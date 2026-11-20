@@ -1,7 +1,7 @@
 using Dekaf.Diagnostics;
 using Dekaf.OpenTelemetry;
-using OpenTelemetry.Trace;
 using OpenTelemetry.Metrics;
+using OpenTelemetry.Trace;
 
 namespace Dekaf.Tests.Unit.Diagnostics;
 

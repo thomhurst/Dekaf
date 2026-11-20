@@ -21,7 +21,9 @@ public sealed partial class PartitionedConsumerRuntimeTests
             async (context, message, cancellationToken) =>
             {
                 if (message.Offset != 1)
+                {
                     return;
+                }
 
                 parked.TrySetResult();
                 // Waiting on a dependency outside Kafka; leave only when the lane starts stopping.
@@ -68,12 +70,18 @@ public sealed partial class PartitionedConsumerRuntimeTests
                 {
                     received.Enqueue(message.Offset);
                     if (message.Offset != 1)
+                    {
                         continue;
+                    }
 
                     if (parked.TrySetResult())
+                    {
                         await Task.Delay(Timeout.Infinite, context.StopRequestedToken).ConfigureAwait(false);
+                    }
                     else
+                    {
                         replayed.TrySetResult();
+                    }
                 }
             },
             new PartitionedProcessingOptions

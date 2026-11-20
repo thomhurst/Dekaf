@@ -18,7 +18,9 @@ public class HeadersRemovalBenchmarks
     {
         _native = new Header[8];
         for (var index = 0; index < _native.Length; index++)
+        {
             _native[index] = new Header($"native-{index}", Data);
+        }
         _native[2] = new Header("tenant", Data);
         _native[5] = new Header("duplicate", Data);
         _replacement.Add("tenant", Data).Add("duplicate", Data).Add("duplicate", Data);
@@ -30,7 +32,9 @@ public class HeadersRemovalBenchmarks
         Fill();
         var replacement = _replacement;
         for (var index = 0; index < replacement.Count; index++)
+        {
             _headers.Remove(replacement[index].Key);
+        }
         return _headers.Count;
     }
 
@@ -46,6 +50,8 @@ public class HeadersRemovalBenchmarks
     {
         _headers.Clear();
         foreach (var header in _native)
+        {
             _headers.Add(header);
+        }
     }
 }

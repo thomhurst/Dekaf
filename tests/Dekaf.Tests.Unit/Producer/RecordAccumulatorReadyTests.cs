@@ -407,7 +407,9 @@ public class RecordAccumulatorReadyTests
         await using var metadataManager = CreateMetadataManager(topic, 1, nodeId: 1);
         var estimator = GetPrivateField<CompressionRatioEstimator>(accumulator, "_compressionRatioEstimator");
         for (var i = 0; i < 200; i++)
+        {
             estimator.Update(topic, CompressionType.Gzip, observedRatio: 0.1);
+        }
 
         ReadyBatch? batch = null;
         try
@@ -742,7 +744,9 @@ public class RecordAccumulatorReadyTests
             await Assert.That(accumulator.IsMuted(tp)).IsTrue();
 
             for (var i = 0; i < 10; i++)
+            {
                 AccumulatorTestHelpers.AppendAwaitedNullRecord(accumulator, pool, "test-topic");
+            }
 
             // One holder releasing leaves the partition muted: Ready() drops the notification.
             accumulator.UnmutePartition(tp);
@@ -1929,7 +1933,9 @@ public class RecordAccumulatorReadyTests
     private static void CompleteAndReturnIfDrained(RecordAccumulator accumulator, ReadyBatch? batch)
     {
         if (batch is null)
+        {
             return;
+        }
 
         batch.CompleteSend(0, DateTimeOffset.UtcNow);
         accumulator.ReturnReadyBatch(batch);
@@ -1939,7 +1945,10 @@ public class RecordAccumulatorReadyTests
     {
         private int _compressCount;
 
-        public CompressionType Type { get; } = type;
+        public CompressionType Type
+        {
+            get;
+        } = type;
 
         public int CompressCount => Volatile.Read(ref _compressCount);
 
@@ -1947,19 +1956,26 @@ public class RecordAccumulatorReadyTests
         {
             Interlocked.Increment(ref _compressCount);
             foreach (var segment in source)
+            {
                 destination.Write(segment.Span);
+            }
         }
 
         public void Decompress(ReadOnlySequence<byte> source, IBufferWriter<byte> destination)
         {
             foreach (var segment in source)
+            {
                 destination.Write(segment.Span);
+            }
         }
     }
 
     private sealed class ThrowingCompressionCodec(CompressionType type) : ICompressionCodec
     {
-        public CompressionType Type { get; } = type;
+        public CompressionType Type
+        {
+            get;
+        } = type;
 
         public void Compress(ReadOnlySequence<byte> source, IBufferWriter<byte> destination)
             => throw new InvalidOperationException("Injected compression failure.");
@@ -1971,7 +1987,10 @@ public class RecordAccumulatorReadyTests
     private sealed class ExpandingCompressionCodec(CompressionType type, int compressedSize)
         : ICompressionCodec
     {
-        public CompressionType Type { get; } = type;
+        public CompressionType Type
+        {
+            get;
+        } = type;
 
         public void Compress(ReadOnlySequence<byte> source, IBufferWriter<byte> destination)
         {
@@ -1983,18 +2002,29 @@ public class RecordAccumulatorReadyTests
         public void Decompress(ReadOnlySequence<byte> source, IBufferWriter<byte> destination)
         {
             foreach (var segment in source)
+            {
                 destination.Write(segment.Span);
+            }
         }
     }
 
     private sealed class BlockingCompressionCodec(CompressionType type) : ICompressionCodec
     {
-        public CompressionType Type { get; } = type;
+        public CompressionType Type
+        {
+            get;
+        } = type;
 
-        public TaskCompletionSource CompressStarted { get; } =
+        public TaskCompletionSource CompressStarted
+        {
+            get;
+        } =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
 
-        public TaskCompletionSource AllowCompression { get; } =
+        public TaskCompletionSource AllowCompression
+        {
+            get;
+        } =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         public void Compress(ReadOnlySequence<byte> source, IBufferWriter<byte> destination)
@@ -2002,13 +2032,17 @@ public class RecordAccumulatorReadyTests
             CompressStarted.TrySetResult();
             AllowCompression.Task.GetAwaiter().GetResult();
             foreach (var segment in source)
+            {
                 destination.Write(segment.Span);
+            }
         }
 
         public void Decompress(ReadOnlySequence<byte> source, IBufferWriter<byte> destination)
         {
             foreach (var segment in source)
+            {
                 destination.Write(segment.Span);
+            }
         }
     }
 

@@ -16,22 +16,34 @@ public sealed class DescribeUserScramCredentialsResponse : IKafkaResponse
     /// <summary>
     /// The duration in milliseconds for which the request was throttled due to quota violation.
     /// </summary>
-    public int ThrottleTimeMs { get; init; }
+    public int ThrottleTimeMs
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The message-level error code, or 0 if there was no error.
     /// </summary>
-    public ErrorCode ErrorCode { get; init; }
+    public ErrorCode ErrorCode
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The message-level error message, or null if there was no error.
     /// </summary>
-    public string? ErrorMessage { get; init; }
+    public string? ErrorMessage
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The results for all users.
     /// </summary>
-    public required IReadOnlyList<DescribeUserScramCredentialsResult> Results { get; init; }
+    public required IReadOnlyList<DescribeUserScramCredentialsResult> Results
+    {
+        get; init;
+    }
 
     public static IKafkaResponse Read(ref KafkaProtocolReader reader, short version)
     {
@@ -65,22 +77,34 @@ public sealed class DescribeUserScramCredentialsResult
     /// <summary>
     /// The user name.
     /// </summary>
-    public required string User { get; init; }
+    public required string User
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The error code for this user, or 0 if there was no error.
     /// </summary>
-    public ErrorCode ErrorCode { get; init; }
+    public ErrorCode ErrorCode
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The error message for this user, or null if there was no error.
     /// </summary>
-    public string? ErrorMessage { get; init; }
+    public string? ErrorMessage
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The SCRAM credentials for this user.
     /// </summary>
-    public required IReadOnlyList<CredentialInfo> CredentialInfos { get; init; }
+    public required IReadOnlyList<CredentialInfo> CredentialInfos
+    {
+        get; init;
+    }
 
     public static DescribeUserScramCredentialsResult Read(ref KafkaProtocolReader reader, short version)
     {
@@ -114,12 +138,18 @@ public sealed class CredentialInfo
     /// <summary>
     /// The SCRAM mechanism (1 = SCRAM-SHA-256, 2 = SCRAM-SHA-512).
     /// </summary>
-    public byte Mechanism { get; init; }
+    public byte Mechanism
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The number of iterations used in the credential.
     /// </summary>
-    public int Iterations { get; init; }
+    public int Iterations
+    {
+        get; init;
+    }
 
     public static CredentialInfo Read(ref KafkaProtocolReader reader, short version)
     {

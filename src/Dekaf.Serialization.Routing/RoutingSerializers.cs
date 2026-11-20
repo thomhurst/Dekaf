@@ -54,7 +54,9 @@ public sealed class TopicRoutingSerializer<TBase> :
         , allows ref struct
     {
         if (value is null)
+        {
             throw MissingRoute("runtime type", "null", context);
+        }
 
         if (_routes.TryGetRoute(context.Topic, out var route))
         {
@@ -220,9 +222,15 @@ public sealed class TypeRoutingSerializer<TBase> :
 internal abstract class SerializerRoute<TBase> : IRecordHeaderSerializer, ISerializerPreparationRequirement
     where TBase : class
 {
-    public abstract bool ProducesRecordHeaders { get; }
+    public abstract bool ProducesRecordHeaders
+    {
+        get;
+    }
 
-    public abstract bool RequiresPreparation { get; }
+    public abstract bool RequiresPreparation
+    {
+        get;
+    }
 
     internal abstract ValueTask PrepareAsync(
         TBase value,
@@ -240,16 +248,14 @@ internal abstract class SerializerRoute<TBase> : IRecordHeaderSerializer, ISeria
         SerializationContext context,
         in SerializerPreparationAdmission admission)
         where TWriter : IBufferWriter<byte>
-        , allows ref struct
-        ;
+        , allows ref struct;
 
     internal abstract void Serialize<TWriter>(
         TBase value,
         ref TWriter destination,
         SerializationContext context)
         where TWriter : IBufferWriter<byte>
-        , allows ref struct
-        ;
+        , allows ref struct;
 }
 
 internal sealed class SerializerRoute<TBase, TDerived>(ISerializer<TDerived> serializer)
@@ -284,7 +290,9 @@ internal sealed class SerializerRoute<TBase, TDerived>(ISerializer<TDerived> ser
         CancellationToken cancellationToken)
     {
         if (_preparer is null || value is not TDerived typedValue)
+        {
             return default;
+        }
 
         return _admission is not null
             ? _admission.PrepareForSerializationAsync(typedValue, context, cancellationToken)
@@ -347,5 +355,8 @@ internal sealed class SerializerRoute<TBase, TDerived>(ISerializer<TDerived> ser
 /// <summary>Reports whether a serializer route needs the producer's asynchronous preparation step.</summary>
 internal interface ISerializerPreparationRequirement
 {
-    bool RequiresPreparation { get; }
+    bool RequiresPreparation
+    {
+        get;
+    }
 }

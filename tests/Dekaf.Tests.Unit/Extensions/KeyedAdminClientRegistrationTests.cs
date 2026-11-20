@@ -103,8 +103,16 @@ public class KeyedAdminClientRegistrationTests
         var calls = 0;
         var services = new ServiceCollection();
         services.AddDekaf(builder => builder
-            .AddAdminClient("first", admin => { calls++; admin.WithBootstrapServers("first:9092"); })
-            .AddAdminClient("second", (_, admin) => { calls++; admin.WithBootstrapServers("second:9092"); }));
+            .AddAdminClient("first", admin =>
+            {
+                calls++;
+                admin.WithBootstrapServers("first:9092");
+            })
+            .AddAdminClient("second", (_, admin) =>
+            {
+                calls++;
+                admin.WithBootstrapServers("second:9092");
+            }));
         await Assert.That(calls).IsEqualTo(0);
         await using var provider = services.BuildServiceProvider();
 
@@ -157,8 +165,12 @@ public class KeyedAdminClientRegistrationTests
         var registered = services.Count;
         var configuration = Configuration([]);
         var options = new AdminClientOptions { BootstrapServers = ["broker:9092"] };
-        Action<AdminClientServiceBuilder> configure = _ => { };
-        Action<IServiceProvider, AdminClientServiceBuilder> providerConfigure = (_, _) => { };
+        Action<AdminClientServiceBuilder> configure = _ =>
+        {
+        };
+        Action<IServiceProvider, AdminClientServiceBuilder> providerConfigure = (_, _) =>
+        {
+        };
 
         await Assert.That(() => builder.AddAdminClient((object)null!, configure)).Throws<ArgumentNullException>();
         await Assert.That(() => builder.AddAdminClient("key", (Action<AdminClientServiceBuilder>)null!)).Throws<ArgumentNullException>();

@@ -27,7 +27,8 @@ public sealed partial class AdminClient : IDetailedConfigMutationAdminClient
                 ValidateOnly = opts.ValidateOnly,
                 Resources = pending.Select(static item => new AlterConfigsResource
                 {
-                    ResourceType = (sbyte)item.Resource.Type, ResourceName = item.Resource.Name,
+                    ResourceType = (sbyte)item.Resource.Type,
+                    ResourceName = item.Resource.Name,
                     Configs = item.Changes.Select(static change => new AlterableConfig { Name = change.Name, Value = change.Value }).ToArray()
                 }).ToArray()
             },
@@ -45,7 +46,7 @@ public sealed partial class AdminClient : IDetailedConfigMutationAdminClient
         var opts = options ?? new IncrementalAlterConfigsOptions();
         ArgumentOutOfRangeException.ThrowIfNegative(opts.TimeoutMs);
         var items = SnapshotDetailedConfigs(configs, static change => new ConfigAlter
-            { Name = change.Name, Value = change.Value, Operation = change.Operation });
+        { Name = change.Name, Value = change.Value, Operation = change.Operation });
         return ExecuteConfigMutationsAsync<IncrementalAlterConfigsRequest, IncrementalAlterConfigsResponse>(items,
             new(ApiKey.IncrementalAlterConfigs, IncrementalAlterConfigsRequest.LowestSupportedVersion,
                 IncrementalAlterConfigsRequest.HighestSupportedVersion, nameof(IncrementalAlterConfigsAsync)),
@@ -55,9 +56,10 @@ public sealed partial class AdminClient : IDetailedConfigMutationAdminClient
                 ValidateOnly = opts.ValidateOnly,
                 Resources = pending.Select(static item => new IncrementalAlterConfigsResource
                 {
-                    ResourceType = (sbyte)item.Resource.Type, ResourceName = item.Resource.Name,
+                    ResourceType = (sbyte)item.Resource.Type,
+                    ResourceName = item.Resource.Name,
                     Configs = item.Changes.Select(static change => new IncrementalAlterableConfig
-                        { Name = change.Name, Value = change.Value, ConfigOperation = (sbyte)change.Operation }).ToArray()
+                    { Name = change.Name, Value = change.Value, ConfigOperation = (sbyte)change.Operation }).ToArray()
                 }).ToArray()
             },
             static (_, response) => MapMutationResults(response.Responses,
@@ -75,10 +77,19 @@ public sealed partial class AdminClient : IDetailedConfigMutationAdminClient
         where TRequest : IKafkaRequest<TResponse> where TResponse : IKafkaResponse
     {
         var results = new Dictionary<ConfigResource, AdminMutationResult>(items.Count);
-        if (items.Count == 0) return results;
+        if (items.Count == 0)
+        {
+            return results;
+        }
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        if (timeoutMs == 0) deadline.Cancel();
-        else deadline.CancelAfter(timeoutMs);
+        if (timeoutMs == 0)
+        {
+            deadline.Cancel();
+        }
+        else
+        {
+            deadline.CancelAfter(timeoutMs);
+        }
         var groups = new Dictionary<int, List<ConfigMutation>>();
         foreach (var item in items)
         {
@@ -86,7 +97,10 @@ public sealed partial class AdminClient : IDetailedConfigMutationAdminClient
             var targetsPhysicalNode = resource.Type == ConfigResourceType.BrokerLogger ||
                 (_controllerMetadataManager is null && resource.Type == ConfigResourceType.Broker && resource.Name.Length != 0);
             var endpoint = targetsPhysicalNode ? int.Parse(resource.Name, CultureInfo.InvariantCulture) : -1;
-            if (!groups.TryGetValue(endpoint, out var group)) groups.Add(endpoint, group = new());
+            if (!groups.TryGetValue(endpoint, out var group))
+            {
+                groups.Add(endpoint, group = new());
+            }
             group.Add(item);
         }
         foreach (var group in groups)
@@ -95,7 +109,10 @@ public sealed partial class AdminClient : IDetailedConfigMutationAdminClient
             var outcomes = await ExecuteDetailedMutationAsync<ConfigResource, ConfigMutation, TRequest, TResponse>(
                 group.Value, static item => item.Resource, protocol, timeoutMs, createRequest, readResponse, cancellationToken,
                 token => LeaseDetailedConfigEndpointAsync(group.Key, protocol.ApiKey, token), deadline).ConfigureAwait(false);
-            foreach (var outcome in outcomes) results.Add(outcome.Key, outcome.Value);
+            foreach (var outcome in outcomes)
+            {
+                results.Add(outcome.Key, outcome.Value);
+            }
         }
         return results;
     }
@@ -103,7 +120,9 @@ public sealed partial class AdminClient : IDetailedConfigMutationAdminClient
     private ValueTask<KafkaConnectionLease> LeaseDetailedConfigEndpointAsync(int endpoint, ApiKey apiKey, CancellationToken token)
     {
         if (_controllerMetadataManager is { } controller)
+        {
             return endpoint < 0 ? controller.LeaseActiveControllerAsync(apiKey, token) : controller.LeaseControllerAsync(endpoint, apiKey, token);
+        }
         return endpoint < 0 ? LeaseAnyBrokerConnectionAsync(token) : _connectionPool.LeaseConnectionAsync(endpoint, token);
     }
 
@@ -120,14 +139,24 @@ public sealed partial class AdminClient : IDetailedConfigMutationAdminClient
             ArgumentNullException.ThrowIfNull(resource.Name);
             if (resource.Type is not (ConfigResourceType.Topic or ConfigResourceType.Broker or ConfigResourceType.BrokerLogger
                 or ConfigResourceType.ClientMetrics or ConfigResourceType.Group))
+            {
                 throw new ArgumentOutOfRangeException(nameof(configs), "Unknown configuration resource type.");
-            if (resource.Type != ConfigResourceType.Broker) ArgumentException.ThrowIfNullOrWhiteSpace(resource.Name, nameof(configs));
+            }
+            if (resource.Type != ConfigResourceType.Broker)
+            {
+                ArgumentException.ThrowIfNullOrWhiteSpace(resource.Name, nameof(configs));
+            }
             if (resource.Type == ConfigResourceType.BrokerLogger || (resource.Type == ConfigResourceType.Broker && resource.Name.Length != 0))
             {
                 if (!int.TryParse(resource.Name, NumberStyles.None, CultureInfo.InvariantCulture, out var id) || id < 0)
+                {
                     throw new ArgumentException("Broker and logger resource names must be nonnegative node IDs.", nameof(configs));
+                }
             }
-            if (!resources.Add(resource)) throw new ArgumentException("Configuration mutations cannot repeat a resource.", nameof(configs));
+            if (!resources.Add(resource))
+            {
+                throw new ArgumentException("Configuration mutations cannot repeat a resource.", nameof(configs));
+            }
             ArgumentNullException.ThrowIfNull(pair.Value);
             var names = new HashSet<string>(StringComparer.Ordinal);
             var changes = new ConfigAlter[pair.Value.Count];
@@ -138,8 +167,13 @@ public sealed partial class AdminClient : IDetailedConfigMutationAdminClient
                 var change = copy(entry);
                 ArgumentException.ThrowIfNullOrWhiteSpace(change.Name, nameof(configs));
                 if ((byte)change.Operation > (byte)ConfigAlterOperation.Subtract)
+                {
                     throw new ArgumentOutOfRangeException(nameof(configs), "Unknown incremental configuration operation.");
-                if (!names.Add(change.Name)) throw new ArgumentException("A resource cannot repeat a configuration key.", nameof(configs));
+                }
+                if (!names.Add(change.Name))
+                {
+                    throw new ArgumentException("A resource cannot repeat a configuration key.", nameof(configs));
+                }
                 changes[i] = change;
             }
             items.Add(new(new() { Type = resource.Type, Name = resource.Name }, System.Array.AsReadOnly(changes)));

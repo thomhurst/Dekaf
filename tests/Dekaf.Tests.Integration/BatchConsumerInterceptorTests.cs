@@ -23,7 +23,9 @@ public sealed class BatchConsumerInterceptorTests(KafkaTestContainer kafka) : Ka
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers).BuildAsync();
         for (var index = 0; index < count; index++)
+        {
             await producer.ProduceAsync(topic, "key", $"value-{index}");
+        }
 
         var calls = new ConcurrentQueue<string>();
         var groupId = $"batch-interceptors-{Guid.NewGuid():N}";
@@ -64,7 +66,9 @@ public sealed class BatchConsumerInterceptorTests(KafkaTestContainer kafka) : Ka
             delivered.Enqueue(record);
             received.Enqueue(record.Value);
             if (received.Count == count)
+            {
                 done.TrySetResult();
+            }
             return ValueTask.CompletedTask;
         }
 
@@ -73,9 +77,13 @@ public sealed class BatchConsumerInterceptorTests(KafkaTestContainer kafka) : Ka
             await foreach (var batch in consumer.ConsumeRawBatchAsync(deadline.Token))
             {
                 foreach (var record in batch)
+                {
                     received.Enqueue(Encoding.UTF8.GetString(record.Value.Span));
+                }
                 if (received.Count == count)
+                {
                     break;
+                }
             }
         }
         else if (delivery == "batch")
@@ -83,9 +91,13 @@ public sealed class BatchConsumerInterceptorTests(KafkaTestContainer kafka) : Ka
             await foreach (var batch in consumer.ConsumeBatchAsync(deadline.Token))
             {
                 foreach (var record in batch)
+                {
                     await Handle(record);
+                }
                 if (received.Count == count)
+                {
                     break;
+                }
             }
         }
         else
@@ -104,19 +116,26 @@ public sealed class BatchConsumerInterceptorTests(KafkaTestContainer kafka) : Ka
                 : consumer.RunPartitionedBatchesAsync(async (_, records, _) =>
                 {
                     for (var index = 0; index < records.Count; index++)
+                    {
                         await Handle(records[index]);
+                    }
                 }, options, stop.Token).AsTask();
             try
             {
                 await Task.WhenAny(done.Task, run).WaitAsync(deadline.Token);
                 if (run.IsCompleted)
+                {
                     await run;
+                }
                 await done.Task.WaitAsync(deadline.Token);
             }
             finally
             {
                 await stop.CancelAsync();
-                try { await run.WaitAsync(TimeSpan.FromSeconds(15)); }
+                try
+                {
+                    await run.WaitAsync(TimeSpan.FromSeconds(15));
+                }
                 catch (OperationCanceledException) when (stop.IsCancellationRequested) { }
             }
         }
@@ -145,6 +164,8 @@ public sealed class BatchConsumerInterceptorTests(KafkaTestContainer kafka) : Ka
         : IConsumerInterceptor<string, string>
     {
         public ConsumeResult<string, string> OnConsume(ConsumeResult<string, string> result) => callback(result);
-        public void OnCommit(IReadOnlyList<TopicPartitionOffset> offsets) { }
+        public void OnCommit(IReadOnlyList<TopicPartitionOffset> offsets)
+        {
+        }
     }
 }

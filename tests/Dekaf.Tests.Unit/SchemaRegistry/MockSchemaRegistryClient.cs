@@ -24,20 +24,59 @@ internal sealed class MockSchemaRegistryClient : IFormattedSchemaRegistryClient,
     private int _nextId = 1;
     private bool _disposed;
 
-    public int GetSchemaCallCount { get; private set; }
-    public CancellationToken LastGetSchemaCancellationToken { get; private set; }
-    public CancellationToken LastGetSchemaByGuidCancellationToken { get; private set; }
-    public int GetOrRegisterSchemaCallCount { get; private set; }
-    public int LookupSchemaCallCount { get; private set; }
-    public CancellationToken LastGetOrRegisterSchemaCancellationToken { get; private set; }
-    public int TryGetCachedSchemaCallCount { get; private set; }
-    internal Action? BeforeTryGetCachedSchema { get; set; }
-    public int GetSchemaFailuresRemaining { get; set; }
-    public int GetOrRegisterSchemaFailuresRemaining { get; set; }
-    public bool LookupRequiresRuleSetPresenceMatch { get; set; }
+    public int GetSchemaCallCount
+    {
+        get; private set;
+    }
+    public CancellationToken LastGetSchemaCancellationToken
+    {
+        get; private set;
+    }
+    public CancellationToken LastGetSchemaByGuidCancellationToken
+    {
+        get; private set;
+    }
+    public int GetOrRegisterSchemaCallCount
+    {
+        get; private set;
+    }
+    public int LookupSchemaCallCount
+    {
+        get; private set;
+    }
+    public CancellationToken LastGetOrRegisterSchemaCancellationToken
+    {
+        get; private set;
+    }
+    public int TryGetCachedSchemaCallCount
+    {
+        get; private set;
+    }
+    internal Action? BeforeTryGetCachedSchema
+    {
+        get; set;
+    }
+    public int GetSchemaFailuresRemaining
+    {
+        get; set;
+    }
+    public int GetOrRegisterSchemaFailuresRemaining
+    {
+        get; set;
+    }
+    public bool LookupRequiresRuleSetPresenceMatch
+    {
+        get; set;
+    }
     public int AssociationLookupCallCount => Volatile.Read(ref _associationLookupCallCount);
-    public int AssociationLookupFailuresRemaining { get; set; }
-    public bool SupportsDeletedVersionLookup { get; init; }
+    public int AssociationLookupFailuresRemaining
+    {
+        get; set;
+    }
+    public bool SupportsDeletedVersionLookup
+    {
+        get; init;
+    }
 
     public void BlockNextAssociationLookup()
     {
@@ -193,7 +232,9 @@ internal sealed class MockSchemaRegistryClient : IFormattedSchemaRegistryClient,
         }
 
         if (_schemasById.TryGetValue(id, out var schema))
+        {
             return schema;
+        }
 
         throw new SchemaRegistryException(40403, $"Schema {id} not found");
     }
@@ -209,7 +250,9 @@ internal sealed class MockSchemaRegistryClient : IFormattedSchemaRegistryClient,
         if (Guid.TryParse(guid, out var parsedGuid))
         {
             if (_schemasByGuid.TryGetValue((parsedGuid, format), out var cached))
+            {
                 return Task.FromResult(cached);
+            }
 
             if (_schemasByGuid.TryGetValue((parsedGuid, null), out var schema))
             {
@@ -234,7 +277,9 @@ internal sealed class MockSchemaRegistryClient : IFormattedSchemaRegistryClient,
             for (var i = 0; i < schemas.Count; i++)
             {
                 if (schemas[i].Id == id)
+                {
                     return Task.FromResult(schemas[i].Schema);
+                }
             }
         }
 
@@ -288,14 +333,18 @@ internal sealed class MockSchemaRegistryClient : IFormattedSchemaRegistryClient,
         ThrowIfDisposed();
 
         if (!_schemasBySubject.TryGetValue(subject, out var list) || list.Count == 0)
+        {
             throw new SchemaRegistryException(40401, $"Subject '{subject}' not found");
+        }
 
         var entry = version == "latest"
             ? list[^1]
             : list.FirstOrDefault(e => e.Version == int.Parse(version));
 
         if (entry == default)
+        {
             throw new SchemaRegistryException(40402, $"Version not found");
+        }
 
         return Task.FromResult(new RegisteredSchema
         {
@@ -341,14 +390,18 @@ internal sealed class MockSchemaRegistryClient : IFormattedSchemaRegistryClient,
         LookupSchemaCallCount++;
 
         if (!_schemasBySubject.TryGetValue(subject, out var list))
+        {
             throw new SchemaRegistryException(40401, $"Subject '{subject}' not found");
+        }
 
         var entry = list.FirstOrDefault(candidate =>
             SchemasAreEquivalent(candidate.Schema, schema) &&
             (!LookupRequiresRuleSetPresenceMatch ||
              (candidate.Schema.RuleSet is null) == (schema.RuleSet is null)));
         if (entry == default)
+        {
             throw new SchemaRegistryException(40403, $"Schema not found under subject '{subject}'");
+        }
 
         return Task.FromResult(new RegisteredSchema
         {
@@ -383,7 +436,9 @@ internal sealed class MockSchemaRegistryClient : IFormattedSchemaRegistryClient,
         {
             var existing = list.FirstOrDefault(e => SchemasAreEquivalent(e.Schema, schema));
             if (existing != default)
+            {
                 return existing.Id;
+            }
         }
 
         // Register new schema
@@ -401,7 +456,9 @@ internal sealed class MockSchemaRegistryClient : IFormattedSchemaRegistryClient,
         var leftReferences = left.References ?? [];
         var rightReferences = right.References ?? [];
         if (leftReferences.Count != rightReferences.Count)
+        {
             return false;
+        }
 
         for (var index = 0; index < leftReferences.Count; index++)
         {
@@ -429,7 +486,9 @@ internal sealed class MockSchemaRegistryClient : IFormattedSchemaRegistryClient,
         ThrowIfDisposed();
 
         if (!_schemasBySubject.TryGetValue(subject, out var list))
+        {
             throw new SchemaRegistryException(40401, $"Subject '{subject}' not found");
+        }
 
         return Task.FromResult<IReadOnlyList<int>>(list.Select(e => e.Version).ToList());
     }
@@ -445,7 +504,9 @@ internal sealed class MockSchemaRegistryClient : IFormattedSchemaRegistryClient,
         ThrowIfDisposed();
 
         if (!_schemasBySubject.TryGetValue(subject, out var list))
+        {
             throw new SchemaRegistryException(40401, $"Subject '{subject}' not found");
+        }
 
         var versions = list.Select(e => e.Version).ToList();
         _schemasBySubject.Remove(subject);
@@ -453,13 +514,19 @@ internal sealed class MockSchemaRegistryClient : IFormattedSchemaRegistryClient,
         foreach (var entry in list)
         {
             if (IsSchemaIdReferenced(entry.Id))
+            {
                 continue;
+            }
 
             _schemasById.Remove(entry.Id);
             if (!_schemaGuidsById.Remove(entry.Id, out var guid))
+            {
                 continue;
+            }
             foreach (var key in _schemasByGuid.Keys.Where(key => key.Guid == guid).ToArray())
+            {
                 _schemasByGuid.Remove(key);
+            }
         }
 
         return Task.FromResult<IReadOnlyList<int>>(versions);
@@ -472,7 +539,9 @@ internal sealed class MockSchemaRegistryClient : IFormattedSchemaRegistryClient,
             for (var index = 0; index < schemas.Count; index++)
             {
                 if (schemas[index].Id == id)
+                {
                     return true;
+                }
             }
         }
 
@@ -501,7 +570,9 @@ internal sealed class MockSchemaRegistryClient : IFormattedSchemaRegistryClient,
         cancellationToken.ThrowIfCancellationRequested();
         Interlocked.Increment(ref _associationLookupCallCount);
         if (_associationLookupResponses.Count > 0)
+        {
             return await _associationLookupResponses.Dequeue().WaitAsync(cancellationToken);
+        }
         if (_associationLookupEntered is { } entered && _associationLookupRelease is { } release)
         {
             entered.TrySetResult();
@@ -531,15 +602,25 @@ internal sealed class MockSchemaRegistryClient : IFormattedSchemaRegistryClient,
         }
 
         if (resourceType is not null)
+        {
             filtered = filtered.Where(association => association.ResourceType == resourceType);
+        }
         if (associationTypes is { Count: > 0 })
+        {
             filtered = filtered.Where(association => associationTypes.Contains(association.AssociationType));
+        }
         if (lifecycle is not null)
+        {
             filtered = filtered.Where(association => association.Lifecycle == lifecycle);
+        }
         if (offset > 0)
+        {
             filtered = filtered.Skip(offset);
+        }
         if (limit >= 0)
+        {
             filtered = filtered.Take(limit);
+        }
 
         return filtered.ToArray();
     }

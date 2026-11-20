@@ -40,7 +40,9 @@ public sealed class OutboxNotifierTests
         using var cancellation = new CancellationTokenSource();
         var waiting = notifier.WaitAsync(TimeSpan.FromSeconds(1), cancellation.Token);
         for (var index = 0; index < 100; index++)
+        {
             notifier.NotifyCommitted(new HashSet<int> { 1, 64 });
+        }
         await Assert.That(waiting.IsCompleted).IsFalse();
         time.Advance(TimeSpan.FromSeconds(1));
         await waiting.AsTask().WaitAsync(TimeSpan.FromSeconds(30));
@@ -69,7 +71,9 @@ public sealed class OutboxNotifierTests
         var time = new ManualTimeProvider();
         using var notifier = new OutboxNotifier(time);
         for (var index = 0; index < 100; index++)
+        {
             notifier.NotifyCommitted();
+        }
         var first = notifier.WaitAsync(TimeSpan.FromSeconds(1));
         await Assert.That(first.IsCompletedSuccessfully).IsTrue();
         await first;
@@ -124,8 +128,14 @@ public sealed class OutboxNotifierTests
 
     private sealed class NotifyingTimeProvider : TimeProvider
     {
-        public Action? OnSchedule { get; set; }
-        public int Schedules { get; private set; }
+        public Action? OnSchedule
+        {
+            get; set;
+        }
+        public int Schedules
+        {
+            get; private set;
+        }
 
         public override ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period)
             => new NotifyingTimer(this);
@@ -142,7 +152,9 @@ public sealed class OutboxNotifierTests
                 return true;
             }
 
-            public void Dispose() { }
+            public void Dispose()
+            {
+            }
             public ValueTask DisposeAsync() => ValueTask.CompletedTask;
         }
     }

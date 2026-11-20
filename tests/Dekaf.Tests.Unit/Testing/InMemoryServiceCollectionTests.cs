@@ -255,7 +255,10 @@ public sealed class InMemoryServiceCollectionTests
     private class ShareOrdersWorker(IKafkaShareConsumer<string, string> consumer)
         : KafkaShareConsumerService<string, string>(consumer, NullLogger.Instance)
     {
-        public IKafkaShareConsumer<string, string> Client { get; } = consumer;
+        public IKafkaShareConsumer<string, string> Client
+        {
+            get;
+        } = consumer;
         protected override IEnumerable<string> Topics => ["orders"];
         protected override ValueTask ProcessAsync(ShareConsumeResult<string, string> result, CancellationToken cancellationToken)
             => ValueTask.CompletedTask;
@@ -284,8 +287,14 @@ public sealed class InMemoryServiceCollectionTests
         : KafkaConsumerService<string, string>(consumer, NullLogger.Instance,
             serviceOptions: new KafkaConsumerServiceOptions { DrainOnShutdown = false })
     {
-        public IKafkaConsumer<string, string> Client { get; } = consumer;
-        public TaskCompletionSource<ConsumeResult<string, string>> Processed { get; } =
+        public IKafkaConsumer<string, string> Client
+        {
+            get;
+        } = consumer;
+        public TaskCompletionSource<ConsumeResult<string, string>> Processed
+        {
+            get;
+        } =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         protected override IEnumerable<string> Topics => ["orders"];

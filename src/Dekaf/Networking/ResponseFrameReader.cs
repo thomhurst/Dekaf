@@ -73,7 +73,9 @@ internal sealed class ResponseFrameReader : IDisposable
         Action<bool>? onAdmissionWait = null)
     {
         if (socket is null && stream is null)
+        {
             throw new ArgumentException("Either a socket or a stream is required.");
+        }
 
         _socket = socket;
         _stream = stream;
@@ -114,7 +116,9 @@ internal sealed class ResponseFrameReader : IDisposable
 
                 var read = await ReadSourceAsync(_buffer[_end..]).ConfigureAwait(false);
                 if (read == 0)
+                {
                     return ResponseFrame.EndOfStream;
+                }
 
                 _end += read;
             }
@@ -124,9 +128,13 @@ internal sealed class ResponseFrameReader : IDisposable
             _start += 4;
 
             if (frameSize >= ResponseBufferPool.NativeMemoryThresholdBytes)
+            {
                 _nativeFrame = _responseBufferPool.RentNative(frameSize);
+            }
             else
+            {
                 _frameArray = _responseBufferPool.Pool.Rent(frameSize);
+            }
             _frameSize = frameSize;
 
             // Copy whatever part of the payload is already buffered.
@@ -191,7 +199,9 @@ internal sealed class ResponseFrameReader : IDisposable
 
                 var read = await ReadSourceAsync(_buffer[_end..]).ConfigureAwait(false);
                 if (read == 0)
+                {
                     return BoundedResponseFrame.EndOfStream;
+                }
 
                 _end += read;
             }
@@ -211,7 +221,9 @@ internal sealed class ResponseFrameReader : IDisposable
 
                 var read = await ReadSourceAsync(_buffer[_end..]).ConfigureAwait(false);
                 if (read == 0)
+                {
                     return BoundedResponseFrame.EndOfStream;
+                }
 
                 _end += read;
             }
@@ -221,7 +233,9 @@ internal sealed class ResponseFrameReader : IDisposable
             if (admission.Discard)
             {
                 if (!await DiscardFrameAsync(frameSize).ConfigureAwait(false))
+                {
                     return BoundedResponseFrame.EndOfStream;
+                }
 
                 return BoundedResponseFrame.ForDiscarded(frameCorrelationId);
             }
@@ -248,9 +262,13 @@ internal sealed class ResponseFrameReader : IDisposable
             }
 
             if (frameSize >= ResponseBufferPool.NativeMemoryThresholdBytes)
+            {
                 _nativeFrame = _responseBufferPool.RentNative(frameSize);
+            }
             else
+            {
                 _frameArray = _responseBufferPool.Pool.Rent(frameSize);
+            }
             _frameSize = frameSize;
 
             var buffered = Math.Min(frameSize, BufferedByteCount);
@@ -310,7 +328,9 @@ internal sealed class ResponseFrameReader : IDisposable
             var read = await ReadSourceAsync(_buffer[..Math.Min(_buffer.Length, remaining)])
                 .ConfigureAwait(false);
             if (read == 0)
+            {
                 return false;
+            }
 
             remaining -= read;
         }
@@ -342,9 +362,11 @@ internal sealed class ResponseFrameReader : IDisposable
             }
             else
 #endif
-            read = _stream is not null
-                ? await _stream.ReadAsync(destination).ConfigureAwait(false)
-                : await _socket!.ReceiveAsync(destination, SocketFlags.None).ConfigureAwait(false);
+            {
+                read = _stream is not null
+                    ? await _stream.ReadAsync(destination).ConfigureAwait(false)
+                    : await _socket!.ReceiveAsync(destination, SocketFlags.None).ConfigureAwait(false);
+            }
         }
         finally
         {
@@ -352,7 +374,9 @@ internal sealed class ResponseFrameReader : IDisposable
         }
 
         if (read > 0)
+        {
             _onBytesReceived?.Invoke(read);
+        }
 
         return read;
     }
@@ -369,7 +393,9 @@ internal sealed class ResponseFrameReader : IDisposable
     public void Abort()
     {
         if (Interlocked.Exchange(ref _aborted, 1) != 0)
+        {
             return;
+        }
 
         try
         {
@@ -407,7 +433,9 @@ internal sealed class ResponseFrameReader : IDisposable
     public void Dispose()
     {
         if (Volatile.Read(ref _readInFlight))
+        {
             return;
+        }
 
         AbandonInProgressFrame();
         _bufferOwner?.Dispose();
@@ -426,7 +454,9 @@ internal sealed class ResponseFrameReader : IDisposable
         try
         {
             if (frameArray is not null)
+            {
                 _responseBufferPool.Pool.Return(frameArray);
+            }
             nativeFrame?.Return();
         }
         finally

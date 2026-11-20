@@ -120,11 +120,15 @@ public class TransactionalProduceAllocationTests
         // LingerMs = 0: the sweep seals the just-appended batch immediately.
         var seal = accumulator.ExpireLingerAsync(CancellationToken.None);
         if (!seal.IsCompletedSuccessfully)
+        {
             return 0;
+        }
         seal.GetAwaiter().GetResult();
 
         if (!accumulator.TryDrainBatch(topicPartition, out var batch))
+        {
             return 0;
+        }
 
         LeakGateHarness.RetireBatch(accumulator, batch, offset);
 
@@ -226,7 +230,9 @@ public class TransactionalProduceAllocationTests
         var checksum = 0;
         var cycles = 0;
         for (var i = 0; i < warmupIterations; i++, cycles++)
+        {
             checksum += operation();
+        }
 
         var best = default(AllocationMeasurement);
         for (var window = 0; window < MeasurementWindows; window++)
@@ -235,7 +241,9 @@ public class TransactionalProduceAllocationTests
             // window, then re-rent the cycle's buffers so the window starts pool-warm.
             GC.Collect(2, GCCollectionMode.Forced, blocking: true);
             for (var i = 0; i < PoolRefillIterations; i++, cycles++)
+            {
                 checksum += operation();
+            }
 
             long allocatedBytes = 0;
             var nonZeroCycles = 0;
@@ -256,7 +264,9 @@ public class TransactionalProduceAllocationTests
             var measurement = new AllocationMeasurement(
                 allocatedBytes, nonZeroCycles, minNonZeroCycleBytes);
             if (window == 0 || measurement.AllocatedBytes < best.AllocatedBytes)
+            {
                 best = measurement;
+            }
         }
 
         return new GateResult(best, checksum, cycles);

@@ -146,7 +146,10 @@ public sealed class ProducerDeliveryGuaranteeTests(KafkaTestContainer kafka) : K
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))
         {
             messages.Add(msg);
-            if (messages.Count >= messageCount) break;
+            if (messages.Count >= messageCount)
+            {
+                break;
+            }
         }
 
         await Assert.That(messages).Count().IsEqualTo(messageCount);
@@ -254,7 +257,10 @@ public sealed class ProducerDeliveryGuaranteeTests(KafkaTestContainer kafka) : K
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))
         {
             messages.Add(msg);
-            if (messages.Count >= 20) break;
+            if (messages.Count >= 20)
+            {
+                break;
+            }
         }
 
         await Assert.That(messages).Count().IsEqualTo(20);
@@ -300,7 +306,10 @@ public sealed class ProducerDeliveryGuaranteeTests(KafkaTestContainer kafka) : K
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))
         {
             messages.Add(msg);
-            if (messages.Count >= 30) break;
+            if (messages.Count >= 30)
+            {
+                break;
+            }
         }
 
         await Assert.That(messages).Count().IsEqualTo(30);
@@ -357,7 +366,10 @@ public sealed class ProducerDeliveryGuaranteeTests(KafkaTestContainer kafka) : K
             await foreach (var msg in consumer.ConsumeAsync(cts.Token))
             {
                 messages.Add(msg);
-                if (messages.Count >= 10) break;
+                if (messages.Count >= 10)
+                {
+                    break;
+                }
             }
 
             await Assert.That(messages).Count().IsEqualTo(10);

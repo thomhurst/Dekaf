@@ -1,10 +1,10 @@
+using System.Reflection;
 using Dekaf.Consumer;
 using Dekaf.Errors;
 using Dekaf.Networking;
 using Dekaf.Protocol.Messages;
 using Dekaf.Security.Sasl;
 using Microsoft.Extensions.Logging;
-using System.Reflection;
 using Testcontainers.Kafka;
 
 namespace Dekaf.Tests.Integration.Security;
@@ -58,7 +58,9 @@ public sealed class OAuthReauthenticationIntegrationTests(ReauthOAuthKafkaContai
             // KafkaChannel rejects a second reauthentication less than one second after the first.
             // Wait past that protocol minimum, independently of token validity.
             if (i > 0)
+            {
                 await Task.Delay(TimeSpan.FromMilliseconds(1100), cancellationToken);
+            }
             var previousSession = connection.SaslSession;
             await connection.PerformReauthenticationAsync().WaitAsync(cancellationToken);
             await Assert.That(connection.IsConnected).IsTrue();
@@ -99,7 +101,9 @@ public sealed class OAuthReauthenticationIntegrationTests(ReauthOAuthKafkaContai
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         deadline.CancelAfter(TimeSpan.FromSeconds(20));
         while (!connection.IsResponseAdmissionWaiting)
+        {
             await Task.Delay(10, deadline.Token);
+        }
 
         var previousSession = connection.SaslSession;
         var renewal = connection.PerformReauthenticationAsync();
@@ -124,7 +128,9 @@ public sealed class OAuthReauthenticationIntegrationTests(ReauthOAuthKafkaContai
         }
         await Assert.That(connection.IsConnected).IsTrue();
         if (!cancelFetch)
+        {
             await Assert.That(fetch.IsCompleted).IsFalse();
+        }
         memoryPool.Release(64);
         if (!cancelFetch)
         {
@@ -133,9 +139,13 @@ public sealed class OAuthReauthenticationIntegrationTests(ReauthOAuthKafkaContai
             response.ReturnToPool();
         }
         if (expireBudget)
+        {
             await connection.PerformReauthenticationAsync().WaitAsync(deadline.Token);
+        }
         else
+        {
             await renewal.WaitAsync(deadline.Token);
+        }
         await Assert.That(connection.IsConnected).IsTrue();
         await Assert.That(connection.SaslSession).IsNotSameReferenceAs(previousSession);
     }
@@ -161,13 +171,17 @@ public sealed class OAuthReauthenticationIntegrationTests(ReauthOAuthKafkaContai
         try
         {
             if (wait == "broker throttle")
+            {
                 throttle.Observe(60_000);
+            }
             else
             {
                 held = GetPrivateField<SemaphoreSlim>(connection,
                     wait == "write lock" ? "_writeLock" : "_pendingRequestSlots");
                 while (held.Wait(0, cancellationToken))
+                {
                     heldCount++;
+                }
             }
 
             // Control the exchange token directly so cancellation occurs while the
@@ -183,7 +197,9 @@ public sealed class OAuthReauthenticationIntegrationTests(ReauthOAuthKafkaContai
         finally
         {
             if (heldCount != 0)
+            {
                 held!.Release(heldCount);
+            }
             typeof(BrokerThrottleState).GetField("_throttleUntilMs", BindingFlags.Instance | BindingFlags.NonPublic)!
                 .SetValue(throttle, 0L);
         }
@@ -213,7 +229,9 @@ public sealed class OAuthReauthenticationIntegrationTests(ReauthOAuthKafkaContai
                 if (Interlocked.Increment(ref calls) == 2)
                 {
                     if (timeout)
+                    {
                         await Task.Delay(Timeout.Infinite, token);
+                    }
                     throw new InvalidOperationException("Token provider unavailable");
                 }
                 return OAuthBearerKafkaContainer.CreateToken(OAuthBearerKafkaContainer.Principal);
@@ -315,7 +333,9 @@ public sealed class SaslReauthenticationIntegrationTests(ReauthKafkaContainer ka
         await using var connection = CreateConnection(token =>
         {
             if (Interlocked.Increment(ref calls) == 1)
+            {
                 return ValueTask.FromResult(ValidCredentials());
+            }
             refreshing.TrySetResult();
             return new ValueTask<SaslCredentials>(credentials.Task.WaitAsync(token));
         });
@@ -348,7 +368,10 @@ public sealed class SaslReauthenticationIntegrationTests(ReauthKafkaContainer ka
             logger: loggerFactory.CreateLogger<KafkaConnection>());
         await connection.ConnectAsync(cancellationToken);
         await ReadMetadataAsync(connection, cancellationToken);
-        try { await connection.PerformReauthenticationAsync().WaitAsync(cancellationToken); }
+        try
+        {
+            await connection.PerformReauthenticationAsync().WaitAsync(cancellationToken);
+        }
         catch (AuthenticationException exception)
         {
             await Assert.That(exception.ErrorCode).IsEqualTo(Dekaf.Protocol.ErrorCode.SaslAuthenticationFailed);
@@ -369,7 +392,9 @@ public sealed class SaslReauthenticationIntegrationTests(ReauthKafkaContainer ka
         await using var connection = CreateConnection(token =>
         {
             if (Interlocked.Increment(ref calls) == 1)
+            {
                 return ValueTask.FromResult(ValidCredentials());
+            }
             refreshing.TrySetResult();
             return new ValueTask<SaslCredentials>(release.Task.WaitAsync(token));
         });
@@ -384,7 +409,10 @@ public sealed class SaslReauthenticationIntegrationTests(ReauthKafkaContainer ka
         {
             release.TrySetResult(ValidCredentials());
             // Once disposal wins, the in-flight exchange may report its closed transport.
-            try { await renewal.WaitAsync(TimeSpan.FromSeconds(5), cancellationToken); }
+            try
+            {
+                await renewal.WaitAsync(TimeSpan.FromSeconds(5), cancellationToken);
+            }
             catch (ObjectDisposedException) { }
             catch (InvalidOperationException) when (!connection.IsConnected) { }
         }
@@ -404,7 +432,9 @@ public sealed class SaslReauthenticationIntegrationTests(ReauthKafkaContainer ka
             RequestTimeout = requestTimeout ?? TimeSpan.FromSeconds(10),
             SaslReauthenticationConfig = new SaslReauthenticationConfig
             {
-                Enabled = automatic, MinSessionLifetimeMs = 0, ReauthenticationThreshold = 0.5
+                Enabled = automatic,
+                MinSessionLifetimeMs = 0,
+                ReauthenticationThreshold = 0.5
             }
         }, logger);
     }

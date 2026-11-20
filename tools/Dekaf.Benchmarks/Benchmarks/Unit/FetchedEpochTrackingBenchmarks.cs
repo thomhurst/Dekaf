@@ -97,7 +97,9 @@ public class FetchedEpochTrackingBenchmarks
         // One published response per partition: the position and its epoch move together.
         var nextOffset = ++_nextOffset;
         for (var partition = 0; partition < PartitionCount; partition++)
+        {
             _consumer.UpdateFetchPositionsFromPrefetch(_partitions[partition], nextOffset, 6, _fetchBufferEpoch);
+        }
 
         return nextOffset;
     }

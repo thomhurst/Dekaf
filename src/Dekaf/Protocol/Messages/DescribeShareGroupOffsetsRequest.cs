@@ -18,7 +18,10 @@ public sealed class DescribeShareGroupOffsetsRequest : IKafkaRequest<DescribeSha
     /// <summary>
     /// The groups to describe offsets for.
     /// </summary>
-    public required IReadOnlyList<DescribeShareGroupOffsetsRequestGroup> Groups { get; init; }
+    public required IReadOnlyList<DescribeShareGroupOffsetsRequestGroup> Groups
+    {
+        get; init;
+    }
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {
@@ -38,12 +41,18 @@ public sealed class DescribeShareGroupOffsetsRequestGroup
     /// <summary>
     /// The group ID.
     /// </summary>
-    public required string GroupId { get; init; }
+    public required string GroupId
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The topics to describe offsets for. Null means all topics.
     /// </summary>
-    public IReadOnlyList<DescribeShareGroupOffsetsRequestTopic>? Topics { get; init; }
+    public IReadOnlyList<DescribeShareGroupOffsetsRequestTopic>? Topics
+    {
+        get; init;
+    }
 
     public void Write(ref KafkaProtocolWriter writer)
     {
@@ -96,12 +105,18 @@ public sealed class DescribeShareGroupOffsetsRequestTopic
     /// <summary>
     /// The topic name.
     /// </summary>
-    public required string TopicName { get; init; }
+    public required string TopicName
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The partition indexes.
     /// </summary>
-    public required IReadOnlyList<int> Partitions { get; init; }
+    public required IReadOnlyList<int> Partitions
+    {
+        get; init;
+    }
 
     public void Write(ref KafkaProtocolWriter writer)
     {

@@ -486,14 +486,19 @@ public sealed class StreamsGroupMemberIntegrationTests(KafkaTestContainer kafka)
         private readonly HashSet<int> _owned = [];
         private int _revoked;
 
-        public IStreamsGroupMember Member { get; set; } = null!;
+        public IStreamsGroupMember Member
+        {
+            get; set;
+        } = null!;
 
         public int[] Owned
         {
             get
             {
                 lock (_gate)
+                {
                     return _owned.ToArray();
+                }
             }
         }
 
@@ -511,7 +516,9 @@ public sealed class StreamsGroupMemberIntegrationTests(KafkaTestContainer kafka)
         public ValueTask OnTasksLostAsync(StreamsGroupAssignment tasks, CancellationToken cancellationToken)
         {
             lock (_gate)
+            {
                 _owned.Clear();
+            }
             return ValueTask.CompletedTask;
         }
 
@@ -523,9 +530,13 @@ public sealed class StreamsGroupMemberIntegrationTests(KafkaTestContainer kafka)
                 foreach (var partition in tasks.ActiveTasks.SelectMany(static set => set.Partitions))
                 {
                     if (add)
+                    {
                         _owned.Add(partition);
+                    }
                     else
+                    {
                         _owned.Remove(partition);
+                    }
                 }
 
                 owned = _owned.Order().ToArray();

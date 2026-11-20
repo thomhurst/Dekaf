@@ -113,7 +113,10 @@ public sealed class InMemoryConsumerLagTests
         using var cancellation = new CancellationTokenSource();
         cancellation.Cancel();
 
-        await Assert.That(() => { _ = consumer.QueryCurrentLagAsync(Partition, cancellation.Token); })
+        await Assert.That(() =>
+            {
+                _ = consumer.QueryCurrentLagAsync(Partition, cancellation.Token);
+            })
             .Throws<OperationCanceledException>();
     }
 

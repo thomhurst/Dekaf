@@ -26,6 +26,8 @@ PRs that change hot-path directories (`src/Dekaf/{Producer,Consumer,ShareConsume
 
 ## Library conventions and contracts
 
+- For C# changes, follow the local [.editorconfig](.editorconfig) and the [shared C# style guide](https://github.com/thomhurst/editorconfig/blob/main/csharp.md). Use braces for control-flow bodies and one blank line between logical groups.
+- Run `curb format <changed-path>` and `curb check <changed-path>` on changed C# files. Keep Roslyn build style analysis enabled for rules that require compilation.
 - Use nullable reference types, init-only options, fluent builders, and existing modern C# conventions. Public APIs expose interfaces; implementations are internal or sealed.
 - All awaits in `src/` use `ConfigureAwait(false)`; tests do not require it. Do not block on tasks with `.Result` or `.Wait()`.
 - Kafka-specific exceptions derive from `KafkaException`; use `IsRetriable` for retry decisions.

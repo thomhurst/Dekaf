@@ -31,7 +31,9 @@ public class TransactionalSchedulerBenchmarks
     {
         var spinWait = new SpinWait();
         for (var spin = 0; spin < LegacyMicroLingerMaxSpins; spin++)
+        {
             spinWait.SpinOnce();
+        }
     }
 
     [Benchmark]

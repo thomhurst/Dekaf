@@ -719,6 +719,7 @@ public sealed class SchemaRegistryMigrationTests
     public async Task DeletedVersionLookup_DefaultImplementation_FailsClosed()
     {
         ISchemaRegistryClient registry = new MockSchemaRegistryClient();
+
         async Task LookupDeletedVersionAsync() =>
             _ = await registry.GetSchemaBySubjectAsync(
                 "orders-value",
@@ -932,7 +933,10 @@ public sealed class SchemaRegistryMigrationTests
     {
         internal const string RuleType = "CONDITION";
 
-        internal int CallCount { get; private set; }
+        internal int CallCount
+        {
+            get; private set;
+        }
 
         public string Type => RuleType;
 
@@ -955,7 +959,10 @@ public sealed class SchemaRegistryMigrationTests
 
     private sealed class CapturingTaggedFieldTransformerProvider : ISchemaRegistryTaggedFieldTransformerProvider
     {
-        internal List<(Schema PayloadSchema, Schema? RuleOwnerSchema)> Calls { get; } = [];
+        internal List<(Schema PayloadSchema, Schema? RuleOwnerSchema)> Calls
+        {
+            get;
+        } = [];
 
         public ISchemaRegistryTaggedFieldTransformer Get(
             Schema payloadSchema,
@@ -968,7 +975,10 @@ public sealed class SchemaRegistryMigrationTests
 
     private sealed class PassthroughTaggedFieldTransformer : ISchemaRegistryTaggedFieldTransformer
     {
-        internal static PassthroughTaggedFieldTransformer Instance { get; } = new();
+        internal static PassthroughTaggedFieldTransformer Instance
+        {
+            get;
+        } = new();
 
         public ReadOnlyMemory<byte> Transform<TState>(
             ReadOnlyMemory<byte> payload,
@@ -1036,7 +1046,10 @@ public sealed class SchemaRegistryMigrationTests
 
     private sealed class MigrationPayload
     {
-        public string Name { get; init; } = "";
+        public string Name
+        {
+            get; init;
+        } = "";
     }
 
     private sealed class MigrationRegistryClient : ISchemaRegistryClient
@@ -1047,11 +1060,26 @@ public sealed class SchemaRegistryMigrationTests
         private TaskCompletionSource? _lookupRelease;
         private int _nextId = 1;
 
-        public int LatestCacheTtlSecs { get; init; } = -1;
-        internal int LatestVersion { get; init; }
-        internal int LookupCount { get; private set; }
-        internal int LatestCount { get; private set; }
-        internal CancellationToken LastLookupCancellationToken { get; private set; }
+        public int LatestCacheTtlSecs
+        {
+            get; init;
+        } = -1;
+        internal int LatestVersion
+        {
+            get; init;
+        }
+        internal int LookupCount
+        {
+            get; private set;
+        }
+        internal int LatestCount
+        {
+            get; private set;
+        }
+        internal CancellationToken LastLookupCancellationToken
+        {
+            get; private set;
+        }
 
         internal void BlockNextLookup()
         {
@@ -1098,13 +1126,17 @@ public sealed class SchemaRegistryMigrationTests
             CancellationToken cancellationToken = default)
         {
             if (version == "latest")
+            {
                 LatestCount++;
+            }
 
             var requestedVersion = version == "latest"
                 ? LatestVersion == 0 ? _byVersion.Keys.Max() : LatestVersion
                 : int.Parse(version, System.Globalization.CultureInfo.InvariantCulture);
             if (!_byVersion.TryGetValue(requestedVersion, out var schema))
+            {
                 throw new SchemaRegistryException(40402, $"Version {requestedVersion} not found.");
+            }
 
             return Task.FromResult(schema);
         }

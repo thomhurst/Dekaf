@@ -27,28 +27,40 @@ internal sealed class ObservedOutboxStore<TContext>(EfCoreOutboxStore<TContext> 
     public async ValueTask<IReadOnlyList<int>> AcquireBucketLeasesAsync(OutboxLeaseRequest request, CancellationToken cancellationToken = default)
     {
         Interlocked.Increment(ref _acquisitions);
-        try { return await inner.AcquireBucketLeasesAsync(request, cancellationToken).ConfigureAwait(false); }
+        try
+        {
+            return await inner.AcquireBucketLeasesAsync(request, cancellationToken).ConfigureAwait(false);
+        }
         catch (Exception error) when (error is not OperationCanceledException || !cancellationToken.IsCancellationRequested) { RecordFailure(error); throw; }
     }
 
     public async ValueTask<bool> RenewBucketLeasesAsync(OutboxLeaseRequest request, IReadOnlyList<int> buckets, CancellationToken cancellationToken = default)
     {
         Interlocked.Increment(ref _renewals);
-        try { return await inner.RenewBucketLeasesAsync(request, buckets, cancellationToken).ConfigureAwait(false); }
+        try
+        {
+            return await inner.RenewBucketLeasesAsync(request, buckets, cancellationToken).ConfigureAwait(false);
+        }
         catch (Exception error) when (error is not OperationCanceledException || !cancellationToken.IsCancellationRequested) { RecordFailure(error); throw; }
     }
 
     public async ValueTask<IReadOnlyList<int>> GetBucketsWithPendingAsync(IReadOnlyList<int> buckets, CancellationToken cancellationToken = default)
     {
         Interlocked.Increment(ref _probes);
-        try { return await inner.GetBucketsWithPendingAsync(buckets, cancellationToken).ConfigureAwait(false); }
+        try
+        {
+            return await inner.GetBucketsWithPendingAsync(buckets, cancellationToken).ConfigureAwait(false);
+        }
         catch (Exception error) when (error is not OperationCanceledException || !cancellationToken.IsCancellationRequested) { RecordFailure(error); throw; }
     }
 
     public async ValueTask<IReadOnlyList<OutboxMessage>> GetNextBatchAsync(int bucket, int maxCount, CancellationToken cancellationToken = default)
     {
         Interlocked.Increment(ref _reads);
-        try { return await inner.GetNextBatchAsync(bucket, maxCount, cancellationToken).ConfigureAwait(false); }
+        try
+        {
+            return await inner.GetNextBatchAsync(bucket, maxCount, cancellationToken).ConfigureAwait(false);
+        }
         catch (Exception error) when (error is not OperationCanceledException || !cancellationToken.IsCancellationRequested) { RecordFailure(error); throw; }
     }
 
@@ -66,7 +78,10 @@ internal sealed class ObservedOutboxStore<TContext>(EfCoreOutboxStore<TContext> 
     public async ValueTask<OutboxPendingMetrics?> GetPendingMetricsAsync(CancellationToken cancellationToken = default)
     {
         Interlocked.Increment(ref _metricQueries);
-        try { return await inner.GetPendingMetricsAsync(cancellationToken).ConfigureAwait(false); }
+        try
+        {
+            return await inner.GetPendingMetricsAsync(cancellationToken).ConfigureAwait(false);
+        }
         catch (Exception error) when (error is not OperationCanceledException || !cancellationToken.IsCancellationRequested) { RecordFailure(error); throw; }
     }
 
@@ -90,7 +105,10 @@ internal sealed class ObservedOutboxPublisher(IOutboxPublisher inner, OutboxWork
 {
     public async ValueTask InitializeAsync(CancellationToken cancellationToken = default)
     {
-        try { await inner.InitializeAsync(cancellationToken).ConfigureAwait(false); }
+        try
+        {
+            await inner.InitializeAsync(cancellationToken).ConfigureAwait(false);
+        }
         catch (Exception error) when (error is not OperationCanceledException || !cancellationToken.IsCancellationRequested) { state.RecordFailure(error); throw; }
     }
 
@@ -101,9 +119,13 @@ internal sealed class ObservedOutboxPublisher(IOutboxPublisher inner, OutboxWork
         {
             var result = await inner.PublishAsync(messages, messageIdHeaderName, cancellationToken).ConfigureAwait(false);
             if (result.FirstError is { } error)
+            {
                 state.RecordFailure(error);
+            }
             else if (result.AckedCount != messages.Count)
+            {
                 state.RecordFailure(new InvalidOperationException("The outbox publisher returned an incomplete prefix without an error."));
+            }
             return result;
         }
         catch (Exception error) when (error is not OperationCanceledException || !cancellationToken.IsCancellationRequested) { state.RecordFailure(error); throw; }

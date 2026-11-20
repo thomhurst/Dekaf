@@ -48,7 +48,9 @@ public class ConsumerSubscribedEnsureAssignmentBenchmarks
         {
             var pending = EnsureAssignmentForPoll();
             if (!pending.IsCompletedSuccessfully)
+            {
                 throw new InvalidOperationException("The steady assignment check did not complete synchronously.");
+            }
             pending.GetAwaiter().GetResult();
         }
     }

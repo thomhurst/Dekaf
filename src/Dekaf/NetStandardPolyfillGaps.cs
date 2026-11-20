@@ -43,7 +43,9 @@ internal ref struct SequenceReader<T>
     public readonly bool TryCopyTo(Span<T> destination)
     {
         if (Remaining < destination.Length)
+        {
             return false;
+        }
 
         UnreadSequence.Slice(0, destination.Length).CopyTo(destination);
         return true;
@@ -52,7 +54,9 @@ internal ref struct SequenceReader<T>
     public void Advance(long count)
     {
         if ((ulong)count > (ulong)Remaining)
+        {
             throw new ArgumentOutOfRangeException(nameof(count));
+        }
 
         _position = _sequence.GetPosition(count, _position);
         _consumed += count;
@@ -83,7 +87,9 @@ internal ref struct SequenceReader<T>
         while (sequence.TryGet(ref position, out var memory))
         {
             if (memory.Length != 0)
+            {
                 return memory.Span;
+            }
         }
 
         return default;
@@ -122,7 +128,9 @@ internal sealed class PeriodicTimer : IDisposable
     public void Dispose()
     {
         if (Interlocked.Exchange(ref _disposeState, 1) != 0)
+        {
             return;
+        }
 
         _disposed.Cancel();
     }
@@ -165,13 +173,17 @@ internal static class ConcurrentCollectionCompatibilityExtensions
             {
                 var updated = updateValueFactory(key, existing, factoryArgument);
                 if (dictionary.TryUpdate(key, updated, existing))
+                {
                     return updated;
+                }
             }
             else
             {
                 var added = addValueFactory(key, factoryArgument);
                 if (dictionary.TryAdd(key, added))
+                {
                     return added;
+                }
             }
         }
     }
@@ -188,7 +200,9 @@ internal static class SocketCompatibilityExtensions
     public static async ValueTask<int> ReceiveAsync(this Socket socket, Memory<byte> buffer, SocketFlags socketFlags)
     {
         if (MemoryMarshal.TryGetArray<byte>(buffer, out var segment))
+        {
             return await socket.ReceiveAsync(segment, socketFlags).ConfigureAwait(false);
+        }
 
         var rented = ArrayPool<byte>.Shared.Rent(buffer.Length);
         try
@@ -249,7 +263,9 @@ internal static class ArrayCompat
     public static void Fill<T>(T[] array, T value)
     {
         for (var i = 0; i < array.Length; i++)
+        {
             array[i] = value;
+        }
     }
 }
 
@@ -260,7 +276,9 @@ internal static class AsciiCompat
         for (var i = 0; i < value.Length; i++)
         {
             if (value[i] > 0x7F)
+            {
                 return false;
+            }
         }
 
         return true;
@@ -273,7 +291,9 @@ internal static class BitOperationsCompat
     {
         var result = 0;
         while ((value >>= 1) != 0)
+        {
             result++;
+        }
         return result;
     }
 
@@ -281,14 +301,18 @@ internal static class BitOperationsCompat
     {
         var result = 0;
         while ((value >>= 1) != 0)
+        {
             result++;
+        }
         return result;
     }
 
     public static int RoundUpToPowerOf2(int value)
     {
         if (value <= 1)
+        {
             return 1;
+        }
 
         var current = (uint)value - 1;
         current |= current >> 1;
@@ -302,7 +326,9 @@ internal static class BitOperationsCompat
     public static uint RoundUpToPowerOf2(uint value)
     {
         if (value <= 1)
+        {
             return 1;
+        }
 
         value--;
         value |= value >> 1;
@@ -346,7 +372,9 @@ internal static class GCCompat
             global::System.Reflection.BindingFlags.Public | global::System.Reflection.BindingFlags.Instance);
 
         if (method is null || property?.PropertyType != typeof(long))
+        {
             return null;
+        }
 
         return () =>
         {
@@ -417,7 +445,9 @@ internal static class Rfc2898DeriveBytesCompat
         int outputLength)
     {
         if (iterations <= 0)
+        {
             throw new ArgumentOutOfRangeException(nameof(iterations));
+        }
 
         using var hmac = CreateHmac(hashAlgorithm, password);
         var result = new byte[outputLength];
@@ -439,7 +469,9 @@ internal static class Rfc2898DeriveBytesCompat
             {
                 u = hmac.ComputeHash(u);
                 for (var j = 0; j < block.Length; j++)
+                {
                     block[j] ^= u[j];
+                }
             }
 
             var count = Math.Min(block.Length, outputLength - offset);
@@ -453,9 +485,13 @@ internal static class Rfc2898DeriveBytesCompat
     private static HMAC CreateHmac(HashAlgorithmName hashAlgorithm, byte[] key)
     {
         if (hashAlgorithm == HashAlgorithmName.SHA256)
+        {
             return new System.Security.Cryptography.HMACSHA256(key);
+        }
         if (hashAlgorithm == HashAlgorithmName.SHA512)
+        {
             return new System.Security.Cryptography.HMACSHA512(key);
+        }
 
         throw new NotSupportedException($"PBKDF2 hash algorithm '{hashAlgorithm.Name}' is not supported.");
     }

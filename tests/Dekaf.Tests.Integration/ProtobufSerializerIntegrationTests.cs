@@ -183,7 +183,10 @@ public sealed class ProtobufSerializerIntegrationTests(KafkaWithAssociationSchem
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))
         {
             consumedPersons.Add(msg.Value!);
-            if (consumedPersons.Count >= messageCount) break;
+            if (consumedPersons.Count >= messageCount)
+            {
+                break;
+            }
         }
 
         await Assert.That(consumedPersons).Count().IsEqualTo(messageCount);
@@ -295,7 +298,9 @@ public sealed class ProtobufSerializerIntegrationTests(KafkaWithAssociationSchem
 
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
         await foreach (var message in consumer.ConsumeAsync(cts.Token))
+        {
             return message.Value!;
+        }
 
         throw new InvalidOperationException("The produced Protobuf message was not consumed.");
     }

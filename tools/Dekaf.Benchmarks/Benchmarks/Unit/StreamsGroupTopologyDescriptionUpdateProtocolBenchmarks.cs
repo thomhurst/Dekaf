@@ -60,8 +60,7 @@ public class StreamsGroupTopologyDescriptionUpdateProtocolBenchmarks
     public int ReadTopologyDescriptionUpdateResponseV0()
     {
         var reader = new KafkaProtocolReader(_response);
-        var response = (StreamsGroupTopologyDescriptionUpdateResponse)
-            StreamsGroupTopologyDescriptionUpdateResponse.Read(ref reader, version: 0);
+        var response = (StreamsGroupTopologyDescriptionUpdateResponse)StreamsGroupTopologyDescriptionUpdateResponse.Read(ref reader, version: 0);
         return response.ThrottleTimeMs;
     }
 

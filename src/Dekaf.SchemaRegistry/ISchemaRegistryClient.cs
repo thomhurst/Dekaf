@@ -586,27 +586,42 @@ public sealed class Schema
     /// <summary>
     /// The schema type (AVRO, JSON, PROTOBUF).
     /// </summary>
-    public SchemaType SchemaType { get; init; } = SchemaType.Avro;
+    public SchemaType SchemaType
+    {
+        get; init;
+    } = SchemaType.Avro;
 
     /// <summary>
     /// The schema definition string.
     /// </summary>
-    public required string SchemaString { get; init; }
+    public required string SchemaString
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Schema references for schemas that depend on other schemas.
     /// </summary>
-    public IReadOnlyList<SchemaReference>? References { get; init; }
+    public IReadOnlyList<SchemaReference>? References
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Optional Schema Registry data-contract metadata, including field tags used by CSFLE policies.
     /// </summary>
-    public SchemaMetadata? Metadata { get; init; }
+    public SchemaMetadata? Metadata
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Optional Schema Registry rule set for data-contract validation, migration, and encryption rules.
     /// </summary>
-    public SchemaRuleSet? RuleSet { get; init; }
+    public SchemaRuleSet? RuleSet
+    {
+        get; init;
+    }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal bool TryGetCachedFingerprint(out int fingerprint)
@@ -636,27 +651,42 @@ public sealed class RegisteredSchema
     /// <summary>
     /// The global schema ID.
     /// </summary>
-    public required int Id { get; init; }
+    public required int Id
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The globally unique schema identifier, when supplied by Schema Registry.
     /// </summary>
-    public string? Guid { get; init; }
+    public string? Guid
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The subject this schema is registered under.
     /// </summary>
-    public required string Subject { get; init; }
+    public required string Subject
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The version number within the subject.
     /// </summary>
-    public required int Version { get; init; }
+    public required int Version
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The schema.
     /// </summary>
-    public required Schema Schema { get; init; }
+    public required Schema Schema
+    {
+        get; init;
+    }
 }
 
 /// <summary>
@@ -667,42 +697,66 @@ public sealed class Kek
     /// <summary>
     /// KEK name.
     /// </summary>
-    public required string Name { get; init; }
+    public required string Name
+    {
+        get; init;
+    }
 
     /// <summary>
     /// KMS provider type, for example aws-kms, azure-kv, or gcp-kms.
     /// </summary>
-    public required string KmsType { get; init; }
+    public required string KmsType
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Provider-specific KMS key identifier.
     /// </summary>
-    public required string KmsKeyId { get; init; }
+    public required string KmsKeyId
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Provider-specific KMS properties.
     /// </summary>
-    public IReadOnlyDictionary<string, string>? KmsProps { get; init; }
+    public IReadOnlyDictionary<string, string>? KmsProps
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Optional KEK documentation.
     /// </summary>
-    public string? Doc { get; init; }
+    public string? Doc
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Whether the DEK Registry has shared access to the KMS.
     /// </summary>
-    public bool Shared { get; init; }
+    public bool Shared
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Whether this KEK has been soft-deleted.
     /// </summary>
-    public bool Deleted { get; init; }
+    public bool Deleted
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Schema Registry timestamp for this KEK, when returned by the server.
     /// </summary>
-    public long? Timestamp { get; init; }
+    public long? Timestamp
+    {
+        get; init;
+    }
 }
 
 /// <summary>
@@ -713,37 +767,58 @@ public sealed class RegisterKekRequest
     /// <summary>
     /// KEK name.
     /// </summary>
-    public required string Name { get; init; }
+    public required string Name
+    {
+        get; init;
+    }
 
     /// <summary>
     /// KMS provider type, for example aws-kms, azure-kv, or gcp-kms.
     /// </summary>
-    public required string KmsType { get; init; }
+    public required string KmsType
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Provider-specific KMS key identifier.
     /// </summary>
-    public required string KmsKeyId { get; init; }
+    public required string KmsKeyId
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Provider-specific KMS properties.
     /// </summary>
-    public IReadOnlyDictionary<string, string>? KmsProps { get; init; }
+    public IReadOnlyDictionary<string, string>? KmsProps
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Optional KEK documentation.
     /// </summary>
-    public string? Doc { get; init; }
+    public string? Doc
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Whether the DEK Registry has shared access to the KMS.
     /// </summary>
-    public bool? Shared { get; init; }
+    public bool? Shared
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Whether this KEK should be registered as deleted.
     /// </summary>
-    public bool? Deleted { get; init; }
+    public bool? Deleted
+    {
+        get; init;
+    }
 }
 
 /// <summary>
@@ -780,42 +855,66 @@ public sealed class Dek
     /// <summary>
     /// KEK name associated with this DEK.
     /// </summary>
-    public required string KekName { get; init; }
+    public required string KekName
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Subject associated with this DEK.
     /// </summary>
-    public required string Subject { get; init; }
+    public required string Subject
+    {
+        get; init;
+    }
 
     /// <summary>
     /// DEK version.
     /// </summary>
-    public required int Version { get; init; }
+    public required int Version
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Encryption algorithm used by this DEK.
     /// </summary>
-    public DekAlgorithm Algorithm { get; init; }
+    public DekAlgorithm Algorithm
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Encrypted DEK material, base64 encoded by Schema Registry.
     /// </summary>
-    public string? EncryptedKeyMaterial { get; init; }
+    public string? EncryptedKeyMaterial
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Raw DEK material when the server returns it.
     /// </summary>
-    public string? KeyMaterial { get; init; }
+    public string? KeyMaterial
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Whether this DEK has been soft-deleted.
     /// </summary>
-    public bool Deleted { get; init; }
+    public bool Deleted
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Schema Registry timestamp for this DEK, when returned by the server.
     /// </summary>
-    public long? Timestamp { get; init; }
+    public long? Timestamp
+    {
+        get; init;
+    }
 }
 
 /// <summary>
@@ -826,27 +925,42 @@ public sealed class RegisterDekRequest
     /// <summary>
     /// Subject associated with this DEK.
     /// </summary>
-    public required string Subject { get; init; }
+    public required string Subject
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Optional explicit DEK version.
     /// </summary>
-    public int? Version { get; init; }
+    public int? Version
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Optional DEK algorithm. When omitted, Schema Registry chooses its default.
     /// </summary>
-    public DekAlgorithm? Algorithm { get; init; }
+    public DekAlgorithm? Algorithm
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Optional encrypted DEK material.
     /// </summary>
-    public string? EncryptedKeyMaterial { get; init; }
+    public string? EncryptedKeyMaterial
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Whether this DEK should be registered as deleted.
     /// </summary>
-    public bool? Deleted { get; init; }
+    public bool? Deleted
+    {
+        get; init;
+    }
 }
 
 /// <summary>
@@ -857,17 +971,26 @@ public sealed class SchemaMetadata
     /// <summary>
     /// Field or schema paths mapped to tag names, for example PII or encrypted.
     /// </summary>
-    public IReadOnlyDictionary<string, IReadOnlySet<string>>? Tags { get; init; }
+    public IReadOnlyDictionary<string, IReadOnlySet<string>>? Tags
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Arbitrary schema metadata properties.
     /// </summary>
-    public IReadOnlyDictionary<string, string>? Properties { get; init; }
+    public IReadOnlyDictionary<string, string>? Properties
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Names of metadata properties that should be treated as sensitive.
     /// </summary>
-    public IReadOnlySet<string>? Sensitive { get; init; }
+    public IReadOnlySet<string>? Sensitive
+    {
+        get; init;
+    }
 }
 
 /// <summary>
@@ -882,7 +1005,10 @@ public sealed class SchemaRuleSet
     /// <summary>
     /// Rules used when migrating between schema versions.
     /// </summary>
-    public IReadOnlyList<SchemaRule>? MigrationRules { get; init; }
+    public IReadOnlyList<SchemaRule>? MigrationRules
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Rules used for validation or transforms on the current schema.
@@ -892,7 +1018,6 @@ public sealed class SchemaRuleSet
     {
         [CompilerGenerated]
         get => _domainRules;
-
         [CompilerGenerated]
         init
         {
@@ -909,7 +1034,6 @@ public sealed class SchemaRuleSet
     {
         [CompilerGenerated]
         get => _encodingRules;
-
         [CompilerGenerated]
         init
         {
@@ -921,7 +1045,10 @@ public sealed class SchemaRuleSet
     /// <summary>
     /// Optional Schema Registry activation marker.
     /// </summary>
-    public string? EnableAt { get; init; }
+    public string? EnableAt
+    {
+        get; init;
+    }
 
     internal bool HasDomainOrEncodingRules =>
         // Schema Registry responses use fixed-length arrays, so the common no-rules path is one
@@ -930,7 +1057,10 @@ public sealed class SchemaRuleSet
             ? _hasFixedDomainOrEncodingRules
             : _domainRules is { Count: > 0 } || _encodingRules is { Count: > 0 };
 
-    internal bool HasFixedRuleCollections { get; init; }
+    internal bool HasFixedRuleCollections
+    {
+        get; init;
+    }
 
     private void UpdateFixedRuleState() =>
         _hasFixedDomainOrEncodingRules = _domainRules is { Count: > 0 } || _encodingRules is { Count: > 0 };
@@ -945,57 +1075,90 @@ public sealed class SchemaRule
     /// <summary>
     /// Rule name.
     /// </summary>
-    public required string Name { get; init; }
+    public required string Name
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Optional rule documentation.
     /// </summary>
-    public string? Doc { get; init; }
+    public string? Doc
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Rule kind.
     /// </summary>
-    public SchemaRuleKind Kind { get; init; }
+    public SchemaRuleKind Kind
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Rule mode.
     /// </summary>
-    public SchemaRuleMode Mode { get; init; }
+    public SchemaRuleMode Mode
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Rule executor type, for example ENCRYPT or CEL.
     /// </summary>
-    public required string Type { get; init; }
+    public required string Type
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Tags this rule applies to.
     /// </summary>
-    public IReadOnlySet<string>? Tags { get; init; }
+    public IReadOnlySet<string>? Tags
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Rule parameters.
     /// </summary>
-    public IReadOnlyDictionary<string, string>? Parameters { get; init; }
+    public IReadOnlyDictionary<string, string>? Parameters
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Optional rule expression.
     /// </summary>
-    public string? Expr { get; init; }
+    public string? Expr
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Optional action on rule success.
     /// </summary>
-    public string? OnSuccess { get; init; }
+    public string? OnSuccess
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Optional action on rule failure.
     /// </summary>
-    public string? OnFailure { get; init; }
+    public string? OnFailure
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Whether this rule is disabled.
     /// </summary>
-    public bool Disabled { get; init; }
+    public bool Disabled
+    {
+        get; init;
+    }
 }
 
 /// <summary>
@@ -1079,15 +1242,24 @@ public sealed class SchemaReference
     /// <summary>
     /// The name of the reference.
     /// </summary>
-    public required string Name { get; init; }
+    public required string Name
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The subject the reference points to.
     /// </summary>
-    public required string Subject { get; init; }
+    public required string Subject
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The version of the referenced schema.
     /// </summary>
-    public required int Version { get; init; }
+    public required int Version
+    {
+        get; init;
+    }
 }

@@ -36,9 +36,13 @@ public sealed class JsonSchemaRegistryIntegrationTests(KafkaWithSchemaRegistryCo
             .WithBootstrapServers(testInfra.BootstrapServers)
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory());
         if (schemaRegistry)
+        {
             builder.UseJsonSchemaRegistry(registryClient, CamelCaseTestOrderSchema, typeInfo);
+        }
         else
+        {
             builder.WithValueSerializer(new Dekaf.Serialization.Json.JsonSerializer<TestOrder>(typeInfo));
+        }
         await using var producer = await builder.BuildAsync(cancellationToken);
         await producer.ProduceAsync(new ProducerMessage<string, TestOrder>
         {
@@ -76,7 +80,9 @@ public sealed class JsonSchemaRegistryIntegrationTests(KafkaWithSchemaRegistryCo
         using var registry = new SchemaRegistryClient(new SchemaRegistryConfig { Url = testInfra.RegistryUrl });
         await using var innerRegistry = new JsonSchemaRegistrySerializer<TestOrder>(registry, TestOrderSchema);
         if (schemaRegistry)
+        {
             _ = await innerRegistry.PrepareAsync(topic, new TestOrder(), cancellationToken: cancellationToken);
+        }
         ISerializer<TestOrder> inner = schemaRegistry
             ? innerRegistry
             : new Dekaf.Serialization.Json.JsonSerializer<TestOrder>();
@@ -396,7 +402,10 @@ public sealed class JsonSchemaRegistryIntegrationTests(KafkaWithSchemaRegistryCo
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))
         {
             consumedOrders.Add(msg.Value!);
-            if (consumedOrders.Count >= messageCount) break;
+            if (consumedOrders.Count >= messageCount)
+            {
+                break;
+            }
         }
 
         await Assert.That(consumedOrders).Count().IsEqualTo(messageCount);
@@ -499,9 +508,18 @@ public sealed class JsonSchemaRegistryIntegrationTests(KafkaWithSchemaRegistryCo
 
 internal sealed class TestOrder
 {
-    public int OrderId { get; set; }
-    public string CustomerName { get; set; } = string.Empty;
-    public decimal Amount { get; set; }
+    public int OrderId
+    {
+        get; set;
+    }
+    public string CustomerName
+    {
+        get; set;
+    } = string.Empty;
+    public decimal Amount
+    {
+        get; set;
+    }
 }
 
 [JsonSourceGenerationOptions(PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase)]

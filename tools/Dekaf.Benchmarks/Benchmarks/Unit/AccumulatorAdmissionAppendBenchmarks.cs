@@ -65,10 +65,16 @@ public class AccumulatorAdmissionAppendBenchmarks
     private long _appendThreadAppends;
 
     [Params(SingleThread, FourThreadsSamePartition, FourThreadsDistinctPartitions)]
-    public string Shape { get; set; } = SingleThread;
+    public string Shape
+    {
+        get; set;
+    } = SingleThread;
 
     [Params(false, true)]
-    public bool AdmissionEnabled { get; set; }
+    public bool AdmissionEnabled
+    {
+        get; set;
+    }
 
     private int ThreadCount => Shape == SingleThread ? 1 : 4;
     private int PartitionCount => Shape == FourThreadsDistinctPartitions ? 4 : 1;
@@ -118,7 +124,9 @@ public class AccumulatorAdmissionAppendBenchmarks
             {
                 Append(partition, ts);
                 if (i % msgsPerBatch == msgsPerBatch - 1)
+                {
                     DrainAll();
+                }
             }
             DrainAll();
         }
@@ -151,13 +159,17 @@ public class AccumulatorAdmissionAppendBenchmarks
     public void Cleanup()
     {
         foreach (var worker in _workers)
+        {
             worker.Stop();
+        }
         if (_barrier is not null)
         {
             // Release workers parked on the start phase so they observe the stop flag.
             _barrier.SignalAndWait();
             foreach (var worker in _workers)
+            {
                 worker.Join();
+            }
             _barrier.Dispose();
         }
 
@@ -201,7 +213,9 @@ public class AccumulatorAdmissionAppendBenchmarks
         var allocatedBefore = GC.GetAllocatedBytesForCurrentThread();
         var ts = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
         for (var i = 0; i < appends; i++)
+        {
             Append(partition, ts);
+        }
 
         Interlocked.Add(ref _appendThreadAllocatedBytes, GC.GetAllocatedBytesForCurrentThread() - allocatedBefore);
         Interlocked.Add(ref _appendThreadAppends, appends);
@@ -228,7 +242,9 @@ public class AccumulatorAdmissionAppendBenchmarks
     private void DrainAll()
     {
         while (_accumulator.TryDrainPublishedBatch(out var batch))
+        {
             Retire(batch);
+        }
     }
 
     private void Retire(ReadyBatch batch)
@@ -281,7 +297,9 @@ public class AccumulatorAdmissionAppendBenchmarks
             {
                 barrier.SignalAndWait(); // start
                 if (owner._stopWorkers)
+                {
                     return;
+                }
 
                 owner.AppendLoop(partition, appendsPerInvoke);
 

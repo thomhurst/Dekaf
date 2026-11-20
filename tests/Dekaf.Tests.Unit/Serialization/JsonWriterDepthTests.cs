@@ -98,10 +98,14 @@ internal sealed class NestedJsonPayloadConverter : JsonConverter<NestedJsonPaylo
     public override void Write(Utf8JsonWriter writer, NestedJsonPayload value, JsonSerializerOptions options)
     {
         for (var i = 0; i < value.Depth; i++)
+        {
             writer.WriteStartArray();
+        }
         writer.WriteNumberValue(0);
         for (var i = 0; i < value.Depth; i++)
+        {
             writer.WriteEndArray();
+        }
     }
 }
 

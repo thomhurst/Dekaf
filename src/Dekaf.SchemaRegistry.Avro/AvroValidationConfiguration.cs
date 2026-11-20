@@ -1,6 +1,6 @@
 using System.Runtime.CompilerServices;
-using AvroSchema = global::Avro.Schema;
 using RegistrySchema = Dekaf.SchemaRegistry.Schema;
+using AvroSchema = global::Avro.Schema;
 
 namespace Dekaf.SchemaRegistry.Avro;
 
@@ -19,7 +19,9 @@ internal static class AvroValidationConfiguration
                 "Unsupported inline validation execution mode.");
         }
         if (execution == ValidationRulesExecution.Disabled)
+        {
             return null;
+        }
         if (ruleExecutor is not null and not SchemaRegistryRuleExecutor &&
             !ReferenceEquals(ruleExecutor, SchemaRegistryMigrationRunner.MarkerRuleExecutor))
         {
@@ -47,7 +49,9 @@ internal sealed class AvroInlineRuleValidatorProvider : IInlineValidationRuleExe
     internal AvroInlineRuleValidator Register(RegistrySchema registrySchema, AvroSchema resolvedSchema)
     {
         if (_registeredSchemas.TryGetValue(registrySchema, out var existing))
+        {
             return existing;
+        }
         CacheResolvedSchema(registrySchema, resolvedSchema);
         return RegisterSlow(registrySchema, resolvedSchema);
     }
@@ -57,7 +61,9 @@ internal sealed class AvroInlineRuleValidatorProvider : IInlineValidationRuleExe
         AvroSchema runtimeSchema)
     {
         if (_registeredSchemas.TryGetValue(registrySchema, out var existing))
+        {
             return existing;
+        }
         return Register(registrySchema, runtimeSchema);
     }
 
@@ -67,9 +73,13 @@ internal sealed class AvroInlineRuleValidatorProvider : IInlineValidationRuleExe
         CancellationToken cancellationToken)
     {
         if (_registeredSchemas.TryGetValue(registrySchema, out var existing))
+        {
             return new ValueTask<AvroInlineRuleValidator>(existing);
+        }
         if (registrySchema.References is not { Count: > 0 })
+        {
             return new ValueTask<AvroInlineRuleValidator>(Register(registrySchema, runtimeSchema));
+        }
         if (_schemaRegistry is null)
         {
             throw new SchemaRegistryRuleException(
@@ -94,7 +104,9 @@ internal sealed class AvroInlineRuleValidatorProvider : IInlineValidationRuleExe
     internal AvroSchema GetResolvedSchema(RegistrySchema registrySchema)
     {
         if (_resolvedSchemas.TryGetValue(registrySchema, out var resolved))
+        {
             return resolved;
+        }
         if (registrySchema.References is { Count: > 0 })
         {
             throw new SchemaRegistryRuleException(
@@ -149,7 +161,9 @@ internal sealed class AvroInlineRuleValidatorProvider : IInlineValidationRuleExe
                 $"Schema {schemaId} is not an Avro schema (type: {schema.SchemaType}).");
         }
         if (!_registeredSchemas.TryGetValue(schema, out var validator))
+        {
             validator = Register(schema, GetResolvedSchema(schema));
+        }
         Volatile.Write(ref _lastSchema, new SchemaValidatorCacheEntry(schemaId, validator));
         return validator;
     }
@@ -157,7 +171,9 @@ internal sealed class AvroInlineRuleValidatorProvider : IInlineValidationRuleExe
     private void CacheResolvedSchema(RegistrySchema registrySchema, AvroSchema resolvedSchema)
     {
         if (_resolvedSchemas.TryGetValue(registrySchema, out _))
+        {
             return;
+        }
         try
         {
             _resolvedSchemas.Add(registrySchema, resolvedSchema);
@@ -175,7 +191,9 @@ internal sealed class AvroInlineRuleValidatorProvider : IInlineValidationRuleExe
         AvroSchema resolvedSchema)
     {
         if (registrySchema.References is not { Count: > 0 } references)
+        {
             return AvroSchema.Parse(registrySchema.SchemaString);
+        }
 
         var names = new global::Avro.SchemaNames();
         for (var index = 0; index < references.Count; index++)
@@ -183,7 +201,9 @@ internal sealed class AvroInlineRuleValidatorProvider : IInlineValidationRuleExe
             var visited = new HashSet<AvroSchema>(AvroSchemaReferenceComparer.Instance);
             var referenced = FindNamedSchema(resolvedSchema, references[index].Name, visited);
             if (referenced is not null)
+            {
                 _ = names.Add(referenced);
+            }
         }
         return AvroSchema.Parse(registrySchema.SchemaString, names);
     }
@@ -194,7 +214,9 @@ internal sealed class AvroInlineRuleValidatorProvider : IInlineValidationRuleExe
         HashSet<AvroSchema> visited)
     {
         if (!visited.Add(schema))
+        {
             return null;
+        }
         if (schema is global::Avro.NamedSchema named &&
             string.Equals(named.Fullname, fullName, StringComparison.Ordinal))
         {
@@ -221,7 +243,9 @@ internal sealed class AvroInlineRuleValidatorProvider : IInlineValidationRuleExe
         {
             var found = FindNamedSchema(record.Fields[index].Schema, fullName, visited);
             if (found is not null)
+            {
                 return found;
+            }
         }
         return null;
     }
@@ -235,7 +259,9 @@ internal sealed class AvroInlineRuleValidatorProvider : IInlineValidationRuleExe
         {
             var found = FindNamedSchema(union[index], fullName, visited);
             if (found is not null)
+            {
                 return found;
+            }
         }
         return null;
     }

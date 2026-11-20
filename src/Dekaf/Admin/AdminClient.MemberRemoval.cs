@@ -23,8 +23,10 @@ public sealed partial class AdminClient : IConsumerGroupMemberRemovalAdminClient
     internal static void ThrowIfMemberRemovalDeadlineExpired(ConsumerGroupMemberRemovalOptions options)
     {
         if (options.TimeoutMs == 0)
+        {
             throw new KafkaTimeoutException(TimeoutKind.Api, TimeSpan.Zero, TimeSpan.Zero,
                 "RemoveMembersFromConsumerGroupAsync timed out after 0 ms.");
+        }
     }
 
     internal static ConsumerGroupMemberIdentity[] ValidateMemberRemoval(ConsumerGroupMemberRemovalOptions options)
@@ -33,7 +35,9 @@ public sealed partial class AdminClient : IConsumerGroupMemberRemovalAdminClient
         ArgumentNullException.ThrowIfNull(options.Members);
         ArgumentOutOfRangeException.ThrowIfNegative(options.TimeoutMs);
         if (options.RemoveAll ? options.Members.Count != 0 : options.Members.Count == 0)
+        {
             throw new ArgumentException("Specify either RemoveAll or a nonempty explicit member collection, never both.", nameof(options));
+        }
 
         var members = new ConsumerGroupMemberIdentity[options.Members.Count];
         var identities = new HashSet<(bool Static, string Id)>();
@@ -42,11 +46,15 @@ public sealed partial class AdminClient : IConsumerGroupMemberRemovalAdminClient
             var member = options.Members[index];
             ArgumentNullException.ThrowIfNull(member);
             if ((member.GroupInstanceId is null) == (member.MemberId is null))
+            {
                 throw new ArgumentException("Each member requires exactly one GroupInstanceId or MemberId.", nameof(options));
+            }
             var id = member.GroupInstanceId ?? member.MemberId!;
             ArgumentException.ThrowIfNullOrWhiteSpace(id);
             if (!identities.Add((member.GroupInstanceId is not null, id)))
+            {
                 throw new ArgumentException("Member identities must be unique.", nameof(options));
+            }
             members[index] = member;
         }
         return members;
@@ -63,9 +71,13 @@ public sealed partial class AdminClient : IConsumerGroupMemberRemovalAdminClient
             var groups = await DescribeConsumerGroupsCoreAsync([groupId], Timeout.Infinite, cancellationToken).ConfigureAwait(false);
             // Classic DescribeGroups before v6 represents a missing group as Dead with no error.
             if (!groups.TryGetValue(groupId, out var group) || string.Equals(group.State, "Dead", StringComparison.OrdinalIgnoreCase))
+            {
                 throw MemberRemovalError(groupId, ErrorCode.GroupIdNotFound);
+            }
             if (group.ProtocolType != "consumer" && !(string.IsNullOrEmpty(group.ProtocolType) && group.Members.Count == 0))
+            {
                 throw MemberRemovalError(groupId, ErrorCode.UnsupportedVersion);
+            }
             members = new ConsumerGroupMemberIdentity[group.Members.Count];
             for (var index = 0; index < members.Length; index++)
             {
@@ -76,11 +88,15 @@ public sealed partial class AdminClient : IConsumerGroupMemberRemovalAdminClient
             }
             // Reject malformed discovery before mutation, using the explicit-identity rules.
             if (members.Length != 0)
+            {
                 members = ValidateMemberRemoval(new ConsumerGroupMemberRemovalOptions { Members = members });
+            }
         }
         cancellationToken.ThrowIfCancellationRequested();
         if (members.Length == 0)
+        {
             return new RemoveMembersFromConsumerGroupResult { GroupId = groupId, Members = [] };
+        }
 
         var writeContext = new KafkaRequestWriteContext(CancellationToken.None);
         return await WithRetryAsync(async attemptToken =>
@@ -131,14 +147,18 @@ public sealed partial class AdminClient : IConsumerGroupMemberRemovalAdminClient
                     isRetriable: false, MemberRemovalError(groupId, response.ErrorCode));
             }
             if (response.ErrorCode != ErrorCode.None)
+            {
                 throw MemberRemovalError(groupId, response.ErrorCode);
+            }
 
             var outcomes = new Dictionary<(bool Static, string Id), LeaveGroupResponseMember>();
             foreach (var member in response.Members)
             {
                 var identity = (member.GroupInstanceId is not null, member.GroupInstanceId ?? member.MemberId);
                 if (!outcomes.TryAdd(identity, member))
+                {
                     throw new KafkaException(ErrorCode.UnknownServerError, "LeaveGroup returned duplicate member outcomes.");
+                }
             }
             var results = new ConsumerGroupMemberRemovalResult[members.Length];
             for (var index = 0; index < members.Length; index++)

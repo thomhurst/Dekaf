@@ -39,7 +39,9 @@ internal sealed class CompatibilitySpinLock
     {
         Monitor.Enter(_gate);
         if (_enableThreadOwnerTracking)
+        {
             _ownerThreadId = Environment.CurrentManagedThreadId;
+        }
 
         lockTaken = true;
     }
@@ -47,7 +49,9 @@ internal sealed class CompatibilitySpinLock
     public void Exit()
     {
         if (_enableThreadOwnerTracking)
+        {
             _ownerThreadId = 0;
+        }
 
         Monitor.Exit(_gate);
     }
@@ -76,7 +80,10 @@ internal readonly struct SpinLockGuard : IDisposable
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public void Dispose()
     {
-        if (_taken) _lock.Exit();
+        if (_taken)
+        {
+            _lock.Exit();
+        }
     }
 }
 #else
@@ -100,11 +107,13 @@ internal ref struct SpinLockGuard
         // the cleared owned bit — saved nothing measurable single-threaded and made four threads
         // appending to four distinct partitions ~1.7x slower per record
         // (AccumulatorAdmissionAppendBenchmarks, 4T-split: 92 ns → 154-195 ns).
-        if (_taken) _lock.Exit();
+        if (_taken)
+        {
+            _lock.Exit();
+        }
     }
 }
 #endif
-
 
 /// <summary>
 /// Debug-only tracking for message flow through the producer pipeline.
@@ -151,9 +160,13 @@ internal static class ProducerDebugCounters
     {
         Interlocked.Increment(ref _messagesAppended);
         if (hasCompletionSource)
+        {
             Interlocked.Increment(ref _messagesAppendedWithCompletion);
+        }
         else
+        {
             Interlocked.Increment(ref _messagesAppendedFireAndForget);
+        }
     }
 
     [Conditional("DEBUG")]
@@ -306,19 +319,58 @@ internal static class ProducerDebugCounters
 
 internal readonly record struct ProducerDebugCounterSnapshot
 {
-    public int MessagesAppended { get; init; }
-    public int MessagesAppendedWithCompletion { get; init; }
-    public int MessagesAppendedFireAndForget { get; init; }
-    public int CompletionSourcesStoredInBatch { get; init; }
-    public int BatchesCompleted { get; init; }
-    public int BatchesSentSuccessfully { get; init; }
-    public int BatchesFailed { get; init; }
-    public int CompletionSourcesCompleted { get; init; }
-    public int CompletionSourcesFailed { get; init; }
-    public int ReadyBatchesRented { get; init; }
-    public int ReadyBatchesReturned { get; init; }
-    public int ReadyBatchDuplicateReturns { get; init; }
-    public int FlushCalls { get; init; }
+    public int MessagesAppended
+    {
+        get; init;
+    }
+    public int MessagesAppendedWithCompletion
+    {
+        get; init;
+    }
+    public int MessagesAppendedFireAndForget
+    {
+        get; init;
+    }
+    public int CompletionSourcesStoredInBatch
+    {
+        get; init;
+    }
+    public int BatchesCompleted
+    {
+        get; init;
+    }
+    public int BatchesSentSuccessfully
+    {
+        get; init;
+    }
+    public int BatchesFailed
+    {
+        get; init;
+    }
+    public int CompletionSourcesCompleted
+    {
+        get; init;
+    }
+    public int CompletionSourcesFailed
+    {
+        get; init;
+    }
+    public int ReadyBatchesRented
+    {
+        get; init;
+    }
+    public int ReadyBatchesReturned
+    {
+        get; init;
+    }
+    public int ReadyBatchDuplicateReturns
+    {
+        get; init;
+    }
+    public int FlushCalls
+    {
+        get; init;
+    }
 }
 
 /// <summary>
@@ -429,7 +481,9 @@ internal static class PooledCompletionSource
         RecordMetadata metadata)
     {
         if (source is null)
+        {
             return false;
+        }
 
         return source.RunContinuationsAsynchronously
             ? TrySetResultAsynchronous(source, metadata)
@@ -476,7 +530,9 @@ internal static class PooledCompletionSource
         Exception exception)
     {
         if (source is null)
+        {
             return false;
+        }
 
         return source.RunContinuationsAsynchronously
             ? TrySetExceptionAsynchronous(source, exception)
@@ -521,7 +577,9 @@ internal static class PooledCompletionSource
         CancellationToken cancellationToken)
     {
         if (source is null)
+        {
             return false;
+        }
 
         return source.RunContinuationsAsynchronously
             ? TrySetCanceledAsynchronous(source, cancellationToken)
@@ -648,11 +706,26 @@ public readonly struct PooledMemory
 /// </remarks>
 public readonly struct ProducerRecordData
 {
-    public long Timestamp { get; init; }
-    public PooledMemory Key { get; init; }
-    public PooledMemory Value { get; init; }
-    public Header[]? Headers { get; init; }
-    public int HeaderCount { get; init; }
+    public long Timestamp
+    {
+        get; init;
+    }
+    public PooledMemory Key
+    {
+        get; init;
+    }
+    public PooledMemory Value
+    {
+        get; init;
+    }
+    public Header[]? Headers
+    {
+        get; init;
+    }
+    public int HeaderCount
+    {
+        get; init;
+    }
 }
 
 /// <summary>
@@ -832,7 +905,10 @@ internal sealed class BatchArena
             // receives a handle, so remove the request here or it would outlive the producer.
             if (s_limits.Unregister(registration))
             {
-                try { ApplyLimits(); }
+                try
+                {
+                    ApplyLimits();
+                }
                 catch { /* Keep the original failure; the next registration re-applies limits. */ }
             }
 
@@ -845,7 +921,9 @@ internal sealed class BatchArena
     private static void Unregister(ArenaPoolLimits.Registration registration)
     {
         if (s_limits.Unregister(registration))
+        {
             ApplyLimits();
+        }
     }
 
     private static void ApplyLimits()
@@ -867,7 +945,9 @@ internal sealed class BatchArena
                 // Order matters for ReturnToPool: limit, then epoch, then release.
                 Interlocked.Increment(ref s_releaseEpoch);
                 if (s_retainedBytes.RetainedBytes > 0)
+                {
                     s_pool.Clear();
+                }
             }
         }
     }
@@ -892,7 +972,9 @@ internal sealed class BatchArena
         public void Dispose()
         {
             if (Interlocked.Exchange(ref _disposed, 1) == 0)
+            {
                 Unregister(registration);
+            }
         }
     }
 
@@ -940,7 +1022,9 @@ internal sealed class BatchArena
     {
         limit = Math.Min(limit, MaxPoolSizeCap);
         if (missesSinceLastRatchet < MissRatchetThreshold || currentSize >= limit)
+        {
             return currentSize;
+        }
 
         return Math.Min(limit, currentSize * 2);
     }
@@ -950,7 +1034,9 @@ internal sealed class BatchArena
         var previousThreshold = Volatile.Read(ref s_lastRatchetMissCount);
         var nextThreshold = previousThreshold + MissRatchetThreshold;
         if (missCount < nextThreshold)
+        {
             return;
+        }
 
         if (Interlocked.CompareExchange(
                 ref s_lastRatchetMissCount,
@@ -963,7 +1049,9 @@ internal sealed class BatchArena
         var currentSize = PoolCapacity;
         var newSize = ComputeRatchetPoolSize(currentSize, MissRatchetThreshold, MissRatchetLimit);
         if (newSize > currentSize)
+        {
             RaisePoolSize(newSize);
+        }
     }
 
     /// <summary>
@@ -994,7 +1082,9 @@ internal sealed class BatchArena
             }
 
             if (arena is null)
+            {
                 return;
+            }
 
             s_pool.Return(arena);
             if (Volatile.Read(ref s_releaseEpoch) != epoch)
@@ -1117,7 +1207,9 @@ internal sealed class BatchArena
         // If it ran while this return was between reserving and pooling, the arena may have
         // been reserved under the old limit and pooled after the release, so release again.
         if (Volatile.Read(ref s_releaseEpoch) != epoch)
+        {
             s_pool.Clear();
+        }
     }
 
     // Test seams, read only on the cold arena paths (swaps, growth, the retry after an
@@ -1179,7 +1271,9 @@ internal sealed class BatchArena
             return new BatchArena();
         }
 
-        protected override void Reset(BatchArena item) { }
+        protected override void Reset(BatchArena item)
+        {
+        }
 
         protected override void Destroy(BatchArena item)
         {
@@ -1300,7 +1394,9 @@ internal sealed class BatchArena
     public bool TryRewindLastAllocation(int offset, int length)
     {
         if (_position != offset + length)
+        {
             return false;
+        }
 
         Volatile.Write(ref _position, offset);
         return true;
@@ -1690,10 +1786,19 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     // read from append worker threads without synchronization — stale reads on ARM64 otherwise).
     private long _producerId = -1;
     private short _producerEpoch = -1;
-    internal long ProducerId { get => Volatile.Read(ref _producerId); set => Volatile.Write(ref _producerId, value); }
-    internal short ProducerEpoch { get => Volatile.Read(ref _producerEpoch); set => Volatile.Write(ref _producerEpoch, value); }
+    internal long ProducerId
+    {
+        get => Volatile.Read(ref _producerId); set => Volatile.Write(ref _producerId, value);
+    }
+    internal short ProducerEpoch
+    {
+        get => Volatile.Read(ref _producerEpoch); set => Volatile.Write(ref _producerEpoch, value);
+    }
     private bool _isTransactional;
-    internal bool IsTransactional { get => Volatile.Read(ref _isTransactional); set => Volatile.Write(ref _isTransactional, value); }
+    internal bool IsTransactional
+    {
+        get => Volatile.Read(ref _isTransactional); set => Volatile.Write(ref _isTransactional, value);
+    }
 
     /// <summary>
     /// Transactional producers only (null otherwise): told about every batch of this accumulator
@@ -1705,7 +1810,10 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     /// <c>TransactionManager.handleFailedBatch</c>). Returns false when the batch carries a producer
     /// identity the producer has since replaced, so the report was ignored. Failure paths only.
     /// </summary>
-    internal Func<long, short, ErrorCode, Exception, bool>? OnTransactionalBatchFailed { get; set; }
+    internal Func<long, short, ErrorCode, Exception, bool>? OnTransactionalBatchFailed
+    {
+        get; set;
+    }
 
     /// <summary>
     /// Called by <see cref="ReadyBatch"/> as its records fail, before any completes; returns the
@@ -1719,7 +1827,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     internal Exception ReportBatchFailure(ReadyBatch batch, Exception exception)
     {
         if (OnTransactionalBatchFailed is not { } report || batch.RecordBatch is not { } recordBatch)
+        {
             return exception;
+        }
 
         try
         {
@@ -1918,7 +2028,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         out bool restarted)
     {
         if (state is not null && !ReferenceEquals(Volatile.Read(ref sequence.ResetState), state))
+        {
             return ClaimSequenceUnderOtherState(sequence, recordCount, previousBaseSequence, inflight, ref state, out restarted);
+        }
 
         restarted = false;
         return IncrementSequence(sequence, recordCount);
@@ -1988,7 +2100,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         if (ReferenceEquals(state, Volatile.Read(ref _currentProducerState)))
         {
             if (inflight is not null && PartitionInflightTracker.HasInflightBeforeLocked(inflight, previousBaseSequence))
+            {
                 return SequenceRestartPending;
+            }
 
             Interlocked.Exchange(ref sequence.Next, 0);
             Volatile.Write(ref sequence.ResetState, state);
@@ -1999,7 +2113,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             // re-stamped behind it, so the partition is fenced until they have been: a fresh
             // batch claiming the next sequence first would reorder them (#3385).
             if (inflight is not null)
+            {
                 PartitionInflightTracker.FenceRestartLocked(inflight);
+            }
         }
         else if (resetState is not null)
         {
@@ -2256,7 +2372,10 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         /// <summary>Remove and return the first batch (oldest). Returns null if empty.</summary>
         public ReadyBatch? PollFirst()
         {
-            if (_count == 0) return null;
+            if (_count == 0)
+            {
+                return null;
+            }
             var item = _items[_head]!;
             _items[_head] = null;
             _head = (_head + 1) % _items.Length;
@@ -2266,7 +2385,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             // Shrink if utilization drops below 25% and array is above minimum capacity.
             // Prevents sticky peak allocation from temporary bursts (e.g., network partition).
             if (_items.Length > MinCapacity && _count <= _items.Length / 4)
+            {
                 Shrink();
+            }
 
             return item;
         }
@@ -2303,7 +2424,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             for (var i = 0; i < _count; i++)
             {
                 if (ReferenceEquals(_items[(_head + i) % _items.Length], batch))
+                {
                     return true;
+                }
             }
             return false;
         }
@@ -2355,7 +2478,10 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
         private void EnsureCapacity()
         {
-            if (_count < _items.Length) return;
+            if (_count < _items.Length)
+            {
+                return;
+            }
             var newItems = new ReadyBatch?[_items.Length * 2];
             for (var i = 0; i < _count; i++)
             {
@@ -2368,7 +2494,10 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         private void Shrink()
         {
             var newCapacity = Math.Max(MinCapacity, _items.Length / 2);
-            if (newCapacity >= _items.Length) return;
+            if (newCapacity >= _items.Length)
+            {
+                return;
+            }
             var newItems = new ReadyBatch?[newCapacity];
             for (var i = 0; i < _count; i++)
             {
@@ -2419,7 +2548,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
             var pd = _partitionDeques.GetValueOrDefault(tp);
             if (pd is null)
+            {
                 continue;
+            }
 
             if (IsMuted(pd))
             {
@@ -2436,7 +2567,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             }
 
             if (head is null)
+            {
                 continue;
+            }
 
             // Check retry backoff
             if (head.IsRetry && head.RetryNotBefore > 0)
@@ -2496,7 +2629,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 _readyPartitionsPerNode[leader.NodeId] = nodePartitions;
             }
             if (_readyPartitionDedup.Add(tp))
+            {
                 nodePartitions.Add(tp);
+            }
         }
 
         // Lost-notification backstop — see RecoverStrandedSealedBatches. A stranded batch
@@ -2546,7 +2681,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         foreach (var (topicPartition, pd) in _partitionDeques)
         {
             if (IsMuted(pd))
+            {
                 continue;
+            }
 
             ReadyBatch? head;
             int dequeDepth;
@@ -2557,10 +2694,14 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             }
 
             if (head is null)
+            {
                 continue;
+            }
 
             if (head.IsRetry && head.RetryNotBefore > nowTimestamp)
+            {
                 continue;
+            }
 
             if (!head.IsPreSerialized)
             {
@@ -2638,14 +2779,18 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             if (_readyPartitionsPerNode.TryGetValue(nodeId, out var migratedPartitions))
             {
                 for (var j = 0; j < migratedPartitions.Count; j++)
+                {
                     _readyPartitions.Enqueue(migratedPartitions[j]);
+                }
             }
             SignalWakeup();
             return;
         }
 
         if (!_drainIndex.TryGetValue(nodeId, out var startIndex))
+        {
             startIndex = 0;
+        }
 
         var size = 0L;
         var count = partitions.Count;
@@ -2675,7 +2820,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
             var pd = _partitionDeques.GetValueOrDefault(tp);
             if (pd is null || IsMuted(pd))
+            {
                 continue;
+            }
 
             ReadyBatch? batch;
             var batchRequestSize = 0;
@@ -2684,7 +2831,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 using var guard = new SpinLockGuard(ref pd.Lock);
                 batch = pd.PeekFirst();
                 if (batch is null)
+                {
                     continue;
+                }
 
                 // Safety check: Ready() should have pre-serialized the head batch before
                 // marking this node ready. If another path exposes an unready batch,
@@ -2697,7 +2846,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
                 if (batch.IsRetry && batch.RetryNotBefore > 0
                     && now < batch.RetryNotBefore)
+                {
                     continue;
+                }
 
                 batchRequestSize = ProduceRequestSizeCalculator.GetSingleBatchRequestBodySize(
                     pd.SingleBatchRequestFixedSize,
@@ -2721,7 +2872,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 // UnmutePartition, but there is a timing gap between drain and mute
                 // where the sender could sleep with no pending notifications.
                 if (pd.PeekFirst() is not null)
+                {
                     _readyPartitions.Enqueue(tp);
+                }
             }
 
             if (batch is not null)
@@ -2729,7 +2882,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 if (oversizedBatch)
                 {
                     if (!SplitAndReenqueue(batch, batch.Generation))
+                    {
                         FailOversizedBatch(batch, batchRequestSize, maxRequestSize);
+                    }
                     continue;
                 }
 
@@ -2738,7 +2893,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 ReattributeUnackedBudget(batch, nodeId);
 
                 if (_options.EnableDeliveryDiagnostics)
+                {
                     batch.AppendDiag('D');
+                }
                 size += batchRequestSize;
                 ready.Add(batch);
             }
@@ -2746,7 +2903,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
         _drainIndex[nodeId] = lastDrainIndex;
         if (reenqueueLeaderChanges)
+        {
             SignalWakeup();
+        }
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
@@ -2782,7 +2941,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         IReadOnlyList<TopicPartition> partitions, int startIndex, int fromOffset, int count)
     {
         for (var j = fromOffset; j < count; j++)
+        {
             _readyPartitions.Enqueue(partitions[(startIndex + j) % count]);
+        }
     }
 
     /// <summary>
@@ -2797,9 +2958,13 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         {
             using var guard = new SpinLockGuard(ref pd.Lock);
             if (ProducerId >= 0)
+            {
                 pd.InsertInSequenceOrder(batch);
+            }
             else
+            {
                 pd.AddFirst(batch);
+            }
         }
 
         // Notify Ready() that this partition has a sendable batch.
@@ -2832,7 +2997,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         Action? senderWakeup)
     {
         if (source.RecordCount <= 1 || !source.TryAcquireResourcePin(expectedGeneration))
+        {
             return null;
+        }
 
         var splitBatches = new List<ReadyBatch>();
         PartitionBatch? building = null;
@@ -2868,7 +3035,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 // The charge moves to the child in Complete() and is released with its arena,
                 // or by the discard below when the split fails.
                 if (_accountsLiveArenas)
+                {
                     ChargeLiveArena(building);
+                }
 
                 while (recordIndex < source.RecordCount)
                 {
@@ -2879,14 +3048,18 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                         source.GetCompletionSource(recordIndex),
                         source.GetCallback(recordIndex));
                     if (!result.Success)
+                    {
                         break;
+                    }
 
                     childMaxRecordSize = Math.Max(childMaxRecordSize, result.ActualSizeAdded);
                     recordIndex++;
                 }
 
                 if (recordIndex == childStartIndex)
+                {
                     throw new InvalidOperationException("KIP-126 split could not fit its first record.");
+                }
 
                 var child = building.Complete()
                     ?? throw new InvalidOperationException("KIP-126 produced an empty split batch.");
@@ -2894,15 +3067,21 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 building = null;
 
                 if (sourceBaseSequence >= 0)
+                {
                     child.RecordBatch.BaseSequence = AdvanceSequence(sourceBaseSequence, childStartIndex);
+                }
                 child.PreserveDeliveryTimeline(source);
                 child.MarkAsSplitBatch(childMaxRecordSize, isRetry: !reenqueue);
                 if (_options.CompressionType == CompressionType.None)
+                {
                     PrepareBatchForPublish(child, child.Generation);
+                }
                 else
+                {
                     child.SetPreSerializationTask(reenqueue
                         ? CreatePreSerializationTask(child)
                         : CreateSenderRetryPreSerializationTask(child, senderWakeup!));
+                }
                 splitBatches.Add(child);
             }
         }
@@ -2932,7 +3111,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
         var splitBytes = 0L;
         foreach (var child in splitBatches)
+        {
             splitBytes += child.DataSize;
+        }
         Interlocked.Add(ref _bufferedBytes, splitBytes);
 
         var pd = GetOrCreateDeque(splitBatches[0].TopicPartition);
@@ -2951,9 +3132,13 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 if (reenqueue)
                 {
                     if (ProducerId >= 0)
+                    {
                         pd.InsertInSequenceOrder(child);
+                    }
                     else
+                    {
                         pd.AddFirst(child);
+                    }
                     ProducerDebugCounters.RecordBatchQueuedToReady();
                 }
             }
@@ -2968,14 +3153,20 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         foreach (var child in splitBatches)
         {
             if (reenqueue)
+            {
                 StartPreSerialization(child);
+            }
             else
+            {
                 StartSenderRetryPreSerialization(child, senderWakeup!);
+            }
         }
 
         Diagnostics.DekafMetrics.RecordBatchSplit(splitBatches[0].TopicPartition.Topic);
         if (reenqueue)
+        {
             SignalWakeup();
+        }
         return splitBatches;
     }
 
@@ -2994,7 +3185,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     {
         var pd = GetOrCreateDeque(tp);
         lock (_partitionMuteLock)
+        {
             Volatile.Write(ref pd.MuteCount, pd.MuteCount + 1);
+        }
     }
 
     /// <summary>
@@ -3006,7 +3199,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     internal bool TryRegisterLoopExitRecovery(ReadyBatch batch, int expectedGeneration)
     {
         if (!batch.TryAcquireResourcePin(expectedGeneration))
+        {
             return false;
+        }
 
         try
         {
@@ -3021,10 +3216,14 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             }
 
             if (batch.IsCurrentIncarnation(expectedGeneration))
+            {
                 return true;
+            }
 
             if (batch.TryCompleteLoopExitRecovery())
+            {
                 UnmutePartition(topicPartition);
+            }
             return false;
         }
         finally
@@ -3036,24 +3235,32 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     internal void UnmutePartition(TopicPartition tp)
     {
         if (!_partitionDeques.TryGetValue(tp, out var pd))
+        {
             return;
+        }
 
         lock (_partitionMuteLock)
         {
             var count = pd.MuteCount;
             if (count == 0)
+            {
                 return;
+            }
 
             // The count must reach zero before notification so Ready() cannot consume the
             // notification while the partition still appears muted.
             Volatile.Write(ref pd.MuteCount, count - 1);
             if (count > 1)
+            {
                 return;
+            }
         }
 
         // Re-notify so Ready() picks up any sealed batches that were skipped while muted.
         if (HasQueuedBatches(pd))
+        {
             _readyPartitions.Enqueue(tp);
+        }
 
         ReactivateDeferredLinger(tp, pd);
 
@@ -3092,7 +3299,10 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     {
         _ = Task.Delay(Math.Max(delayMs, 1), _disposalCts.Token).ContinueWith(static (t, state) =>
         {
-            if (t.IsCanceled) return;
+            if (t.IsCanceled)
+            {
+                return;
+            }
             var (self, partition) = ((RecordAccumulator, TopicPartition))state!;
             self._readyPartitions.Enqueue(partition);
             self.SignalWakeup();
@@ -3124,13 +3334,17 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         // until max.block.ms because only the send loop could free memory). This is the
         // admission-side analog of ReleaseMemoryWithoutDrain.
         if (t_inPendingAppendDrainScan)
+        {
             return true;
+        }
 
         // The active owner temporarily moves every candidate out of the concurrent queue
         // while it evaluates admission. An empty queue is therefore conclusive only when
         // no drainer owns that private snapshot.
         if (_pendingAppends.IsEmpty && Volatile.Read(ref _draining) == 0)
+        {
             return true;
+        }
 
         // Publish the request before competing for ownership. If the current owner releases
         // between these operations, this caller takes over; otherwise that owner observes the
@@ -3138,7 +3352,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         // where both callers can miss the wake.
         Interlocked.Increment(ref _pendingAppendDrainRequestVersion);
         if (Interlocked.CompareExchange(ref _draining, 1, 0) != 0)
+        {
             return false;
+        }
 
         Interlocked.Increment(ref _pendingAppendDrainEntryCount);
         var ownsDrainGuard = true;
@@ -3164,7 +3380,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
                 // Bail if accumulator is being disposed — DisposeAsync will drain the queue.
                 if (Volatile.Read(ref _disposed) != 0)
+                {
                     return true;
+                }
 
                 var madeProgress = false;
                 lock (_pendingAppendQueueLock)
@@ -3175,7 +3393,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
                     var remainingToInspect = _pendingAppends.Count;
                     while (remainingToInspect-- > 0 && _pendingAppends.TryDequeue(out var candidate))
+                    {
                         _pendingAppendScan.Add(candidate);
+                    }
 
                     var memoryExhausted = false;
                     foreach (var entry in _pendingAppendScan)
@@ -3185,7 +3405,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                         // instance; the live rental has its own entry further back in the queue.
                         var candidate = entry.Operation;
                         if (!candidate.IsPending(entry.Generation))
+                        {
                             continue;
+                        }
 
                         var recordSize = candidate.RecordSize;
                         var maxBufferMemory = (ulong)Volatile.Read(ref _maxBufferMemory);
@@ -3222,9 +3444,13 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                         {
                             _pendingAppends.Enqueue(entry);
                             if (brokerBlocked)
+                            {
                                 _blockedPendingPartitions.Add(topicPartition);
+                            }
                             else
+                            {
                                 memoryExhausted = true;
+                            }
                             continue;
                         }
 
@@ -3243,12 +3469,16 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 if (_oversizedPendingAppends is { } oversizedAppends)
                 {
                     foreach (var oversized in oversizedAppends)
+                    {
                         oversized.Entry.Operation.TryFail(oversized.Exception, oversized.Entry.Generation);
+                    }
                     oversizedAppends.Clear();
                 }
 
                 if (s_perRecordTestHooks && madeProgress)
+                {
                     AfterPendingAppendDrainReservationForTest?.Invoke();
+                }
 
                 var arenaWaitRequired = false;
                 var arenaChargesFilledBuffer = false;
@@ -3326,7 +3556,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                             // record: wait again until an in-flight batch frees its arena.
                             arenaWaitRequired = true;
                             if (op.ReturnToPendingAfterClaim(drainable.Generation))
+                            {
                                 (_arenaWaitRequeue ??= []).Add(new QueuedPendingAppend(op, drainable.Generation));
+                            }
                             continue;
                         }
 
@@ -3342,7 +3574,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 }
                 _drainablePendingAppends.Clear();
                 if (arenaChargesFilledBuffer && !arenaWaitRequired)
+                {
                     RequeuePendingAppendsAtHead();
+                }
 
                 if (arenaWaitRequired)
                 {
@@ -3350,7 +3584,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                     // Same publish-then-recheck as TryConvertReservationToArenaDebt for the
                     // reservations added to the debt above.
                     if (Volatile.Read(ref _liveArenaCount) == 0)
+                    {
                         ReleaseArenaDebt();
+                    }
                 }
 
                 // The scan released the arena debt (an arena freed during it, or the recheck
@@ -3386,7 +3622,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
                 // Re-acquire the drain lock for another pass
                 if (Interlocked.CompareExchange(ref _draining, 1, 0) != 0)
+                {
                     return true; // Another thread took over
+                }
 
                 ownsDrainGuard = true;
             }
@@ -3441,7 +3679,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     {
         var budget = reservation.Budget;
         if (budget is null && reservation.Deque is { } deque)
+        {
             budget = GetCachedAdmissionBudget(deque, operation.Topic, operation.Partition);
+        }
 
         var waitMilliseconds = MonotonicClock.GetMilliseconds() - operation.StartTicks;
         budget?.RecordAdmissionWait(waitMilliseconds * Stopwatch.Frequency / 1_000);
@@ -3456,18 +3696,26 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     {
         var requeue = _arenaWaitRequeue;
         if (requeue is null || requeue.Count == 0)
+        {
             return;
+        }
 
         lock (_pendingAppendQueueLock)
         {
             _pendingAppendScan.Clear();
             while (_pendingAppends.TryDequeue(out var queued))
+            {
                 _pendingAppendScan.Add(queued);
+            }
 
             foreach (var entry in requeue)
+            {
                 _pendingAppends.Enqueue(entry);
+            }
             foreach (var entry in _pendingAppendScan)
+            {
                 _pendingAppends.Enqueue(entry);
+            }
 
             _pendingAppendScan.Clear();
         }
@@ -3484,7 +3732,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     private void SignalBufferSpaceAvailable()
     {
         if (Volatile.Read(ref _bufferSpaceWaiters) == 0)
+        {
             return;
+        }
 
         var prev = Interlocked.Exchange(
             ref _bufferSpaceSignal,
@@ -3514,7 +3764,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     internal int GetMillisUntilEarliestLingerDeadline(int maxWaitMs)
     {
         if (Volatile.Read(ref _lingerReactivationPending) != 0)
+        {
             return 1;
+        }
 
         // Any batch holding an awaited produce seals on the shorter awaited window,
         // so the wait horizon must shrink to it while such a batch is pending.
@@ -3524,7 +3776,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
         var oldestTicks = Volatile.Read(ref _oldestBatchCreatedTicks);
         if (oldestTicks == long.MaxValue && HasUnsealedBatches())
+        {
             return Math.Max(1, maxWaitMs);
+        }
 
         var elapsedMs = oldestTicks == long.MaxValue
             ? 0.0
@@ -3590,10 +3844,12 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         ProducerOptions.ValidateArenaCapacity(options.BatchSize, options.ArenaCapacity);
         if (!ProducerOptions.IsBufferMemoryAllocationStrategyDefined(
                 options.BufferMemoryAllocationStrategy))
+        {
             throw new ArgumentOutOfRangeException(
                 nameof(options),
                 options.BufferMemoryAllocationStrategy,
                 "Unknown buffer memory allocation strategy.");
+        }
 
         // Scale pool sizes with BufferMemory/BatchSize to prevent pool exhaustion.
         // Small batches (e.g., 16KB) create high batch churn (~6,250/sec at 100K msg/sec)
@@ -3603,15 +3859,19 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         var availableMemoryBytes = GetAvailableMemoryBytes();
         _accountsLiveArenas = options.BufferMemoryAllocationStrategy == BufferMemoryAllocationStrategy.Full;
         if (_accountsLiveArenas)
+        {
             LiveArenaBudget.Shared.SetLimitFromAvailableMemory(availableMemoryBytes);
+        }
         var arenaPoolSize = ComputePoolSize(options, availableMemoryBytes);
         var batchPoolSize = ComputeBatchPoolSize(options, options.BufferMemory, availableMemoryBytes);
         // Full-arena producers register with the process-wide arena pool last, once nothing
         // else in the constructor can throw, so a failed construction leaves no registration.
         if (options.BufferMemoryAllocationStrategy != BufferMemoryAllocationStrategy.Full)
+        {
             IncrementalBatchBuffer.RatchetPoolSize(
                 batchPoolSize * ReadyBatchPoolSizeRatio,
                 options.BatchSize);
+        }
         // ReadyBatch lifecycle spans seal→send→response→cleanup (longer than PartitionBatch),
         // so its pool needs to be larger to avoid exhaustion under sustained throughput.
         _readyBatchPool = new ReadyBatchPool(maxPoolSize: batchPoolSize * ReadyBatchPoolSizeRatio, failureObserver: this);
@@ -3801,7 +4061,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         long availableMemoryBytes)
     {
         if (options.BufferMemoryAllocationStrategy != BufferMemoryAllocationStrategy.Full)
+        {
             return BatchArena.MaxPoolSizeCap;
+        }
 
         var batchCount = (ulong)ComputeRetainedArenaBytes(options, bufferMemory, availableMemoryBytes)
             / (ulong)GetPooledArenaCapacity(options);
@@ -3832,7 +4094,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     {
         var retainedBytes = (long)Math.Min(bufferMemory, long.MaxValue);
         if (availableMemoryBytes > 0)
+        {
             retainedBytes = Math.Min(retainedBytes, availableMemoryBytes / RetainedMemoryDivisor);
+        }
         return retainedBytes;
     }
 
@@ -3850,7 +4114,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         foreach (var kvp in _partitionDeques)
         {
             if (TryDrainBatch(kvp.Key, out batch))
+            {
                 return true;
+            }
         }
 
         batch = null;
@@ -3891,7 +4157,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         while (_readyPartitions.TryDequeue(out var topicPartition))
         {
             if (!_partitionDeques.TryGetValue(topicPartition, out var pd))
+            {
                 continue;
+            }
 
             using var guard = new SpinLockGuard(ref pd.Lock);
             if (pd.Count > 0)
@@ -3928,7 +4196,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     internal bool TryCleanupFailedPreSerializationBatch(ReadyBatch batch, int expectedGeneration)
     {
         if (!batch.TryAcquireCleanupPin(expectedGeneration))
+        {
             return false;
+        }
 
         var returnClaimed = false;
         try
@@ -3936,9 +4206,15 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             returnClaimed = batch.IsSendCompleted && TryClaimReadyBatchReturn(batch);
             if (returnClaimed)
             {
-                try { ReleaseBatchMemory(batch); }
+                try
+                {
+                    ReleaseBatchMemory(batch);
+                }
                 catch (Exception cleanupEx) { LogBatchCleanupStepFailed(cleanupEx); }
-                try { OnBatchExitsPipeline(batch); }
+                try
+                {
+                    OnBatchExitsPipeline(batch);
+                }
                 catch (Exception cleanupEx) { LogBatchCleanupStepFailed(cleanupEx); }
             }
         }
@@ -3948,7 +4224,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         }
 
         if (returnClaimed)
+        {
             CompleteClaimedReadyBatchReturn(batch);
+        }
         return returnClaimed;
     }
 
@@ -3965,7 +4243,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         batch.CompleteTerminalBookkeeping();
 
         if (returnClaimed)
+        {
             CompleteClaimedReadyBatchReturn(batch);
+        }
     }
 
     private static bool TryClaimReadyBatchReturn(ReadyBatch batch)
@@ -3988,7 +4268,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         // pins and terminal bookkeeping finish. This also keeps newer work fenced until the
         // recovered batch is fully disposed. Only the pool-return owner reaches this point.
         if (batch.TryCompleteLoopExitRecovery())
+        {
             UnmutePartition(batch.TopicPartition);
+        }
 
         _readyBatchPool.Return(batch);
     }
@@ -4013,7 +4295,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     private void EnsureAppendWorkersStarted()
     {
         if (Volatile.Read(ref _appendWorkersStarted) != 0)
+        {
             return;
+        }
 
         // Ensure StartAppendWorkers has been called (token is stored).
         // Without workers, items sit in the channel forever and the caller's
@@ -4023,12 +4307,16 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         if (Volatile.Read(ref _appendWorkersReady) == 0)
         {
             if (Volatile.Read(ref _disposed) != 0)
+            {
                 return; // Let TryWrite fail with ObjectDisposedException
+            }
             throw new InvalidOperationException("EnqueueAppend called before StartAppendWorkers");
         }
 
         if (Interlocked.CompareExchange(ref _appendWorkersStarted, 1, 0) != 0)
+        {
             return;
+        }
 
         // Other producers can already queue items here, before the tasks below are published.
         BeforeAppendWorkerTasksPublishedForTest?.Invoke();
@@ -4141,7 +4429,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             catch (OperationCanceledException) when (workItem.CancellationToken.IsCancellationRequested)
             {
                 if (!appendStarted)
+                {
                     CleanupWorkItemResources(in workItem);
+                }
                 PooledCompletionSource.TrySetCanceled(workItem.Completion, workItem.CancellationToken);
             }
             catch (Exception ex)
@@ -4165,7 +4455,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         Interlocked.Decrement(ref pd.AppendWorkerItemCount);
         // A deferred pending append holds its own FIFO count until it completes.
         if (workItem.DeferredAppend is null)
+        {
             Interlocked.Decrement(ref pd.SlowPathAppendCount);
+        }
         MarkAppendWorkItemProcessed(workerIndex);
     }
 
@@ -4185,7 +4477,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     internal static void ReturnPooledHeaders(Header[]? headers, int headerCount)
     {
         if (headers is null)
+        {
             return;
+        }
 
         // Headers keeps deferred tracing headers at the tail so cleanup remains O(1) without
         // clearing every live element in the rented array.
@@ -4273,9 +4567,13 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         try
         {
             if (key.IsNull && !keyIsNull)
+            {
                 key = CopySpanToPooledMemory(keyData);
+            }
             if (value.IsNull && !valueIsNull)
+            {
                 value = CopySpanToPooledMemory(valueData);
+            }
 
             EnqueueAppend(topic, partition, timestamp, key, value, headers, headerCount,
                 completion, cancellationToken, partitionCount, transactionalGeneration);
@@ -4300,7 +4598,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         var batch = _batchPool.Rent(topicPartition, partitionCount);
         batch.SetTransactionState(ProducerId, ProducerEpoch, IsTransactional);
         if (_accountsLiveArenas)
+        {
             ChargeLiveArena(batch);
+        }
         return batch;
     }
 
@@ -4319,7 +4619,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             arenaFailure = null;
             var batch = RentBatch(topicPartition, partitionCount);
             if (s_perRecordTestHooks)
+            {
                 AfterRentBatchForTest?.Invoke();
+            }
             return batch;
         }
         catch (OutOfMemoryException)
@@ -4376,7 +4678,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     {
         var capacity = batch.ArenaCapacity;
         if (capacity == 0)
+        {
             return;
+        }
 
         var budget = _liveArenaBudget;
         Interlocked.Increment(ref _liveArenaCount);
@@ -4391,7 +4695,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     internal int AcquireLiveArenaBytes(LiveArenaBudget budget, int bytes)
     {
         if (budget.Acquire(bytes))
+        {
             return 0;
+        }
 
         Interlocked.Add(ref _bufferedBytes, bytes);
         Interlocked.Add(ref _arenaChargedBytes, bytes);
@@ -4437,10 +4743,14 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         // is published before its owner re-reads the count, so one of the two releases it.
         // One read per batch; releases on that path only.
         if (Volatile.Read(ref _arenaDebtBytes) != 0)
+        {
             drainDeferred |= ReleaseArenaDebt(drainInline);
+        }
 
         if (drainDeferred)
+        {
             QueueDeferredPendingAppendDrain();
+        }
     }
 
     /// <summary>
@@ -4451,7 +4761,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     private void QueueDeferredPendingAppendDrain()
     {
         if (Interlocked.CompareExchange(ref _deferredPendingAppendDrainQueued, 1, 0) != 0)
+        {
             return;
+        }
 
         ThreadPool.UnsafeQueueUserWorkItem(s_deferredPendingAppendDrain, this);
     }
@@ -4477,19 +4789,25 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     {
         Interlocked.Increment(ref _arenaAllocationFailures);
         if (Volatile.Read(ref _liveArenaCount) == 0)
+        {
             return false;
+        }
 
         // Fill BufferMemory before publishing the debt, so a concurrent release never subtracts
         // bytes that were not added yet.
         var fill = Math.Max(0, Volatile.Read(ref _maxBufferMemory) - Volatile.Read(ref _bufferedBytes));
         if (fill > 0)
+        {
             Interlocked.Add(ref _bufferedBytes, fill);
+        }
         Interlocked.Add(ref _arenaDebtBytes, recordSize + fill);
 
         // ReleaseLiveArena decrements the live count before it reads the debt. If the last live
         // arena was released before the debt was published, nothing would release it.
         if (Volatile.Read(ref _liveArenaCount) == 0)
+        {
             ReleaseArenaDebt();
+        }
 
         return true;
     }
@@ -4500,16 +4818,22 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     {
         var debt = Interlocked.Exchange(ref _arenaDebtBytes, 0);
         if (debt <= 0)
+        {
             return false;
+        }
 
         Interlocked.Add(ref _bufferedBytes, -debt);
         if (!drain)
+        {
             return true;
+        }
 
         // Inside the drain owner's scan the call below returns without requesting a pass
         // (#2207); the owner checks this flag and rescans the appends it re-queued.
         if (t_inPendingAppendDrainScan)
+        {
             _arenaDebtReleasedDuringDrainScan = true;
+        }
         DrainPendingAppends();
         SignalBufferSpaceAvailable();
         return false;
@@ -4661,14 +4985,20 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         }
 
         if (ReferenceEquals(firstCached, deque))
+        {
             return;
+        }
 
         var secondIndex = firstIndex + 1;
         var secondEntry = threadCache[secondIndex];
         if (secondEntry is null)
+        {
             threadCache[secondIndex] = new WeakReference<PartitionDeque>(deque);
+        }
         else if (!secondEntry.TryGetTarget(out var secondCached) || !ReferenceEquals(secondCached, deque))
+        {
             secondEntry.SetTarget(deque);
+        }
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
@@ -4710,7 +5040,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         {
             var original = Interlocked.CompareExchange(ref _oldestBatchCreatedTicks, createdTicks, current);
             if (original == current)
+            {
                 return true;
+            }
             current = original;
         }
 
@@ -4807,7 +5139,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         int transactionalGeneration = NoTransactionalGeneration)
     {
         if (Volatile.Read(ref _disposed) != 0)
+        {
             return new ValueTask<bool>(false);
+        }
 
         var pd = GetOrCreateDeque(topic, partition);
         int recordSize;
@@ -4836,7 +5170,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             // ArenaWaitRequired (no arena for a new batch while batches are in flight): the arena
             // debt fills BufferMemory, so the cold path below queues the record until one frees its arena.
             if (outcome != AppendCoreOutcome.ArenaWaitRequired)
+            {
                 return new ValueTask<bool>(outcome == AppendCoreOutcome.Appended);
+            }
         }
 
         // Cold path: buffer full or broker over budget — enqueue pooled PendingAppend
@@ -4985,7 +5321,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                                 ownsReservation = false;
                                 ownsRecordResources = false;
                                 if (firstAwaitedProduceInBatch)
+                                {
                                     TrackPendingAwaitedProduceBatch();
+                                }
                                 if (ShouldSealAppendedBatch(pd, currentBatch, completionSource))
                                 {
                                     batchToComplete = DetachCurrentBatchForSealUnderLock(pd, currentBatch);
@@ -5063,7 +5401,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                                 ownsReservation = false;
                                 ownsRecordResources = false;
                                 if (firstAwaitedProduceInBatch)
+                                {
                                     TrackPendingAwaitedProduceBatch();
+                                }
                                 if (ShouldSealAppendedBatch(pd, newBatch, completionSource))
                                 {
                                     batchToComplete = DetachCurrentBatchForSealUnderLock(pd, newBatch);
@@ -5094,10 +5434,14 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 }
 
                 if (batchToPublish is not null)
+                {
                     PublishEnqueuedBatch(pd, batchToPublish, releaseRotationAfterPublish);
+                }
 
                 if (batchToReturn is not null)
+                {
                     _batchPool.Return(batchToReturn);
+                }
 
                 if (batchToFail is not null)
                 {
@@ -5108,7 +5452,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                     finally
                     {
                         if (releaseRotationAfterFail)
+                        {
                             ReleaseRotationGate(pd);
+                        }
                     }
                 }
 
@@ -5156,7 +5502,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                     // seal refund; release it now that the rotation has been handed off.
                     ReleaseDetachedBatchBytesIfSafe();
                     if (drainPendingAfterAppend)
+                    {
                         DrainPendingAppends();
+                    }
 
                     return AppendCoreOutcome.Appended;
                 }
@@ -5191,7 +5539,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 }
 
                 if (needBatch && rentedBatch is null)
+                {
                     rentedBatch = TryRentBatch(topicPartition, partitionCount, out arenaFailure);
+                }
             }
         }
         catch
@@ -5299,7 +5649,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         // Close the release TOCTOU window for the first queued operation. Later waiters are
         // woken by terminal broker-byte or BufferMemory release.
         if (wasQueueEmpty)
+        {
             DrainPendingAppends();
+        }
 
         return new ValueTask<bool>(op, op.Version);
     }
@@ -5326,7 +5678,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         Interlocked.Increment(ref GetOrCreateDeque(topic, partition).AppendWorkerItemCount);
         Interlocked.Increment(ref _appendWorkerQueuedSequences[workerIndex * AppendWorkerSequenceStride]);
         if (_appendWorkerChannels[workerIndex].Writer.TryWrite(workItem))
+        {
             return true;
+        }
 
         ReleaseAppendWorkItem(in workItem, workerIndex);
         return false;
@@ -5340,7 +5694,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     private void EnqueuePendingAppend(PendingAppend op, int generation)
     {
         if (!op.IsPending(generation))
+        {
             return;
+        }
 
         bool wasQueueEmpty = false;
         bool enqueueRejected;
@@ -5356,9 +5712,13 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
         // Disposal's final drain may already have run; the caller still awaits this rental.
         if (enqueueRejected)
+        {
             op.TryFail(new ObjectDisposedException(nameof(RecordAccumulator)), generation);
+        }
         else if (wasQueueEmpty)
+        {
             DrainPendingAppends();
+        }
     }
 
     /// <summary>
@@ -5380,7 +5740,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         int partitionCount = 0)
     {
         if (Volatile.Read(ref _disposed) != 0)
+        {
             return false;
+        }
 
         var pd = GetOrCreateDeque(topic, partition);
         int recordSize;
@@ -5403,7 +5765,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         // or the destination broker is over its unacked-byte budget, return false so the
         // caller (ProduceAsync fast path) falls back to the async path.
         if (!TryAdmitAndReserve(pd, topic, partition, recordSize, out var admissionReservation))
+        {
             return false;
+        }
 
         // On ArenaWaitRequired the caller keeps the record and takes the async path, which waits
         // behind the arena debt.
@@ -5432,7 +5796,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         int transactionalGeneration = NoTransactionalGeneration)
     {
         if (Volatile.Read(ref _disposed) != 0)
+        {
             return false;
+        }
 
         var pd = GetOrCreateDeque(topic, partition);
         var keyLength = keyIsNull ? 0 : keyData.Length;
@@ -5451,7 +5817,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         }
 
         if (!TryAdmitAndReserve(pd, topic, partition, recordSize, out var admissionReservation))
+        {
             return false;
+        }
 
         // On ArenaWaitRequired the caller keeps the record and hands it to the slow path, which
         // waits behind the arena debt until an in-flight batch frees its arena.
@@ -5723,10 +6091,14 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 }
 
                 if (batchToPublish is not null)
+                {
                     PublishEnqueuedBatch(pd, batchToPublish, releaseRotationAfterPublish);
+                }
 
                 if (batchToReturn is not null)
+                {
                     _batchPool.Return(batchToReturn);
+                }
 
                 if (batchToFail is not null)
                 {
@@ -5737,7 +6109,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                     finally
                     {
                         if (releaseRotationAfterFail)
+                        {
                             ReleaseRotationGate(pd);
+                        }
                     }
                 }
 
@@ -5758,7 +6132,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                             headers,
                             headerCount);
                         if (s_perRecordTestHooks)
+                        {
                             AfterReservedAppendEncodedForTest?.Invoke();
+                        }
 
                         var disposedAfterReserve = false;
                         {
@@ -5794,7 +6170,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                                 ownsReservation = false;
                                 ownsHeaderResources = false;
                                 if (reservedFirstAwaitedProduceInBatch)
+                                {
                                     TrackPendingAwaitedProduceBatch();
+                                }
 
                                 if (ShouldSealAppendedBatch(pd, reservedAppendBatch, completionSource))
                                 {
@@ -5830,7 +6208,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
                         ReleaseDetachedBatchBytesIfSafe();
                         if (drainPendingAfterAppend)
+                        {
                             DrainPendingAppends();
+                        }
                         return AppendCoreOutcome.Appended;
                     }
                     catch
@@ -5905,7 +6285,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 }
 
                 if (needBatch && rentedBatch is null)
+                {
                     rentedBatch = TryRentBatch(topicPartition, partitionCount, out arenaFailure);
+                }
             }
         }
         catch
@@ -5970,7 +6352,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         int transactionalGeneration = NoTransactionalGeneration)
     {
         if (Volatile.Read(ref _disposed) != 0)
+        {
             return new ValueTask<bool>(false);
+        }
 
         var pd = GetOrCreateDeque(topic, partition);
         var keyLength = keyIsNull ? 0 : keyData.Length;
@@ -6010,7 +6394,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             // ArenaWaitRequired (no arena for a new batch while batches are in flight): queue the
             // record on the cold path below, behind the arena debt that fills BufferMemory.
             if (outcome != AppendCoreOutcome.ArenaWaitRequired)
+            {
                 return new ValueTask<bool>(outcome == AppendCoreOutcome.Appended);
+            }
         }
 
         // Cold path: buffer full. Copy spans to PooledMemory BEFORE the await boundary
@@ -6048,7 +6434,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 ProduceRequestSizeCalculator.CompactBytesLengthSize((int)estimatedBatchSize) +
                 estimatedBatchSize;
             if (estimatedRequestBodySize <= maxRequestSize)
+            {
                 return;
+            }
         }
 
         ThrowIfRecordExceedsMaxRequestSizeSlow(
@@ -6084,7 +6472,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             singleBatchFixedSize,
             encodedBatchSize);
         if (encodedRequestBodySize <= maxRequestSize)
+        {
             return;
+        }
 
         throw new ProduceException(
             ErrorCode.MessageTooLarge,
@@ -6148,12 +6538,16 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         // path also records the admission block and requests a flush when the broker is over
         // budget, so leave that bookkeeping to it.
         if (Volatile.Read(ref pd.SlowPathAppendCount) != 0)
+        {
             return false;
+        }
 
         // BufferMemory exhausted: the reservation path queues the record behind the same
         // backpressure.
         if (!TryReserveMemory(recordSize))
+        {
             return false;
+        }
 
         PartitionBatch? batchToComplete = null;
         BrokerUnackedByteBudget? leaseBudget = null;
@@ -6191,7 +6585,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                     // refresh and flush-request bookkeeping of the reservation path.
                     leaseBytes = GetAdmissionLeaseBytes(recordSize);
                     if (!budget.TryReserve(leaseBytes, out leaseGeneration))
+                    {
                         return false;
+                    }
 
                     leaseBudget = budget;
                 }
@@ -6212,20 +6608,28 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             // The estimate fit but the arena could not take the encoded record: rotation belongs
             // to the two-phase path.
             if (!result.Success)
+            {
                 return false;
+            }
 
             if (leaseBudget is not null)
+            {
                 currentBatch.AddAdmissionLease(leaseBudget, leaseGeneration, leaseBytes);
+            }
 
             committed = true;
             actualBytesAdded = result.ActualSizeAdded;
             ProducerDebugCounters.RecordMessageAppended(hasCompletionSource: completionSource is not null);
 
             if (result.FirstCompletionSourceInBatch)
+            {
                 TrackPendingAwaitedProduceBatch();
+            }
 
             if (ShouldSealAppendedBatch(pd, currentBatch, completionSource))
+            {
                 batchToComplete = DetachCurrentBatchForSealUnderLock(pd, currentBatch);
+            }
         }
         finally
         {
@@ -6241,7 +6645,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         }
 
         if (!committed)
+        {
             return false;
+        }
 
         NotifyRecordAppended(topic, partition, actualBytesAdded, partitionCount);
         if (batchToComplete is not null)
@@ -6305,7 +6711,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 estimatedSize: recordSize);
 
             if (!result.Success)
+            {
                 return false;
+            }
 
             drainPendingAfterAppend = CommitAdmissionReservationUnderLock(
                 currentBatch,
@@ -6315,7 +6723,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             ProducerDebugCounters.RecordMessageAppended(hasCompletionSource: completionSource is not null);
 
             if (result.FirstCompletionSourceInBatch)
+            {
                 TrackPendingAwaitedProduceBatch();
+            }
 
             if (ShouldSealAppendedBatch(pd, currentBatch, completionSource))
             {
@@ -6334,7 +6744,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         }
 
         if (drainPendingAfterAppend)
+        {
             DrainPendingAppends();
+        }
 
         return true;
     }
@@ -6428,13 +6840,19 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 ReleasePendingAwaitedProduceBatch(completionSourcesCount, ref pendingAwaitedProduceBatchReleased);
                 ProducerDebugCounters.RecordBatchCompleted(readyBatch.CompletionSourcesCount);
                 if (currentBatch.PartitionCount > 1)
+                {
                     _onBatchComplete?.Invoke(readyBatch.TopicPartition.Topic, currentBatch.PartitionCount);
+                }
                 if (preSerialize)
                 {
                     if (_options.CompressionType == CompressionType.None)
+                    {
                         PrepareBatchForPublish(readyBatch, readyBatch.Generation);
+                    }
                     else
+                    {
                         readyBatch.SetPreSerializationTask(CreatePreSerializationTask(readyBatch));
+                    }
                 }
             }
 
@@ -6445,10 +6863,15 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         {
             ReleasePendingAwaitedProduceBatch(completionSourcesCount, ref pendingAwaitedProduceBatchReleased);
             bytesToRelease = currentBatch.FailCompleteFailure(ex);
-            try { _batchPool.Return(currentBatch); }
+            try
+            {
+                _batchPool.Return(currentBatch);
+            }
             catch (Exception returnEx) { LogBatchCleanupStepFailed(returnEx); }
             if (releaseMemoryOnFailure)
+            {
                 ReleaseDetachedBatchBytes(ref bytesToRelease);
+            }
             throw;
         }
     }
@@ -6456,7 +6879,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     private void ReleasePendingAwaitedProduceBatch(int completionSourcesCount, ref bool released)
     {
         if (released || completionSourcesCount <= 0)
+        {
             return;
+        }
 
         Interlocked.Decrement(ref _pendingAwaitedProduceCount);
         released = true;
@@ -6472,7 +6897,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     private void TrackPendingAwaitedProduceBatch()
     {
         if (Interlocked.Increment(ref _pendingAwaitedProduceCount) == 1)
+        {
             _lingerWakeupSignal.Signal();
+        }
     }
 
     private bool TryCompleteDetachedBatchForCleanup(
@@ -6500,7 +6927,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     private void NotifyRecordAppended(string topic, int partition, int actualBytesAdded, int partitionCount)
     {
         if (partitionCount > 1 && actualBytesAdded > 0)
+        {
             _onRecordAppended?.Invoke(topic, partition, actualBytesAdded, partitionCount);
+        }
     }
 
     private static long SaturatingAdd(long current, int value)
@@ -6518,7 +6947,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             var updated = SaturatingAdd(current, bytes);
             var observed = Interlocked.CompareExchange(ref pd.QueueBytes, updated, current);
             if (observed == current)
+            {
                 return;
+            }
 
             current = observed;
         }
@@ -6533,7 +6964,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             var updated = Math.Max(0, current - bytes);
             var observed = Interlocked.CompareExchange(ref pd.QueueBytes, updated, current);
             if (observed == current)
+            {
                 return updated == 0;
+            }
 
             current = observed;
         }
@@ -6556,10 +6989,14 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         PooledValueTaskSource<RecordMetadata>? completionSource)
     {
         if (batch.IsExactlyAtSizeLimit)
+        {
             return true;
+        }
 
         if (_options.LingerMs == 0)
+        {
             return !ShouldDeferPartialBatchSeal(pd, batch);
+        }
 
         return IsAppLimitedAwaitedAppend(batch, completionSource)
             && !IsMuted(pd);
@@ -6703,19 +7140,29 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             }
 
             if (readyBatch is null)
+            {
                 ClearRotationInProgressUnderLock(pd);
+            }
             else
+            {
                 ClearAdmissionFlushRequestUnderLock(pd);
+            }
         }
 
         if (readyBatch is not null)
+        {
             PublishEnqueuedBatch(pd, readyBatch, releaseRotation: true);
+        }
 
         if (rejectedBatch is not null)
+        {
             FailUnpublishedCompletedBatch(rejectedBatch, new ObjectDisposedException(nameof(RecordAccumulator)));
+        }
 
         if (bytesToRelease > 0)
+        {
             ReleaseMemory(bytesToRelease);
+        }
 
         return readyBatch is not null;
     }
@@ -6735,7 +7182,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         finally
         {
             if (releaseRotation)
+            {
                 ReleaseRotationGate(pd);
+            }
         }
     }
 
@@ -6808,7 +7257,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     private void ReleaseRotationGate(PartitionDeque pd)
     {
         if (!pd.RotationInProgress)
+        {
             return;
+        }
 
         Volatile.Write(ref pd.RotationInProgress, false);
         Interlocked.Decrement(ref _rotatingPartitionCount);
@@ -6839,7 +7290,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     private void ReleaseDetachedBatchBytes(ref int bytesToRelease)
     {
         if (bytesToRelease <= 0)
+        {
             return;
+        }
 
         var bytes = bytesToRelease;
         bytesToRelease = 0;
@@ -6858,7 +7311,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     {
         _readyPartitions.Enqueue(readyBatch.TopicPartition);
         if (signalWakeup)
+        {
             SignalWakeup();
+        }
     }
 
     /// <summary>
@@ -6921,13 +7376,17 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     private void PreSerializeAndPublishBatch(ReadyBatch readyBatch, int generation)
     {
         if (PrepareBatchForPublish(readyBatch, generation) && readyBatch.IsCurrentIncarnation(generation))
+        {
             PublishSealedBatch(readyBatch);
+        }
     }
 
     private void PreSerializeSenderRetryBatch(ReadyBatch readyBatch, int generation, Action senderWakeup)
     {
         if (PrepareBatchForPublish(readyBatch, generation) && readyBatch.IsCurrentIncarnation(generation))
+        {
             senderWakeup();
+        }
     }
 
     private sealed class PreSerializationWorkItem(
@@ -6935,11 +7394,20 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         ReadyBatch batch,
         int generation)
     {
-        public RecordAccumulator Accumulator { get; } = accumulator;
+        public RecordAccumulator Accumulator
+        {
+            get;
+        } = accumulator;
 
-        public ReadyBatch Batch { get; } = batch;
+        public ReadyBatch Batch
+        {
+            get;
+        } = batch;
 
-        public int Generation { get; } = generation;
+        public int Generation
+        {
+            get;
+        } = generation;
     }
 
     private sealed class SenderRetryPreSerializationWorkItem(
@@ -6948,13 +7416,25 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         int generation,
         Action senderWakeup)
     {
-        public RecordAccumulator Accumulator { get; } = accumulator;
+        public RecordAccumulator Accumulator
+        {
+            get;
+        } = accumulator;
 
-        public ReadyBatch Batch { get; } = batch;
+        public ReadyBatch Batch
+        {
+            get;
+        } = batch;
 
-        public int Generation { get; } = generation;
+        public int Generation
+        {
+            get;
+        } = generation;
 
-        public Action SenderWakeup { get; } = senderWakeup;
+        public Action SenderWakeup
+        {
+            get;
+        } = senderWakeup;
     }
 
     /// <summary>
@@ -6971,7 +7451,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     private bool PrepareBatchForPublish(ReadyBatch readyBatch, int generation)
     {
         if (!readyBatch.TryAcquireResourcePin(generation))
+        {
             return false;
+        }
 
         try
         {
@@ -7001,12 +7483,16 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             }
 
             if (!readyBatch.IsCurrentIncarnation(generation))
+            {
                 return false;
+            }
 
             // Mark pre-serialization complete so the drain loop can pick up this batch.
             readyBatch.MarkPreSerialized();
             if (failure is null)
+            {
                 return !readyBatch.IsSendCompleted && readyBatch.IsCurrentIncarnation(generation);
+            }
 
             return readyBatch.IsCurrentIncarnation(generation) && readyBatch.FailFromPreSerialization(failure);
         }
@@ -7058,13 +7544,17 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         // Do NOT add "only apply if newer" logic — there is no monotonic version here.
         var previous = (ulong)Volatile.Read(ref _maxBufferMemory);
         if (previous == newLimit)
+        {
             return;
+        }
 
         Interlocked.Exchange(ref _maxBufferMemory, (long)newLimit);
 
         // Growing: wake any waiters so they retry their reservation immediately.
         if (newLimit > previous)
+        {
             SignalBufferSpaceAvailable();
+        }
 
         ResizeBatchStorage();
     }
@@ -7103,17 +7593,25 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             // pool; the same goes for the incremental chunk pools, which size themselves.
             var readyBatchPoolSize = batchPoolSize * ReadyBatchPoolSizeRatio;
             if (readyBatchPoolSize > _readyBatchPool.MaxPoolSize)
+            {
                 _readyBatchPool.RatchetMaxPoolSize(readyBatchPoolSize);
+            }
             if (_options.BufferMemoryAllocationStrategy != BufferMemoryAllocationStrategy.Full)
+            {
                 IncrementalBatchBuffer.RatchetPoolSize(readyBatchPoolSize, _options.BatchSize);
+            }
             var poolSize = ComputePoolSize(_options, bufferMemory, availableMemoryBytes);
 
             if (_options.BufferMemoryAllocationStrategy != BufferMemoryAllocationStrategy.Full)
+            {
                 return;
+            }
 
             var previous = _arenaPoolRegistration;
             if (previous is null || _arenaPoolReleased)
+            {
                 return;
+            }
 
             // Register before releasing the old request, so the effective limit never dips
             // below this producer's need in between (a dip would release pooled arenas).
@@ -7171,7 +7669,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         var newValue = Interlocked.Add(ref _bufferedBytes, recordSize);
 
         if ((ulong)newValue <= max)
+        {
             return true;
+        }
 
         Interlocked.Add(ref _bufferedBytes, -recordSize);
         return false;
@@ -7220,13 +7720,17 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         while (!TryReserveMemory(recordSize))
         {
             if (Volatile.Read(ref _disposed) != 0)
+            {
                 throw new ObjectDisposedException(nameof(RecordAccumulator));
+            }
 
             cancellationToken.ThrowIfCancellationRequested();
 
             var remainingMs = deadline - Dekaf.MonotonicClock.GetMilliseconds();
             if (remainingMs <= 0)
+            {
                 ThrowBufferMemoryTimeout(recordSize, startTicks);
+            }
 
             Interlocked.Increment(ref _bufferSpaceWaiters);
 
@@ -7268,7 +7772,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     internal ValueTask ReserveMemoryAsync(int recordSize, CancellationToken cancellationToken)
     {
         if (TryReserveMemory(recordSize))
+        {
             return default;
+        }
 
         var (startTicks, deadline) = BeginReservationWait(recordSize);
         return WaitForReservationAsync(recordSize, startTicks, deadline, cancellationToken);
@@ -7288,16 +7794,22 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
         var lastRatchet = Volatile.Read(ref _lastPoolRatchetPressure);
         if (pressureCount - lastRatchet < RatchetThreshold)
+        {
             return;
+        }
 
         // CAS to claim this ratchet event (only one thread ratchets per threshold crossing)
         if (Interlocked.CompareExchange(ref _lastPoolRatchetPressure, pressureCount, lastRatchet) != lastRatchet)
+        {
             return;
+        }
 
         var currentCapacity = ProducerDataPool.CurrentArraysPerBucket;
         var newCapacity = Math.Min(currentCapacity * 2, MaxRatchetCapacity);
         if (newCapacity > currentCapacity)
+        {
             ProducerDataPool.RatchetBucketCapacity(newCapacity);
+        }
     }
 
     private void ThrowBufferMemoryTimeout(int recordSize, long startTicks)
@@ -7339,7 +7851,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         var debtBytes = ArenaDebtBytes;
         var allocationFailures = Volatile.Read(ref _arenaAllocationFailures);
         if (chargedBytes == 0 && debtBytes == 0 && allocationFailures == 0)
+        {
             return string.Empty;
+        }
 
         var budget = _liveArenaBudget;
         var message =
@@ -7397,7 +7911,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     internal void ReleaseBatchMemory(ReadyBatch batch)
     {
         if (!batch.TryBeginMemoryRelease(out var dataSize))
+        {
             return;
+        }
 
         try
         {
@@ -7502,7 +8018,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         {
             var oldestTicks = Volatile.Read(ref _oldestBatchCreatedTicks);
             if (oldestTicks == long.MaxValue && _lingerPartitions.IsEmpty)
+            {
                 return default;
+            }
 
             if (oldestTicks != long.MaxValue)
             {
@@ -7526,21 +8044,29 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     internal bool HasPendingWork()
     {
         if (Volatile.Read(ref _inFlightBatchCount) > 0)
+        {
             return true;
+        }
 
         if (Volatile.Read(ref _unsealedBatchCount) > 0)
+        {
             return true;
+        }
 
         // Fast path: if the ready notification queue is non-empty, there are sealed batches
         // waiting to be drained — skip the O(n) partition scan below.
         if (!_readyPartitions.IsEmpty)
+        {
             return true;
+        }
 
         // Still need O(n) scan for sealed-but-not-yet-sent batches (pd.Count > 0)
         foreach (var kvp in _partitionDeques)
         {
             if (kvp.Value.Count > 0)
+            {
                 return true;
+            }
         }
         return false;
     }
@@ -7574,7 +8100,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             // Linger mode: non-blocking acquire — skip this tick if FlushAsync holds the lock
             // FlushAsync will seal everything, so there's no work lost.
             if (!_flushLingerLock.Wait(0, CancellationToken.None))
+            {
                 return;
+            }
         }
 
         Interlocked.Increment(ref _lingerSweepVersion);
@@ -7584,7 +8112,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             // Consume only after acquiring the sweep lock and before taking its snapshot.
             // A reactivation queued later must remain pending for the following pass.
             if (Volatile.Read(ref _lingerReactivationPending) != 0)
+            {
                 Interlocked.Exchange(ref _lingerReactivationPending, 0);
+            }
 
             var now = Stopwatch.GetTimestamp();
             var newOldestTicks = long.MaxValue;
@@ -7597,7 +8127,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 foreach (var kvp in _partitionDeques)
                 {
                     if (TrySealCurrentBatch(kvp.Key, kvp.Value, now, sealAll: true, cancellationToken, ref newOldestTicks, ref sawUnknownDeadline))
+                    {
                         anySealed = true;
+                    }
                     AfterFlushPartitionVisitedForTest?.Invoke(kvp.Key);
                 }
             }
@@ -7608,14 +8140,20 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 for (var i = 0; i < count; i++)
                 {
                     if (!_lingerPartitions.TryDequeue(out var topicPartition))
+                    {
                         break;
+                    }
 
                     if (!_partitionDeques.TryGetValue(topicPartition, out var pd))
+                    {
                         continue;
+                    }
 
                     MarkLingerPartitionDequeued(pd);
                     if (TrySealCurrentBatch(topicPartition, pd, now, sealAll: false, cancellationToken, ref newOldestTicks, ref sawUnknownDeadline))
+                    {
                         anySealed = true;
+                    }
                 }
             }
 
@@ -7637,7 +8175,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 {
                     // Fall back to lower-only maintenance of the hint.
                     if (newOldestTicks != long.MaxValue)
+                    {
                         TrackOldestBatchCreated(newOldestTicks);
+                    }
                 }
             }
             else
@@ -7649,7 +8189,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             }
 
             if (anySealed)
+            {
                 SignalWakeup();
+            }
         }
         finally
         {
@@ -7719,17 +8261,23 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                         Volatile.Write(ref pd.LingerDeferred, 0);
                         var batchCreatedTicks = currentBatch.CreatedAtStopwatchTimestamp;
                         if (batchCreatedTicks < newOldestTicks)
+                        {
                             newOldestTicks = batchCreatedTicks;
+                        }
 
                         if (!sealAll)
+                        {
                             QueueLingerPartition(pd, topicPartition, signalLingerLoop: false);
+                        }
                     }
                     break;
                 }
             }
 
             if (!waitForRotation)
+            {
                 break;
+            }
 
             if (!sealAll)
             {
@@ -7745,10 +8293,14 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         }
 
         if (lingerDeferred)
+        {
             ReactivateDeferredLinger(topicPartition, pd);
+        }
 
         if (batchToComplete is null)
+        {
             return false;
+        }
 
         return CompleteDetachedBatchAndPublish(pd, batchToComplete);
     }
@@ -7756,7 +8308,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     private static bool IsAdmissionFlushRequiredUnderLock(PartitionDeque pd)
     {
         if (Volatile.Read(ref pd.AdmissionFlushRequested) == 0)
+        {
             return false;
+        }
 
         if (pd.AdmissionFlushBudget is { } budget
             && budget.IsAdmissionFlushClaimActive(pd.AdmissionFlushClaim))
@@ -7780,7 +8334,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     private void OnBatchEntersPipeline(PartitionDeque pd, ReadyBatch batch, ReadyBatch? replaces = null)
     {
         if (_unackedBudgetEnabled)
+        {
             ChargeUnackedBudget(batch);
+        }
 
         if (batch.UnackedBudget is { } unackedBudget)
         {
@@ -7814,7 +8370,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     internal void MarkBatchDeliveryComplete(ReadyBatch batch)
     {
         if (Interlocked.Exchange(ref batch.DeliveryAccountingArmed, 0) != 1)
+        {
             return;
+        }
 
         var count = Interlocked.Decrement(ref _undeliveredBatchCount);
         Debug.Assert(count >= 0, $"Undelivered batch count went negative ({count}) — mismatched enter/complete accounting");
@@ -7832,7 +8390,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         // remove the batch proceeds with the decrement. This prevents double-decrement from
         // concurrent cleanup paths (e.g., DisposeAsync racing with SendLoopAsync's finally block).
         if (!InFlightBatchListRemove(batch, out var newHeadEntrySequence))
+        {
             return false;
+        }
 
         // Fallback for paths that never reached the sender's pre-CompleteSend call
         // (failures, purge, sweeps, dispose). No-op when already marked.
@@ -7841,7 +8401,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         if (Interlocked.Exchange(ref batch.UnackedBudget, null) is { } unackedBudget)
         {
             if (Interlocked.Exchange(ref batch.UnackedBudgetPipelineTracked, 0) != 0)
+            {
                 unackedBudget.RecordPipelineBatchExited();
+            }
             var reservedBytes = batch.UnackedReservedBytes;
             batch.UnackedReservedBytes = 0;
             batch.AdmissionGeneration = 0;
@@ -7859,7 +8421,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         }
 
         if (_options.EnableDeliveryDiagnostics)
+        {
             batch.AppendDiag('X');
+        }
         var count = Interlocked.Decrement(ref _inFlightBatchCount);
         Debug.Assert(count >= 0, $"In-flight batch count went negative ({count}) — mismatched Enter/Exit calls");
 
@@ -7873,7 +8437,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             // re-enter WaitForWakeupAsync and sleep up to 100ms before discovering all
             // work is done.
             if (Volatile.Read(ref _closed) != 0)
+            {
                 SignalWakeup();
+            }
         }
         else if (newHeadEntrySequence > Volatile.Read(ref _flushCheckpointWakeSequence))
         {
@@ -7894,17 +8460,25 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     private static void ChargeUnackedBudget(ReadyBatch batch)
     {
         if (batch.UnackedBudget is not { } budget)
+        {
             return;
+        }
 
         var missingBytes = batch.DataSize - batch.UnackedReservedBytes;
         if (missingBytes <= 0)
+        {
             return;
+        }
 
         budget.Charge(missingBytes);
         if (batch.UnackedReservedBytes != 0)
+        {
             batch.AdmissionGeneration = 0;
+        }
         else
+        {
             batch.AdmissionGeneration = budget.CurrentGeneration;
+        }
         batch.UnackedReservedBytes = batch.DataSize;
     }
 
@@ -7913,7 +8487,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         BrokerUnackedByteBudget? newBudget)
     {
         if (newBudget is null || ReferenceEquals(batch.UnackedBudget, newBudget))
+        {
             return;
+        }
 
         var reservedBytes = batch.UnackedReservedBytes;
         if (reservedBytes > 0)
@@ -7946,7 +8522,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     internal void ReattributeUnackedBudget(ReadyBatch batch, int brokerId)
     {
         if (GetBrokerUnackedBudget(brokerId) is not { } newBudget)
+        {
             return;
+        }
 
         if (_partitionDeques.TryGetValue(batch.TopicPartition, out var partitionDeque))
         {
@@ -7962,7 +8540,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             // Terminal cleanup removes the batch under this lock before releasing its
             // charge. Checking linkage prevents installing a new charge after that exit.
             if (!batch.InFlightLinked || ReferenceEquals(batch.UnackedBudget, newBudget))
+            {
                 return;
+            }
 
             var reservedBytes = batch.UnackedReservedBytes;
             newBudget.Charge(reservedBytes);
@@ -7971,14 +8551,21 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             batch.AdmissionGeneration = 0;
             newBudget.RecordPipelineBatchEntered();
             if (Volatile.Read(ref batch.UnackedBudgetPipelineTracked) != 0)
+            {
                 oldBudget?.RecordPipelineBatchExited();
+            }
             else
+            {
                 Volatile.Write(ref batch.UnackedBudgetPipelineTracked, 1);
+            }
             oldBudget?.Release(reservedBytes);
         }
         finally
         {
-            if (lockTaken) _inFlightBatchLock.Exit();
+            if (lockTaken)
+            {
+                _inFlightBatchLock.Exit();
+            }
         }
 
         DrainPendingAppends();
@@ -7993,7 +8580,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     internal BrokerUnackedByteBudget? GetBrokerUnackedBudget(int brokerId)
     {
         if (!_unackedBudgetEnabled)
+        {
             return null;
+        }
 
         return _brokerUnackedBudgets.GetOrAdd(
             brokerId,
@@ -8082,7 +8671,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         // With admission disabled, preserve FIFO and BufferMemory semantics without paying
         // for the per-partition admission CAS on every producer hot-path append.
         if (!_unackedBudgetEnabled)
+        {
             return TryReserveMemory(recordSize);
+        }
 
         // Serialize the short admission-to-append handoff for this partition. Without this
         // slot, another appender or linger seal could rotate the batch after the lease decision
@@ -8164,7 +8755,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 generation,
                 leaseBytes);
             if (TryReserveMemory(recordSize))
+            {
                 return true;
+            }
 
             // Transfer cleanup ownership before draining waiters: their append can throw,
             // and the outer catch must not release this reservation a second time.
@@ -8177,12 +8770,16 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         catch
         {
             if (reservedBudget is not null && leaseBytes > 0)
+            {
                 reservedBudget.Release(leaseBytes);
+            }
             Volatile.Write(ref partitionDeque.AdmissionInProgress, 0);
             try
             {
                 if (Volatile.Read(ref partitionDeque.SlowPathAppendCount) != 0)
+                {
                     DrainPendingAppends();
+                }
             }
             catch
             {
@@ -8212,14 +8809,20 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     private void ReleaseAdmissionReservation(in AdmissionReservation reservation)
     {
         if (reservation.HasBrokerReservation)
+        {
             reservation.Budget!.Release(reservation.Bytes);
+        }
 
         if (!reservation.HasAdmissionSlot)
+        {
             return;
+        }
 
         Volatile.Write(ref reservation.Deque!.AdmissionInProgress, 0);
         if (Volatile.Read(ref reservation.Deque.SlowPathAppendCount) != 0)
+        {
             DrainPendingAppends();
+        }
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -8236,7 +8839,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         }
 
         if (!reservation.HasAdmissionSlot)
+        {
             return false;
+        }
 
         Volatile.Write(ref reservation.Deque!.AdmissionInProgress, 0);
         return Volatile.Read(ref reservation.Deque.SlowPathAppendCount) != 0;
@@ -8276,7 +8881,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         int partition)
     {
         if (Volatile.Read(ref partitionDeque.AdmissionBudgetInitialized) == 0)
+        {
             return ResolveAndCacheUnackedBudget(partitionDeque, topic, partition);
+        }
 
         return Volatile.Read(ref partitionDeque.AdmissionBudget);
     }
@@ -8295,7 +8902,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     private BrokerUnackedByteBudget? ResolveUnackedBudget(string topic, int partition)
     {
         if (!_unackedBudgetEnabled)
+        {
             return null;
+        }
 
         var leaderId = _resolveLeaderId!(topic, partition);
         return leaderId >= 0 ? GetBrokerUnackedBudget(leaderId) : null;
@@ -8340,9 +8949,13 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 batch.InFlightNext = replaces.InFlightNext;
 
                 if (replaces.InFlightNext is not null)
+                {
                     replaces.InFlightNext.InFlightPrev = batch;
+                }
                 else
+                {
                     _inFlightBatchTail = batch;
+                }
 
                 replaces.InFlightNext = batch;
                 Interlocked.Increment(ref _inFlightBatchCount);
@@ -8356,16 +8969,23 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             batch.InFlightNext = null;
 
             if (_inFlightBatchTail is not null)
+            {
                 _inFlightBatchTail.InFlightNext = batch;
+            }
             else
+            {
                 _inFlightBatchHead = batch;
+            }
 
             _inFlightBatchTail = batch;
             Interlocked.Increment(ref _inFlightBatchCount);
         }
         finally
         {
-            if (lockTaken) _inFlightBatchLock.Exit();
+            if (lockTaken)
+            {
+                _inFlightBatchLock.Exit();
+            }
         }
     }
 
@@ -8385,7 +9005,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             _inFlightBatchLock.Enter(ref lockTaken);
 
             if (!batch.InFlightLinked)
+            {
                 return false;
+            }
 
             batch.InFlightLinked = false;
 
@@ -8400,9 +9022,13 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             }
 
             if (batch.InFlightNext is not null)
+            {
                 batch.InFlightNext.InFlightPrev = batch.InFlightPrev;
+            }
             else
+            {
                 _inFlightBatchTail = batch.InFlightPrev;
+            }
 
             batch.InFlightPrev = null;
             batch.InFlightNext = null;
@@ -8411,7 +9037,10 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         }
         finally
         {
-            if (lockTaken) _inFlightBatchLock.Exit();
+            if (lockTaken)
+            {
+                _inFlightBatchLock.Exit();
+            }
         }
     }
 
@@ -8435,7 +9064,10 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         }
         finally
         {
-            if (lockTaken) _inFlightBatchLock.Exit();
+            if (lockTaken)
+            {
+                _inFlightBatchLock.Exit();
+            }
         }
     }
 
@@ -8455,15 +9087,27 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         }
         finally
         {
-            if (lockTaken) _inFlightBatchLock.Exit();
+            if (lockTaken)
+            {
+                _inFlightBatchLock.Exit();
+            }
         }
     }
 
     private readonly struct DiagnosticBatchReference(ReadyBatch batch, int generation, TopicPartition topicPartition)
     {
-        public ReadyBatch Batch { get; } = batch;
-        public int Generation { get; } = generation;
-        public TopicPartition TopicPartition { get; } = topicPartition;
+        public ReadyBatch Batch
+        {
+            get;
+        } = batch;
+        public int Generation
+        {
+            get;
+        } = generation;
+        public TopicPartition TopicPartition
+        {
+            get;
+        } = topicPartition;
     }
 
     internal ProducerDeliveryDiagnosticsSnapshot GetDeliveryDiagnosticsSnapshot()
@@ -8540,7 +9184,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         {
             var requestCount = Interlocked.Read(ref counters.RequestCount);
             if (requestCount == 0)
+            {
                 continue;
+            }
 
             var requestBytes = Interlocked.Read(ref counters.RequestBytes);
             snapshot.BrokerProduceRequests.Add(new ProducerBrokerRequestDiagnostic
@@ -8585,7 +9231,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         }
 
         foreach (var batch in batches)
+        {
             snapshot.Batches.Add(batch.Batch.CreateDeliveryDiagnostic(batch.Generation, batch.TopicPartition));
+        }
 
         return snapshot;
     }
@@ -8596,7 +9244,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         Interlocked.Increment(ref _produceRequestCount);
         var widthCounts = _coalesceWidthCounts;
         if (widthCounts is null)
+        {
             return;
+        }
 
         Interlocked.Increment(ref widthCounts[Math.Min(coalesceWidth, MaxTrackedCoalesceWidth + 1)]);
         var counters = _brokerProduceRequestCounters!.GetOrAdd(
@@ -8612,17 +9262,23 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         Volatile.Write(ref _produceRequestDiagnosticsStartedAt, Stopwatch.GetTimestamp());
         var widthCounts = _coalesceWidthCounts;
         if (widthCounts is null)
+        {
             return;
+        }
 
         for (var width = 1; width < widthCounts.Length; width++)
+        {
             Interlocked.Exchange(ref widthCounts[width], 0);
+        }
         foreach (var counters in _brokerProduceRequestCounters!.Values)
         {
             Interlocked.Exchange(ref counters.RequestCount, 0);
             Interlocked.Exchange(ref counters.RequestBytes, 0);
         }
         foreach (var budget in _brokerUnackedBudgets.Values)
+        {
             budget.ResetDiagnostics();
+        }
     }
 
     private sealed class ProducerRequestDiagnosticCounters
@@ -8643,12 +9299,16 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         long observedDurationMs = 0)
     {
         if (!_options.EnableDeliveryDiagnostics)
+        {
             return;
+        }
 
         lock (_deliveryDiagnosticsLock)
         {
             if (_connectionScaleEvents.Count >= MaxConnectionScaleDiagnosticEvents)
+            {
                 return;
+            }
 
             _connectionScaleEvents.Add(new ProducerConnectionScaleDiagnostic
             {
@@ -8669,7 +9329,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     private void MaybeRecordBrokerBudgetDiagnosticSample()
     {
         if (!_options.EnableDeliveryDiagnostics || !_unackedBudgetEnabled)
+        {
             return;
+        }
 
         var now = Dekaf.MonotonicClock.GetMilliseconds();
         var next = Volatile.Read(ref _nextBrokerBudgetDiagnosticTimestampMs);
@@ -8678,7 +9340,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 ref _nextBrokerBudgetDiagnosticTimestampMs,
                 now + BrokerBudgetDiagnosticIntervalMs,
                 next) != next)
+        {
             return;
+        }
 
         RecordBrokerBudgetDiagnosticSample();
     }
@@ -8686,7 +9350,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     internal void RecordBrokerBudgetDiagnosticSample()
     {
         if (!_options.EnableDeliveryDiagnostics || !_unackedBudgetEnabled)
+        {
             return;
+        }
 
         var capturedAtUtc = DateTimeOffset.UtcNow;
         lock (_deliveryDiagnosticsLock)
@@ -8694,7 +9360,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             foreach (var (brokerId, budget) in _brokerUnackedBudgets)
             {
                 if (_brokerBudgetSamples.Count >= MaxBrokerBudgetDiagnosticSamples)
+                {
                     _brokerBudgetSamples.RemoveAt(0);
+                }
 
                 _brokerBudgetSamples.Add(CreateBrokerBudgetDiagnostic(brokerId, budget, capturedAtUtc, includeHistograms: false));
             }
@@ -8743,7 +9411,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     internal int SweepExpiredInFlightBatches()
     {
         if (Volatile.Read(ref _inFlightBatchCount) <= 0)
+        {
             return 0;
+        }
 
         var now = Stopwatch.GetTimestamp();
         // Use 3x delivery timeout for the sweep. BrokerSender.ProcessCompletedResponses
@@ -8763,13 +9433,17 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         {
             var deadlineTicks = batch.StopwatchCreatedTicks + deliveryTimeoutTicks;
             if (now < deadlineTicks)
+            {
                 continue; // Not yet expired
+            }
 
             // Use OnBatchExitsPipeline as the atomic guard: only the first thread to
             // remove the batch proceeds. This uses the same cleanup path as BrokerSender,
             // ensuring consistent counter decrement and flush signaling per-batch.
             if (!OnBatchExitsPipeline(batch))
+            {
                 continue; // Another thread already handled this batch
+            }
 
             expiredCount++;
             var elapsed = Stopwatch.GetElapsedTime(batch.StopwatchCreatedTicks);
@@ -8800,7 +9474,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         }
 
         if (expiredCount > 0)
+        {
             LogOrphanedBatchesSweep(expiredCount);
+        }
 
         return expiredCount;
     }
@@ -8821,14 +9497,18 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     internal void ForceFailAllInFlightBatches(bool returnToPool = true)
     {
         if (Volatile.Read(ref _inFlightBatchCount) <= 0)
+        {
             return;
+        }
 
         // Snapshot the list to iterate outside the lock
         var snapshot = new List<ReadyBatch>();
         InFlightBatchListSnapshot(snapshot);
 
         if (snapshot.Count == 0)
+        {
             return;
+        }
 
         LogOrphanedBatchesDuringDisposal(snapshot.Count);
         var disposedException = new ObjectDisposedException(nameof(RecordAccumulator));
@@ -8837,7 +9517,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         {
             // OnBatchExitsPipeline uses InFlightBatchListRemove as atomic guard and decrements counter.
             if (!OnBatchExitsPipeline(orphanedBatch))
+            {
                 continue; // Another thread already handled this batch
+            }
 
             FailAndRelease(orphanedBatch, disposedException);
 
@@ -8845,7 +9527,10 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             {
                 // Only safe when BrokerSenders are stopped — their send loops no longer
                 // reference these batches, so Reset() won't cause use-after-free.
-                try { ReturnReadyBatch(orphanedBatch); }
+                try
+                {
+                    ReturnReadyBatch(orphanedBatch);
+                }
                 catch (Exception returnEx) { LogBatchCleanupStepFailed(returnEx); }
             }
         }
@@ -8865,13 +9550,19 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         var purgedCount = 0;
 
         if ((options & PurgeOptions.Queue) != 0)
+        {
             purgedCount += PurgeQueuedBatches(exception, onPurgingBatch);
+        }
 
         if ((options & PurgeOptions.InFlight) != 0)
+        {
             purgedCount += PurgeInFlightBatches(exception, onPurgingBatch);
+        }
 
         if (purgedCount > 0)
+        {
             SignalWakeup();
+        }
 
         return purgedCount;
     }
@@ -9026,7 +9717,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 }
 
                 if (!waitForAppend)
+                {
                     break;
+                }
 
                 spinner.SpinOnce();
             }
@@ -9046,7 +9739,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 }
 
                 if (bytesToRelease > 0)
+                {
                     ReleaseMemory(bytesToRelease);
+                }
                 if (readyBatch is not null)
                 {
                     // This detached open batch never entered the in-flight list, so normal
@@ -9059,7 +9754,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         }
 
         if (readyBatches is null)
+        {
             return purgedCount;
+        }
 
         foreach (var batch in readyBatches)
         {
@@ -9079,7 +9776,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     {
         var spinWait = new SpinWait();
         while (Interlocked.CompareExchange(ref _draining, 1, 0) != 0)
+        {
             spinWait.SpinOnce();
+        }
 
         // An append that queues while this purge holds the drain guard publishes a drain request
         // and leaves (DrainPendingAppends lost the guard to us). Honor that request after the
@@ -9093,7 +9792,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             while (_pendingAppends.TryDequeue(out var entry))
             {
                 if (entry.Operation.TryFail(exception, entry.Generation))
+                {
                     failedCount++;
+                }
             }
 
             PurgePendingAppendsGuardHeldForTest?.Invoke();
@@ -9116,7 +9817,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     private int PurgeInFlightBatches(Exception exception, Action<ReadyBatch>? onPurgingBatch)
     {
         if (Volatile.Read(ref _inFlightBatchCount) <= 0)
+        {
             return 0;
+        }
 
         var snapshot = new List<ReadyBatch>();
         InFlightBatchListSnapshot(snapshot);
@@ -9125,10 +9828,14 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         foreach (var batch in snapshot)
         {
             if (IsBatchStillQueued(batch))
+            {
                 continue;
+            }
 
             if (!OnBatchExitsPipeline(batch))
+            {
                 continue;
+            }
 
             FailBatchAndCleanup(
                 batch,
@@ -9145,7 +9852,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     private bool IsBatchStillQueued(ReadyBatch batch)
     {
         if (!_partitionDeques.TryGetValue(batch.TopicPartition, out var pd))
+        {
             return false;
+        }
 
         using var guard = new SpinLockGuard(ref pd.Lock);
         return pd.Contains(batch);
@@ -9158,9 +9867,15 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         bool removeFromPipeline,
         bool returnToPool)
     {
-        try { beforeFailure?.Invoke(batch); }
+        try
+        {
+            beforeFailure?.Invoke(batch);
+        }
         catch (Exception cleanupEx) { LogBatchCleanupStepFailed(cleanupEx); }
-        try { batch.Fail(exception); }
+        try
+        {
+            batch.Fail(exception);
+        }
         catch (Exception failEx) { LogBatchCleanupStepFailed(failEx); }
         try
         {
@@ -9169,12 +9884,18 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         catch (Exception memEx) { LogBatchCleanupStepFailed(memEx); }
         if (removeFromPipeline)
         {
-            try { OnBatchExitsPipeline(batch); }
+            try
+            {
+                OnBatchExitsPipeline(batch);
+            }
             catch (Exception exitEx) { LogBatchCleanupStepFailed(exitEx); }
         }
         if (returnToPool)
         {
-            try { ReturnReadyBatch(batch); }
+            try
+            {
+                ReturnReadyBatch(batch);
+            }
             catch (Exception returnEx) { LogBatchCleanupStepFailed(returnEx); }
         }
     }
@@ -9189,7 +9910,10 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     /// </summary>
     private void FailAndRelease(ReadyBatch batch, Exception exception)
     {
-        try { batch.Fail(exception); }
+        try
+        {
+            batch.Fail(exception);
+        }
         catch (Exception failEx) { LogBatchCleanupStepFailed(failEx); }
         try
         {
@@ -9331,7 +10055,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     private void WaitForRotationsInProgress(CancellationToken cancellationToken)
     {
         if (Volatile.Read(ref _rotatingPartitionCount) == 0)
+        {
             return;
+        }
 
         BeforeFlushWaitsForRotationsForTest?.Invoke();
         foreach (var kvp in _partitionDeques)
@@ -9374,7 +10100,10 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         }
         finally
         {
-            if (lockTaken) _inFlightBatchLock.Exit();
+            if (lockTaken)
+            {
+                _inFlightBatchLock.Exit();
+            }
         }
     }
 
@@ -9430,7 +10159,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     private void RetireFlushCheckpointWake(long checkpoint)
     {
         if (Volatile.Read(ref _flushCheckpointWakeSequence) == checkpoint)
+        {
             SignalFlushCheckpointWaiters();
+        }
     }
 
     private void RegisterFlushCheckpointWake(long checkpoint)
@@ -9440,7 +10171,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         {
             var observed = Interlocked.CompareExchange(ref _flushCheckpointWakeSequence, checkpoint, current);
             if (observed == current)
+            {
                 return;
+            }
             current = observed;
         }
     }
@@ -9454,13 +10187,17 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         // Not _appendWorkerTasks: EnqueueAppend can queue an item after the start flag is set
         // and before the task array is published.
         if (Volatile.Read(ref _appendWorkersStarted) == 0)
+        {
             return false;
+        }
 
         for (var i = 0; i < _appendWorkerCount; i++)
         {
             var slot = i * AppendWorkerSequenceStride;
             if (Volatile.Read(ref _appendWorkerProcessedSequences[slot]) < Volatile.Read(ref _appendWorkerQueuedSequences[slot]))
+            {
                 return true;
+            }
         }
 
         return false;
@@ -9473,10 +10210,14 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     {
         var targets = default(AppendWorkerTargets);
         if (Volatile.Read(ref _appendWorkersStarted) == 0)
+        {
             return targets;
+        }
 
         for (var i = 0; i < _appendWorkerCount; i++)
+        {
             targets[i] = Volatile.Read(ref _appendWorkerQueuedSequences[i * AppendWorkerSequenceStride]);
+        }
 
         return targets;
     }
@@ -9489,7 +10230,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         for (var i = 0; i < _appendWorkerCount; i++)
         {
             if (Volatile.Read(ref _appendWorkerProcessedSequences[i * AppendWorkerSequenceStride]) < targets[i])
+            {
                 return true;
+            }
         }
 
         return false;
@@ -9521,7 +10264,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 // Check after taking the TCS: MarkAppendWorkItemProcessed and DisposeAsync
                 // update their state before completing the current TCS.
                 if (Volatile.Read(ref _disposed) != 0 || !HasAppendWorkerBacklog(in targets))
+                {
                     return;
+                }
 
                 await tcs.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
             }
@@ -9558,15 +10303,32 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             {
                 switch (index)
                 {
-                    case 0: _w0 = value; break;
-                    case 1: _w1 = value; break;
-                    case 2: _w2 = value; break;
-                    case 3: _w3 = value; break;
-                    case 4: _w4 = value; break;
-                    case 5: _w5 = value; break;
-                    case 6: _w6 = value; break;
-                    case 7: _w7 = value; break;
-                    default: throw new ArgumentOutOfRangeException(nameof(index));
+                    case 0:
+                        _w0 = value;
+                        break;
+                    case 1:
+                        _w1 = value;
+                        break;
+                    case 2:
+                        _w2 = value;
+                        break;
+                    case 3:
+                        _w3 = value;
+                        break;
+                    case 4:
+                        _w4 = value;
+                        break;
+                    case 5:
+                        _w5 = value;
+                        break;
+                    case 6:
+                        _w6 = value;
+                        break;
+                    case 7:
+                        _w7 = value;
+                        break;
+                    default:
+                        throw new ArgumentOutOfRangeException(nameof(index));
                 }
             }
         }
@@ -9580,7 +10342,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     {
         Interlocked.Increment(ref _appendWorkerProcessedSequences[workerIndex * AppendWorkerSequenceStride]);
         if (Volatile.Read(ref _appendWorkerFlushWaiters) != 0)
+        {
             Interlocked.Exchange(ref _flushTcs, null)?.TrySetResult(true);
+        }
     }
 
     private void SignalFlushCheckpointWaiters()
@@ -9588,7 +10352,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         // The pipeline-empty exit calls this per batch when batches go out one at a time;
         // skip the interlocked write when no checkpoint is registered.
         if (Volatile.Read(ref _flushCheckpointWakeSequence) != long.MaxValue)
+        {
             Interlocked.Exchange(ref _flushCheckpointWakeSequence, long.MaxValue);
+        }
         Interlocked.Exchange(ref _flushTcs, null)?.TrySetResult(true);
     }
 
@@ -9615,7 +10381,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         {
             // Fast path: already complete
             if (Volatile.Read(ref _inFlightBatchCount) == 0)
+            {
                 return;
+            }
 
             // Get or create TCS for waiting
             var tcs = Volatile.Read(ref _flushTcs);
@@ -9628,7 +10396,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
             // Double-check after TCS setup (counter may have hit 0 while we were setting up)
             if (Volatile.Read(ref _inFlightBatchCount) == 0)
+            {
                 return;
+            }
 
             // Wait on the TCS with cancellation support
             await tcs.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
@@ -9641,7 +10411,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     private void CompleteAppendWorkerChannels()
     {
         foreach (var channel in _appendWorkerChannels)
+        {
             channel.Writer.TryComplete();
+        }
     }
 
     /// <summary>
@@ -9651,7 +10423,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     public async ValueTask CloseAsync(CancellationToken cancellationToken)
     {
         if (Volatile.Read(ref _disposed) != 0 || Interlocked.Exchange(ref _closed, 1) != 0)
+        {
             return;
+        }
 
         LogCloseStarted(_partitionDeques.Count);
 
@@ -9671,7 +10445,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     public async ValueTask DisposeAsync()
     {
         if (Interlocked.Exchange(ref _disposed, 1) != 0)
+        {
             return;
+        }
 
         try
         {
@@ -9686,7 +10462,10 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     }
 
     /// <summary>Test hook: runs first in disposal, to simulate a failing disposal step.</summary>
-    internal Action? DisposeStepHookForTest { get; set; }
+    internal Action? DisposeStepHookForTest
+    {
+        get; set;
+    }
 
     private async ValueTask DisposeCoreAsync()
     {
@@ -9736,20 +10515,26 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         // dequeuing ops while we're clearing the queue (avoids TryPeek/TryDequeue mismatch).
         var spinWait = new SpinWait();
         while (Interlocked.CompareExchange(ref _draining, 1, 0) != 0)
+        {
             spinWait.SpinOnce();
+        }
 
         try
         {
             lock (_pendingAppendQueueLock)
             {
                 while (_pendingAppends.TryDequeue(out var op))
+                {
                     _pendingAppendScan.Add(op);
+                }
             }
 
             // TryFail disposes cancellation registrations. Complete outside the queue lock:
             // an in-flight cancellation callback may be waiting to inspect this queue.
             foreach (var entry in _pendingAppendScan)
+            {
                 entry.Operation.TryFail(new ObjectDisposedException(nameof(RecordAccumulator)), entry.Generation);
+            }
         }
         finally
         {
@@ -9862,7 +10647,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                                         ReleaseBatchMemory(readyBatch);
                                     }
                                     if (bytesToRelease > 0)
+                                    {
                                         ReleaseMemory(bytesToRelease);
+                                    }
                                 }
                             }
 
@@ -9878,7 +10665,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 }
 
                 if (appendWaitTimedOut)
+                {
                     LogAppendInProgressDisposalTimeout(kvp.Key.Topic, kvp.Key.Partition);
+                }
 
                 break;
             }
@@ -10102,7 +10891,10 @@ internal sealed class PartitionBatchPool
     internal BatchArrayReuseQueue ArrayReuseQueueForTest => _arrayReuseQueue;
 
     /// <summary>Test hook: runs before each pooling reset, to simulate a failing reset.</summary>
-    internal Action<PartitionBatch>? PoolingResetHookForTest { get; set; }
+    internal Action<PartitionBatch>? PoolingResetHookForTest
+    {
+        get; set;
+    }
 
     /// <summary>Batches currently retained through <see cref="Return"/>.</summary>
     internal int RetainedCount => Volatile.Read(ref _retainedCount);
@@ -10119,7 +10911,9 @@ internal sealed class PartitionBatchPool
     {
         var missing = Math.Min(count, RetentionLimit) - RetainedCount;
         for (var i = 0; i < missing; i++)
+        {
             Return(CreateBatch());
+        }
     }
 
     /// <summary>Rents a batch, releasing its retention slot when it came from the pool.</summary>
@@ -10128,7 +10922,9 @@ internal sealed class PartitionBatchPool
     {
         var batch = _pool.Rent();
         if (batch.ClearPoolRetention())
+        {
             Interlocked.Decrement(ref _retainedCount);
+        }
         return batch;
     }
 
@@ -10170,7 +10966,9 @@ internal sealed class PartitionBatchPool
             // The pooling reset (PrepareForPooling) threw, so the batch never reached the pool:
             // give back its slot and storage, or the slot would count against the limit forever.
             if (item.ClearPoolRetention())
+            {
                 Interlocked.Decrement(ref _retainedCount);
+            }
             item.ReleaseForDiscard();
             throw;
         }
@@ -10178,7 +10976,9 @@ internal sealed class PartitionBatchPool
         // A lowered limit may have been published while this return was between admission
         // and pooling; its release ran before the batch arrived, so release again.
         if (Volatile.Read(ref _releaseEpoch) != epoch)
+        {
             _pool.Clear();
+        }
     }
 
     /// <summary>Releases every pooled batch and queued completion array.</summary>
@@ -10200,7 +11000,9 @@ internal sealed class PartitionBatchPool
     {
         // Rejected returns and Clear destroy retained batches.
         if (item.ClearPoolRetention())
+        {
             Interlocked.Decrement(ref _retainedCount);
+        }
 
         // Pooled batches already released their storage and lease; hand back the completion array.
         item.ReleaseForDiscard();
@@ -10350,7 +11152,9 @@ internal sealed class PartitionBatch
 
         // Pool-created batches rent their storage in Reset, like every pooled batch.
         if (allocateAppendBuffer)
+        {
             CreateAppendBuffer(options, rentFullArenaFromPool: false);
+        }
         _recordCount = 0;
 
         // Rent arrays from pool - eliminates List allocations.
@@ -10420,7 +11224,9 @@ internal sealed class PartitionBatch
             _options,
             _compressionRatioEstimator);
         if (_arena is null && _incrementalBuffer is null)
+        {
             CreateAppendBuffer(_options);
+        }
         EnsureNormalArenaCapacity();
         _createdStopwatchTimestamp = Stopwatch.GetTimestamp();
         _recordCount = 0;
@@ -10455,9 +11261,13 @@ internal sealed class PartitionBatch
         if (arena is not null)
         {
             if (_recordCount == 0)
+            {
                 BatchArena.ReturnToPool(arena);
+            }
             else
+            {
                 arena.Return();
+            }
         }
 
         // After the arena is back in the pool: releasing the charge can release arena debt and
@@ -10474,7 +11284,9 @@ internal sealed class PartitionBatch
     {
         ReleaseArena();
         if (_incrementalBuffer is not null)
+        {
             IncrementalBatchBuffer.ReturnToPool(_incrementalBuffer);
+        }
         _incrementalBuffer = null;
 
         // Fire-only batches keep their array after Complete; awaited batches handed theirs to
@@ -10482,7 +11294,9 @@ internal sealed class PartitionBatch
         var completionSources = _completionSources;
         _completionSources = null;
         if (completionSources is not null)
+        {
             ProducerContainerPools.CompletionSources.Return(completionSources, clearArray: false);
+        }
 
         ReleaseAdmissionReservation();
     }
@@ -10501,7 +11315,9 @@ internal sealed class PartitionBatch
         // in the normal path but retained for failure safety.
         ReleaseArena();
         if (_incrementalBuffer is not null)
+        {
             IncrementalBatchBuffer.ReturnToPool(_incrementalBuffer);
+        }
 
         // A pooled batch keeps no append storage: Reset rents it when the batch is next used.
         // Idle arenas then live only in the byte-bounded process-wide arena pool, instead of
@@ -10585,14 +11401,20 @@ internal sealed class PartitionBatch
     {
         var owner = _arenaChargeOwner;
         if (owner is null)
+        {
             return;
+        }
 
         var capacity = _arena?.Capacity ?? 0;
         var delta = capacity - _arenaLiveBytes;
         if (delta > 0)
+        {
             _arenaChargedBytes += owner.AcquireLiveArenaBytes(_arenaChargeBudget!, delta);
+        }
         else if (delta < 0)
+        {
             _arenaChargeBudget!.Release(-delta);
+        }
 
         _arenaLiveBytes = capacity;
     }
@@ -10601,7 +11423,9 @@ internal sealed class PartitionBatch
     {
         var owner = _arenaChargeOwner;
         if (owner is null)
+        {
             return;
+        }
 
         var budget = _arenaChargeBudget!;
         var liveBytes = _arenaLiveBytes;
@@ -10634,10 +11458,14 @@ internal sealed class PartitionBatch
     internal bool CanFitEstimatedRecord(int estimatedSize)
     {
         if (Volatile.Read(ref _isCompleted) != 0)
+        {
             return false;
+        }
 
         if (_recordCount == 0)
+        {
             return true;
+        }
 
         var maximumRecordsSize = Math.Max(
             0,
@@ -10662,7 +11490,9 @@ internal sealed class PartitionBatch
         int bytes)
     {
         if (bytes <= 0)
+        {
             return;
+        }
 
         if (_admissionBudget is null)
         {
@@ -10698,7 +11528,9 @@ internal sealed class PartitionBatch
             topicPartition.Topic ?? string.Empty);
         var wireBatchSizeLimit = Math.Min(options.BatchSize, maxEncodedBatchSize);
         if (options.CompressionType == CompressionType.None)
+        {
             return wireBatchSizeLimit;
+        }
 
         var estimatedRatio = compressionRatioEstimator.Get(
             topicPartition.Topic ?? string.Empty,
@@ -10731,7 +11563,9 @@ internal sealed class PartitionBatch
     private void EnsureNormalArenaCapacity()
     {
         if (_incrementalBuffer is not null)
+        {
             return;
+        }
 
         var requiredCapacity = GetNormalArenaCapacity(_options);
         if (_arena is not null && _arena.Capacity >= requiredCapacity)
@@ -10745,7 +11579,9 @@ internal sealed class PartitionBatch
         var previous = _arena;
         _arena = BatchArena.RentOrCreateWithFallback(requiredCapacity, requiredCapacity);
         if (previous is not null)
+        {
             BatchArena.ReturnToPool(previous);
+        }
         SyncArenaCharge();
     }
 
@@ -10921,7 +11757,9 @@ internal sealed class PartitionBatch
             out var reservedAppend);
 
         if (!result.Success)
+        {
             return result;
+        }
 
         try
         {
@@ -11159,7 +11997,9 @@ internal sealed class PartitionBatch
         }
 
         if (_callbacks is not null)
+        {
             _callbacks[recordIndex] = callback;
+        }
         if (callback is not null)
         {
             TrackDeliveryIndex(
@@ -11229,7 +12069,9 @@ internal sealed class PartitionBatch
             callback is not null,
             out var reservedAppend);
         if (!result.Success)
+        {
             return result;
+        }
 
         try
         {
@@ -11282,12 +12124,16 @@ internal sealed class PartitionBatch
     {
         var arena = _arena;
         if (arena is null || encodedRecordSize <= arena.RemainingCapacity)
+        {
             return;
+        }
 
         var maximumCapacity = GetEffectiveArenaCapacity(_options, _effectiveBatchSizeLimit);
         var requiredCapacity = checked(arena.Position + encodedRecordSize);
         if (requiredCapacity > maximumCapacity)
+        {
             return;
+        }
 
         var doubledCapacity = (int)Math.Min((long)arena.Capacity * 2, maximumCapacity);
         GrowArena(arena, Math.Max(requiredCapacity, doubledCapacity));
@@ -11327,7 +12173,9 @@ internal sealed class PartitionBatch
         var copiedCount = Math.Min(count, array.Length);
         Array.Copy(array, newArray, copiedCount);
         if (clearExpandedGap && requiredCapacity > copiedCount)
+        {
             Array.Clear(newArray, copiedCount, requiredCapacity - copiedCount);
+        }
         pool.Return(array, clearArray: false);
         array = newArray;
     }
@@ -11341,7 +12189,9 @@ internal sealed class PartitionBatch
         ref int sparseCount)
     {
         if (recordIndex == deliveryCount)
+        {
             return;
+        }
 
         if (sparseIndexes is null)
         {
@@ -11379,7 +12229,9 @@ internal sealed class PartitionBatch
         // A stale read that returns 0 when there are records just delays flush to next cycle.
         // A stale read that returns non-zero for an empty batch results in a no-op Complete().
         if (Volatile.Read(ref _recordCount) == 0)
+        {
             return false;
+        }
 
         var elapsedMs = Stopwatch.GetElapsedTime(_createdStopwatchTimestamp, nowStopwatchTimestamp).TotalMilliseconds;
 
@@ -11392,7 +12244,9 @@ internal sealed class PartitionBatch
         if (Volatile.Read(ref _completionSourceCount) > 0)
         {
             if (lingerMs == 0)
+            {
                 return true;
+            }
 
             return elapsedMs >= GetAwaitedLingerWindowMilliseconds(lingerMs);
         }
@@ -11523,7 +12377,9 @@ internal sealed class PartitionBatch
 
             // Null out references whose ownership transferred to ReadyBatch.
             if (transfersCompletionSources)
+            {
                 _completionSources = null;
+            }
             _completionSourceIndexes = null;
             _arena = null;
             _incrementalBuffer = null;
@@ -11533,7 +12389,9 @@ internal sealed class PartitionBatch
         catch
         {
             if (readyBatch is not null && _readyBatchPool is not null)
+            {
                 _readyBatchPool.Return(readyBatch);
+            }
 
             if (batch is not null)
             {
@@ -11562,7 +12420,9 @@ internal sealed class PartitionBatch
                     ? deliveryIndex
                     : _completionSourceIndexes![deliveryIndex - _completionSourceDenseCount];
                 if (_completionSources[recordIndex] is { } source)
+                {
                     PooledCompletionSource.TrySetException(source, exception);
+                }
             }
         }
 
@@ -11575,9 +12435,14 @@ internal sealed class PartitionBatch
                     : _callbackIndexes![deliveryIndex - _callbackDenseCount];
                 var callback = _callbacks[recordIndex];
                 if (callback is null)
+                {
                     continue;
+                }
 
-                try { ProducerCallbackContext.Invoke(callback, default, exception); }
+                try
+                {
+                    ProducerCallbackContext.Invoke(callback, default, exception);
+                }
                 catch { }
                 _callbacks[recordIndex] = null;
             }
@@ -11603,9 +12468,13 @@ internal sealed class PartitionBatch
     internal void DiscardSplitBuild()
     {
         if (_completionSources is not null)
+        {
             Array.Clear(_completionSources, 0, Math.Min(_recordCount, _completionSources.Length));
+        }
         if (_callbacks is not null)
+        {
             Array.Clear(_callbacks, 0, Math.Min(_recordCount, _callbacks.Length));
+        }
 
         ReleaseAdmissionReservation();
         ReturnBatchArraysToPool();
@@ -11631,7 +12500,9 @@ internal sealed class PartitionBatch
         _admissionGeneration = 0;
         _admissionReservedBytes = 0;
         if (budget is not null && bytes > 0)
+        {
             budget.Release(bytes);
+        }
     }
 
     private void ReturnBatchArraysToPool()
@@ -11639,14 +12510,20 @@ internal sealed class PartitionBatch
         // Return working arrays to dedicated pools (with null checks since they may have been transferred)
         // clearArray: false for internal tracking arrays - they will be overwritten on next use
         if (_completionSources is not null)
+        {
             ProducerContainerPools.CompletionSources.Return(_completionSources, clearArray: false);
+        }
         if (_completionSourceIndexes is not null)
+        {
             ProducerContainerPools.DeliveryIndexes.Return(_completionSourceIndexes, clearArray: false);
+        }
 
         // Return arena buffer if present
         ReleaseArena();
         if (_incrementalBuffer is not null)
+        {
             IncrementalBatchBuffer.ReturnToPool(_incrementalBuffer);
+        }
 
         // Null out references to prevent accidental reuse
         _completionSources = null;
@@ -11813,7 +12690,9 @@ internal sealed class BatchArrayReuseQueue
         // A rejected return destroys the array, which releases its slot.
         _pool.Return(completionSources);
         if (Volatile.Read(ref _releaseEpoch) != epoch)
+        {
             _pool.Clear();
+        }
     }
 
     /// <summary>
@@ -11891,12 +12770,18 @@ internal sealed class ReadyBatch
     /// <summary>
     /// Uncompressed encoded record bytes reserved against BufferMemory.
     /// </summary>
-    public int DataSize { get; private set; }
+    public int DataSize
+    {
+        get; private set;
+    }
 
     /// <summary>
     /// Full encoded record batch size used for MaxRequestSize drain accounting.
     /// </summary>
-    public int EncodedSize { get; private set; }
+    public int EncodedSize
+    {
+        get; private set;
+    }
 
     /// <summary>
     /// Gets a ValueTask that completes when this batch is done (either sent successfully or failed).
@@ -11912,7 +12797,9 @@ internal sealed class ReadyBatch
         {
             var state = RegisterDoneTaskObserver(out var completedResult);
             if (completedResult is { } succeeded)
+            {
                 return new ValueTask<bool>(succeeded);
+            }
 
             AfterDoneTaskObserverRegisteredForTest?.Invoke();
             return new ValueTask<bool>(state.Source.Task);
@@ -11948,14 +12835,20 @@ internal sealed class ReadyBatch
     internal PooledValueTaskSource<RecordMetadata>? GetCompletionSource(int recordIndex)
     {
         if (_completionSourcesArray is null || recordIndex < 0)
+        {
             return null;
+        }
 
         if (recordIndex < _completionSourceDenseCount)
+        {
             return _completionSourcesArray[recordIndex];
+        }
 
         var indexes = _completionSourceIndexes;
         if (indexes is null)
+        {
             return null;
+        }
 
         var low = 0;
         var high = _completionSourcesCount - _completionSourceDenseCount - 1;
@@ -11964,12 +12857,18 @@ internal sealed class ReadyBatch
             var middle = low + ((high - low) >> 1);
             var indexedRecord = indexes[middle];
             if (indexedRecord == recordIndex)
+            {
                 return _completionSourcesArray[recordIndex];
+            }
 
             if (indexedRecord < recordIndex)
+            {
                 low = middle + 1;
+            }
             else
+            {
                 high = middle - 1;
+            }
         }
 
         return null;
@@ -11990,11 +12889,20 @@ internal sealed class ReadyBatch
             ? deliveryIndex
             : _callbackIndexes![deliveryIndex - _callbackDenseCount];
 
-    internal bool IsSplitBatch { get; private set; }
+    internal bool IsSplitBatch
+    {
+        get; private set;
+    }
 
-    internal int MaxRecordSize { get; private set; }
+    internal int MaxRecordSize
+    {
+        get; private set;
+    }
 
-    internal double ObservedCompressionRatio { get; set; } = 1.0;
+    internal double ObservedCompressionRatio
+    {
+        get; set;
+    } = 1.0;
 
     internal void MarkAsSplitBatch(int maxRecordSize, bool isRetry)
     {
@@ -12005,7 +12913,10 @@ internal sealed class ReadyBatch
 
     // In-flight tracker entry for coordinated retry with multiple in-flight batches per partition.
     // Set by KafkaProducer when registering with PartitionInflightTracker, cleared in Reset().
-    internal InflightEntry? InflightEntry { get; set; }
+    internal InflightEntry? InflightEntry
+    {
+        get; set;
+    }
 
     // Unacked-byte budget this batch's DataSize is currently charged against. Released
     // once (first terminal path wins, guarded by OnBatchExitsPipeline's InFlightBatchListRemove)
@@ -12062,16 +12973,22 @@ internal sealed class ReadyBatch
         {
             var len = Volatile.Read(ref _diagTraceLen);
             if (len <= 0)
+            {
                 return "";
+            }
 
             var count = Math.Min(len, _diagTrace.Length);
             if (len <= _diagTrace.Length)
+            {
                 return new string(_diagTrace, 0, count);
+            }
 
             var chars = new char[count];
             var start = len - count;
             for (var i = 0; i < count; i++)
+            {
                 chars[i] = _diagTrace[(start + i) % _diagTrace.Length];
+            }
 
             return new string(chars);
         }
@@ -12091,7 +13008,9 @@ internal sealed class ReadyBatch
         TopicPartition capturedTopicPartition)
     {
         if (!TryAcquireResourcePin(expectedGeneration))
+        {
             return CreateStaleDeliveryDiagnostic(capturedTopicPartition, expectedGeneration);
+        }
 
         try
         {
@@ -12180,20 +13099,30 @@ internal sealed class ReadyBatch
         bool isPreSerialized)
     {
         if (isReturnedToPool)
+        {
             return "recycled";
+        }
         if (isSendCompleted)
+        {
             return "completed-send";
+        }
         if (isMemoryReleased)
+        {
             return "awaiting-response";
+        }
         if (inFlightLinked)
+        {
             return isPreSerialized ? "in-flight" : "appended";
+        }
         return isPreSerialized ? "serialized" : "appended";
     }
 
     private static string DescribeLastTouchedBy(string trace)
     {
         if (trace.Length == 0)
+        {
             return "none";
+        }
 
         return trace[^1] switch
         {
@@ -12269,7 +13198,9 @@ internal sealed class ReadyBatch
     {
         var task = Volatile.Read(ref _preSerializationTask);
         if (task is null || task.IsCompleted)
+        {
             return;
+        }
 
         task.GetAwaiter().GetResult();
     }
@@ -12326,11 +13257,15 @@ internal sealed class ReadyBatch
     internal void WaitForMemoryReleaseIfStarted()
     {
         if (Volatile.Read(ref _memoryReleased) != MemoryReleaseInProgress)
+        {
             return;
+        }
 
         var spinWait = new SpinWait();
         while (Volatile.Read(ref _memoryReleased) == MemoryReleaseInProgress)
+        {
             spinWait.SpinOnce();
+        }
     }
 
     /// <summary>
@@ -12338,7 +13273,10 @@ internal sealed class ReadyBatch
     /// when coalescing a retry batch, ensuring it is sent before newer batches for the
     /// same partition. Set by ProcessCompletedResponses, cleared during coalescing or in Reset().
     /// </summary>
-    internal bool IsRetry { get; set; }
+    internal bool IsRetry
+    {
+        get; set;
+    }
 
     /// <summary>
     /// True while this batch owns a crash-recovery mute reference. Kept separate from
@@ -12357,7 +13295,10 @@ internal sealed class ReadyBatch
         => Interlocked.CompareExchange(ref _loopExitRecoveryRegistered, 0, 1) == 1;
 
     /// <summary>Replacement-sender FIFO position for loop-exit recovery ordering.</summary>
-    internal long LoopExitRedeliveryOrder { get; set; }
+    internal long LoopExitRedeliveryOrder
+    {
+        get; set;
+    }
 
     /// <summary>
     /// Position in which the owning send loop first took this batch from its channel (0 before
@@ -12365,36 +13306,54 @@ internal sealed class ReadyBatch
     /// retry that fails again must go back ahead of a newer retry that was held in carry-over
     /// meanwhile, not behind it. Written and read by the send loop only.
     /// </summary>
-    internal long SenderArrivalOrder { get; set; }
+    internal long SenderArrivalOrder
+    {
+        get; set;
+    }
 
     /// <summary>
     /// Stopwatch timestamp before which this retry batch should not be sent (backoff).
     /// Set by ProcessCompletedResponses when a retriable error occurs. The send loop
     /// skips batches where the backoff hasn't elapsed. 0 means no backoff.
     /// </summary>
-    internal long RetryNotBefore { get; set; }
+    internal long RetryNotBefore
+    {
+        get; set;
+    }
 
     /// <summary>Number of consecutive failed requests for this batch.</summary>
-    internal int RetryFailureCount { get; set; }
+    internal int RetryFailureCount
+    {
+        get; set;
+    }
 
     /// <summary>
     /// Number of retries charged against <see cref="ProducerOptions.Retries"/>: failures of a
     /// request that was written to the broker. Written and read by the send loop only.
     /// </summary>
-    internal int CountedRetries { get; set; }
+    internal int CountedRetries
+    {
+        get; set;
+    }
 
     /// <summary>
     /// Stopwatch timestamp when the accumulator batch was created. Used for absolute delivery
     /// deadline computation in ProcessCompletedResponses (prevents infinite retries with relative
     /// deadlines and includes configured linger time).
     /// </summary>
-    internal long StopwatchCreatedTicks { get; private set; }
+    internal long StopwatchCreatedTicks
+    {
+        get; private set;
+    }
 
     /// <summary>
     /// Stopwatch timestamp when the accumulator batch was sealed into this ready batch. Producer
     /// queue-latency control starts here so configured linger is not mistaken for admission delay.
     /// </summary>
-    internal long StopwatchSealedTicks { get; private set; }
+    internal long StopwatchSealedTicks
+    {
+        get; private set;
+    }
 
     /// <summary>
     /// Origin for the governed delivery-delay sample: the seal, or the linger deadline when
@@ -12403,7 +13362,10 @@ internal sealed class ReadyBatch
     /// stalls, drain starvation) is delay the user pays that seal-to-send alone cannot see.
     /// Fixed at seal time so retries keep their original origin.
     /// </summary>
-    internal long GovernedOriginTicks { get; private set; }
+    internal long GovernedOriginTicks
+    {
+        get; private set;
+    }
 
     /// <summary>
     /// Age of this ready batch in milliseconds since sealing (or since last reenqueue).
@@ -12439,8 +13401,14 @@ internal sealed class ReadyBatch
     // returned to its pool before an asynchronous continuation consumes the prior result.
     private sealed class DoneTaskState(int generation)
     {
-        public int Generation { get; } = generation;
-        public TaskCompletionSource<bool> Source { get; } =
+        public int Generation
+        {
+            get;
+        } = generation;
+        public TaskCompletionSource<bool> Source
+        {
+            get;
+        } =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
     }
 
@@ -12506,13 +13474,17 @@ internal sealed class ReadyBatch
         while (true)
         {
             if (!IsCurrentIncarnation(expectedGeneration) || Volatile.Read(ref _cleanedUp) != 0)
+            {
                 return false;
+            }
 
             var current = Volatile.Read(ref _activeResourcePins);
             if (Interlocked.CompareExchange(ref _activeResourcePins, current + 1, current) == current)
             {
                 if (IsCurrentIncarnation(expectedGeneration) && Volatile.Read(ref _cleanedUp) == 0)
+                {
                     return true;
+                }
 
                 ReleaseResourcePin();
                 return false;
@@ -12529,13 +13501,17 @@ internal sealed class ReadyBatch
         while (true)
         {
             if (!IsCurrentIncarnation(expectedGeneration))
+            {
                 return false;
+            }
 
             var current = Volatile.Read(ref _activeResourcePins);
             if (Interlocked.CompareExchange(ref _activeResourcePins, current + 1, current) == current)
             {
                 if (IsCurrentIncarnation(expectedGeneration))
+                {
                     return true;
+                }
 
                 ReleaseResourcePin();
                 return false;
@@ -12548,16 +13524,23 @@ internal sealed class ReadyBatch
         var remaining = Interlocked.Decrement(ref _activeResourcePins);
         Debug.Assert(remaining >= 0, "ReadyBatch resource pin count went negative");
         if (remaining == 0 && Volatile.Read(ref _cleanedUp) != 0)
+        {
             TryCleanupResources();
+        }
     }
 
     internal void WaitForResourcePins()
     {
         if (Volatile.Read(ref _activeResourcePins) == 0)
+        {
             return;
+        }
 
         var sw = new SpinWait();
-        do { sw.SpinOnce(); }
+        do
+        {
+            sw.SpinOnce();
+        }
         while (Volatile.Read(ref _activeResourcePins) != 0);
     }
 
@@ -12698,7 +13681,9 @@ internal sealed class ReadyBatch
                     var recordIndex = GetCompletionSourceRecordIndex(deliveryIndex);
                     if (_completionSourcesArray[recordIndex] is { } source
                         && PooledCompletionSource.TrySetException(source, orphanedException))
+                    {
                         failedCount++;
+                    }
                 }
             }
 
@@ -12784,7 +13769,9 @@ internal sealed class ReadyBatch
         // Atomic entry guard: only one thread can execute CompleteSend/Fail.
         // Separate from _cleanedUp so Cleanup() in the finally block still runs.
         if (Interlocked.Exchange(ref _sendCompleted, 1) != 0)
+        {
             return;
+        }
 
         try
         {
@@ -12902,12 +13889,16 @@ internal sealed class ReadyBatch
     internal bool TryAbandonForSplit(int expectedGeneration)
     {
         if (!TryAcquireResourcePin(expectedGeneration))
+        {
             return false;
+        }
 
         try
         {
             if (Interlocked.CompareExchange(ref _sendCompleted, 1, 0) != 0)
+            {
                 return false;
+            }
 
             CompleteDoneTask(succeeded: true);
             Cleanup();
@@ -12925,10 +13916,15 @@ internal sealed class ReadyBatch
     internal void WaitForTerminalBookkeeping()
     {
         if (Volatile.Read(ref _terminalBookkeepingCompleted) != 0)
+        {
             return;
+        }
 
         var sw = new SpinWait();
-        do { sw.SpinOnce(); }
+        do
+        {
+            sw.SpinOnce();
+        }
         while (Volatile.Read(ref _terminalBookkeepingCompleted) == 0);
     }
 
@@ -12940,7 +13936,9 @@ internal sealed class ReadyBatch
         // Atomic entry guard: only one thread can execute Fail/CompleteSend.
         // Separate from _cleanedUp so Cleanup() in the finally block still runs.
         if (Interlocked.Exchange(ref _sendCompleted, 1) != 0)
+        {
             return false;
+        }
 
         CompleteFailure(exception, waitForPreSerialization);
         return true;
@@ -12967,12 +13965,16 @@ internal sealed class ReadyBatch
     private Exception CompleteFailure(Exception exception, bool waitForPreSerialization)
     {
         if (waitForPreSerialization)
+        {
             WaitForPreSerializationIfStarted();
+        }
 
         // Before any record completes: a caller that observes the failure must already see the
         // transaction state it causes. Failure path only; reports its own errors.
         if (_failureObserver is { } failureObserver)
+        {
             exception = failureObserver.ReportBatchFailure(this, exception);
+        }
 
         try
         {
@@ -13047,7 +14049,9 @@ internal sealed class ReadyBatch
         var generation = Generation;
         var completion = succeeded ? CompletionSucceeded : CompletionFailed;
         if (Interlocked.CompareExchange(ref _completed, completion, 0) != 0)
+        {
             return;
+        }
 
         if (Volatile.Read(ref _doneTaskObserverCount) == 0)
         {
@@ -13057,7 +14061,9 @@ internal sealed class ReadyBatch
             // count read. It will either consume the packed result under the observer lock,
             // or this thread will acquire that lock and deliver the result directly.
             if (Volatile.Read(ref _doneTaskObserverCount) == 0)
+            {
                 return;
+            }
         }
 
         CompleteDoneTaskObservers(generation, completion, succeeded);
@@ -13098,13 +14104,17 @@ internal sealed class ReadyBatch
         catch
         {
             if (observerCountIncremented)
+            {
                 Interlocked.Decrement(ref _doneTaskObserverCount);
+            }
             throw;
         }
         finally
         {
             if (lockTaken)
+            {
                 _doneTaskObserverLock.Exit();
+            }
         }
     }
 
@@ -13117,13 +14127,17 @@ internal sealed class ReadyBatch
             Volatile.Write(ref _lastDoneTaskCompletion, PackDoneTaskCompletion(generation, completion));
 
             if (_doneTaskObservers is null)
+            {
                 return;
+            }
 
             for (var i = _doneTaskObservers.Count - 1; i >= 0; i--)
             {
                 var state = _doneTaskObservers[i];
                 if (state.Generation != generation)
+                {
                     continue;
+                }
 
                 _doneTaskObservers.RemoveAt(i);
                 Interlocked.Decrement(ref _doneTaskObserverCount);
@@ -13133,7 +14147,9 @@ internal sealed class ReadyBatch
         finally
         {
             if (lockTaken)
+            {
                 _doneTaskObserverLock.Exit();
+            }
         }
     }
 
@@ -13172,7 +14188,10 @@ internal sealed class ReadyBatch
         if (Volatile.Read(ref _cleanedUp) == 0 && Volatile.Read(ref _sendCompleted) != 0)
         {
             var sw = new SpinWait();
-            do { sw.SpinOnce(); }
+            do
+            {
+                sw.SpinOnce();
+            }
             while (Volatile.Read(ref _cleanedUp) == 0);
         }
 
@@ -13182,7 +14201,10 @@ internal sealed class ReadyBatch
             // Reset must wait for deferred resource cleanup; otherwise it can recycle fields
             // while the last serialization pin is still returning the old RecordBatch/arena.
             var sw = new SpinWait();
-            do { sw.SpinOnce(); }
+            do
+            {
+                sw.SpinOnce();
+            }
             while (Volatile.Read(ref _resourcesCleanedUp) != ResourceCleanupComplete);
         }
     }
@@ -13207,7 +14229,9 @@ internal sealed class ReadyBatch
         // Guard against double-cleanup request. Actual pooled-resource return may be
         // deferred until active serialization pins release.
         if (Interlocked.Exchange(ref _cleanedUp, 1) != 0)
+        {
             return;
+        }
 
         TryCleanupResources();
     }
@@ -13215,13 +14239,17 @@ internal sealed class ReadyBatch
     private void TryCleanupResources()
     {
         if (Volatile.Read(ref _activeResourcePins) != 0)
+        {
             return;
+        }
 
         if (Interlocked.CompareExchange(
                 ref _resourcesCleanedUp,
                 ResourceCleanupInProgress,
                 ResourceCleanupPending) != ResourceCleanupPending)
+        {
             return;
+        }
 
         var completionSourcesArray = _completionSourcesArray;
         var completionSourceIndexes = _completionSourceIndexes;
@@ -13262,7 +14290,9 @@ internal sealed class ReadyBatch
                 }
             }
             if (completionSourceIndexes is not null)
+            {
                 ProducerContainerPools.DeliveryIndexes.Return(completionSourceIndexes, clearArray: false);
+            }
 
             // Return arena to pool for reuse (arena-based path)
             // This avoids allocating a new BatchArena object on each batch recycle
@@ -13282,7 +14312,9 @@ internal sealed class ReadyBatch
                 ProducerContainerPools.Callbacks.Return(callbacks, clearArray: true);
             }
             if (callbackIndexes is not null)
+            {
                 ProducerContainerPools.DeliveryIndexes.Return(callbackIndexes, clearArray: false);
+            }
 
             // Return pre-compressed buffer and RecordBatch to pool.
             // ReturnPreCompressedBuffer() releases the producer-pool buffer, then ReturnToPool()

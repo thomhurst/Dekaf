@@ -45,17 +45,29 @@ public sealed class AssociatedNameStrategyOptions
     /// Kafka cluster ID passed as the association resource namespace. Null uses the
     /// Schema Registry wildcard namespace <c>-</c>.
     /// </summary>
-    public string? KafkaClusterId { get; init; }
+    public string? KafkaClusterId
+    {
+        get; init;
+    }
 
     /// <summary>Fallback used when Schema Registry returns no association.</summary>
-    public AssociatedNameFallbackStrategy FallbackStrategy { get; init; } =
+    public AssociatedNameFallbackStrategy FallbackStrategy
+    {
+        get; init;
+    } =
         AssociatedNameFallbackStrategy.TopicName;
 
     /// <summary>Maximum successful topic/component/record resolutions retained.</summary>
-    public int MaxCachedSubjects { get; init; } = 1000;
+    public int MaxCachedSubjects
+    {
+        get; init;
+    } = 1000;
 
     /// <summary>Maximum duration of one shared Schema Registry association lookup.</summary>
-    public TimeSpan LookupTimeout { get; init; } = TimeSpan.FromSeconds(30);
+    public TimeSpan LookupTimeout
+    {
+        get; init;
+    } = TimeSpan.FromSeconds(30);
 }
 
 /// <summary>
@@ -99,9 +111,13 @@ public sealed class AssociatedNameStrategy : IAsyncSubjectNameStrategy
         _schemaRegistry = schemaRegistry ?? throw new ArgumentNullException(nameof(schemaRegistry));
         options ??= new AssociatedNameStrategyOptions();
         if (options.KafkaClusterId is not null)
+        {
             ArgumentException.ThrowIfNullOrWhiteSpace(options.KafkaClusterId);
+        }
         if (!Enum.IsDefined(options.FallbackStrategy))
+        {
             throw new ArgumentOutOfRangeException(nameof(options), options.FallbackStrategy, "Unknown fallback strategy.");
+        }
         ArgumentOutOfRangeException.ThrowIfLessThan(options.MaxCachedSubjects, 1);
         if (options.LookupTimeout <= TimeSpan.Zero
             || options.LookupTimeout > TimeSpan.FromMilliseconds(int.MaxValue))
@@ -133,7 +149,9 @@ public sealed class AssociatedNameStrategy : IAsyncSubjectNameStrategy
                 }
 
                 if (ReferenceEquals(existing, target))
+                {
                     return;
+                }
             }
 
             _invalidationTargets.Add(new WeakReference<IAssociatedNameCacheInvalidationTarget>(target));
@@ -152,7 +170,9 @@ public sealed class AssociatedNameStrategy : IAsyncSubjectNameStrategy
         cancellationToken.ThrowIfCancellationRequested();
         var key = new CacheKey(topic, recordType, isKey);
         if (_cache.TryGetValue(key, out var subject))
+        {
             return new ValueTask<string>(subject);
+        }
 
         return ResolveSlow(key, forceRefresh: false, cancellationToken);
     }
@@ -192,7 +212,9 @@ public sealed class AssociatedNameStrategy : IAsyncSubjectNameStrategy
         lock (_gate)
         {
             foreach (var pending in _pending.Values)
+            {
                 _invalidatedPending.Add(pending);
+            }
             _cache.Clear();
             _order.Clear();
             _orderNodes.Clear();
@@ -211,17 +233,23 @@ public sealed class AssociatedNameStrategy : IAsyncSubjectNameStrategy
         lock (_gate)
         {
             if (!forceRefresh && _cache.TryGetValue(key, out var cached))
+            {
                 return new ValueTask<string>(cached);
+            }
 
             if (forceRefresh)
+            {
                 InvalidatePendingAliasesUnderLock(key);
+            }
 
             if (!_pending.TryGetValue(key, out var pending)
                 || _invalidatedPending.Contains(pending)
                 || (forceRefresh && !pending.IsRefresh))
             {
                 if (pending is not null)
+                {
                     _invalidatedPending.Add(pending);
+                }
 
                 start = new TaskCompletionSource<bool>(
                     TaskCreationOptions.RunContinuationsAsynchronously);
@@ -240,7 +268,9 @@ public sealed class AssociatedNameStrategy : IAsyncSubjectNameStrategy
         start?.TrySetResult(true);
 
         if (!cancellationToken.CanBeCanceled)
+        {
             return new ValueTask<string>(resolution);
+        }
 
         return new ValueTask<string>(WaitWithCancellationAsync(resolution, cancellationToken));
     }
@@ -259,10 +289,14 @@ public sealed class AssociatedNameStrategy : IAsyncSubjectNameStrategy
                 if (!_invalidatedPending.Contains(pending))
                 {
                     if (pending.IsRefresh)
+                    {
                         InvalidateCachedAliasesUnderLock(key);
+                    }
                     Publish(key, subject);
                     if (pending.IsRefresh)
+                    {
                         InvalidateDependentCaches();
+                    }
                 }
             }
 
@@ -314,7 +348,9 @@ public sealed class AssociatedNameStrategy : IAsyncSubjectNameStrategy
         {
             var subject = associations[0].Subject;
             if (string.IsNullOrWhiteSpace(subject))
+            {
                 throw new InvalidOperationException($"The subject association for topic '{key.Topic}' is empty.");
+            }
             return subject;
         }
 
@@ -365,7 +401,9 @@ public sealed class AssociatedNameStrategy : IAsyncSubjectNameStrategy
     private void RemoveOrderNode(CacheKey key)
     {
         if (!_orderNodes.Remove(key, out var node))
+        {
             return;
+        }
 
         _order.Remove(node);
     }
@@ -396,7 +434,9 @@ public sealed class AssociatedNameStrategy : IAsyncSubjectNameStrategy
         foreach (var (pendingKey, pending) in _pending)
         {
             if (IsAlias(pendingKey, key))
+            {
                 _invalidatedPending.Add(pending);
+            }
         }
     }
 
@@ -409,9 +449,13 @@ public sealed class AssociatedNameStrategy : IAsyncSubjectNameStrategy
         for (var index = _invalidationTargets.Count - 1; index >= 0; index--)
         {
             if (_invalidationTargets[index].TryGetTarget(out var target))
+            {
                 target.InvalidateAssociatedNameCache();
+            }
             else
+            {
                 _invalidationTargets.RemoveAt(index);
+            }
         }
     }
 
@@ -441,8 +485,14 @@ public sealed class AssociatedNameStrategy : IAsyncSubjectNameStrategy
 
     private sealed class PendingResolution(bool isRefresh)
     {
-        internal bool IsRefresh { get; } = isRefresh;
-        internal Task<string> Task { get; set; } = null!;
+        internal bool IsRefresh
+        {
+            get;
+        } = isRefresh;
+        internal Task<string> Task
+        {
+            get; set;
+        } = null!;
     }
 }
 

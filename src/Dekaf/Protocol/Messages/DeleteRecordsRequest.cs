@@ -13,12 +13,18 @@ public sealed class DeleteRecordsRequest : IKafkaRequest<DeleteRecordsResponse>
     /// <summary>
     /// The topics with partitions and offsets to delete up to.
     /// </summary>
-    public required IReadOnlyList<DeleteRecordsRequestTopic> Topics { get; init; }
+    public required IReadOnlyList<DeleteRecordsRequestTopic> Topics
+    {
+        get; init;
+    }
 
     /// <summary>
     /// How long to wait in milliseconds before timing out the request.
     /// </summary>
-    public int TimeoutMs { get; init; } = 30000;
+    public int TimeoutMs
+    {
+        get; init;
+    } = 30000;
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {
@@ -41,12 +47,18 @@ public sealed class DeleteRecordsRequestTopic
     /// <summary>
     /// The topic name.
     /// </summary>
-    public required string Name { get; init; }
+    public required string Name
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The partitions with offsets to delete up to.
     /// </summary>
-    public required IReadOnlyList<DeleteRecordsRequestPartition> Partitions { get; init; }
+    public required IReadOnlyList<DeleteRecordsRequestPartition> Partitions
+    {
+        get; init;
+    }
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {
@@ -69,12 +81,18 @@ public sealed class DeleteRecordsRequestPartition
     /// <summary>
     /// The partition index.
     /// </summary>
-    public required int PartitionIndex { get; init; }
+    public required int PartitionIndex
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The deletion offset. Records before this offset will be deleted.
     /// </summary>
-    public required long Offset { get; init; }
+    public required long Offset
+    {
+        get; init;
+    }
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {

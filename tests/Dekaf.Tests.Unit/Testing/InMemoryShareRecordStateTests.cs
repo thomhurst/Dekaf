@@ -1,5 +1,5 @@
-using Dekaf.Consumer;
 using Dekaf.Admin;
+using Dekaf.Consumer;
 using Dekaf.Errors;
 using Dekaf.Protocol;
 using Dekaf.ShareConsumer;
@@ -17,8 +17,12 @@ public sealed class InMemoryShareRecordStateTests
         var cluster = new InMemoryKafkaCluster();
         await ProduceRecords(cluster, 3);
         if (withFault)
+        {
             for (var index = 0; index < 3; index++)
+            {
                 cluster.FaultPlan.PauseNext(new KafkaFaultScope(KafkaFaultOperation.ShareConsume)).Release();
+            }
+        }
         await using var first = CreateConsumer(cluster);
         await using var second = CreateConsumer(cluster);
         var firstRecord = await first.PollAsync().FirstAsync();
@@ -136,9 +140,13 @@ public sealed class InMemoryShareRecordStateTests
         var acquired = cluster.TryAcquireShareRecord("workers", "second", second, partition, 0, out _, out var count);
         await Assert.That(acquired).IsEqualTo(!atLimit);
         if (atLimit)
+        {
             await Assert.That(cluster.GetCommittedShareOffset("workers", partition)).IsEqualTo(1);
+        }
         else
+        {
             await Assert.That(count).IsEqualTo(2);
+        }
     }
 
     [Test]
@@ -236,14 +244,22 @@ public sealed class InMemoryShareRecordStateTests
         if (delete)
         {
             if (detailed)
+            {
                 await admin.DeleteShareGroupOffsetsDetailedAsync("workers", ["shared"]);
+            }
             else
+            {
                 await admin.DeleteShareGroupOffsetsAsync("workers", ["shared"]);
+            }
         }
         else if (detailed)
+        {
             await admin.AlterShareGroupOffsetsDetailedAsync("workers", offsets);
+        }
         else
+        {
             await admin.AlterShareGroupOffsetsAsync("workers", offsets);
+        }
 
         await using var replacement = CreateConsumer(cluster);
         var replayed = await replacement.PollAsync().ToListAsync();
@@ -267,11 +283,17 @@ public sealed class InMemoryShareRecordStateTests
             await original.CommitAsync();
         }
         else
+        {
             await LeaveAcknowledgementGap(cluster);
+        }
         if (deleteById)
+        {
             cluster.DeleteTopic(cluster.DescribeTopics(["shared"])["shared"].TopicId);
+        }
         else
+        {
             cluster.DeleteTopic("shared");
+        }
         await ProduceRecords(cluster, 2);
         await using var replacement = CreateConsumer(cluster);
         var replayed = await replacement.PollAsync().ToListAsync();
@@ -304,7 +326,9 @@ public sealed class InMemoryShareRecordStateTests
         cluster.DeleteTopic("shared");
         await ProduceRecords(cluster, 1);
         if (withFault)
+        {
             cluster.FaultPlan.PauseNext(new(KafkaFaultOperation.ShareConsume)).Release();
+        }
         await Assert.That(await poll.MoveNextAsync()).IsTrue();
         var current = poll.Current;
         await Assert.That(current.Offset).IsEqualTo(stale.Offset);
@@ -312,7 +336,9 @@ public sealed class InMemoryShareRecordStateTests
         consumer.Acknowledge(stale, type);
         consumer.Acknowledge(current, AcknowledgeType.Release);
         if (withFault)
+        {
             cluster.FaultPlan.PauseNext(new(KafkaFaultOperation.ShareAcknowledge)).Release();
+        }
         await consumer.CommitAsync();
 
         await Assert.That(cluster.ReadRecords("dead-letters")).IsEmpty();
@@ -342,7 +368,9 @@ public sealed class InMemoryShareRecordStateTests
             await ProduceRecords(cluster, 1);
         }
         else
+        {
             cluster.RollbackShareRecordAcquisition("workers", "member", member, partition, stale);
+        }
 
         await Assert.That(cluster.TryAcquireShareRecordForFault("workers", "member", member, partition, 0, out var current)).IsTrue();
         await Assert.That(cluster.TryCompleteShareRecordAcquisition("workers", "member", member, partition, stale, out _)).IsFalse();
@@ -372,7 +400,7 @@ public sealed class InMemoryShareRecordStateTests
             for (var offset = 0; offset < 3; offset++)
             {
                 await producer.ProduceAsync(new Dekaf.Producer.ProducerMessage<string, string>
-                    { Topic = "shared", Partition = partition, Key = "key", Value = "value" });
+                { Topic = "shared", Partition = partition, Key = "key", Value = "value" });
                 cluster.TryAcquireShareRecord("workers", "member", registration, topicPartition, offset, out var record, out _);
                 completions.Add(new(record, AcknowledgeType.Accept));
             }
@@ -466,6 +494,8 @@ public sealed class InMemoryShareRecordStateTests
         cluster.ConfigureShareOffsetReset(new InMemoryShareConsumerOptions { GroupId = "workers", AutoOffsetReset = AutoOffsetReset.Earliest });
         await using var producer = new InMemoryProducer<string, string>(cluster);
         for (var index = 0; index < count; index++)
+        {
             await producer.ProduceAsync("shared", "key", $"value-{index}");
+        }
     }
 }

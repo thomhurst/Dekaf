@@ -25,7 +25,9 @@ public sealed partial class AdminClient : IConsumerGroupOffsetQueryAdminClient
         var opts = options ?? new ListConsumerGroupOffsetsOptions();
         ArgumentOutOfRangeException.ThrowIfNegative(opts.TimeoutMs);
         if (requests.Count == 0)
+        {
             return new(new Dictionary<string, ConsumerGroupOffsetsResult>(StringComparer.Ordinal));
+        }
 
         return ExecuteWithTimeoutAsync(
             token => ListConsumerGroupOffsetDetailsCoreAsync(requests, opts.RequireStable, token),
@@ -69,10 +71,14 @@ public sealed partial class AdminClient : IConsumerGroupOffsetQueryAdminClient
                     unstable.Add(groupId, pending[groupId]);
                 }
                 else
+                {
                     results.Add(groupId, ConsumerGroupOffsetsResult.FromStreamsResult(result));
+                }
             }
             if (unstable is null)
+            {
                 break;
+            }
 
             // A transaction can outlive the normal request retry count. Keep its group
             // pending until the caller's total budget expires; completed groups stay complete.
@@ -84,18 +90,24 @@ public sealed partial class AdminClient : IConsumerGroupOffsetQueryAdminClient
 
         var ordered = new Dictionary<string, ConsumerGroupOffsetsResult>(requests.Count, StringComparer.Ordinal);
         foreach (var groupId in requests.Keys)
+        {
             ordered.Add(groupId, results[groupId]);
+        }
         return ordered;
     }
 
     private static bool HasUnstableOffsets(StreamsGroupOffsetsResult result)
     {
         if (result.ErrorCode == ErrorCode.UnstableOffsetCommit)
+        {
             return true;
+        }
         foreach (var offset in result.Offsets.Values)
         {
             if (offset.ErrorCode == ErrorCode.UnstableOffsetCommit)
+            {
                 return true;
+            }
         }
         return false;
     }

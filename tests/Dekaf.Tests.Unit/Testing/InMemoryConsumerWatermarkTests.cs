@@ -36,9 +36,13 @@ public sealed class InMemoryConsumerWatermarkTests
         await Assert.That(consumer.GetCurrentLag(Partition)).IsEqualTo(queried.High - 2);
 
         if (commit)
+        {
             await transaction.CommitAsync();
+        }
         else
+        {
             await transaction.AbortAsync();
+        }
 
         // Completion reserves one invisible COMMIT/ABORT control offset after the five pending records.
         await Assert.That((await consumer.QueryWatermarkOffsetsAsync(Partition)).High).IsEqualTo(16L);
@@ -71,9 +75,13 @@ public sealed class InMemoryConsumerWatermarkTests
         await Assert.That(consumer.GetPosition(Partition)).IsEqualTo(expectedOffset);
         var record = await consumer.ConsumeOneAsync(TimeSpan.Zero);
         if (offsetCount == 0)
+        {
             await Assert.That(record).IsNull();
+        }
         else
+        {
             await Assert.That(record!.Value.Offset).IsEqualTo(expectedOffset);
+        }
     }
 
     [Test]
@@ -93,9 +101,13 @@ public sealed class InMemoryConsumerWatermarkTests
         consumer.Assign(Partition);
 
         if (allAssignedPartitions)
+        {
             consumer.SeekToEnd();
+        }
         else
+        {
             consumer.SeekToEnd(Partition);
+        }
 
         await Assert.That(consumer.GetPosition(Partition))
             .IsEqualTo(isolationLevel == IsolationLevel.ReadCommitted ? 10L : 15L);
@@ -103,9 +115,13 @@ public sealed class InMemoryConsumerWatermarkTests
         await transaction.CommitAsync();
         var record = await consumer.ConsumeOneAsync(TimeSpan.Zero);
         if (isolationLevel == IsolationLevel.ReadCommitted)
+        {
             await Assert.That(record!.Value.Offset).IsEqualTo(10L);
+        }
         else
+        {
             await Assert.That(record).IsNull();
+        }
     }
 
     [Test]
@@ -131,18 +147,26 @@ public sealed class InMemoryConsumerWatermarkTests
             });
 
         if (subscribe)
+        {
             consumer.Subscribe(Partition.Topic);
+        }
         else
+        {
             consumer.Assign(Partition);
+        }
 
         await Assert.That(consumer.GetPosition(Partition))
             .IsEqualTo(isolationLevel == IsolationLevel.ReadCommitted ? 10L : 15L);
         await transaction.CommitAsync();
         var record = await consumer.ConsumeOneAsync(TimeSpan.Zero);
         if (isolationLevel == IsolationLevel.ReadCommitted)
+        {
             await Assert.That(record!.Value.Offset).IsEqualTo(10L);
+        }
         else
+        {
             await Assert.That(record).IsNull();
+        }
     }
 
     [Test]
@@ -155,7 +179,9 @@ public sealed class InMemoryConsumerWatermarkTests
         var cluster = new InMemoryKafkaCluster();
         var partition = new TopicPartition(Partition.Topic, missingTopic ? 0 : 1);
         if (!missingTopic)
+        {
             cluster.CreateTopic(partition.Topic);
+        }
         await using var consumer = new InMemoryConsumer<string, string>(
             cluster,
             new InMemoryConsumerOptions
@@ -166,9 +192,13 @@ public sealed class InMemoryConsumerWatermarkTests
         consumer.Assign(partition);
 
         if (missingTopic)
+        {
             cluster.CreateTopic(partition.Topic);
+        }
         else
+        {
             cluster.CreatePartitions(partition.Topic, 2);
+        }
         await using var producer = new InMemoryProducer<string, string>(cluster);
         var message = new ProducerMessage<string, string>
         {
@@ -189,9 +219,13 @@ public sealed class InMemoryConsumerWatermarkTests
         await transaction.CommitAsync();
         var record = await consumer.ConsumeOneAsync(TimeSpan.Zero);
         if (isolationLevel == IsolationLevel.ReadCommitted)
+        {
             await Assert.That(record!.Value.Offset).IsEqualTo(1L);
+        }
         else
+        {
             await Assert.That(record).IsNull();
+        }
     }
 
     [Test]
@@ -224,9 +258,13 @@ public sealed class InMemoryConsumerWatermarkTests
         await transaction.CommitAsync();
         var record = await consumer.ConsumeOneAsync(TimeSpan.Zero);
         if (isolationLevel == IsolationLevel.ReadCommitted)
+        {
             await Assert.That(record!.Value.Offset).IsEqualTo(10L);
+        }
         else
+        {
             await Assert.That(record).IsNull();
+        }
     }
 
     [Test]
@@ -282,9 +320,13 @@ public sealed class InMemoryConsumerWatermarkTests
         await Assert.That(await snapshot.MoveNextAsync()).IsTrue();
         var offsets = new List<long> { snapshot.Current.Offset };
         if (commitDuringSnapshot)
+        {
             await transaction.CommitAsync();
+        }
         while (await snapshot.MoveNextAsync())
+        {
             offsets.Add(snapshot.Current.Offset);
+        }
 
         var expectedEnd = isolationLevel == IsolationLevel.ReadCommitted ? 10 : 15;
         await Assert.That(offsets).IsEquivalentTo(Enumerable.Range(0, expectedEnd).Select(offset => (long)offset));
@@ -326,9 +368,13 @@ public sealed class InMemoryConsumerWatermarkTests
         await Assert.That(watermarks.High).IsEqualTo(expectedEnd);
         await Assert.That(consumer.GetWatermarkOffsets(Partition)!.Value).IsEqualTo(watermarks);
         if (seekToTail)
+        {
             await consumer.SeekToTailAsync(Partition, 0);
+        }
         else
+        {
             consumer.SeekToEnd(Partition);
+        }
         await Assert.That(consumer.GetPosition(Partition)).IsEqualTo(expectedEnd);
         await Assert.That(await consumer.ConsumeOneAsync(TimeSpan.Zero)).IsNull();
 
@@ -353,12 +399,16 @@ public sealed class InMemoryConsumerWatermarkTests
     private static async Task ProduceCommittedAsync(InMemoryProducer<string, string> producer)
     {
         for (var i = 0; i < 10; i++)
+        {
             await producer.ProduceAsync(Partition.Topic, $"key-{i}", $"committed-{i}");
+        }
     }
 
     private static async Task ProducePendingAsync(ITransaction<string, string> transaction)
     {
         for (var i = 0; i < 5; i++)
+        {
             await transaction.ProduceAsync(Partition.Topic, $"key-{i}", $"pending-{i}");
+        }
     }
 }

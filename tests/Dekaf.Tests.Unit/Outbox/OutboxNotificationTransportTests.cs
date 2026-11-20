@@ -41,7 +41,9 @@ public sealed class OutboxNotificationTransportTests
         await Assert.That(count).IsEqualTo(buckets.Count);
         await Assert.That(output[count - 1]).IsEqualTo(65);
         for (var index = 0; index < count - 1; index++)
+        {
             await Assert.That(output[index]).IsEqualTo(index);
+        }
     }
 
     [Test]
@@ -55,10 +57,14 @@ public sealed class OutboxNotificationTransportTests
         var buffer = new OutboxRemoteNotifications(1000001);
         var output = new int[3];
         for (var index = 0; index < 100; index++)
+        {
             buffer.Notify(buckets);
+        }
         var before = GC.GetAllocatedBytesForCurrentThread();
         for (var index = 0; index < 1000; index++)
+        {
             buffer.Notify(buckets);
+        }
         var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
         await Assert.That(allocated).IsEqualTo(0);
         await Assert.That(await buffer.ReadAsync(output, default)).IsEqualTo(1);
@@ -157,7 +163,9 @@ public sealed class OutboxNotificationTransportTests
             notifier.NotifyCommitted(0);
             await transport.Sent.Reader.ReadAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(30));
             for (var index = 0; index < 10000; index++)
+            {
                 notifier.NotifyCommitted(index % 2);
+            }
             await Assert.That(transport.SendCalls).IsEqualTo(1);
         }
         finally
@@ -227,7 +235,9 @@ public sealed class OutboxNotificationTransportTests
     {
         var buffer = new OutboxRemoteNotifications(130);
         for (var index = 0; index < 10000; index++)
+        {
             buffer.Notify(index % 130);
+        }
         var buckets = new int[130];
         await Assert.That(await buffer.ReadAsync(buckets, default)).IsEqualTo(130);
         buffer.Notify(-1);
@@ -241,8 +251,14 @@ public sealed class OutboxNotificationTransportTests
 
     private sealed class Transport : IOutboxNotificationTransport
     {
-        public TaskCompletionSource<Action<int>> Listener { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        public Channel<int[]> Sent { get; } = Channel.CreateUnbounded<int[]>();
+        public TaskCompletionSource<Action<int>> Listener
+        {
+            get;
+        } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public Channel<int[]> Sent
+        {
+            get;
+        } = Channel.CreateUnbounded<int[]>();
         public bool BlockSend;
         public bool FailSend;
         public bool FailListen;
@@ -256,10 +272,17 @@ public sealed class OutboxNotificationTransportTests
             Interlocked.Increment(ref SendCalls);
             Sent.Writer.TryWrite(buckets.ToArray());
             if (FailSend)
+            {
                 throw new InvalidOperationException("transport unavailable");
+            }
             if (!BlockSend)
+            {
                 return;
-            try { await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken); }
+            }
+            try
+            {
+                await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+            }
             finally { SendCancelled = cancellationToken.IsCancellationRequested; }
         }
 
@@ -267,9 +290,14 @@ public sealed class OutboxNotificationTransportTests
         {
             Interlocked.Increment(ref ListenCalls);
             if (FailListen)
+            {
                 throw new InvalidOperationException("subscription unavailable");
+            }
             Listener.TrySetResult(notifyCommitted);
-            try { await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken); }
+            try
+            {
+                await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+            }
             finally { Stopped = true; }
         }
     }

@@ -85,7 +85,9 @@ public class ProduceAllAsyncTests(KafkaTestContainer kafka) : KafkaIntegrationTe
         meterListener.InstrumentPublished = (instrument, l) =>
         {
             if (instrument.Meter.Name == DekafDiagnostics.MeterName)
+            {
                 l.EnableMeasurementEvents(instrument);
+            }
         };
         meterListener.Start();
 
@@ -233,7 +235,9 @@ public class ProduceAllAsyncTests(KafkaTestContainer kafka) : KafkaIntegrationTe
         {
             consumed.Add(result.Value!);
             if (consumed.Count >= 5)
+            {
                 break;
+            }
         }
 
         await Assert.That(consumed.Count).IsEqualTo(5);
@@ -249,7 +253,9 @@ public class ProduceAllAsyncTests(KafkaTestContainer kafka) : KafkaIntegrationTe
         public ProducerMessage<string, string> OnSend(ProducerMessage<string, string> message)
         {
             if (message.Value == triggerValue)
+            {
                 cts.Cancel();
+            }
             return message;
         }
 

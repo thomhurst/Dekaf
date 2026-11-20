@@ -139,9 +139,13 @@ public sealed class ProducerStateGaugeIntegrationTests(KafkaTestContainer kafka)
         foreach (var tag in tags)
         {
             if (tag.Key == DekafDiagnostics.MessagingClientId)
+            {
                 clientId = tag.Value as string;
+            }
             else if (tag.Key == DekafDiagnostics.DekafBrokerId)
+            {
                 brokerId = tag.Value;
+            }
         }
 
         lock (samples)

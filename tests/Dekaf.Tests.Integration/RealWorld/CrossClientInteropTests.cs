@@ -1,11 +1,11 @@
 using System.Text;
-using ConfluentKafka = Confluent.Kafka;
 using Dekaf.Compression.Lz4;
 using Dekaf.Compression.Snappy;
 using Dekaf.Compression.Zstd;
 using Dekaf.Consumer;
 using Dekaf.Producer;
 using Dekaf.Serialization;
+using ConfluentKafka = Confluent.Kafka;
 
 namespace Dekaf.Tests.Integration.RealWorld;
 
@@ -517,7 +517,9 @@ public sealed class CrossClientInteropTests(KafkaTestContainer kafka) : KafkaInt
     }
 
     private sealed record CodecCase(string Name, ConfluentKafka.CompressionType ConfluentCompression);
+
     private sealed record ExpectedHeader(string Key, byte[]? Value);
+
     private sealed record WireRecord(
         byte[]? Key,
         byte[]? Value,

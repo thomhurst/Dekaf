@@ -34,8 +34,11 @@ public sealed class InMemoryDetailedMutationTests
     {
         var cluster = new InMemoryKafkaCluster();
         await using var admin = new InMemoryAdminClient(cluster);
-        NewTopic[] topics = [new() { Name = "orders",
-            ReplicaAssignments = new Dictionary<int, IReadOnlyList<int>> { [0] = [0] } }];
+        NewTopic[] topics = [new()
+        {
+            Name = "orders",
+            ReplicaAssignments = new Dictionary<int, IReadOnlyList<int>> { [0] = [0] }
+        }];
         await Assert.That((await admin.CreateTopicsDetailedAsync(topics, new() { ValidateOnly = true }))["orders"].IsSuccess).IsTrue();
         await Assert.That(cluster.ListTopics()).IsEmpty();
         await Assert.That((await admin.CreateTopicsDetailedAsync(topics))["orders"].IsSuccess).IsTrue();
@@ -163,8 +166,13 @@ public sealed class InMemoryDetailedMutationTests
         await using var admin = new InMemoryAdminClient(cluster);
         var brokerIds = new[] { 0 };
         var barrier = cluster.FaultPlan.PauseNext(new(KafkaFaultOperation.Admin, topic: "orders"));
-        var pending = admin.CreateTopicsDetailedAsync([new() { Name = "orders", NumPartitions = -1, ReplicationFactor = -1,
-            ReplicaAssignments = new Dictionary<int, IReadOnlyList<int>> { [0] = brokerIds } }]).AsTask();
+        var pending = admin.CreateTopicsDetailedAsync([new()
+        {
+            Name = "orders",
+            NumPartitions = -1,
+            ReplicationFactor = -1,
+            ReplicaAssignments = new Dictionary<int, IReadOnlyList<int>> { [0] = brokerIds }
+        }]).AsTask();
         await barrier.WaitUntilEnteredAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(10));
         brokerIds[0] = 99;
         barrier.Release();

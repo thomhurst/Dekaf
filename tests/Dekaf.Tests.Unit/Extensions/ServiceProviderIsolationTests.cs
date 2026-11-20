@@ -41,7 +41,9 @@ public sealed class ServiceProviderIsolationTests
         services.AddSingleton(_ =>
         {
             if (!barrier.SignalAndWait(TimeSpan.FromSeconds(30)))
+            {
                 throw new TimeoutException("Both providers must resolve their interceptor concurrently.");
+            }
             return new ProviderInterceptor(calls);
         });
         await using var first = services.BuildServiceProvider();
@@ -66,7 +68,9 @@ public sealed class ServiceProviderIsolationTests
         var services = CreateServices(keyed, [], configuredLogger ? fallback : null);
         var firstServices = new ServiceCollection();
         foreach (var descriptor in services)
+        {
             ((IServiceCollection)firstServices).Add(descriptor);
+        }
         firstServices.AddSingleton<ILoggerFactory, TestLoggerFactory>();
 
         TestLoggerFactory firstLogger;
@@ -103,19 +107,26 @@ public sealed class ServiceProviderIsolationTests
         {
             builder.AddGlobalProducerInterceptor<string, string, ProviderInterceptor>();
             builder.AddGlobalConsumerInterceptor<string, string, ProviderInterceptor>();
+
             void ConfigureProducer(ProducerBuilder<string, string> producer)
             {
                 producer.WithBootstrapServers("localhost:9092").AddInterceptor(new InstanceInterceptor(calls));
                 if (loggerFactory is not null)
+                {
                     producer.WithLoggerFactory(loggerFactory);
+                }
             }
+
             void ConfigureConsumer(ConsumerBuilder<string, string> consumer)
             {
                 consumer.WithBootstrapServers("localhost:9092").WithGroupId("isolation-test")
                     .AddInterceptor(new InstanceInterceptor(calls));
                 if (loggerFactory is not null)
+                {
                     consumer.WithLoggerFactory(loggerFactory);
+                }
             }
+
             if (keyed)
             {
                 builder.AddProducer<string, string>("client", ConfigureProducer);
@@ -149,9 +160,13 @@ public sealed class ServiceProviderIsolationTests
         await Assert.That(consumerInterceptors[0]).IsSameReferenceAs(expected);
         calls.Clear();
         foreach (var interceptor in producerInterceptors)
+        {
             interceptor.OnSend(new ProducerMessage<string, string> { Topic = "test", Value = "value" });
+        }
         foreach (var interceptor in consumerInterceptors)
+        {
             interceptor.OnConsume(default);
+        }
         await Assert.That(calls).Count().IsEqualTo(4);
         await Assert.That(calls[0]).IsEqualTo("global");
         await Assert.That(calls[1]).IsEqualTo("instance");
@@ -172,7 +187,10 @@ public sealed class ServiceProviderIsolationTests
     private sealed class ProviderInterceptor(List<string> calls)
         : IProducerInterceptor<string, string>, IConsumerInterceptor<string, string>, IDisposable
     {
-        public bool Disposed { get; private set; }
+        public bool Disposed
+        {
+            get; private set;
+        }
         public ProducerMessage<string, string> OnSend(ProducerMessage<string, string> message)
         {
             ObjectDisposedException.ThrowIf(Disposed, this);
@@ -185,8 +203,12 @@ public sealed class ServiceProviderIsolationTests
             calls.Add("global");
             return result;
         }
-        public void OnAcknowledgement(RecordMetadata metadata, Exception? exception) { }
-        public void OnCommit(IReadOnlyList<TopicPartitionOffset> offsets) { }
+        public void OnAcknowledgement(RecordMetadata metadata, Exception? exception)
+        {
+        }
+        public void OnCommit(IReadOnlyList<TopicPartitionOffset> offsets)
+        {
+        }
         public void Dispose() => Disposed = true;
     }
 
@@ -203,33 +225,50 @@ public sealed class ServiceProviderIsolationTests
             calls.Add("instance");
             return result;
         }
-        public void OnAcknowledgement(RecordMetadata metadata, Exception? exception) { }
-        public void OnCommit(IReadOnlyList<TopicPartitionOffset> offsets) { }
+        public void OnAcknowledgement(RecordMetadata metadata, Exception? exception)
+        {
+        }
+        public void OnCommit(IReadOnlyList<TopicPartitionOffset> offsets)
+        {
+        }
     }
 
     private sealed class TestLoggerFactory : ILoggerFactory
     {
-        public TestLogger Logger { get; } = new();
-        public bool Disposed { get; private set; }
+        public TestLogger Logger
+        {
+            get;
+        } = new();
+        public bool Disposed
+        {
+            get; private set;
+        }
         public ILogger CreateLogger(string categoryName)
         {
             ObjectDisposedException.ThrowIf(Disposed, this);
             return Logger;
         }
-        public void AddProvider(ILoggerProvider provider) { }
+        public void AddProvider(ILoggerProvider provider)
+        {
+        }
         public void Dispose() => Disposed = true;
     }
 
     private sealed class TestLogger : ILogger
     {
         public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
-        public int EnabledCheckCount { get; private set; }
+        public int EnabledCheckCount
+        {
+            get; private set;
+        }
         public bool IsEnabled(LogLevel logLevel)
         {
             EnabledCheckCount++;
             return false;
         }
         public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception,
-            Func<TState, Exception?, string> formatter) { }
+            Func<TState, Exception?, string> formatter)
+        {
+        }
     }
 }

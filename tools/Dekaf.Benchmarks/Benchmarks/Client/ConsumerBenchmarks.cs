@@ -43,10 +43,16 @@ public class ConsumerBenchmarks
     private CancellationTokenSource? _dekafConsumeCts;
 
     [Params(100, 1000)]
-    public int MessageCount { get; set; }
+    public int MessageCount
+    {
+        get; set;
+    }
 
     [Params(100, 1000)]
-    public int MessageSize { get; set; }
+    public int MessageSize
+    {
+        get; set;
+    }
 
     [GlobalSetup]
     public async Task Setup()
@@ -180,7 +186,9 @@ public class ConsumerBenchmarks
         {
             count++;
             if (count >= MessageCount)
+            {
                 break;
+            }
         }
 
         return count;

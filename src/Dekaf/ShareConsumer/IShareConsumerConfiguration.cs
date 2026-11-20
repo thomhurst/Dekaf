@@ -4,7 +4,10 @@ namespace Dekaf.ShareConsumer;
 public interface IShareConsumerConfiguration
 {
     /// <summary>Gets the configured acknowledgement mode.</summary>
-    ShareAcknowledgementMode AcknowledgementMode { get; }
+    ShareAcknowledgementMode AcknowledgementMode
+    {
+        get;
+    }
 }
 
 // Raw copies are opt-in and scoped to the current poll round. The hosted service never
@@ -17,7 +20,10 @@ internal interface IRawShareRecordAccessor
 
 internal interface IHostedShareConsumer
 {
-    long AcquisitionStartedTimestamp { get; }
+    long AcquisitionStartedTimestamp
+    {
+        get;
+    }
     // Hosted processing completes renewed work in place: terminal dispositions stop local
     // renewal replay while acknowledgement submission remains tracked independently.
     void ObserveAcknowledgements(ShareAcknowledgementCommitCallback observer);

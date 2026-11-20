@@ -189,12 +189,16 @@ public sealed class EventHubsEmulatorIntegrationTests(EventHubsEmulatorContainer
         {
             await Assert.That(values.Add(result.Value)).IsTrue();
             if (values.Count == messageCount)
+            {
                 break;
+            }
         }
 
         await Assert.That(values.Count).IsEqualTo(messageCount);
         for (var i = 0; i < messageCount; i++)
+        {
             await Assert.That(values).Contains($"batch-value-{i}");
+        }
     }
 
     [Test]
@@ -287,10 +291,14 @@ public sealed class EventHubsEmulatorIntegrationTests(EventHubsEmulatorContainer
     {
         var partitions = new TopicPartition[EventHubsEmulatorContainer.PartitionCount];
         for (var partition = 0; partition < partitions.Length; partition++)
+        {
             partitions[partition] = new TopicPartition(topic, partition);
+        }
 
         consumer.Assign(partitions);
         for (var partition = 0; partition < partitions.Length; partition++)
+        {
             consumer.Seek(new TopicPartitionOffset(topic, partition, 0));
+        }
     }
 }

@@ -107,11 +107,15 @@ public sealed class BrokerUnackedAdmissionTests
                 topic, 0, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
                 PooledMemory.Null, PooledMemory.Null, null, 0, null, null, CancellationToken.None);
             if (!appended)
+            {
                 throw new InvalidOperationException("Append failed before any batch sealed.");
+            }
         }
 
         if (stopOnceCharged is { UnackedBytes: 0 })
+        {
             throw new InvalidOperationException("No batch sealed after 10 appends.");
+        }
     }
 
     private static List<ReadyBatch> DrainSealedBatches(RecordAccumulator accumulator, MetadataManager metadataManager)
@@ -123,7 +127,9 @@ public sealed class BrokerUnackedAdmissionTests
             var drainResult = new Dictionary<int, List<ReadyBatch>>();
             accumulator.Drain(metadataManager, [LeaderNodeId], int.MaxValue, drainResult, new Stack<List<ReadyBatch>>());
             if (!drainResult.TryGetValue(LeaderNodeId, out var batches) || batches.Count == 0)
+            {
                 return drained;
+            }
             drained.AddRange(batches);
         }
     }
@@ -169,7 +175,9 @@ public sealed class BrokerUnackedAdmissionTests
             await Assert.That(budget.UnackedBytes).IsEqualTo(chargedBytes);
 
             foreach (var batch in batches)
+            {
                 ExitAndReturn(accumulator, batch);
+            }
 
             await Assert.That(budget.UnackedBytes).IsEqualTo(0);
         }
@@ -231,7 +239,9 @@ public sealed class BrokerUnackedAdmissionTests
 
             // Acking (exiting) the charged batches reopens the gate and serves the queue.
             foreach (var batch in DrainSealedBatches(accumulator, metadataManager))
+            {
                 ExitAndReturn(accumulator, batch);
+            }
 
             var appended = await gatedAppend;
             await Assert.That(appended).IsTrue();
@@ -357,7 +367,9 @@ public sealed class BrokerUnackedAdmissionTests
             // release drains the original append without double-releasing the budget.
             budget.Charge(chargedBytes);
             foreach (var batch in DrainSealedBatches(accumulator, metadataManager))
+            {
                 ExitAndReturn(accumulator, batch);
+            }
 
             await Assert.That(await first).IsTrue();
         }
@@ -395,7 +407,9 @@ public sealed class BrokerUnackedAdmissionTests
             await Assert.That(blockedAppend.IsCompleted).IsFalse();
 
             foreach (var batch in DrainSealedBatches(accumulator, metadataManager))
+            {
                 ExitAndReturn(accumulator, batch);
+            }
             await Assert.That(await blockedAppend).IsTrue();
         }
         finally
@@ -676,7 +690,9 @@ public sealed class BrokerUnackedAdmissionTests
             await Assert.That(newBudget.UnackedBytes).IsEqualTo(batchBytes);
 
             foreach (var drainedBatch in batches)
+            {
                 ExitAndReturn(accumulator, drainedBatch);
+            }
 
             await Assert.That(originalBudget.UnackedBytes).IsEqualTo(0);
             await Assert.That(newBudget.UnackedBytes).IsEqualTo(0);

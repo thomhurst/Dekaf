@@ -53,7 +53,10 @@ public sealed class ConsumerConfigurationTests(KafkaTestContainer kafka) : Kafka
         await foreach (var msg in consumer.ConsumeAsync(cts.Token).ConfigureAwait(false))
         {
             consumedCount++;
-            if (consumedCount >= 50) break;
+            if (consumedCount >= 50)
+            {
+                break;
+            }
         }
 
         // Assert - all 50 messages should eventually be consumed
@@ -100,7 +103,10 @@ public sealed class ConsumerConfigurationTests(KafkaTestContainer kafka) : Kafka
         await foreach (var msg in consumer.ConsumeAsync(cts.Token).ConfigureAwait(false))
         {
             consumedCount++;
-            if (consumedCount >= 20) break;
+            if (consumedCount >= 20)
+            {
+                break;
+            }
         }
 
         // Assert - should still consume all messages despite minimal prefetching
@@ -259,7 +265,9 @@ public sealed class ConsumerConfigurationTests(KafkaTestContainer kafka) : Kafka
 
             await Assert.That(await consume).IsNotNull();
             if (!completedSynchronously)
+            {
                 continue;
+            }
 
             observedBufferedConsume = true;
             await Assert.That(GetPollVersion(coordinator)).IsEqualTo(pollVersion + 1);
@@ -327,7 +335,10 @@ public sealed class ConsumerConfigurationTests(KafkaTestContainer kafka) : Kafka
         await foreach (var msg in consumer.ConsumeAsync(cts.Token).ConfigureAwait(false))
         {
             consumedCount++;
-            if (consumedCount >= 10) break;
+            if (consumedCount >= 10)
+            {
+                break;
+            }
         }
 
         // Assert

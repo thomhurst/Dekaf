@@ -79,13 +79,17 @@ public class MemoryReleasedAtomicityTests
             {
                 barrier.SignalAndWait();
                 if (batch.TrySetMemoryReleased())
+                {
                     Interlocked.Increment(ref trueCount);
+                }
             })).ToArray();
 
             await Task.WhenAll(tasks);
 
             if (trueCount != 1)
+            {
                 Interlocked.Increment(ref failedIterations);
+            }
         }
 
         await Assert.That(failedIterations).IsEqualTo(0);
@@ -139,9 +143,13 @@ public class MemoryReleasedAtomicityTests
                     var overestimatedBytes = partBatch.OverestimatedBytes;
                     var readyBatch = partBatch.Complete();
                     if (overestimatedBytes > 0)
+                    {
                         accumulator.ReleaseMemory(overestimatedBytes);
+                    }
                     if (readyBatch is not null)
+                    {
                         batches.Add((readyBatch, readyBatch.DataSize));
+                    }
                 }
             }
 
@@ -226,6 +234,8 @@ public class MemoryReleasedAtomicityTests
     private static void ClearCurrentBatches(RecordAccumulator accumulator)
     {
         for (var p = 0; p < 10; p++)
+        {
             accumulator.ClearCurrentBatch("test-topic", p);
+        }
     }
 }

@@ -48,6 +48,9 @@ public static class DynamoDbOutboxServiceCollectionExtensions
     // Not disposable, so the container leaves the caller's client alone.
     private sealed class OutboxClient(IAmazonDynamoDB client)
     {
-        public IAmazonDynamoDB Client { get; } = client;
+        public IAmazonDynamoDB Client
+        {
+            get;
+        } = client;
     }
 }

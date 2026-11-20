@@ -14,5 +14,8 @@ internal interface IPooledMemory : IDisposable
     /// <summary>
     /// Gets the pooled memory. Valid until Dispose() is called.
     /// </summary>
-    ReadOnlyMemory<byte> Memory { get; }
+    ReadOnlyMemory<byte> Memory
+    {
+        get;
+    }
 }

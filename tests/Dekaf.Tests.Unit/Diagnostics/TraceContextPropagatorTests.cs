@@ -134,7 +134,9 @@ public sealed class TraceContextPropagatorTests
         var headers = TraceContextPropagator.InjectTraceContext(new Headers(2), activity)!;
         var pooledHeaders = ProducerContainerPools.Headers.Rent(headers.Count);
         for (var i = 0; i < headers.Count; i++)
+        {
             pooledHeaders[i] = headers[i];
+        }
 
         RecordAccumulator.ReturnPooledHeaders(pooledHeaders, headers.Count);
 

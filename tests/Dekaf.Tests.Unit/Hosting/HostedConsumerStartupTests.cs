@@ -142,7 +142,10 @@ public class HostedConsumerStartupTests
             MaxPollRetryBackoff = TimeSpan.FromMilliseconds(1)
         })
     {
-        public TaskCompletionSource Processed { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource Processed
+        {
+            get;
+        } = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         protected override IEnumerable<string> Topics => ["orders"];
 

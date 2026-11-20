@@ -72,7 +72,9 @@ public sealed class ZstdCompressionCodec : ICompressionCodecWithLevel
                 sourceSpan = sourceSpan[bytesConsumed..];
 
                 if (status == OperationStatus.InvalidData)
+                {
                     throw new InvalidOperationException("Zstd compression failed: invalid data");
+                }
 
                 if (status == OperationStatus.DestinationTooSmall && bytesConsumed == 0 && bytesWritten == 0)
                 {
@@ -94,13 +96,19 @@ public sealed class ZstdCompressionCodec : ICompressionCodecWithLevel
                     destination.Advance(bytesWritten);
 
                     if (status == OperationStatus.Done)
+                    {
                         return;
+                    }
 
                     if (status == OperationStatus.InvalidData)
+                    {
                         throw new InvalidOperationException("Zstd compression failed: invalid data");
+                    }
 
                     if (status == OperationStatus.DestinationTooSmall && bytesWritten == 0)
+                    {
                         flushSizeHint = GrowDestinationSizeHint(flushSizeHint);
+                    }
                 }
             }
         }
@@ -125,10 +133,14 @@ public sealed class ZstdCompressionCodec : ICompressionCodecWithLevel
                 sourceSpan = sourceSpan[bytesConsumed..];
 
                 if (status == OperationStatus.Done)
+                {
                     return;
+                }
 
                 if (status == OperationStatus.InvalidData)
+                {
                     throw new InvalidDataException("Zstd decompression failed: invalid data");
+                }
 
                 // NeedMoreData or DestinationTooSmall: continue with next iteration
             }
@@ -170,7 +182,9 @@ public sealed class ZstdCompressionCodec : ICompressionCodecWithLevel
     private static int GrowDestinationSizeHint(int sizeHint)
     {
         if (sizeHint <= 0)
+        {
             return 256;
+        }
 
         return sizeHint >= int.MaxValue / 2
             ? int.MaxValue

@@ -54,7 +54,9 @@ public sealed class OffsetCommitSafetyTests(KafkaTestContainer kafka) : KafkaInt
                 }
 
                 if (consumed == messageCount)
+                {
                     break;
+                }
             }
 
             await consumer.CloseAsync();
@@ -156,7 +158,9 @@ public sealed class OffsetCommitSafetyTests(KafkaTestContainer kafka) : KafkaInt
         {
             offsets.Add(message.Offset);
             if (offsets.Count >= messageCount - committedOffset)
+            {
                 break;
+            }
         }
 
         // Exactly the records from the committed offset onwards, in order — no
@@ -323,7 +327,9 @@ public sealed class OffsetCommitSafetyTests(KafkaTestContainer kafka) : KafkaInt
                     seen.TryAdd((message.Partition, message.Offset), 0);
 
                     if (perMessageDelay > TimeSpan.Zero)
+                    {
                         await Task.Delay(perMessageDelay, cancellationToken);
+                    }
                 }
             }
             catch (OperationCanceledException)

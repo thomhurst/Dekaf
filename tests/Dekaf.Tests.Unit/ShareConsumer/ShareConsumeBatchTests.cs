@@ -120,7 +120,9 @@ public sealed class ShareConsumeBatchTests
         var records = batch.GetEnumerator();
         await Assert.That(records.MoveNext()).IsTrue();
         if (mode == ShareAcknowledgementMode.Explicit)
+        {
             batch.Acknowledge(records.Current);
+        }
         batch.Dispose();
         await Assert.That(tracker.RetainedBatchCount).IsEqualTo(1);
         await Assert.That(batch.Storage.TrackedCount).IsEqualTo(1);
@@ -144,7 +146,9 @@ public sealed class ShareConsumeBatchTests
         foreach (var record in batch)
         {
             if (record.Offset != 101)
+            {
                 batch.Acknowledge(record);
+            }
         }
         var wire = tracker.Flush();
         var submitted = wire[new TopicPartition("batch", 0)];
@@ -296,7 +300,9 @@ public sealed class ShareConsumeBatchTests
         var iterator = batch.GetEnumerator();
         var expected = 1;
         while (iterator.MoveNext())
+        {
             await Assert.That(iterator.Current.Value).IsEqualTo(expected++);
+        }
         await Assert.That(expected).IsEqualTo(4);
     }
 
@@ -315,7 +321,9 @@ public sealed class ShareConsumeBatchTests
         using var encoded = CreateSource(5);
         var raw = encoded.GetUnparsedRecordData();
         if (truncateTail)
+        {
             raw = raw[..^3];
+        }
         ShareFetchAcquiredRecords[] acquired =
         [
             new() { FirstOffset = 101, LastOffset = 101, DeliveryCount = 2 },
@@ -391,7 +399,9 @@ public sealed class ShareConsumeBatchTests
         var outcomes = wire[new TopicPartition("batch", 0)][0].AcknowledgeTypes;
         await Assert.That(outcomes.Length).IsEqualTo(256);
         for (var index = 0; index < outcomes.Length; index++)
+        {
             await Assert.That(outcomes[index]).IsEqualTo((byte)(index % 2 == 0 ? 1 : 2));
+        }
     }
 
     [Test]
@@ -439,7 +449,9 @@ public sealed class ShareConsumeBatchTests
         await Assert.That(wire.Select(static batch => (batch.FirstOffset, batch.LastOffset)))
             .IsEquivalentTo(new (long, long)[] { (1, 1), (3, 4), (8, 11) });
         foreach (var batch in wire)
+        {
             await Assert.That(batch.IsGapOnly).IsTrue();
+        }
     }
 
     [Test]
@@ -480,8 +492,14 @@ public sealed class ShareConsumeBatchTests
         current.Acknowledge(currentRecord, disposition);
         var newer = tracker.Flush();
 
-        if (olderSucceeded) tracker.ApplySuccessfulAcknowledgements(older);
-        else tracker.RequeueAcknowledgements(older);
+        if (olderSucceeded)
+        {
+            tracker.ApplySuccessfulAcknowledgements(older);
+        }
+        else
+        {
+            tracker.RequeueAcknowledgements(older);
+        }
         await Assert.That(tracker.HasPending).IsFalse();
         await Assert.That(tracker.RetainedBatchCount).IsEqualTo(1);
         await Assert.That(tracker.GetReplays(1)).IsNull();
@@ -552,7 +570,9 @@ public sealed class ShareConsumeBatchTests
         tracker.ApplySuccessfulAcknowledgements(tracker.Flush());
 
         using (var unread = tracker.GetReplays(2)![0])
+        {
             await Assert.That(unread.Count).IsEqualTo(2);
+        }
 
         using (var first = tracker.GetReplays(2)![0])
         {
@@ -634,14 +654,18 @@ public sealed class ShareConsumeBatchTests
         using var batch = await consumer.ParseRecordBatchAsync(
             new TopicPartition("batch", 0), CreateSource(2), Acquired(100, 101), 2, default);
         if (!deliverBeforeRegistration)
+        {
             tracker.Register(batch);
+        }
         foreach (var record in batch)
         {
             batch.Acknowledge(record, AcknowledgeType.Release);
             batch.Acknowledge(record, AcknowledgeType.Reject);
         }
         if (deliverBeforeRegistration)
+        {
             tracker.Register(batch);
+        }
         await Assert.That(tracker.HasPending).IsTrue();
         var first = tracker.Flush();
         await Assert.That(tracker.HasPending).IsFalse();
@@ -671,9 +695,13 @@ public sealed class ShareConsumeBatchTests
         _ = iterator.MoveNext();
         await Assert.That(tracker.HasPending).IsTrue();
         if (clearAll)
+        {
             tracker.Clear();
+        }
         else
+        {
             tracker.RemoveOutsideAssignment(new HashSet<TopicPartition> { second.TopicPartition });
+        }
         await Assert.That(tracker.HasPending).IsFalse();
         // The caller still holds the removed lease. Reading its unread tail must
         // not make the tracker's pending aggregate include detached storage.
@@ -720,15 +748,21 @@ public sealed class ShareConsumeBatchTests
             new TopicPartition("batch", 0), CreateSource(8), Acquired(100, 107), 8, default);
         tracker.Register(original);
         foreach (var record in original)
+        {
             original.Acknowledge(record, AcknowledgeType.Renew);
+        }
         tracker.ApplySuccessfulAcknowledgements(tracker.Flush());
         original.Dispose();
         var firstReplay = tracker.GetReplays(8)!;
         foreach (var replay in firstReplay)
         {
             foreach (var record in replay)
+            {
                 if (record.Offset % 2 == 0)
+                {
                     replay.Acknowledge(record);
+                }
+            }
             replay.Dispose();
         }
         tracker.ApplySuccessfulAcknowledgements(tracker.Flush());
@@ -744,7 +778,9 @@ public sealed class ShareConsumeBatchTests
             original.TopicPartition, CreateSource(8), acquired, 8, default);
         tracker.Register(replacement);
         foreach (var record in replacement)
+        {
             replacement.Acknowledge(record, AcknowledgeType.Release);
+        }
         var wire = tracker.Flush();
         // The renewed odd offsets stay out of the payload; type 0 would archive them as gaps.
         var released = wire[original.TopicPartition];
@@ -806,7 +842,9 @@ public sealed class ShareConsumeBatchTests
             partition, CreateSource(1), Acquired(100, 100), 1, default);
         tracker.Register(retained);
         foreach (var record in retained)
+        {
             retained.Acknowledge(record, AcknowledgeType.Renew);
+        }
         tracker.ApplySuccessfulAcknowledgements(tracker.Flush());
         retained.Dispose();
         for (var offset = 101; offset < 1125; offset++)
@@ -817,7 +855,9 @@ public sealed class ShareConsumeBatchTests
                 partition, source, Acquired(offset, offset), 1, default);
             tracker.Register(batch);
             foreach (var record in batch)
+            {
                 batch.Acknowledge(record);
+            }
             batch.Dispose();
             tracker.ApplySuccessfulAcknowledgements(tracker.Flush());
         }
@@ -829,7 +869,9 @@ public sealed class ShareConsumeBatchTests
         foreach (var replay in tracker.GetReplays(1)!)
         {
             foreach (var record in replay)
+            {
                 replay.Acknowledge(record);
+            }
             replay.Dispose();
         }
         tracker.ApplySuccessfulAcknowledgements(tracker.Flush());

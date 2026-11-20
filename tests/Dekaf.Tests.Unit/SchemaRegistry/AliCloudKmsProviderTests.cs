@@ -283,7 +283,9 @@ public sealed class AliCloudKmsProviderTests
             properties[AliCloudKmsProvider.AccessKeySecretProperty] = "secret";
         }
         if (includeRole)
+        {
             properties[AliCloudKmsProvider.RoleSessionExpirationProperty] = "899";
+        }
         var factory = new RecordingFactory(_ => new XorClient());
         var provider = CreateProvider(factory);
 
@@ -420,7 +422,9 @@ public sealed class AliCloudKmsProviderTests
         finally
         {
             if (File.Exists(caFile))
+            {
                 File.Delete(caFile);
+            }
         }
     }
 
@@ -451,7 +455,9 @@ public sealed class AliCloudKmsProviderTests
         finally
         {
             if (File.Exists(caFile))
+            {
                 File.Delete(caFile);
+            }
         }
     }
 
@@ -501,7 +507,9 @@ public sealed class AliCloudKmsProviderTests
         var factory = new RecordingFactory(_ =>
         {
             if (Interlocked.Increment(ref attempt) == 1)
+            {
                 throw new HttpRequestException("temporary failure");
+            }
             return new XorClient();
         });
         var provider = CreateProvider(factory);
@@ -577,7 +585,9 @@ public sealed class AliCloudKmsProviderTests
     {
         var keyUri = Environment.GetEnvironmentVariable("DEKAF_ALICLOUD_KMS_KEY_URI");
         if (string.IsNullOrWhiteSpace(keyUri))
+        {
             return;
+        }
 
         var provider = new AliCloudKmsProvider();
         var reference = CreateReference(keyUri);
@@ -630,7 +640,10 @@ public sealed class AliCloudKmsProviderTests
 
         internal int EncryptCount => Volatile.Read(ref _encryptCount);
         internal int DecryptCount => Volatile.Read(ref _decryptCount);
-        internal string? LastKeyId { get; private set; }
+        internal string? LastKeyId
+        {
+            get; private set;
+        }
 
         public ValueTask<byte[]> EncryptAsync(
             string keyId,
@@ -656,14 +669,19 @@ public sealed class AliCloudKmsProviderTests
         {
             var output = input.ToArray();
             for (var index = 0; index < output.Length; index++)
+            {
                 output[index] ^= 0xa5;
+            }
             return output;
         }
     }
 
     private sealed class CancelingClient : IAliCloudKmsClient
     {
-        internal CancellationToken CapturedToken { get; private set; }
+        internal CancellationToken CapturedToken
+        {
+            get; private set;
+        }
 
         public async ValueTask<byte[]> EncryptAsync(
             string keyId,

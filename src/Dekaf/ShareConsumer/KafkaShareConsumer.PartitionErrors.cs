@@ -42,7 +42,9 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue>
                 {
                     if (_partitionFetchErrors is { Count: > 0 } errors
                         && lookup.Get(_metadataManager, topic.TopicId) is { } recoveredTopic)
+                    {
                         errors.Remove(new TopicPartition(recoveredTopic.Name, partition.PartitionIndex));
+                    }
                     continue;
                 }
 
@@ -50,7 +52,9 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue>
                 // metadata refreshed, gives its partitions no leader, so no fetch includes them.
                 // The broker can still report them while its share session remembers them.
                 if (lookup.Get(_metadataManager, topic.TopicId) is not { } topicInfo)
+                {
                     continue;
+                }
 
                 HandlePartitionFetchError(
                     brokerId,
@@ -68,14 +72,18 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue>
         IReadOnlyList<ShareFetchNodeEndpoint> nodeEndpoints)
     {
         if (!_assignmentSnapshot.Contains(topicPartition))
+        {
             return;
+        }
 
         // A share session keeps a partition until the next request to that broker forgets it, and a
         // request already in flight can still report it. Once metadata routes the partition
         // elsewhere, a later error from the old broker is stale.
         var leader = _metadataManager.Metadata.GetPartitionLeader(topicPartition.Topic, topicPartition.Partition);
         if (leader is not null && leader.NodeId != brokerId)
+        {
             return;
+        }
 
         var errorCode = partition.ErrorCode;
         var currentLeader = partition.CurrentLeader;
@@ -94,7 +102,9 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue>
         // same broker is fetched, so it can report the error again during the backoff. Keep the
         // deadline and the requested refresh, so each partition refreshes at most once per backoff.
         if (IsPartitionFetchSuspended(errors, topicPartition, now))
+        {
             return;
+        }
 
         // An incremental response can omit a recovered partition, so an entry can outlive its
         // error. Continue a streak only when this error follows the previous retry promptly.
@@ -116,10 +126,14 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue>
         // Warn when an error starts or changes. Repeats of the same error are expected while
         // metadata catches up, so they log at debug level.
         if (consecutiveErrors == 1)
+        {
             LogPartitionFetchError(topicPartition.Topic, topicPartition.Partition, errorCode, backoffMs);
+        }
         else
+        {
             LogPartitionFetchErrorRepeated(topicPartition.Topic, topicPartition.Partition, errorCode,
                 consecutiveErrors, backoffMs);
+        }
     }
 
     /// <summary>
@@ -138,7 +152,9 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue>
             {
                 var partition = partitions[partitionIndex];
                 if (!IsLeaderChangeError(partition.ErrorCode))
+                {
                     continue;
+                }
 
                 var currentLeader = partition.CurrentLeader;
                 if (lookup.Get(_metadataManager, topic.TopicId) is not { } topicInfo
@@ -168,7 +184,9 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue>
         {
             var endpoint = endpoints[index];
             if (endpoint.NodeId == nodeId)
+            {
                 return new NodeEndpoint { NodeId = nodeId, Host = endpoint.Host, Port = endpoint.Port, Rack = endpoint.Rack };
+            }
         }
         return null;
     }
@@ -179,7 +197,9 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue>
         {
             var endpoint = endpoints[index];
             if (endpoint.NodeId == nodeId)
+            {
                 return new NodeEndpoint { NodeId = nodeId, Host = endpoint.Host, Port = endpoint.Port, Rack = endpoint.Rack };
+            }
         }
         return null;
     }
@@ -222,11 +242,15 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue>
         foreach (var (topicPartition, batches) in pendingAcks)
         {
             if (IsPartitionFetchSuspended(errors, topicPartition, now))
+            {
                 (suspended ??= [])[topicPartition] = batches;
+            }
         }
 
         if (suspended is not null)
+        {
             DeferAcknowledgements(pendingAcks, suspended);
+        }
     }
 
     /// <summary>
@@ -236,7 +260,9 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue>
     private Dictionary<TopicPartition, PartitionFetchError>? GetPartitionFetchErrors(TopicPartitionSet assignment)
     {
         if (_partitionFetchErrors is not { Count: > 0 } errors)
+        {
             return null;
+        }
         if (!ReferenceEquals(_partitionFetchErrorsAssignment, assignment))
         {
             _partitionFetchErrorsAssignment = assignment;
@@ -244,12 +270,16 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue>
             foreach (var topicPartition in errors.Keys)
             {
                 if (!assignment.Contains(topicPartition))
+                {
                     (revoked ??= []).Add(topicPartition);
+                }
             }
             if (revoked is not null)
             {
                 foreach (var topicPartition in revoked)
+                {
                     errors.Remove(topicPartition);
+                }
             }
         }
         return errors.Count == 0 ? null : errors;
@@ -262,21 +292,29 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue>
     private int GetPartitionFetchResumeDelayMs(TopicPartitionSet assignment)
     {
         if (GetPartitionFetchErrors(assignment) is not { } errors)
+        {
             return 0;
+        }
 
         var now = Stopwatch.GetTimestamp();
         var earliest = long.MaxValue;
         foreach (var topicPartition in assignment)
         {
             if (_metadataManager.Metadata.GetPartitionLeader(topicPartition.Topic, topicPartition.Partition) is null)
+            {
                 continue;
+            }
             if (!errors.TryGetValue(topicPartition, out var error) || error.RetryAtTimestamp <= now)
+            {
                 return 0;
+            }
             earliest = Math.Min(earliest, error.RetryAtTimestamp);
         }
 
         if (earliest == long.MaxValue)
+        {
             return 0;
+        }
         return (int)Math.Max(1, (earliest - now + Stopwatch.Frequency / 1000 - 1) * 1000 / Stopwatch.Frequency);
     }
 

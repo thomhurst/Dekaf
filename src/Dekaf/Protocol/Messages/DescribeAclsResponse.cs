@@ -16,22 +16,34 @@ public sealed class DescribeAclsResponse : IKafkaResponse
     /// <summary>
     /// The duration in milliseconds for which the request was throttled due to quota violation.
     /// </summary>
-    public int ThrottleTimeMs { get; init; }
+    public int ThrottleTimeMs
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The error code, or 0 if there was no error.
     /// </summary>
-    public ErrorCode ErrorCode { get; init; }
+    public ErrorCode ErrorCode
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The error message, or null if there was no error.
     /// </summary>
-    public string? ErrorMessage { get; init; }
+    public string? ErrorMessage
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The resources and their associated ACLs.
     /// </summary>
-    public required IReadOnlyList<DescribeAclsResource> Resources { get; init; }
+    public required IReadOnlyList<DescribeAclsResource> Resources
+    {
+        get; init;
+    }
 
     public static IKafkaResponse Read(ref KafkaProtocolReader reader, short version)
     {
@@ -68,22 +80,34 @@ public sealed class DescribeAclsResource
     /// <summary>
     /// The resource type.
     /// </summary>
-    public sbyte ResourceType { get; init; }
+    public sbyte ResourceType
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The resource name.
     /// </summary>
-    public required string ResourceName { get; init; }
+    public required string ResourceName
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The resource pattern type (v1+).
     /// </summary>
-    public sbyte PatternType { get; init; } = 3; // Literal
+    public sbyte PatternType
+    {
+        get; init;
+    } = 3; // Literal
 
     /// <summary>
     /// The ACLs associated with this resource.
     /// </summary>
-    public required IReadOnlyList<AclDescription> Acls { get; init; }
+    public required IReadOnlyList<AclDescription> Acls
+    {
+        get; init;
+    }
 
     public static DescribeAclsResource Read(ref KafkaProtocolReader reader, short version)
     {
@@ -121,22 +145,34 @@ public sealed class AclDescription
     /// <summary>
     /// The principal.
     /// </summary>
-    public required string Principal { get; init; }
+    public required string Principal
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The host.
     /// </summary>
-    public required string Host { get; init; }
+    public required string Host
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The operation.
     /// </summary>
-    public sbyte Operation { get; init; }
+    public sbyte Operation
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The permission type.
     /// </summary>
-    public sbyte PermissionType { get; init; }
+    public sbyte PermissionType
+    {
+        get; init;
+    }
 
     public static AclDescription Read(ref KafkaProtocolReader reader, short version)
     {

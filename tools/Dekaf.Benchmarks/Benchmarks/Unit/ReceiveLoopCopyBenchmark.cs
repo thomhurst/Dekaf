@@ -31,10 +31,16 @@ public class ReceiveLoopCopyBenchmark
     private byte[] _destination = null!;
 
     [Params(65_536, 262_144, 1_048_576, 4_194_304, 16_777_216, 52_428_800)]
-    public int ResponseSize { get; set; }
+    public int ResponseSize
+    {
+        get; set;
+    }
 
     [Params(1, 4, 16, 64)]
-    public int SegmentCount { get; set; }
+    public int SegmentCount
+    {
+        get; set;
+    }
 
     [GlobalSetup]
     public void Setup()

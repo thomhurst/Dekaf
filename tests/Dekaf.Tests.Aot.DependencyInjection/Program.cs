@@ -8,8 +8,8 @@ using Dekaf.Extensions.Hosting;
 using Dekaf.Producer;
 using Dekaf.ShareConsumer;
 using Dekaf.Testing;
-using Microsoft.Extensions.Diagnostics.HealthChecks;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Diagnostics.HealthChecks;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 
@@ -87,13 +87,17 @@ static async Task RunTestingAndHealthChecksSmokeAsync()
 
     var report = await provider.GetRequiredService<HealthCheckService>().CheckHealthAsync();
     if (report.Entries.Count != 2)
+    {
         throw new InvalidOperationException("Health check registration smoke failed.");
+    }
 }
 
 static void RunClosedGenericTestingSmoke()
 {
     if (RuntimeFeature.IsDynamicCodeSupported)
+    {
         return;
+    }
 
     var services = new ServiceCollection();
     services.AddSingleton<IKafkaConsumer<string, string>>(static _ => throw new InvalidOperationException("Real consumer was not replaced."));

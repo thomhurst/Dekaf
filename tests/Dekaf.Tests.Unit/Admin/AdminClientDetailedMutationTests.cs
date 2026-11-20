@@ -39,8 +39,14 @@ public sealed class AdminClientDetailedMutationTests
         var calls = 0;
         Setup(connection, operation, names =>
         {
-            if (++calls == 1) return [("good", ErrorCode.None, null), ("bad", rejection, "rejected")];
-            if (names.Length != 1 || names[0] != "bad") throw new InvalidOperationException("Confirmed mutation was replayed.");
+            if (++calls == 1)
+            {
+                return [("good", ErrorCode.None, null), ("bad", rejection, "rejected")];
+            }
+            if (names.Length != 1 || names[0] != "bad")
+            {
+                throw new InvalidOperationException("Confirmed mutation was replayed.");
+            }
             return [("bad", ErrorCode.None, null)];
         });
         var results = await Invoke(admin, operation);
@@ -63,7 +69,10 @@ public sealed class AdminClientDetailedMutationTests
         Setup(connection, operation, _ =>
         {
             calls++;
-            if (!brokerTimeout) throw new IOException("response lost");
+            if (!brokerTimeout)
+            {
+                throw new IOException("response lost");
+            }
             return [("good", ErrorCode.RequestTimedOut, "unknown"), ("bad", ErrorCode.RequestTimedOut, "unknown")];
         });
         var results = await Invoke(admin, operation);
@@ -108,9 +117,13 @@ public sealed class AdminClientDetailedMutationTests
         {
             calls++;
             if (duringRetry && calls == 1)
+            {
                 return [("good", ErrorCode.None, null), ("bad", ErrorCode.NotController, "moved")];
+            }
             if (duringRetry && (names.Length != 1 || names[0] != "bad"))
+            {
                 throw new InvalidOperationException("Confirmed mutation was replayed.");
+            }
             throw failure;
         });
 
@@ -200,11 +213,13 @@ public sealed class AdminClientDetailedMutationTests
         var (admin, connection) = CreateAdmin();
         await using var client = admin;
         var failure = new InvalidOperationException("Invalid fixture invariant");
+
         IEnumerable<NewTopic> InvalidInputSource()
         {
             yield return new() { Name = "good" };
             throw failure;
         }
+
         var caught = await Assert.ThrowsAsync<InvalidOperationException>(() => admin.CreateTopicsDetailedAsync(InvalidInputSource()).AsTask());
         await Assert.That(caught).IsSameReferenceAs(failure);
         await Assert.That(connection.ReceivedCalls()).IsEmpty();
@@ -218,20 +233,32 @@ public sealed class AdminClientDetailedMutationTests
         var (admin, connection) = CreateAdmin();
         await using var client = admin;
         await using var unavailable = new KafkaConnection("localhost", 9092);
-        if (disposed) await unavailable.DisposeAsync();
+        if (disposed)
+        {
+            await unavailable.DisposeAsync();
+        }
         var calls = 0;
         connection.SendAsync<CreateTopicsRequest, CreateTopicsResponse>(Arg.Any<CreateTopicsRequest>(), Arg.Any<short>(), Arg.Any<CancellationToken>())
             .Returns(call => ++calls == 1
-                ? ValueTask.FromResult(new CreateTopicsResponse { Topics =
-                    [new() { Name = "good" }, new() { Name = "bad", ErrorCode = ErrorCode.NotController }] })
+                ? ValueTask.FromResult(new CreateTopicsResponse
+                {
+                    Topics =
+                    [new() { Name = "good" }, new() { Name = "bad", ErrorCode = ErrorCode.NotController }]
+                })
                 : unavailable.SendAsync<CreateTopicsRequest, CreateTopicsResponse>(call.Arg<CreateTopicsRequest>(), call.Arg<short>(), call.Arg<CancellationToken>()));
         var results = await Invoke(admin, "create");
         await Assert.That(calls).IsEqualTo(2);
         await Assert.That(results["good"].IsSuccess).IsTrue();
         await Assert.That(results["bad"].Outcome).IsEqualTo(AdminMutationOutcome.Unknown);
         await Assert.That(results["bad"].ErrorCode).IsNull();
-        if (disposed) await Assert.That(results["bad"].Exception).IsTypeOf<ObjectDisposedException>();
-        else await Assert.That(results["bad"].Exception).IsTypeOf<InvalidOperationException>();
+        if (disposed)
+        {
+            await Assert.That(results["bad"].Exception).IsTypeOf<ObjectDisposedException>();
+        }
+        else
+        {
+            await Assert.That(results["bad"].Exception).IsTypeOf<InvalidOperationException>();
+        }
     }
 
     [Test]
@@ -359,11 +386,20 @@ public sealed class AdminClientDetailedMutationTests
         var pending = admin.CreateTopicsDetailedAsync([new() { Name = "good" }],
             new() { TimeoutMs = timeout ? 500 : 30000 }, cancellation.Token).AsTask();
         await entered.Task.WaitAsync(TimeSpan.FromSeconds(10));
-        if (!timeout) cancellation.Cancel();
+        if (!timeout)
+        {
+            cancellation.Cancel();
+        }
         var results = await pending.WaitAsync(TimeSpan.FromSeconds(10));
         await Assert.That(results["good"].Outcome).IsEqualTo(AdminMutationOutcome.Unknown);
-        if (timeout) await Assert.That(results["good"].Exception).IsTypeOf<KafkaTimeoutException>();
-        else await Assert.That(results["good"].Exception is OperationCanceledException).IsTrue();
+        if (timeout)
+        {
+            await Assert.That(results["good"].Exception).IsTypeOf<KafkaTimeoutException>();
+        }
+        else
+        {
+            await Assert.That(results["good"].Exception is OperationCanceledException).IsTrue();
+        }
     }
 
     private static async ValueTask<CreateTopicsResponse> WaitForCancellation(TaskCompletionSource entered, CancellationToken token)
@@ -429,20 +465,31 @@ public sealed class AdminClientDetailedMutationTests
             .Returns(call =>
             {
                 if (++calls == 1)
+                {
                     return ValueTask.FromResult(topLevel
                         ? new AlterPartitionReassignmentsResponse { ErrorCode = ErrorCode.NotController, ErrorMessage = "moved", Responses = [] }
                         : new AlterPartitionReassignmentsResponse
                         {
-                            Responses = [new() { Name = "orders", Partitions =
-                            [new() { PartitionIndex = 0 }, new() { PartitionIndex = 1, ErrorCode = ErrorCode.NotController }] }]
+                            Responses = [new()
+                            {
+                                Name = "orders",
+                                Partitions =
+                            [new() { PartitionIndex = 0 }, new() { PartitionIndex = 1, ErrorCode = ErrorCode.NotController }]
+                            }]
                         });
+                }
                 var partitions = call.Arg<AlterPartitionReassignmentsRequest>().Topics[0].Partitions;
                 if (partitions.Count != (topLevel ? 2 : 1) || (!topLevel && partitions[0].PartitionIndex != 1))
+                {
                     throw new InvalidOperationException("Incorrect unresolved reassignment batch.");
+                }
                 return ValueTask.FromResult(new AlterPartitionReassignmentsResponse
                 {
-                    Responses = [new() { Name = "orders",
-                    Partitions = partitions.Select(static item => new AlterPartitionReassignmentsResponsePartition { PartitionIndex = item.PartitionIndex }).ToArray() }]
+                    Responses = [new()
+                    {
+                        Name = "orders",
+                        Partitions = partitions.Select(static item => new AlterPartitionReassignmentsResponsePartition { PartitionIndex = item.PartitionIndex }).ToArray()
+                    }]
                 });
             });
         var results = await admin.AlterPartitionReassignmentsDetailedAsync(new Dictionary<TopicPartition, Optional<NewPartitionReassignment>>
@@ -475,7 +522,10 @@ public sealed class AdminClientDetailedMutationTests
         connection.SendAsync<DeleteTopicsRequest, DeleteTopicsResponse>(Arg.Any<DeleteTopicsRequest>(), Arg.Any<short>(), Arg.Any<CancellationToken>())
             .Returns(call =>
             {
-                if (call.Arg<short>() < 6) throw new InvalidOperationException("Topic IDs need v6.");
+                if (call.Arg<short>() < 6)
+                {
+                    throw new InvalidOperationException("Topic IDs need v6.");
+                }
                 return ValueTask.FromResult(new DeleteTopicsResponse
                 {
                     Responses = [new() { Name = string.Empty, TopicId = second }, new() { Name = string.Empty, TopicId = Guid.Empty, ErrorCode = ErrorCode.None }]
@@ -500,8 +550,12 @@ public sealed class AdminClientDetailedMutationTests
                 captured = call.Arg<AlterPartitionReassignmentsRequest>();
                 return ValueTask.FromResult(new AlterPartitionReassignmentsResponse
                 {
-                    Responses = [new() { Name = "orders", Partitions = [new() { PartitionIndex = 0 },
-                        new() { PartitionIndex = 1, ErrorCode = ErrorCode.NoReassignmentInProgress, ErrorMessage = "nothing to cancel" }] }]
+                    Responses = [new()
+                    {
+                        Name = "orders",
+                        Partitions = [new() { PartitionIndex = 0 },
+                        new() { PartitionIndex = 1, ErrorCode = ErrorCode.NoReassignmentInProgress, ErrorMessage = "nothing to cancel" }]
+                    }]
                 });
             });
         var results = await admin.AlterPartitionReassignmentsDetailedAsync(new Dictionary<TopicPartition, Optional<NewPartitionReassignment>>
@@ -588,7 +642,8 @@ public sealed class AdminClientDetailedMutationTests
                             .Select(static item => new CreatePartitionsResponseResult { Name = item.Name, ErrorCode = item.Code, ErrorMessage = item.Message }).ToArray()
                     }));
                 break;
-            default: throw new ArgumentOutOfRangeException(nameof(operation));
+            default:
+                throw new ArgumentOutOfRangeException(nameof(operation));
         }
     }
 }

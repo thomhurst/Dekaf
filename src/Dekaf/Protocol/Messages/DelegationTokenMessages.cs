@@ -9,9 +9,18 @@ public sealed class CreateDelegationTokenRequest : IKafkaRequest<CreateDelegatio
     public static short LowestSupportedVersion => 1;
     public static short HighestSupportedVersion => 3;
 
-    public DelegationTokenPrincipalData? Owner { get; init; }
-    public IReadOnlyList<DelegationTokenPrincipalData>? Renewers { get; init; }
-    public long MaxLifetimeMs { get; init; } = -1;
+    public DelegationTokenPrincipalData? Owner
+    {
+        get; init;
+    }
+    public IReadOnlyList<DelegationTokenPrincipalData>? Renewers
+    {
+        get; init;
+    }
+    public long MaxLifetimeMs
+    {
+        get; init;
+    } = -1;
 
     public static bool IsFlexibleVersion(short version) => version >= 2;
     public static short GetRequestHeaderVersion(short version) => IsFlexibleVersion(version) ? (short)2 : (short)1;
@@ -100,17 +109,50 @@ public sealed class CreateDelegationTokenResponse : IKafkaResponse
     public static short LowestSupportedVersion => 1;
     public static short HighestSupportedVersion => 3;
 
-    public ErrorCode ErrorCode { get; init; }
-    public required string PrincipalType { get; init; }
-    public required string PrincipalName { get; init; }
-    public string? TokenRequesterPrincipalType { get; init; }
-    public string? TokenRequesterPrincipalName { get; init; }
-    public long IssueTimestampMs { get; init; }
-    public long ExpiryTimestampMs { get; init; }
-    public long MaxTimestampMs { get; init; }
-    public required string TokenId { get; init; }
-    public required byte[] Hmac { get; init; }
-    public int ThrottleTimeMs { get; init; }
+    public ErrorCode ErrorCode
+    {
+        get; init;
+    }
+    public required string PrincipalType
+    {
+        get; init;
+    }
+    public required string PrincipalName
+    {
+        get; init;
+    }
+    public string? TokenRequesterPrincipalType
+    {
+        get; init;
+    }
+    public string? TokenRequesterPrincipalName
+    {
+        get; init;
+    }
+    public long IssueTimestampMs
+    {
+        get; init;
+    }
+    public long ExpiryTimestampMs
+    {
+        get; init;
+    }
+    public long MaxTimestampMs
+    {
+        get; init;
+    }
+    public required string TokenId
+    {
+        get; init;
+    }
+    public required byte[] Hmac
+    {
+        get; init;
+    }
+    public int ThrottleTimeMs
+    {
+        get; init;
+    }
 
     public static IKafkaResponse Read(ref KafkaProtocolReader reader, short version)
     {
@@ -165,8 +207,14 @@ public sealed class RenewDelegationTokenRequest : IKafkaRequest<RenewDelegationT
     public static short LowestSupportedVersion => 1;
     public static short HighestSupportedVersion => 2;
 
-    public required byte[] Hmac { get; init; }
-    public long RenewPeriodMs { get; init; } = -1;
+    public required byte[] Hmac
+    {
+        get; init;
+    }
+    public long RenewPeriodMs
+    {
+        get; init;
+    } = -1;
 
     public static bool IsFlexibleVersion(short version) => version >= 2;
     public static short GetRequestHeaderVersion(short version) => IsFlexibleVersion(version) ? (short)2 : (short)1;
@@ -194,9 +242,18 @@ public sealed class RenewDelegationTokenResponse : IKafkaResponse
     public static short LowestSupportedVersion => 1;
     public static short HighestSupportedVersion => 2;
 
-    public ErrorCode ErrorCode { get; init; }
-    public long ExpiryTimestampMs { get; init; }
-    public int ThrottleTimeMs { get; init; }
+    public ErrorCode ErrorCode
+    {
+        get; init;
+    }
+    public long ExpiryTimestampMs
+    {
+        get; init;
+    }
+    public int ThrottleTimeMs
+    {
+        get; init;
+    }
 
     public static IKafkaResponse Read(ref KafkaProtocolReader reader, short version)
     {
@@ -228,8 +285,14 @@ public sealed class ExpireDelegationTokenRequest : IKafkaRequest<ExpireDelegatio
     public static short LowestSupportedVersion => 1;
     public static short HighestSupportedVersion => 2;
 
-    public required byte[] Hmac { get; init; }
-    public long ExpiryTimePeriodMs { get; init; } = -1;
+    public required byte[] Hmac
+    {
+        get; init;
+    }
+    public long ExpiryTimePeriodMs
+    {
+        get; init;
+    } = -1;
 
     public static bool IsFlexibleVersion(short version) => version >= 2;
     public static short GetRequestHeaderVersion(short version) => IsFlexibleVersion(version) ? (short)2 : (short)1;
@@ -257,9 +320,18 @@ public sealed class ExpireDelegationTokenResponse : IKafkaResponse
     public static short LowestSupportedVersion => 1;
     public static short HighestSupportedVersion => 2;
 
-    public ErrorCode ErrorCode { get; init; }
-    public long ExpiryTimestampMs { get; init; }
-    public int ThrottleTimeMs { get; init; }
+    public ErrorCode ErrorCode
+    {
+        get; init;
+    }
+    public long ExpiryTimestampMs
+    {
+        get; init;
+    }
+    public int ThrottleTimeMs
+    {
+        get; init;
+    }
 
     public static IKafkaResponse Read(ref KafkaProtocolReader reader, short version)
     {
@@ -291,7 +363,10 @@ public sealed class DescribeDelegationTokenRequest : IKafkaRequest<DescribeDeleg
     public static short LowestSupportedVersion => 1;
     public static short HighestSupportedVersion => 3;
 
-    public IReadOnlyList<DelegationTokenPrincipalData>? Owners { get; init; }
+    public IReadOnlyList<DelegationTokenPrincipalData>? Owners
+    {
+        get; init;
+    }
 
     public static bool IsFlexibleVersion(short version) => version >= 2;
     public static short GetRequestHeaderVersion(short version) => IsFlexibleVersion(version) ? (short)2 : (short)1;
@@ -331,9 +406,18 @@ public sealed class DescribeDelegationTokenResponse : IKafkaResponse
     public static short LowestSupportedVersion => 1;
     public static short HighestSupportedVersion => 3;
 
-    public ErrorCode ErrorCode { get; init; }
-    public required IReadOnlyList<DescribedDelegationTokenData> Tokens { get; init; }
-    public int ThrottleTimeMs { get; init; }
+    public ErrorCode ErrorCode
+    {
+        get; init;
+    }
+    public required IReadOnlyList<DescribedDelegationTokenData> Tokens
+    {
+        get; init;
+    }
+    public int ThrottleTimeMs
+    {
+        get; init;
+    }
 
     public static IKafkaResponse Read(ref KafkaProtocolReader reader, short version)
     {
@@ -371,8 +455,14 @@ public sealed class DescribeDelegationTokenResponse : IKafkaResponse
 /// </summary>
 public sealed class DelegationTokenPrincipalData
 {
-    public required string PrincipalType { get; init; }
-    public required string PrincipalName { get; init; }
+    public required string PrincipalType
+    {
+        get; init;
+    }
+    public required string PrincipalName
+    {
+        get; init;
+    }
 
     public void Write(ref KafkaProtocolWriter writer, bool flexible)
     {
@@ -408,16 +498,46 @@ public sealed class DelegationTokenPrincipalData
 /// </summary>
 public sealed class DescribedDelegationTokenData
 {
-    public required string PrincipalType { get; init; }
-    public required string PrincipalName { get; init; }
-    public string? TokenRequesterPrincipalType { get; init; }
-    public string? TokenRequesterPrincipalName { get; init; }
-    public long IssueTimestampMs { get; init; }
-    public long ExpiryTimestampMs { get; init; }
-    public long MaxTimestampMs { get; init; }
-    public required string TokenId { get; init; }
-    public required byte[] Hmac { get; init; }
-    public required IReadOnlyList<DelegationTokenPrincipalData> Renewers { get; init; }
+    public required string PrincipalType
+    {
+        get; init;
+    }
+    public required string PrincipalName
+    {
+        get; init;
+    }
+    public string? TokenRequesterPrincipalType
+    {
+        get; init;
+    }
+    public string? TokenRequesterPrincipalName
+    {
+        get; init;
+    }
+    public long IssueTimestampMs
+    {
+        get; init;
+    }
+    public long ExpiryTimestampMs
+    {
+        get; init;
+    }
+    public long MaxTimestampMs
+    {
+        get; init;
+    }
+    public required string TokenId
+    {
+        get; init;
+    }
+    public required byte[] Hmac
+    {
+        get; init;
+    }
+    public required IReadOnlyList<DelegationTokenPrincipalData> Renewers
+    {
+        get; init;
+    }
 
     public static DescribedDelegationTokenData Read(ref KafkaProtocolReader reader, short version)
     {

@@ -485,7 +485,9 @@ public class PooledPendingRequestTests
                 var testData = new byte[] { 0, 0, 0, 1, value };
                 var buffer = new PooledResponseBuffer(testData, testData.Length, isPooled: false);
                 if (request.TryComplete(buffer))
+                {
                     Interlocked.Increment(ref successCount);
+                }
             }));
         }
 
@@ -496,7 +498,9 @@ public class PooledPendingRequestTests
             {
                 barrier.SignalAndWait();
                 if (request.TrySetException(new InvalidOperationException("test")))
+                {
                     Interlocked.Increment(ref successCount);
+                }
             }));
         }
 
@@ -806,7 +810,9 @@ public class PooledPendingRequestTests
                 var testData = new byte[] { 0, 0, 0, 1, value };
                 var buffer = new PooledResponseBuffer(testData, testData.Length, isPooled: false);
                 if (request.TryComplete(buffer))
+                {
                     Interlocked.Increment(ref successCount);
+                }
             }));
         }
 
@@ -815,7 +821,9 @@ public class PooledPendingRequestTests
         {
             barrier.SignalAndWait();
             if (request.TrySetCanceled())
+            {
                 Interlocked.Increment(ref successCount);
+            }
         }));
 
         await Task.WhenAll(tasks).ConfigureAwait(false);
@@ -912,8 +920,7 @@ public class PooledPendingRequestTests
     /// Sets up a pending request with an active awaiter that mirrors
     /// the AwaitAndParseResponseAsync finally-block cleanup pattern.
     /// </summary>
-    private static async Task<(PendingRequestPool Pool, PooledPendingRequest Request,
-        ConcurrentDictionary<int, PooledPendingRequest> Dict, Task AwaiterTask)>
+    private static async Task<(PendingRequestPool Pool, PooledPendingRequest Request, ConcurrentDictionary<int, PooledPendingRequest> Dict, Task AwaiterTask)>
         SetupFailAllScenarioAsync()
     {
         var pool = new PendingRequestPool();

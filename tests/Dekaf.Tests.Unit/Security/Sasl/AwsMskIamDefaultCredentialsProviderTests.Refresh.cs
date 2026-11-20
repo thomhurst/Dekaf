@@ -286,7 +286,9 @@ public sealed partial class AwsMskIamDefaultCredentialsProviderTests
         using var http = new HttpClient(new CredentialHandler(async (_, token) =>
         {
             if (Interlocked.Increment(ref calls) == 1)
+            {
                 return CredentialResponse(DateTimeOffset.UtcNow.AddMinutes(1));
+            }
             refreshEntered.SetResult();
             await releaseRefresh.Task.WaitAsync(token);
             return CredentialResponse(DateTimeOffset.UtcNow.AddHours(1), "refreshed");
@@ -310,7 +312,9 @@ public sealed partial class AwsMskIamDefaultCredentialsProviderTests
         }
         var refreshed = await refresh;
         foreach (var credentials in await Task.WhenAll(waiters))
+        {
             await Assert.That(credentials).IsSameReferenceAs(refreshed);
+        }
         await Assert.That(refreshed.AccessKeyId).IsEqualTo("refreshed");
         await Assert.That(await provider.GetCredentialsAsync()).IsSameReferenceAs(refreshed);
         await Assert.That(calls).IsEqualTo(2);
@@ -428,7 +432,10 @@ public sealed partial class AwsMskIamDefaultCredentialsProviderTests
     {
         Content = new StringContent(JsonSerializer.Serialize(new Dictionary<string, string>
         {
-            ["AccessKeyId"] = access, ["SecretAccessKey"] = "secret", ["Token"] = "token", ["Expiration"] = expiration.ToString("O")
+            ["AccessKeyId"] = access,
+            ["SecretAccessKey"] = "secret",
+            ["Token"] = "token",
+            ["Expiration"] = expiration.ToString("O")
         }))
     };
 
@@ -461,7 +468,9 @@ public sealed partial class AwsMskIamDefaultCredentialsProviderTests
         public CredentialEnvironment()
         {
             foreach (var name in Names)
+            {
                 Environment.SetEnvironmentVariable(name, null);
+            }
             Environment.SetEnvironmentVariable("AWS_PROFILE", "dekaf-test-missing-" + Guid.NewGuid().ToString("N"));
             Environment.SetEnvironmentVariable("AWS_SHARED_CREDENTIALS_FILE", WriteFile(string.Empty));
             Environment.SetEnvironmentVariable("AWS_CONFIG_FILE", WriteFile(string.Empty));
@@ -480,7 +489,9 @@ public sealed partial class AwsMskIamDefaultCredentialsProviderTests
         {
             _snapshot.Restore();
             foreach (var file in _files)
+            {
                 File.Delete(file);
+            }
         }
     }
 }

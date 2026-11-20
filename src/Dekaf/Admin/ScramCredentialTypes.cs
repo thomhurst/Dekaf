@@ -29,12 +29,18 @@ public sealed class ScramCredentialInfo
     /// <summary>
     /// The SCRAM mechanism.
     /// </summary>
-    public required ScramMechanism Mechanism { get; init; }
+    public required ScramMechanism Mechanism
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The number of iterations used in the credential.
     /// </summary>
-    public required int Iterations { get; init; }
+    public required int Iterations
+    {
+        get; init;
+    }
 }
 
 /// <summary>
@@ -45,7 +51,10 @@ public abstract class UserScramCredentialAlteration
     /// <summary>
     /// The user whose credentials are being altered.
     /// </summary>
-    public required string User { get; init; }
+    public required string User
+    {
+        get; init;
+    }
 }
 
 /// <summary>
@@ -56,22 +65,34 @@ public sealed class UserScramCredentialUpsertion : UserScramCredentialAlteration
     /// <summary>
     /// The SCRAM mechanism to use.
     /// </summary>
-    public required ScramMechanism Mechanism { get; init; }
+    public required ScramMechanism Mechanism
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The number of iterations to use (must be at least 4096).
     /// </summary>
-    public required int Iterations { get; init; }
+    public required int Iterations
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The password for the credential.
     /// </summary>
-    public required string Password { get; init; }
+    public required string Password
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Optional salt to use. If not provided, a random salt will be generated.
     /// </summary>
-    public byte[]? Salt { get; init; }
+    public byte[]? Salt
+    {
+        get; init;
+    }
 }
 
 /// <summary>
@@ -82,7 +103,10 @@ public sealed class UserScramCredentialDeletion : UserScramCredentialAlteration
     /// <summary>
     /// The SCRAM mechanism to delete.
     /// </summary>
-    public required ScramMechanism Mechanism { get; init; }
+    public required ScramMechanism Mechanism
+    {
+        get; init;
+    }
 }
 
 /// <summary>
@@ -93,7 +117,10 @@ public sealed class DescribeUserScramCredentialsOptions
     /// <summary>
     /// How long to wait in milliseconds before timing out the request.
     /// </summary>
-    public int TimeoutMs { get; init; } = 30000;
+    public int TimeoutMs
+    {
+        get; init;
+    } = 30000;
 }
 
 /// <summary>
@@ -104,5 +131,8 @@ public sealed class AlterUserScramCredentialsOptions
     /// <summary>
     /// How long to wait in milliseconds before timing out the request.
     /// </summary>
-    public int TimeoutMs { get; init; } = 30000;
+    public int TimeoutMs
+    {
+        get; init;
+    } = 30000;
 }

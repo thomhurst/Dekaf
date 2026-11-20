@@ -13,7 +13,10 @@ public sealed class CreateAclsRequest : IKafkaRequest<CreateAclsResponse>
     /// <summary>
     /// The ACLs to create.
     /// </summary>
-    public required IReadOnlyList<AclCreation> Creations { get; init; }
+    public required IReadOnlyList<AclCreation> Creations
+    {
+        get; init;
+    }
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {
@@ -34,37 +37,58 @@ public sealed class AclCreation
     /// <summary>
     /// The resource type.
     /// </summary>
-    public sbyte ResourceType { get; init; }
+    public sbyte ResourceType
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The resource name.
     /// </summary>
-    public required string ResourceName { get; init; }
+    public required string ResourceName
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The resource pattern type (v1+).
     /// </summary>
-    public sbyte ResourcePatternType { get; init; } = 3; // Literal
+    public sbyte ResourcePatternType
+    {
+        get; init;
+    } = 3; // Literal
 
     /// <summary>
     /// The principal.
     /// </summary>
-    public required string Principal { get; init; }
+    public required string Principal
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The host.
     /// </summary>
-    public required string Host { get; init; }
+    public required string Host
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The operation.
     /// </summary>
-    public sbyte Operation { get; init; }
+    public sbyte Operation
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The permission type.
     /// </summary>
-    public sbyte PermissionType { get; init; }
+    public sbyte PermissionType
+    {
+        get; init;
+    }
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {

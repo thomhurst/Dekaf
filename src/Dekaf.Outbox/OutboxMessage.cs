@@ -27,13 +27,19 @@ public class OutboxMessage
     /// bucket. Stores that maintain enqueue order by other means (a time-ordered document
     /// id, a sequence field on a subclass) may leave this zero - the relay never reads it.
     /// </summary>
-    public long Id { get; init; }
+    public long Id
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Stable unique identifier assigned at enqueue time. Stamped onto the published record
     /// as a header so consumers can deduplicate redeliveries (at-least-once semantics).
     /// </summary>
-    public required Guid MessageId { get; init; }
+    public required Guid MessageId
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Ordering bucket computed from the record key via <see cref="OutboxBucket.Compute(byte[], Guid, int)"/>.
@@ -41,32 +47,50 @@ public class OutboxMessage
     /// (and therefore a bucket) are submitted in enqueue order. Partial failures can change
     /// consumer-observed order when retained rows are retried.
     /// </summary>
-    public required int Bucket { get; init; }
+    public required int Bucket
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The topic to publish to.
     /// </summary>
-    public required string Topic { get; init; }
+    public required string Topic
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Pre-serialized record key, or null for a keyless record.
     /// </summary>
-    public byte[]? Key { get; init; }
+    public byte[]? Key
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Pre-serialized record value, or null for a tombstone.
     /// </summary>
-    public byte[]? Value { get; init; }
+    public byte[]? Value
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Record headers serialized with <see cref="OutboxHeaderCodec"/>, or null for none.
     /// </summary>
-    public byte[]? Headers { get; init; }
+    public byte[]? Headers
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Optional explicit partition. When null the producer's partitioner chooses from the key.
     /// </summary>
-    public int? Partition { get; init; }
+    public int? Partition
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Enqueue time. Deliberately not used as the published record's timestamp: a record
@@ -74,7 +98,10 @@ public class OutboxMessage
     /// CreateTime topic's retention and be deleted before consumers read it. Enqueuers
     /// that need the enqueue time downstream should carry it as a record header.
     /// </summary>
-    public required DateTimeOffset CreatedAtUtc { get; init; }
+    public required DateTimeOffset CreatedAtUtc
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Creates an outbox message by serializing the key and value with Dekaf serializers.
@@ -130,7 +157,9 @@ public class OutboxMessage
         var keyBytes = SerializeComponent(topic, key, keySerializer, headers, SerializationComponent.Key);
         var valueBytes = SerializeComponent(topic, value, valueSerializer, headers, SerializationComponent.Value);
         if (traceActivity is not null)
+        {
             AddTraceContext(headers!, traceActivity);
+        }
 
         return new OutboxMessage
         {
@@ -149,14 +178,18 @@ public class OutboxMessage
     {
         headers.Add(TraceContextPropagator.TraceparentHeader, activity.Id!);
         if (!string.IsNullOrEmpty(activity.TraceStateString))
+        {
             headers.Add(TraceContextPropagator.TracestateHeader, activity.TraceStateString!);
+        }
     }
 
     private static byte[]? SerializeComponent<T>(
         string topic, T? value, ISerializer<T> serializer, Headers? headers, SerializationComponent component)
     {
         if (value is null)
+        {
             return null;
+        }
 
         var buffer = new ArrayBufferWriter<byte>();
         var context = new SerializationContext

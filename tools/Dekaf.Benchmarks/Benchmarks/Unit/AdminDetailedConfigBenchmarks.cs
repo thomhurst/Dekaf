@@ -12,10 +12,16 @@ namespace Dekaf.Benchmarks.Benchmarks.Unit;
 public class AdminDetailedConfigBenchmarks
 {
     [Params("topic-1", "topic-32", "mixed-32", "routed-3")]
-    public string Scenario { get; set; } = "topic-1";
+    public string Scenario
+    {
+        get; set;
+    } = "topic-1";
 
     [Params(false, true)]
-    public bool Incremental { get; set; }
+    public bool Incremental
+    {
+        get; set;
+    }
 
     private AdminClient _admin = null!;
     private Dictionary<ConfigResource, IReadOnlyList<ConfigEntry>> _replacement = null!;
@@ -29,24 +35,40 @@ public class AdminDetailedConfigBenchmarks
             : Enumerable.Range(0, Scenario == "topic-1" ? 1 : 32).Select(index => ConfigResource.Topic($"topic-{index}")).ToArray();
         _replacement = resources.ToDictionary(static resource => resource, static _ => (IReadOnlyList<ConfigEntry>)[new() { Name = "retention.ms", Value = "1000" }]);
         _incremental = resources.ToDictionary(static resource => resource, static _ => (IReadOnlyList<ConfigAlter>)[ConfigAlter.Set("retention.ms", "1000")]);
-        var metadata = new MetadataResponse { Brokers = [new() { NodeId = 1, Host = "localhost", Port = 9092 },
-            new() { NodeId = 2, Host = "localhost", Port = 9093 }, new() { NodeId = 3, Host = "localhost", Port = 9094 }], ControllerId = 1, Topics = [] };
+        var metadata = new MetadataResponse
+        {
+            Brokers = [new() { NodeId = 1, Host = "localhost", Port = 9092 },
+            new() { NodeId = 2, Host = "localhost", Port = 9093 }, new() { NodeId = 3, Host = "localhost", Port = 9094 }],
+            ControllerId = 1,
+            Topics = []
+        };
         var connections = new Dictionary<int, Connection>();
         foreach (var id in new[] { 1, 2, 3 })
         {
             var scoped = id == 1 ? resources : System.Array.Empty<ConfigResource>();
-            if (Scenario == "routed-3") scoped = [resources[id - 1]];
+            if (Scenario == "routed-3")
+            {
+                scoped = [resources[id - 1]];
+            }
             connections.Add(id, new Connection(id, metadata,
-                new() { Responses = scoped.Select(resource => new AlterConfigsResourceResponse
+                new()
                 {
-                    ResourceType = (sbyte)resource.Type, ResourceName = resource.Name,
-                    ErrorCode = Scenario == "mixed-32" && resource.Equals(resources[^1]) ? ErrorCode.TopicAuthorizationFailed : ErrorCode.None
-                }).ToArray() },
-                new() { Responses = scoped.Select(resource => new IncrementalAlterConfigsResourceResponse
+                    Responses = scoped.Select(resource => new AlterConfigsResourceResponse
+                    {
+                        ResourceType = (sbyte)resource.Type,
+                        ResourceName = resource.Name,
+                        ErrorCode = Scenario == "mixed-32" && resource.Equals(resources[^1]) ? ErrorCode.TopicAuthorizationFailed : ErrorCode.None
+                    }).ToArray()
+                },
+                new()
                 {
-                    ResourceType = (sbyte)resource.Type, ResourceName = resource.Name,
-                    ErrorCode = Scenario == "mixed-32" && resource.Equals(resources[^1]) ? ErrorCode.TopicAuthorizationFailed : ErrorCode.None
-                }).ToArray() }));
+                    Responses = scoped.Select(resource => new IncrementalAlterConfigsResourceResponse
+                    {
+                        ResourceType = (sbyte)resource.Type,
+                        ResourceName = resource.Name,
+                        ErrorCode = Scenario == "mixed-32" && resource.Equals(resources[^1]) ? ErrorCode.TopicAuthorizationFailed : ErrorCode.None
+                    }).ToArray()
+                }));
         }
         var pool = new Pool(connections);
         var manager = new MetadataManager(pool, ["localhost:9092"]);
@@ -57,7 +79,9 @@ public class AdminDetailedConfigBenchmarks
         _admin = new AdminClient(new AdminClientOptions { BootstrapServers = ["localhost:9092"] }, pool, manager, ownsResources: true);
         var result = await Alter();
         if (result.Count != resources.Length || result[resources[^1]].IsSuccess == (Scenario == "mixed-32"))
+        {
             throw new InvalidOperationException("Incorrect configuration benchmark outcomes.");
+        }
     }
 
     [Benchmark]
@@ -99,7 +123,9 @@ public class AdminDetailedConfigBenchmarks
         public ValueTask<IKafkaConnection> GetConnectionAsync(int id, CancellationToken token = default) => ValueTask.FromResult<IKafkaConnection>(connections[id]);
         public ValueTask<IKafkaConnection> GetConnectionAsync(string host, int port, CancellationToken token = default) => ValueTask.FromResult<IKafkaConnection>(connections[port - 9091]);
         public ValueTask<IKafkaConnection> GetConnectionByIndexAsync(int id, int index, CancellationToken token = default) => ValueTask.FromResult<IKafkaConnection>(connections[id]);
-        public void RegisterBroker(int id, string host, int port) { }
+        public void RegisterBroker(int id, string host, int port)
+        {
+        }
         public ValueTask<int> ScaleConnectionGroupAsync(int id, int count, CancellationToken token = default) => ValueTask.FromResult(1);
         public ValueTask<IKafkaConnection?> ShrinkConnectionGroupAsync(int id, int count, CancellationToken token = default) => ValueTask.FromResult<IKafkaConnection?>(null);
         public ValueTask RemoveConnectionAsync(int id) => ValueTask.CompletedTask;

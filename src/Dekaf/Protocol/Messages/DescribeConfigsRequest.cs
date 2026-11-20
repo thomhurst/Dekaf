@@ -13,17 +13,26 @@ public sealed class DescribeConfigsRequest : IKafkaRequest<DescribeConfigsRespon
     /// <summary>
     /// The resources whose configurations we want to describe.
     /// </summary>
-    public required IReadOnlyList<DescribeConfigsResource> Resources { get; init; }
+    public required IReadOnlyList<DescribeConfigsResource> Resources
+    {
+        get; init;
+    }
 
     /// <summary>
     /// True if we should include all synonyms (v1+).
     /// </summary>
-    public bool IncludeSynonyms { get; init; }
+    public bool IncludeSynonyms
+    {
+        get; init;
+    }
 
     /// <summary>
     /// True if we should include configuration documentation (v3+).
     /// </summary>
-    public bool IncludeDocumentation { get; init; }
+    public bool IncludeDocumentation
+    {
+        get; init;
+    }
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {
@@ -48,17 +57,26 @@ public sealed class DescribeConfigsResource
     /// <summary>
     /// The resource type (2=TOPIC, 4=BROKER, 8=BROKER_LOGGER).
     /// </summary>
-    public required sbyte ResourceType { get; init; }
+    public required sbyte ResourceType
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The resource name.
     /// </summary>
-    public required string ResourceName { get; init; }
+    public required string ResourceName
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The configuration keys to list, or null to list all.
     /// </summary>
-    public IReadOnlyList<string>? ConfigurationKeys { get; init; }
+    public IReadOnlyList<string>? ConfigurationKeys
+    {
+        get; init;
+    }
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {

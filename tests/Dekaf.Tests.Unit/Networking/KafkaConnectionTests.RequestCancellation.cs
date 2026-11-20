@@ -32,12 +32,17 @@ public sealed partial class KafkaConnectionTests
         try
         {
             if (wait == "broker throttle")
+            {
                 GetPrivateField<BrokerThrottleState>(connection, "_brokerThrottleState").Observe(60_000);
+            }
             else
             {
                 held = GetPrivateField<SemaphoreSlim>(connection,
                     wait == "write lock" ? "_writeLock" : "_pendingRequestSlots");
-                while (held.Wait(0, cancellationToken)) heldCount++;
+                while (held.Wait(0, cancellationToken))
+                {
+                    heldCount++;
+                }
             }
             var send = ((IKafkaRequestCancellationConnection)connection)
                 .SendWithResponseCancellationAsync<ApiVersionsRequest, ApiVersionsResponse>(
@@ -54,7 +59,10 @@ public sealed partial class KafkaConnectionTests
         }
         finally
         {
-            if (heldCount != 0) held!.Release(heldCount);
+            if (heldCount != 0)
+            {
+                held!.Release(heldCount);
+            }
         }
     }
 

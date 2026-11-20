@@ -147,7 +147,9 @@ public sealed class ConsumerPartitionStopListenerTests
         {
             releaseListener.TrySetResult();
             if (close is not null)
+            {
                 await close.ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
+            }
             await consumer.DisposeAsync();
             try
             {
@@ -384,11 +386,26 @@ public sealed class ConsumerPartitionStopListenerTests
 
     private sealed class TrackingPartitionStopListener : IRebalanceListener, IPartitionStopListener
     {
-        public List<List<TopicPartition>> StoppedPartitions { get; } = [];
-        public List<CancellationToken> CancellationTokens { get; } = [];
-        public List<List<TopicPartition>> LostPartitions { get; } = [];
-        public Func<IEnumerable<TopicPartition>, CancellationToken, ValueTask>? OnStopped { get; init; }
-        public Func<IEnumerable<TopicPartition>, CancellationToken, ValueTask>? OnLost { get; init; }
+        public List<List<TopicPartition>> StoppedPartitions
+        {
+            get;
+        } = [];
+        public List<CancellationToken> CancellationTokens
+        {
+            get;
+        } = [];
+        public List<List<TopicPartition>> LostPartitions
+        {
+            get;
+        } = [];
+        public Func<IEnumerable<TopicPartition>, CancellationToken, ValueTask>? OnStopped
+        {
+            get; init;
+        }
+        public Func<IEnumerable<TopicPartition>, CancellationToken, ValueTask>? OnLost
+        {
+            get; init;
+        }
 
         public ValueTask OnPartitionsAssignedAsync(
             IEnumerable<TopicPartition> partitions,

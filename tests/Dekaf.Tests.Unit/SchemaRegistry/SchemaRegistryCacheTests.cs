@@ -75,7 +75,9 @@ public sealed class SchemaRegistryCacheTests
         {
             Interlocked.Increment(ref _subjectGetSchemaCallCount);
             if (_idsBySubject.TryGetValue(subject, out var subjectId) && subjectId == id)
+            {
                 return Task.FromResult(_schemasById[id]);
+            }
 
             throw new SchemaRegistryException(40403, $"Schema {id} not found under subject '{subject}'");
         }
@@ -95,12 +97,17 @@ public sealed class SchemaRegistryCacheTests
         public Task<IReadOnlyList<int>> DeleteSubjectAsync(string subject, bool permanent = false, CancellationToken cancellationToken = default)
             => throw new NotImplementedException();
 
-        public void Dispose() { }
+        public void Dispose()
+        {
+        }
     }
 
     private sealed class NonCachingSchemaRegistryClient(Schema schema) : ISchemaRegistryClient
     {
-        public int GetSchemaCallCount { get; private set; }
+        public int GetSchemaCallCount
+        {
+            get; private set;
+        }
 
         public Task<int> GetOrRegisterSchemaAsync(string subject, Schema schema, CancellationToken cancellationToken = default)
             => throw new NotImplementedException();
@@ -129,7 +136,9 @@ public sealed class SchemaRegistryCacheTests
         public Task<IReadOnlyList<int>> DeleteSubjectAsync(string subject, bool permanent = false, CancellationToken cancellationToken = default)
             => throw new NotImplementedException();
 
-        public void Dispose() { }
+        public void Dispose()
+        {
+        }
     }
 
     private sealed class CountingSubjectNameStrategy : ISubjectNameStrategy
@@ -149,8 +158,14 @@ public sealed class SchemaRegistryCacheTests
         byte[]? serializedPayload = null,
         byte[]? deserializedPayload = null) : ISchemaRegistryRuleExecutor
     {
-        public SchemaRegistryRuleContext? SerializeContext { get; private set; }
-        public SchemaRegistryRuleContext? DeserializeContext { get; private set; }
+        public SchemaRegistryRuleContext? SerializeContext
+        {
+            get; private set;
+        }
+        public SchemaRegistryRuleContext? DeserializeContext
+        {
+            get; private set;
+        }
 
         public ReadOnlyMemory<byte> TransformSerializedPayload(
             ReadOnlyMemory<byte> payload,
@@ -258,7 +273,9 @@ public sealed class SchemaRegistryCacheTests
 
         var topics = new string[SubjectSchemaIdCache.TurnoverCapacity * 8];
         for (var index = 0; index < topics.Length; index++)
+        {
             topics[index] = $"turnover-{index}";
+        }
 
         var mismatches = 0;
         Parallel.For(0, 100_000, iteration =>
@@ -271,7 +288,9 @@ public sealed class SchemaRegistryCacheTests
                 static (_, topic, _) => topic,
                 static (id, _) => new SubjectSchemaIdCache.SubjectSchemaIdCacheValue(id, null));
             if (entry.SchemaId != schemaId)
+            {
                 Interlocked.Increment(ref mismatches);
+            }
         });
 
         await Assert.That(mismatches).IsEqualTo(0);
@@ -1095,7 +1114,10 @@ public sealed class SchemaRegistryCacheTests
     {
         private readonly Queue<(HttpStatusCode StatusCode, string Content)> _responses = new();
 
-        public List<Uri> RequestUris { get; } = [];
+        public List<Uri> RequestUris
+        {
+            get;
+        } = [];
 
         public QueueingSchemaRegistryHandler Enqueue(HttpStatusCode statusCode, string content)
         {

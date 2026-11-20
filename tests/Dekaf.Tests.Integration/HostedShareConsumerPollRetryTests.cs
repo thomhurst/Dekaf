@@ -6,9 +6,8 @@ using Dekaf.ShareConsumer;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging.Abstractions;
-
-using StringSet = System.Collections.Generic.IReadOnlySet<string>;
 using PartitionSet = System.Collections.Generic.IReadOnlySet<Dekaf.TopicPartition>;
+using StringSet = System.Collections.Generic.IReadOnlySet<string>;
 
 namespace Dekaf.Tests.Integration;
 
@@ -53,17 +52,29 @@ public class HostedShareConsumerPollRetryTests(KafkaTestContainer kafka) : Kafka
         : KafkaShareConsumerService<string, string>(consumer, NullLogger.Instance,
             serviceOptions: new KafkaShareConsumerServiceOptions { PollRetryBackoff = TimeSpan.FromMilliseconds(1) })
     {
-        public TaskCompletionSource Processed { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        public Exception? Failure { get; private set; }
+        public TaskCompletionSource Processed
+        {
+            get;
+        } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public Exception? Failure
+        {
+            get; private set;
+        }
         protected override IEnumerable<string> Topics => [topic];
         protected override ValueTask ProcessAsync(ShareConsumeResult<string, string> record, CancellationToken token)
         {
-            if (record.Value != "queued-before-join") throw new InvalidOperationException("Unexpected record.");
+            if (record.Value != "queued-before-join")
+            {
+                throw new InvalidOperationException("Unexpected record.");
+            }
             Processed.TrySetResult();
             return ValueTask.CompletedTask;
         }
         protected override ValueTask OnErrorAsync(Exception exception, ShareConsumeResult<string, string>? record, CancellationToken token)
-        { Failure = exception; return ValueTask.CompletedTask; }
+        {
+            Failure = exception;
+            return ValueTask.CompletedTask;
+        }
     }
 
     // Inject exactly the coordinator's timeout at the poll boundary; subsequent operations
@@ -71,7 +82,10 @@ public class HostedShareConsumerPollRetryTests(KafkaTestContainer kafka) : Kafka
     private sealed class JoinTimeoutConsumer(IKafkaShareConsumer<string, string> inner)
         : IKafkaShareConsumer<string, string>, IShareConsumerConfiguration, IHostedShareConsumer
     {
-        public int PollAttempts { get; private set; }
+        public int PollAttempts
+        {
+            get; private set;
+        }
         public long AcquisitionStartedTimestamp => ((IHostedShareConsumer)inner).AcquisitionStartedTimestamp;
         public void ObserveAcknowledgements(ShareAcknowledgementCommitCallback observer)
             => ((IHostedShareConsumer)inner).ObserveAcknowledgements(observer);
@@ -85,14 +99,27 @@ public class HostedShareConsumerPollRetryTests(KafkaTestContainer kafka) : Kafka
         public string? MemberId => inner.MemberId;
         public int? AcquisitionLockTimeoutMs => inner.AcquisitionLockTimeoutMs;
         public ValueTask InitializeAsync(CancellationToken cancellationToken = default) => inner.InitializeAsync(cancellationToken);
-        public IKafkaShareConsumer<string, string> Subscribe(params string[] topics) { inner.Subscribe(topics); return this; }
-        public IKafkaShareConsumer<string, string> Unsubscribe() { inner.Unsubscribe(); return this; }
+        public IKafkaShareConsumer<string, string> Subscribe(params string[] topics)
+        {
+            inner.Subscribe(topics);
+            return this;
+        }
+        public IKafkaShareConsumer<string, string> Unsubscribe()
+        {
+            inner.Unsubscribe();
+            return this;
+        }
         public async IAsyncEnumerable<ShareConsumeResult<string, string>> PollAsync([EnumeratorCancellation] CancellationToken cancellationToken = default)
         {
             if (++PollAttempts == 1)
+            {
                 throw new KafkaTimeoutException(TimeoutKind.Rebalance, TimeSpan.FromSeconds(45),
                     TimeSpan.FromSeconds(45), "Failed to join share group within timeout");
-            await foreach (var record in inner.PollAsync(cancellationToken)) yield return record;
+            }
+            await foreach (var record in inner.PollAsync(cancellationToken))
+            {
+                yield return record;
+            }
         }
         public void Acknowledge(ShareConsumeResult<string, string> record, AcknowledgeType type = AcknowledgeType.Accept)
             => inner.Acknowledge(record, type);

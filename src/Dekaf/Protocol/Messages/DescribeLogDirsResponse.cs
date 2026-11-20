@@ -16,17 +16,26 @@ public sealed class DescribeLogDirsResponse : IKafkaResponse
     /// <summary>
     /// The duration in milliseconds for which the request was throttled due to quota violation.
     /// </summary>
-    public int ThrottleTimeMs { get; init; }
+    public int ThrottleTimeMs
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Top-level error code for v3+ responses.
     /// </summary>
-    public ErrorCode ErrorCode { get; init; }
+    public ErrorCode ErrorCode
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The log directories reported by the broker.
     /// </summary>
-    public required IReadOnlyList<DescribeLogDirsResponseDir> Results { get; init; }
+    public required IReadOnlyList<DescribeLogDirsResponseDir> Results
+    {
+        get; init;
+    }
 
     public static IKafkaResponse Read(ref KafkaProtocolReader reader, short version)
     {
@@ -71,12 +80,30 @@ public sealed class DescribeLogDirsResponse : IKafkaResponse
 /// </summary>
 public sealed class DescribeLogDirsResponseDir
 {
-    public required ErrorCode ErrorCode { get; init; }
-    public required string LogDir { get; init; }
-    public required IReadOnlyList<DescribeLogDirsResponseTopic> Topics { get; init; }
-    public long? TotalBytes { get; init; }
-    public long? UsableBytes { get; init; }
-    public bool? IsCordoned { get; init; }
+    public required ErrorCode ErrorCode
+    {
+        get; init;
+    }
+    public required string LogDir
+    {
+        get; init;
+    }
+    public required IReadOnlyList<DescribeLogDirsResponseTopic> Topics
+    {
+        get; init;
+    }
+    public long? TotalBytes
+    {
+        get; init;
+    }
+    public long? UsableBytes
+    {
+        get; init;
+    }
+    public bool? IsCordoned
+    {
+        get; init;
+    }
 
     public static DescribeLogDirsResponseDir Read(ref KafkaProtocolReader reader, short version)
     {
@@ -134,8 +161,14 @@ public sealed class DescribeLogDirsResponseDir
 /// </summary>
 public sealed class DescribeLogDirsResponseTopic
 {
-    public required string Name { get; init; }
-    public required IReadOnlyList<DescribeLogDirsResponsePartition> Partitions { get; init; }
+    public required string Name
+    {
+        get; init;
+    }
+    public required IReadOnlyList<DescribeLogDirsResponsePartition> Partitions
+    {
+        get; init;
+    }
 
     public static DescribeLogDirsResponseTopic Read(ref KafkaProtocolReader reader, short version)
     {
@@ -173,10 +206,22 @@ public sealed class DescribeLogDirsResponseTopic
 /// </summary>
 public sealed class DescribeLogDirsResponsePartition
 {
-    public required int PartitionIndex { get; init; }
-    public required long PartitionSize { get; init; }
-    public required long OffsetLag { get; init; }
-    public required bool IsFutureKey { get; init; }
+    public required int PartitionIndex
+    {
+        get; init;
+    }
+    public required long PartitionSize
+    {
+        get; init;
+    }
+    public required long OffsetLag
+    {
+        get; init;
+    }
+    public required bool IsFutureKey
+    {
+        get; init;
+    }
 
     public static DescribeLogDirsResponsePartition Read(ref KafkaProtocolReader reader, short version)
     {

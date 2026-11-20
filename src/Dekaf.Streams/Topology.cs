@@ -46,14 +46,26 @@ public sealed class Topology
     }
 
     /// <summary>Gets the application id.</summary>
-    public string ApplicationId { get; }
+    public string ApplicationId
+    {
+        get;
+    }
 
     /// <summary>Gets the subtopologies in id order. Each one runs as one task per input partition.</summary>
-    public IReadOnlyList<SubtopologyDescription> Subtopologies { get; }
+    public IReadOnlyList<SubtopologyDescription> Subtopologies
+    {
+        get;
+    }
 
-    internal Func<ProcessingError, ErrorResponse>? ErrorHandler { get; }
+    internal Func<ProcessingError, ErrorResponse>? ErrorHandler
+    {
+        get;
+    }
 
-    internal IReadOnlyList<IReadOnlyList<GraphNode>> NodesBySubtopology { get; }
+    internal IReadOnlyList<IReadOnlyList<GraphNode>> NodesBySubtopology
+    {
+        get;
+    }
 
     /// <summary>Whether <paramref name="topic"/> is an internal repartition topic of this topology.</summary>
     internal bool IsRepartitionTopic(string topic) => _repartitionTopics.Contains(topic);
@@ -382,23 +394,44 @@ public sealed class Topology
 public sealed class SubtopologyDescription
 {
     /// <summary>Gets the subtopology id.</summary>
-    public required string Id { get; init; }
+    public required string Id
+    {
+        get; init;
+    }
 
     /// <summary>Gets the topics the subtopology reads, excluding internal repartition topics.</summary>
-    public required IReadOnlyList<string> SourceTopics { get; init; }
+    public required IReadOnlyList<string> SourceTopics
+    {
+        get; init;
+    }
 
     /// <summary>Gets the internal repartition topics the subtopology reads.</summary>
-    public required IReadOnlyList<string> RepartitionSourceTopics { get; init; }
+    public required IReadOnlyList<string> RepartitionSourceTopics
+    {
+        get; init;
+    }
 
     /// <summary>Gets the internal repartition topics the subtopology writes.</summary>
-    public required IReadOnlyList<string> RepartitionSinkTopics { get; init; }
+    public required IReadOnlyList<string> RepartitionSinkTopics
+    {
+        get; init;
+    }
 
     /// <summary>Gets the topics the subtopology writes, excluding internal topics.</summary>
-    public required IReadOnlyList<string> SinkTopics { get; init; }
+    public required IReadOnlyList<string> SinkTopics
+    {
+        get; init;
+    }
 
     /// <summary>Gets the internal changelog topics of the subtopology's stores.</summary>
-    public required IReadOnlyList<string> ChangelogTopics { get; init; }
+    public required IReadOnlyList<string> ChangelogTopics
+    {
+        get; init;
+    }
 
     /// <summary>Gets the names of the subtopology's state stores.</summary>
-    public required IReadOnlyList<string> StateStores { get; init; }
+    public required IReadOnlyList<string> StateStores
+    {
+        get; init;
+    }
 }

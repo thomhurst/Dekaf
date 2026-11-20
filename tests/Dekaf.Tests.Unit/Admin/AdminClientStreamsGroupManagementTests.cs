@@ -494,22 +494,22 @@ public sealed class AdminClientStreamsGroupManagementTests
                 Arg.Any<CancellationToken>())
             .Returns(
                 ValueTask.FromResult(new OffsetFetchResponse
-                    {
-                        Groups =
-                        [
-                            new OffsetFetchResponseGroup
-                            {
-                                GroupId = FirstGroup,
-                                ErrorCode = ErrorCode.None,
-                                Topics =
-                                [
-                                    new OffsetFetchResponseTopic
-                                    {
-                                        TopicId = mismatchTopicId,
-                                        Partitions = [Offset(0, 10, ErrorCode.None)]
-                                    }
-                                ]
-                            },
+                {
+                    Groups =
+                    [
+                        new OffsetFetchResponseGroup
+                        {
+                            GroupId = FirstGroup,
+                            ErrorCode = ErrorCode.None,
+                            Topics =
+                            [
+                                new OffsetFetchResponseTopic
+                                {
+                                    TopicId = mismatchTopicId,
+                                    Partitions = [Offset(0, 10, ErrorCode.None)]
+                                }
+                            ]
+                        },
                             new OffsetFetchResponseGroup
                             {
                                 GroupId = SecondGroup,
@@ -523,8 +523,8 @@ public sealed class AdminClientStreamsGroupManagementTests
                                     }
                                 ]
                             }
-                        ]
-                    }),
+                    ]
+                }),
                 ValueTask.FromResult(new OffsetFetchResponse
                 {
                     Groups =
@@ -1779,19 +1779,19 @@ public sealed class AdminClientStreamsGroupManagementTests
         string groupId,
         ErrorCode errorCode,
         int nodeId = 1) => new()
-    {
-        Coordinators =
-        [
-            new Coordinator
-            {
-                Key = groupId,
-                NodeId = nodeId,
-                Host = "localhost",
-                Port = 9092,
-                ErrorCode = errorCode
-            }
-        ]
-    };
+        {
+            Coordinators =
+            [
+                new Coordinator
+                {
+                    Key = groupId,
+                    NodeId = nodeId,
+                    Host = "localhost",
+                    Port = 9092,
+                    ErrorCode = errorCode
+                }
+            ]
+        };
 
     private static (AdminClient Admin, IKafkaConnection Connection) CreateAdmin(
         short offsetFetchMaxVersion = 10)

@@ -13,12 +13,16 @@ internal static class ShareBatchRecordReader
     {
         var length = reader.ReadVarInt();
         if (length < 0)
+        {
             throw new MalformedProtocolDataException($"Invalid record length {length}");
+        }
 
         // Bound the whole body before reading fields. An incomplete body is a truncated
         // tail; an invalid field inside a complete body is protocol corruption.
         if (length > reader.Remaining)
+        {
             throw new InsufficientDataException();
+        }
         var body = reader.ReadContiguousMemorySlice(length);
         var bodyReader = new KafkaProtocolReader(body);
         try
@@ -33,22 +37,30 @@ internal static class ShareBatchRecordReader
             var headerCount = bodyReader.ReadVarInt();
             if (headerCount < 0 || headerCount > Record.MaxReasonableHeaderCount
                 || headerCount > bodyReader.Remaining / 2)
+            {
                 throw new MalformedProtocolDataException($"Invalid record header count {headerCount}");
+            }
 
             var headerBytes = body[(int)bodyReader.Consumed..];
             for (var index = 0; index < headerCount; index++)
             {
                 var headerKeyLength = bodyReader.ReadVarInt();
                 if (headerKeyLength < 0)
+                {
                     throw new MalformedProtocolDataException("Record header keys cannot be null");
+                }
                 bodyReader.Skip(headerKeyLength);
                 var headerValueLength = bodyReader.ReadVarInt();
                 if (headerValueLength >= 0)
+                {
                     bodyReader.Skip(headerValueLength);
+                }
             }
 
             if (!bodyReader.End)
+            {
                 throw new MalformedProtocolDataException("Record body has trailing bytes");
+            }
 
             return new ShareBatchRecordData(
                 offsetDelta, timestampDelta, key, value, keyLength < 0, valueLength < 0,

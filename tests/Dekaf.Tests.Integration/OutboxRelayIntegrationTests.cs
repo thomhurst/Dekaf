@@ -1,6 +1,6 @@
-using System.Threading.Channels;
 using System.Diagnostics;
 using System.Diagnostics.Metrics;
+using System.Threading.Channels;
 using Dekaf.Consumer;
 using Dekaf.Outbox;
 using Dekaf.Outbox.EntityFrameworkCore;
@@ -43,17 +43,23 @@ public class OutboxRelayIntegrationTests(KafkaTestContainer kafka) : KafkaIntegr
             await using var writer = BuildPod("z-writer", writerTime, writerTransport);
             var factory = writer.GetRequiredService<IDbContextFactory<OutboxContext>>();
             await using (var context = await factory.CreateDbContextAsync())
+            {
                 await context.Database.EnsureCreatedAsync();
+            }
             var ownerServices = owner.GetServices<IHostedService>().ToArray();
             var writerServices = writer.GetServices<IHostedService>().ToArray();
             using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(60));
             try
             {
                 foreach (var service in ownerServices)
+                {
                     await service.StartAsync(deadline.Token);
+                }
                 await ownerTime.Scheduled.Reader.ReadAsync(deadline.Token);
                 foreach (var service in writerServices)
+                {
                     await service.StartAsync(deadline.Token);
+                }
                 await writerTime.Scheduled.Reader.ReadAsync(deadline.Token);
                 await ownerTransport.Listening.Task.WaitAsync(deadline.Token);
                 await writerTransport.Listening.Task.WaitAsync(deadline.Token);
@@ -84,9 +90,13 @@ public class OutboxRelayIntegrationTests(KafkaTestContainer kafka) : KafkaIntegr
             finally
             {
                 for (var index = writerServices.Length - 1; index >= 0; index--)
+                {
                     await writerServices[index].StopAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(30));
+                }
                 for (var index = ownerServices.Length - 1; index >= 0; index--)
+                {
                     await ownerServices[index].StopAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(30));
+                }
             }
         }
         finally
@@ -111,7 +121,10 @@ public class OutboxRelayIntegrationTests(KafkaTestContainer kafka) : KafkaIntegr
     // Test transport broadcasts to both independently wired processes, including echoes.
     private sealed class BroadcastTransport(Channel<int> incoming, Channel<int> peer) : IOutboxNotificationTransport
     {
-        public TaskCompletionSource Listening { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource Listening
+        {
+            get;
+        } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public int Sends;
         public ValueTask PublishAsync(ReadOnlyMemory<int> buckets, CancellationToken cancellationToken = default)
         {
@@ -127,7 +140,9 @@ public class OutboxRelayIntegrationTests(KafkaTestContainer kafka) : KafkaIntegr
         {
             Listening.TrySetResult();
             await foreach (var bucket in incoming.Reader.ReadAllAsync(cancellationToken))
+            {
                 notifyCommitted(bucket);
+            }
         }
     }
 
@@ -147,13 +162,17 @@ public class OutboxRelayIntegrationTests(KafkaTestContainer kafka) : KafkaIntegr
             services.AddDekafEntityFrameworkCoreOutboxStore<OutboxContext>((_, builder) =>
                 builder.UseSqlite(new SqliteConnectionStringBuilder
                 {
-                    DataSource = databasePath, Pooling = false, DefaultTimeout = 30
+                    DataSource = databasePath,
+                    Pooling = false,
+                    DefaultTimeout = 30
                 }.ToString()));
             services.AddDekafOutboxRelay(producer => producer.WithBootstrapServers(KafkaContainer.BootstrapServers), options);
             await using var provider = services.BuildServiceProvider();
             var factory = provider.GetRequiredService<IDbContextFactory<OutboxContext>>();
             await using (var context = await factory.CreateDbContextAsync())
+            {
                 await context.Database.EnsureCreatedAsync();
+            }
             var relay = provider.GetServices<IHostedService>().OfType<OutboxRelayService>().Single();
             await relay.StartAsync(CancellationToken.None);
             try
@@ -214,21 +233,29 @@ public class OutboxRelayIntegrationTests(KafkaTestContainer kafka) : KafkaIntegr
             await using var survivor = BuildPod("b-survivor");
             var factory = survivor.GetRequiredService<IDbContextFactory<OutboxContext>>();
             await using (var context = await factory.CreateDbContextAsync())
+            {
                 await context.Database.EnsureCreatedAsync();
+            }
             var leavingServices = leaving.GetServices<IHostedService>().ToArray();
             var survivorServices = survivor.GetServices<IHostedService>().ToArray();
             var leavingStopped = false;
             try
             {
                 foreach (var service in leavingServices)
+                {
                     await service.StartAsync(CancellationToken.None);
+                }
                 await WaitForConditionAsync(() => OwnedBy("a-leaving") == BucketCount, TimeSpan.FromSeconds(30));
                 foreach (var service in survivorServices)
+                {
                     await service.StartAsync(CancellationToken.None);
+                }
                 await WaitForConditionAsync(() => OwnedBy("b-survivor") == BucketCount / 2, TimeSpan.FromSeconds(30));
 
                 for (var index = leavingServices.Length - 1; index >= 0; index--)
+                {
                     await leavingServices[index].StopAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(30));
+                }
                 leavingStopped = true;
 
                 // The lease lasts far longer than this wait, so only the release can free
@@ -243,7 +270,9 @@ public class OutboxRelayIntegrationTests(KafkaTestContainer kafka) : KafkaIntegr
                     {
                         context.AddOutboxMessage(new OutboxMessage
                         {
-                            MessageId = Guid.NewGuid(), Bucket = bucket, Topic = topic,
+                            MessageId = Guid.NewGuid(),
+                            Bucket = bucket,
+                            Topic = topic,
                             Value = System.Text.Encoding.UTF8.GetBytes($"bucket-{bucket}"),
                             CreatedAtUtc = DateTimeOffset.UtcNow
                         });
@@ -262,7 +291,9 @@ public class OutboxRelayIntegrationTests(KafkaTestContainer kafka) : KafkaIntegr
                 {
                     delivered.Add(record.Value);
                     if (delivered.Count == BucketCount)
+                    {
                         break;
+                    }
                 }
 
                 await Assert.That(delivered.Count).IsEqualTo(BucketCount);
@@ -270,11 +301,15 @@ public class OutboxRelayIntegrationTests(KafkaTestContainer kafka) : KafkaIntegr
             finally
             {
                 for (var index = survivorServices.Length - 1; index >= 0; index--)
+                {
                     await survivorServices[index].StopAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(30));
+                }
                 if (!leavingStopped)
                 {
                     for (var index = leavingServices.Length - 1; index >= 0; index--)
+                    {
                         await leavingServices[index].StopAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(30));
+                    }
                 }
             }
 
@@ -297,8 +332,10 @@ public class OutboxRelayIntegrationTests(KafkaTestContainer kafka) : KafkaIntegr
             services.AddDekafOutboxRelay(builder => builder.WithBootstrapServers(KafkaContainer.BootstrapServers),
                 new OutboxRelayOptions
                 {
-                    BucketCount = BucketCount, RelayId = relayId,
-                    LeaseDuration = TimeSpan.FromMinutes(10), LeaseRenewInterval = TimeSpan.FromSeconds(1)
+                    BucketCount = BucketCount,
+                    RelayId = relayId,
+                    LeaseDuration = TimeSpan.FromMinutes(10),
+                    LeaseRenewInterval = TimeSpan.FromSeconds(1)
                 });
             return services.BuildServiceProvider();
         }
@@ -320,8 +357,10 @@ public class OutboxRelayIntegrationTests(KafkaTestContainer kafka) : KafkaIntegr
             {
                 await context.Database.EnsureCreatedAsync();
                 for (var index = 0; index < hotRows; index++)
+                {
                     context.AddOutboxMessage(topic, "hot", index.ToString(), Serializers.String, Serializers.String,
                         bucketCount: 2, partition: 0);
+                }
                 context.AddOutboxMessage(topic, "quiet", "quiet", Serializers.String, Serializers.String,
                     bucketCount: 2, partition: 1);
                 await context.SaveChangesAsync();
@@ -359,9 +398,13 @@ public class OutboxRelayIntegrationTests(KafkaTestContainer kafka) : KafkaIntegr
                         hotReceived++;
                     }
                     else
+                    {
                         quietReceived++;
+                    }
                     if (hotReceived + quietReceived == hotRows + 1)
+                    {
                         break;
+                    }
                 }
                 await Assert.That(hotReceived).IsEqualTo(hotRows);
                 await Assert.That(quietReceived).IsEqualTo(1);
@@ -382,9 +425,18 @@ public class OutboxRelayIntegrationTests(KafkaTestContainer kafka) : KafkaIntegr
     {
         private int _marked;
         private int _probes;
-        public List<int> Batches { get; } = [];
-        public int ProbesAtCompletion { get; private set; }
-        public TaskCompletionSource Completed { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public List<int> Batches
+        {
+            get;
+        } = [];
+        public int ProbesAtCompletion
+        {
+            get; private set;
+        }
+        public TaskCompletionSource Completed
+        {
+            get;
+        } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public ValueTask<IReadOnlyList<int>> AcquireBucketLeasesAsync(OutboxLeaseRequest request,
             CancellationToken cancellationToken = default) => inner.AcquireBucketLeasesAsync(request, cancellationToken);
         public ValueTask<bool> RenewBucketLeasesAsync(OutboxLeaseRequest request, IReadOnlyList<int> buckets,
@@ -413,7 +465,10 @@ public class OutboxRelayIntegrationTests(KafkaTestContainer kafka) : KafkaIntegr
 
     private sealed class FrozenPollingTimeProvider : TimeProvider
     {
-        public Channel<TimeSpan> Scheduled { get; } = Channel.CreateUnbounded<TimeSpan>();
+        public Channel<TimeSpan> Scheduled
+        {
+            get;
+        } = Channel.CreateUnbounded<TimeSpan>();
         public override long GetTimestamp() => 1;
         public override DateTimeOffset GetUtcNow() => DateTimeOffset.UnixEpoch;
         public override ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period)
@@ -424,10 +479,14 @@ public class OutboxRelayIntegrationTests(KafkaTestContainer kafka) : KafkaIntegr
             public bool Change(TimeSpan dueTime, TimeSpan period)
             {
                 if (dueTime != Timeout.InfiniteTimeSpan)
+                {
                     owner.Scheduled.Writer.TryWrite(dueTime);
+                }
                 return true;
             }
-            public void Dispose() { }
+            public void Dispose()
+            {
+            }
             public ValueTask DisposeAsync() => ValueTask.CompletedTask;
         }
     }
@@ -479,19 +538,27 @@ public class OutboxRelayIntegrationTests(KafkaTestContainer kafka) : KafkaIntegr
         listener.InstrumentPublished = (instrument, meterListener) =>
         {
             if (instrument.Meter.Name == OutboxDiagnostics.MeterName)
+            {
                 meterListener.EnableMeasurementEvents(instrument);
+            }
         };
         listener.SetMeasurementEventCallback<long>((instrument, value, tags, _) =>
         {
             if (instrument.Name != "dekaf.outbox.publish.acknowledged")
+            {
                 return;
+            }
             foreach (var tag in tags)
             {
                 if (tag.Key == "outbox.name" && Equals(tag.Value, "outbox-integration"))
+                {
                     Interlocked.Add(ref acknowledged, value);
+                }
             }
         });
-        listener.SetMeasurementEventCallback<double>(static (_, _, _, _) => { });
+        listener.SetMeasurementEventCallback<double>(static (_, _, _, _) =>
+        {
+        });
         listener.Start();
         await using (var context = new OutboxContext(contextOptions))
         {
@@ -558,7 +625,9 @@ public class OutboxRelayIntegrationTests(KafkaTestContainer kafka) : KafkaIntegr
                     ReadHeader(msg.Headers, "origin"),
                     ReadHeader(msg.Headers, OutboxRelayOptions.DefaultMessageIdHeaderName)));
                 if (messages.Count >= 5)
+                {
                     break;
+                }
             }
 
             await Assert.That(messages.Count).IsEqualTo(5);
@@ -603,7 +672,9 @@ public class OutboxRelayIntegrationTests(KafkaTestContainer kafka) : KafkaIntegr
         var contextOptions = new DbContextOptionsBuilder<OutboxContext>()
             .UseSqlite(new SqliteConnectionStringBuilder
             {
-                DataSource = databasePath, Pooling = false, DefaultTimeout = 30
+                DataSource = databasePath,
+                Pooling = false,
+                DefaultTimeout = 30
             }.ToString())
             .Options;
         using var listener = new ActivityListener
@@ -694,15 +765,24 @@ public class OutboxRelayIntegrationTests(KafkaTestContainer kafka) : KafkaIntegr
     private sealed class ObservedRenewalStore(EfCoreOutboxStore<OutboxContext> inner)
         : IOutboxStore, IOutboxLeaseRenewalStore, IOutboxMetricsStore
     {
-        internal TaskCompletionSource MetricsObserved { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        internal TaskCompletionSource MetricsObserved
+        {
+            get;
+        } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public async ValueTask<OutboxPendingMetrics?> GetPendingMetricsAsync(CancellationToken cancellationToken = default)
         {
             var result = await inner.GetPendingMetricsAsync(cancellationToken);
             MetricsObserved.TrySetResult();
             return result;
         }
-        internal TaskCompletionSource RenewalObserved { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        internal IReadOnlyList<int> PeerBuckets { get; private set; } = [];
+        internal TaskCompletionSource RenewalObserved
+        {
+            get;
+        } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        internal IReadOnlyList<int> PeerBuckets
+        {
+            get; private set;
+        } = [];
         public ValueTask<IReadOnlyList<int>> AcquireBucketLeasesAsync(OutboxLeaseRequest request,
             CancellationToken cancellationToken = default) => inner.AcquireBucketLeasesAsync(request, cancellationToken);
         public ValueTask<IReadOnlyList<int>> GetBucketsWithPendingAsync(IReadOnlyList<int> buckets,
@@ -720,7 +800,9 @@ public class OutboxRelayIntegrationTests(KafkaTestContainer kafka) : KafkaIntegr
             {
                 PeerBuckets = await inner.AcquireBucketLeasesAsync(new OutboxLeaseRequest
                 {
-                    RelayId = "peer-relay", BucketCount = request.BucketCount, LeaseDuration = request.LeaseDuration
+                    RelayId = "peer-relay",
+                    BucketCount = request.BucketCount,
+                    LeaseDuration = request.LeaseDuration
                 }, cancellationToken);
                 RenewalObserved.SetResult();
             }
@@ -755,7 +837,9 @@ public class OutboxRelayIntegrationTests(KafkaTestContainer kafka) : KafkaIntegr
         for (var i = 0; i < headers.Count; i++)
         {
             if (headers[i].Key == key)
+            {
                 return headers[i].GetValueAsString();
+            }
         }
 
         return null;

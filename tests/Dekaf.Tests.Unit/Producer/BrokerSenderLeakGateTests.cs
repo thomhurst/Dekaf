@@ -62,7 +62,9 @@ public sealed class BrokerSenderLeakGateTests : ScriptedProduceResponseFixture
         var options = CreateOptions();
         var accumulator = new RecordAccumulator(options);
         var valueTaskSourcePool = new ValueTaskSourcePool<RecordMetadata>();
-        var sender = CreateSender(pool, options, accumulator, (_, _, _, _, _) => { });
+        var sender = CreateSender(pool, options, accumulator, (_, _, _, _, _) =>
+        {
+        });
 
         try
         {
@@ -114,7 +116,9 @@ public sealed class BrokerSenderLeakGateTests : ScriptedProduceResponseFixture
         var options = CreateOptions();
         var accumulator = new RecordAccumulator(options);
         var valueTaskSourcePool = new ValueTaskSourcePool<RecordMetadata>();
-        var sender = CreateSender(pool, options, accumulator, (_, _, _, _, _) => { });
+        var sender = CreateSender(pool, options, accumulator, (_, _, _, _, _) =>
+        {
+        });
 
         try
         {
@@ -155,7 +159,9 @@ public sealed class BrokerSenderLeakGateTests : ScriptedProduceResponseFixture
         var options = CreateOptions();
         var accumulator = new RecordAccumulator(options);
         var valueTaskSourcePool = new ValueTaskSourcePool<RecordMetadata>();
-        var sender = CreateSender(pool, options, accumulator, (_, _, _, _, _) => { });
+        var sender = CreateSender(pool, options, accumulator, (_, _, _, _, _) =>
+        {
+        });
 
         try
         {
@@ -210,7 +216,9 @@ public sealed class BrokerSenderLeakGateTests : ScriptedProduceResponseFixture
         var options = CreateOptions();
         var accumulator = new RecordAccumulator(options);
         var valueTaskSourcePool = new ValueTaskSourcePool<RecordMetadata>();
-        var sender = CreateSender(pool, options, accumulator, (_, _, _, _, _) => { });
+        var sender = CreateSender(pool, options, accumulator, (_, _, _, _, _) =>
+        {
+        });
 
         try
         {

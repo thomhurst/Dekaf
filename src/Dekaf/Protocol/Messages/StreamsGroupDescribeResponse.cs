@@ -24,12 +24,18 @@ public sealed class StreamsGroupDescribeResponse : IKafkaResponse
     /// The duration in milliseconds for which the request was throttled due to quota violation
     /// (zero if not throttled).
     /// </summary>
-    public int ThrottleTimeMs { get; init; }
+    public int ThrottleTimeMs
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The described groups.
     /// </summary>
-    public required IReadOnlyList<StreamsGroupDescribeGroup> Groups { get; init; }
+    public required IReadOnlyList<StreamsGroupDescribeGroup> Groups
+    {
+        get; init;
+    }
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {
@@ -66,30 +72,66 @@ public sealed class StreamsGroupDescribeResponse : IKafkaResponse
 /// </summary>
 public sealed class StreamsGroupDescribeGroup
 {
-    public ErrorCode ErrorCode { get; init; }
-    public string? ErrorMessage { get; init; }
-    public required string GroupId { get; init; }
-    public required string GroupState { get; init; }
-    public int GroupEpoch { get; init; }
-    public int AssignmentEpoch { get; init; }
-    public StreamsGroupDescribeTopology? Topology { get; init; }
-    public required IReadOnlyList<StreamsGroupDescribeMember> Members { get; init; }
-    public int AuthorizedOperations { get; init; } = int.MinValue;
+    public ErrorCode ErrorCode
+    {
+        get; init;
+    }
+    public string? ErrorMessage
+    {
+        get; init;
+    }
+    public required string GroupId
+    {
+        get; init;
+    }
+    public required string GroupState
+    {
+        get; init;
+    }
+    public int GroupEpoch
+    {
+        get; init;
+    }
+    public int AssignmentEpoch
+    {
+        get; init;
+    }
+    public StreamsGroupDescribeTopology? Topology
+    {
+        get; init;
+    }
+    public required IReadOnlyList<StreamsGroupDescribeMember> Members
+    {
+        get; init;
+    }
+    public int AuthorizedOperations
+    {
+        get; init;
+    } = int.MinValue;
 
     /// <summary>
     /// The full topology description (v1+). Non-null only when <see cref="TopologyDescriptionStatus"/> is 3 (available).
     /// </summary>
-    public StreamsTopologyDescriptionData? TopologyDescription { get; init; }
+    public StreamsTopologyDescriptionData? TopologyDescription
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The topology description status (v1+): 0 = not requested, 1 = not stored, 2 = error, 3 = available.
     /// </summary>
-    public sbyte TopologyDescriptionStatus { get; init; }
+    public sbyte TopologyDescriptionStatus
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The task assignor for the next assignment computation (v1+), or null on a describe error.
     /// </summary>
-    public string? AssignorName { get; init; }
+    public string? AssignorName
+    {
+        get; init;
+    }
 
     public void Write(ref KafkaProtocolWriter writer) => Write(ref writer, 0);
 
@@ -167,8 +209,14 @@ public sealed class StreamsGroupDescribeGroup
 /// </summary>
 public sealed class StreamsGroupDescribeTopology
 {
-    public int Epoch { get; init; }
-    public IReadOnlyList<StreamsGroupDescribeSubtopology>? Subtopologies { get; init; }
+    public int Epoch
+    {
+        get; init;
+    }
+    public IReadOnlyList<StreamsGroupDescribeSubtopology>? Subtopologies
+    {
+        get; init;
+    }
 
     public void Write(ref KafkaProtocolWriter writer)
     {
@@ -220,11 +268,26 @@ public sealed class StreamsGroupDescribeTopology
 /// </summary>
 public sealed class StreamsGroupDescribeSubtopology
 {
-    public required string SubtopologyId { get; init; }
-    public required IReadOnlyList<string> SourceTopics { get; init; }
-    public required IReadOnlyList<string> RepartitionSinkTopics { get; init; }
-    public required IReadOnlyList<StreamsGroupDescribeTopicInfo> StateChangelogTopics { get; init; }
-    public required IReadOnlyList<StreamsGroupDescribeTopicInfo> RepartitionSourceTopics { get; init; }
+    public required string SubtopologyId
+    {
+        get; init;
+    }
+    public required IReadOnlyList<string> SourceTopics
+    {
+        get; init;
+    }
+    public required IReadOnlyList<string> RepartitionSinkTopics
+    {
+        get; init;
+    }
+    public required IReadOnlyList<StreamsGroupDescribeTopicInfo> StateChangelogTopics
+    {
+        get; init;
+    }
+    public required IReadOnlyList<StreamsGroupDescribeTopicInfo> RepartitionSourceTopics
+    {
+        get; init;
+    }
 
     public void Write(ref KafkaProtocolWriter writer)
     {
@@ -282,10 +345,22 @@ public sealed class StreamsGroupDescribeSubtopology
 /// </summary>
 public sealed class StreamsGroupDescribeTopicInfo
 {
-    public required string Name { get; init; }
-    public int Partitions { get; init; }
-    public short ReplicationFactor { get; init; }
-    public required IReadOnlyList<StreamsGroupDescribeKeyValue> TopicConfigs { get; init; }
+    public required string Name
+    {
+        get; init;
+    }
+    public int Partitions
+    {
+        get; init;
+    }
+    public short ReplicationFactor
+    {
+        get; init;
+    }
+    public required IReadOnlyList<StreamsGroupDescribeKeyValue> TopicConfigs
+    {
+        get; init;
+    }
 
     public void Write(ref KafkaProtocolWriter writer)
     {
@@ -325,8 +400,14 @@ public sealed class StreamsGroupDescribeTopicInfo
 /// </summary>
 public sealed class StreamsGroupDescribeKeyValue
 {
-    public required string Key { get; init; }
-    public required string Value { get; init; }
+    public required string Key
+    {
+        get; init;
+    }
+    public required string Value
+    {
+        get; init;
+    }
 
     public void Write(ref KafkaProtocolWriter writer)
     {
@@ -355,21 +436,66 @@ public sealed class StreamsGroupDescribeKeyValue
 /// </summary>
 public sealed class StreamsGroupDescribeMember
 {
-    public required string MemberId { get; init; }
-    public int MemberEpoch { get; init; }
-    public string? InstanceId { get; init; }
-    public string? RackId { get; init; }
-    public required string ClientId { get; init; }
-    public required string ClientHost { get; init; }
-    public int TopologyEpoch { get; init; }
-    public required string ProcessId { get; init; }
-    public StreamsGroupDescribeEndpoint? UserEndpoint { get; init; }
-    public required IReadOnlyList<StreamsGroupDescribeKeyValue> ClientTags { get; init; }
-    public required IReadOnlyList<StreamsGroupDescribeTaskOffset> TaskOffsets { get; init; }
-    public required IReadOnlyList<StreamsGroupDescribeTaskOffset> TaskEndOffsets { get; init; }
-    public required StreamsGroupDescribeAssignment Assignment { get; init; }
-    public required StreamsGroupDescribeAssignment TargetAssignment { get; init; }
-    public bool IsClassic { get; init; }
+    public required string MemberId
+    {
+        get; init;
+    }
+    public int MemberEpoch
+    {
+        get; init;
+    }
+    public string? InstanceId
+    {
+        get; init;
+    }
+    public string? RackId
+    {
+        get; init;
+    }
+    public required string ClientId
+    {
+        get; init;
+    }
+    public required string ClientHost
+    {
+        get; init;
+    }
+    public int TopologyEpoch
+    {
+        get; init;
+    }
+    public required string ProcessId
+    {
+        get; init;
+    }
+    public StreamsGroupDescribeEndpoint? UserEndpoint
+    {
+        get; init;
+    }
+    public required IReadOnlyList<StreamsGroupDescribeKeyValue> ClientTags
+    {
+        get; init;
+    }
+    public required IReadOnlyList<StreamsGroupDescribeTaskOffset> TaskOffsets
+    {
+        get; init;
+    }
+    public required IReadOnlyList<StreamsGroupDescribeTaskOffset> TaskEndOffsets
+    {
+        get; init;
+    }
+    public required StreamsGroupDescribeAssignment Assignment
+    {
+        get; init;
+    }
+    public required StreamsGroupDescribeAssignment TargetAssignment
+    {
+        get; init;
+    }
+    public bool IsClassic
+    {
+        get; init;
+    }
 
     public void Write(ref KafkaProtocolWriter writer)
     {
@@ -452,8 +578,14 @@ public sealed class StreamsGroupDescribeMember
 /// </summary>
 public sealed class StreamsGroupDescribeEndpoint
 {
-    public required string Host { get; init; }
-    public ushort Port { get; init; }
+    public required string Host
+    {
+        get; init;
+    }
+    public ushort Port
+    {
+        get; init;
+    }
 
     public void Write(ref KafkaProtocolWriter writer)
     {
@@ -500,9 +632,18 @@ public sealed class StreamsGroupDescribeEndpoint
 /// </summary>
 public sealed class StreamsGroupDescribeTaskOffset
 {
-    public required string SubtopologyId { get; init; }
-    public int Partition { get; init; }
-    public long Offset { get; init; }
+    public required string SubtopologyId
+    {
+        get; init;
+    }
+    public int Partition
+    {
+        get; init;
+    }
+    public long Offset
+    {
+        get; init;
+    }
 
     public void Write(ref KafkaProtocolWriter writer)
     {
@@ -534,9 +675,18 @@ public sealed class StreamsGroupDescribeTaskOffset
 /// </summary>
 public sealed class StreamsGroupDescribeAssignment
 {
-    public required IReadOnlyList<StreamsGroupDescribeTaskIds> ActiveTasks { get; init; }
-    public required IReadOnlyList<StreamsGroupDescribeTaskIds> StandbyTasks { get; init; }
-    public required IReadOnlyList<StreamsGroupDescribeTaskIds> WarmupTasks { get; init; }
+    public required IReadOnlyList<StreamsGroupDescribeTaskIds> ActiveTasks
+    {
+        get; init;
+    }
+    public required IReadOnlyList<StreamsGroupDescribeTaskIds> StandbyTasks
+    {
+        get; init;
+    }
+    public required IReadOnlyList<StreamsGroupDescribeTaskIds> WarmupTasks
+    {
+        get; init;
+    }
 
     public void Write(ref KafkaProtocolWriter writer)
     {
@@ -583,8 +733,14 @@ public sealed class StreamsGroupDescribeAssignment
 /// </summary>
 public sealed class StreamsGroupDescribeTaskIds
 {
-    public required string SubtopologyId { get; init; }
-    public required IReadOnlyList<int> Partitions { get; init; }
+    public required string SubtopologyId
+    {
+        get; init;
+    }
+    public required IReadOnlyList<int> Partitions
+    {
+        get; init;
+    }
 
     public void Write(ref KafkaProtocolWriter writer)
     {

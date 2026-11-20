@@ -92,8 +92,14 @@ public sealed class ConsumerHeartbeatCallbackIntegrationTests(KafkaTestContainer
 
     private sealed class BlockingRevocationListener : IRebalanceListener
     {
-        public TaskCompletionSource Entered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        public TaskCompletionSource Release { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource Entered
+        {
+            get;
+        } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource Release
+        {
+            get;
+        } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         private int _lostCount;
         public int LostCount => Volatile.Read(ref _lostCount);
 

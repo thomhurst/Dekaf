@@ -68,7 +68,10 @@ internal sealed class LatencyTracker
     internal Task WaitForDeliverySamplesAsync()
     {
         Volatile.Write(ref _waitingForDeliveries, 1);
-        if (Volatile.Read(ref _pendingDeliveries) == 0) _deliveriesDrained.TrySetResult();
+        if (Volatile.Read(ref _pendingDeliveries) == 0)
+        {
+            _deliveriesDrained.TrySetResult();
+        }
         return _deliveriesDrained.Task;
     }
 
@@ -132,7 +135,9 @@ internal sealed class LatencyTracker
             var seen = _outlierCount++;
             var slot = seen < MaxOutlierSamples ? seen : Random.Shared.NextInt64(seen + 1);
             if ((ulong)slot >= MaxOutlierSamples)
+            {
                 return;
+            }
 
             var completedAt = DateTimeOffset.UtcNow;
             var latency = Stopwatch.GetElapsedTime(0, ticks);
@@ -159,7 +164,9 @@ internal sealed class LatencyTracker
         {
             currentMin = Interlocked.Read(ref _minTicks);
             if (ticks >= currentMin)
+            {
                 break;
+            }
         } while (Interlocked.CompareExchange(ref _minTicks, ticks, currentMin) != currentMin);
 
         long currentMax;
@@ -167,7 +174,9 @@ internal sealed class LatencyTracker
         {
             currentMax = Interlocked.Read(ref _maxTicks);
             if (ticks <= currentMax)
+            {
                 break;
+            }
         } while (Interlocked.CompareExchange(ref _maxTicks, ticks, currentMax) != currentMax);
     }
 
@@ -178,7 +187,9 @@ internal sealed class LatencyTracker
     {
         var count = Interlocked.Read(ref _count);
         if (count == 0)
+        {
             return (0, 0, 0);
+        }
 
         var targetP50 = Math.Max(1L, (long)(count * 50 / 100.0));
         var targetP95 = Math.Max(1L, (long)(count * 95 / 100.0));
@@ -216,9 +227,18 @@ internal sealed class LatencyTracker
         }
 
         var maxUs = TicksToUs(Interlocked.Read(ref _maxTicks));
-        if (!foundP50) p50 = maxUs;
-        if (!foundP95) p95 = maxUs;
-        if (!foundP99) p99 = maxUs;
+        if (!foundP50)
+        {
+            p50 = maxUs;
+        }
+        if (!foundP95)
+        {
+            p95 = maxUs;
+        }
+        if (!foundP99)
+        {
+            p99 = maxUs;
+        }
 
         return (p50, p95, p99);
     }
@@ -266,28 +286,72 @@ internal sealed class LatencyTracker
 
 internal sealed class LatencySnapshot
 {
-    public required long Count { get; init; }
-    public required double MinUs { get; init; }
-    public required double MaxUs { get; init; }
-    public required double P50Us { get; init; }
-    public required double P95Us { get; init; }
-    public required double P99Us { get; init; }
-    public required long OverflowCount { get; init; }
-    public List<LatencyOutlierSample> OutlierSamples { get; init; } = [];
-    public long DroppedOutlierSamples { get; init; }
+    public required long Count
+    {
+        get; init;
+    }
+    public required double MinUs
+    {
+        get; init;
+    }
+    public required double MaxUs
+    {
+        get; init;
+    }
+    public required double P50Us
+    {
+        get; init;
+    }
+    public required double P95Us
+    {
+        get; init;
+    }
+    public required double P99Us
+    {
+        get; init;
+    }
+    public required long OverflowCount
+    {
+        get; init;
+    }
+    public List<LatencyOutlierSample> OutlierSamples
+    {
+        get; init;
+    } = [];
+    public long DroppedOutlierSamples
+    {
+        get; init;
+    }
 
     // Convenience properties for backward compatibility (excluded from JSON output)
-    [JsonIgnore] public double MinMs => MinUs / 1000.0;
-    [JsonIgnore] public double MaxMs => MaxUs / 1000.0;
-    [JsonIgnore] public double P50Ms => P50Us / 1000.0;
-    [JsonIgnore] public double P95Ms => P95Us / 1000.0;
-    [JsonIgnore] public double P99Ms => P99Us / 1000.0;
+    [JsonIgnore]
+    public double MinMs => MinUs / 1000.0;
+    [JsonIgnore]
+    public double MaxMs => MaxUs / 1000.0;
+    [JsonIgnore]
+    public double P50Ms => P50Us / 1000.0;
+    [JsonIgnore]
+    public double P95Ms => P95Us / 1000.0;
+    [JsonIgnore]
+    public double P99Ms => P99Us / 1000.0;
 }
 
 internal readonly record struct LatencyOutlierSample
 {
-    public long? MessageIndex { get; init; }
-    public required DateTimeOffset StartedAtUtc { get; init; }
-    public required DateTimeOffset CompletedAtUtc { get; init; }
-    public required double LatencyUs { get; init; }
+    public long? MessageIndex
+    {
+        get; init;
+    }
+    public required DateTimeOffset StartedAtUtc
+    {
+        get; init;
+    }
+    public required DateTimeOffset CompletedAtUtc
+    {
+        get; init;
+    }
+    public required double LatencyUs
+    {
+        get; init;
+    }
 }

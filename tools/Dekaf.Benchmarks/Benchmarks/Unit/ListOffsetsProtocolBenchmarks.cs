@@ -17,7 +17,10 @@ public class ListOffsetsProtocolBenchmarks
     private ListOffsetsRequest _request = null!;
 
     [Params((short)8, (short)9, (short)10, (short)11)]
-    public short Version { get; set; }
+    public short Version
+    {
+        get; set;
+    }
 
     [GlobalSetup]
     public void Setup()

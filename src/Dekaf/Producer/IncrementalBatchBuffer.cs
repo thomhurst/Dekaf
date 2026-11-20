@@ -54,10 +54,14 @@ internal sealed class IncrementalBatchBuffer
         var chunkSize = GetChunkSize(batchSize);
         var arrays = new byte[count][];
         for (var i = 0; i < count; i++)
+        {
             arrays[i] = s_chunkArrays.Pool.Rent(chunkSize);
+        }
 
         for (var i = 0; i < count; i++)
+        {
             s_chunkArrays.Pool.Return(arrays[i], clearArray: false);
+        }
 
         s_segments.PreWarm(count);
         s_buffers.PreWarm(count);
@@ -69,7 +73,9 @@ internal sealed class IncrementalBatchBuffer
         {
             var capacity = 0;
             for (var segment = _head; segment is not null; segment = segment.NextSegment)
+            {
                 capacity = checked(capacity + segment.Buffer.Length);
+            }
             return capacity;
         }
     }
@@ -143,9 +149,13 @@ internal sealed class IncrementalBatchBuffer
         {
             var previous = segment.Previous;
             if (previous is null)
+            {
                 _head = null;
+            }
             else
+            {
                 previous.DetachNext();
+            }
 
             _tail = previous;
             ReturnSegment(segment);
@@ -157,10 +167,14 @@ internal sealed class IncrementalBatchBuffer
     internal ReadOnlySequence<byte> AsReadOnlySequence()
     {
         if (_head is null || _tail is null || _length == 0)
+        {
             return ReadOnlySequence<byte>.Empty;
+        }
 
         for (var segment = _head; segment is not null; segment = segment.NextSegment)
+        {
             segment.CommitMemory();
+        }
 
         return new ReadOnlySequence<byte>(_head, 0, _tail, _tail.Used);
     }
@@ -214,10 +228,19 @@ internal sealed class IncrementalBatchBuffer
 
     private sealed class ChunkSegment : ReadOnlySequenceSegment<byte>
     {
-        internal byte[] Buffer { get; private set; } = [];
+        internal byte[] Buffer
+        {
+            get; private set;
+        } = [];
         internal int Capacity => Buffer.Length;
-        internal int Used { get; private set; }
-        internal ChunkSegment? Previous { get; set; }
+        internal int Used
+        {
+            get; private set;
+        }
+        internal ChunkSegment? Previous
+        {
+            get; set;
+        }
         internal ChunkSegment? NextSegment => (ChunkSegment?)Next;
 
         internal void Initialize(byte[] buffer)
@@ -262,13 +285,17 @@ internal sealed class IncrementalBatchBuffer
     {
         protected override IncrementalBatchBuffer Create() => new(MinimumChunkSize);
 
-        protected override void Reset(IncrementalBatchBuffer item) { }
+        protected override void Reset(IncrementalBatchBuffer item)
+        {
+        }
     }
 
     private sealed class SegmentPool(int maxPoolSize) : ObjectPool<ChunkSegment>(maxPoolSize)
     {
         protected override ChunkSegment Create() => new();
 
-        protected override void Reset(ChunkSegment item) { }
+        protected override void Reset(ChunkSegment item)
+        {
+        }
     }
 }

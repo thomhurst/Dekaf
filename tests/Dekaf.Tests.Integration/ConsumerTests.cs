@@ -15,7 +15,10 @@ public class ConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
     {
         private Action? _callback;
 
-        public int CallbackCount { get; private set; }
+        public int CallbackCount
+        {
+            get; private set;
+        }
 
         public void SetCallback(Action callback) => _callback = callback;
 
@@ -115,7 +118,10 @@ public class ConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))
         {
             messages.Add(msg);
-            if (messages.Count >= 3) break;
+            if (messages.Count >= 3)
+            {
+                break;
+            }
         }
 
         // Assert - should have all 3 messages starting from offset 0
@@ -251,7 +257,9 @@ public class ConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
         {
             consumed.Add(result);
             if (consumed.Count == 2)
+            {
                 break;
+            }
         }
 
         await Assert.That(deserializer.CallbackCount).IsEqualTo(1);
@@ -572,7 +580,10 @@ public class ConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))
         {
             messages.Add(msg);
-            if (messages.Count >= 3) break;
+            if (messages.Count >= 3)
+            {
+                break;
+            }
         }
 
         // Commit offset 3 (next message to consume)
@@ -996,7 +1007,10 @@ public class ConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))
         {
             messages.Add(msg);
-            if (messages.Count >= 2) break;
+            if (messages.Count >= 2)
+            {
+                break;
+            }
         }
 
         // Assert
@@ -1148,7 +1162,10 @@ public class ConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
         await foreach (var msg in consumer.ConsumeAsync(cts1.Token))
         {
             firstPassMessages.Add(msg.Value);
-            if (firstPassMessages.Count >= 5) break;
+            if (firstPassMessages.Count >= 5)
+            {
+                break;
+            }
         }
 
         // Verify we consumed all 5
@@ -1163,7 +1180,10 @@ public class ConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
         await foreach (var msg in consumer.ConsumeAsync(cts2.Token))
         {
             replayMessages.Add(msg.Value);
-            if (replayMessages.Count >= 5) break;
+            if (replayMessages.Count >= 5)
+            {
+                break;
+            }
         }
 
         // Assert - replay should match first pass
@@ -1280,7 +1300,10 @@ public class ConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
         await foreach (var msg in consumer.ConsumeAsync(cts1.Token))
         {
             consumed.Add(msg);
-            if (consumed.Count >= 5) break;
+            if (consumed.Count >= 5)
+            {
+                break;
+            }
         }
 
         // Verify position is now 5
@@ -1296,7 +1319,10 @@ public class ConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
         await foreach (var msg in consumer.ConsumeAsync(cts2.Token))
         {
             replayed.Add(msg);
-            if (replayed.Count >= 3) break;
+            if (replayed.Count >= 3)
+            {
+                break;
+            }
         }
 
         // Assert - should get messages at offsets 2, 3, 4
@@ -1352,7 +1378,10 @@ public class ConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
                 await foreach (var msg in consumer.ConsumeAsync(cts.Token))
                 {
                     receivedMessages.Add(msg);
-                    if (receivedMessages.Count >= 1) break;
+                    if (receivedMessages.Count >= 1)
+                    {
+                        break;
+                    }
                 }
             }
             catch (OperationCanceledException) { }
@@ -1388,7 +1417,9 @@ public class ConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
                 var position = consumer.GetPosition(partition);
                 var watermarks = await consumer.QueryWatermarkOffsetsAsync(partition, cts.Token);
                 if (position == watermarks.High)
+                {
                     continue;
+                }
 
                 pendingPartition = partition;
                 pendingPosition = position;
@@ -1397,7 +1428,9 @@ public class ConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
             }
 
             if (pendingPartition is null)
+            {
                 break;
+            }
 
             if (sw.Elapsed >= positionTimeout)
             {
@@ -1464,7 +1497,10 @@ public class ConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
             await foreach (var msg in consumer1.ConsumeAsync(cts1.Token))
             {
                 count++;
-                if (count >= 5) break;
+                if (count >= 5)
+                {
+                    break;
+                }
             }
 
             // Commit at offset 5 (all messages consumed)
@@ -1593,7 +1629,10 @@ public class ConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
         {
             receivedMessages.Add(msg);
             partitionCounts[msg.Partition] = partitionCounts.GetValueOrDefault(msg.Partition) + 1;
-            if (receivedMessages.Count >= 6 * messagesPerPartition) break;
+            if (receivedMessages.Count >= 6 * messagesPerPartition)
+            {
+                break;
+            }
         }
 
         // Assert - should receive all messages from all partitions
@@ -1647,7 +1686,10 @@ public class ConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))
         {
             receivedCount++;
-            if (receivedCount >= totalMessages) break;
+            if (receivedCount >= totalMessages)
+            {
+                break;
+            }
         }
 
         sw.Stop();
@@ -1799,7 +1841,10 @@ public class ConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
                 await foreach (var msg in consumer.ConsumeAsync(cts.Token))
                 {
                     receivedMessages.Add(msg);
-                    if (receivedMessages.Count >= 1) break;
+                    if (receivedMessages.Count >= 1)
+                    {
+                        break;
+                    }
                 }
             }
             catch (OperationCanceledException) { }
@@ -2092,7 +2137,10 @@ public class ConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
         {
             receivedByPartition[msg.Partition].Add(msg.Value);
             var totalReceived = receivedByPartition.Values.Sum(l => l.Count);
-            if (totalReceived >= 4 * messagesPerPartition) break;
+            if (totalReceived >= 4 * messagesPerPartition)
+            {
+                break;
+            }
         }
 
         // Assert - should have received all messages from all partitions

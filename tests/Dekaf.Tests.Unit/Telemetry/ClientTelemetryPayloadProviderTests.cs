@@ -16,8 +16,7 @@ public sealed class ClientTelemetryPayloadProviderTests
         var provider = new ClientTelemetryPayloadProvider(unixNanoClock: clock.Next);
         var snapshot = new ClientTelemetryMetricSnapshot(
             DeltaTemporality: false,
-            Metrics:
-            [
+            Metrics: [
                 new ClientTelemetryMetric(
                     ClientTelemetryMetricNames.ProducerConnectionCreationTotal,
                     ClientTelemetryMetricKind.Counter,
@@ -61,8 +60,7 @@ public sealed class ClientTelemetryPayloadProviderTests
         var provider = new ClientTelemetryPayloadProvider(unixNanoClock: clock.Next);
         var snapshot = new ClientTelemetryMetricSnapshot(
             DeltaTemporality: true,
-            Metrics:
-            [
+            Metrics: [
                 new ClientTelemetryMetric(
                     ClientTelemetryMetricNames.ConsumerConnectionCreationTotal,
                     ClientTelemetryMetricKind.Counter,
@@ -90,8 +88,7 @@ public sealed class ClientTelemetryPayloadProviderTests
         var provider = new ClientTelemetryPayloadProvider(compressionCodecs, clock.Next);
         var snapshot = new ClientTelemetryMetricSnapshot(
             DeltaTemporality: false,
-            Metrics:
-            [
+            Metrics: [
                 new ClientTelemetryMetric(
                     ClientTelemetryMetricNames.ProducerConnectionCreationTotal,
                     ClientTelemetryMetricKind.Counter,

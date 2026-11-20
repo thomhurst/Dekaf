@@ -74,14 +74,19 @@ public sealed class AdminClientClassicGroupDescriptionTests
         finally
         {
             releaseSecond.TrySetResult();
-            try { await operation; }
+            try
+            {
+                await operation;
+            }
             catch (InvalidOperationException) { }
         }
 
         async ValueTask Complete(string group)
         {
             if (group == "first")
+            {
                 throw failure;
+            }
             secondStarted.SetResult();
             await releaseSecond.Task;
             secondFinished = true;
@@ -91,14 +96,18 @@ public sealed class AdminClientClassicGroupDescriptionTests
         async ValueTask<FindCoordinatorResponse> Find(string group)
         {
             if (discovery)
+            {
                 await Complete(group);
+            }
             return Coordinator(group, group == "first" ? 1 : 2);
         }
 
         async ValueTask<DescribeGroupsResponse> Describe(string group)
         {
             if (!discovery)
+            {
                 await Complete(group);
+            }
             return new() { Groups = [Group(group)] };
         }
     }
@@ -135,28 +144,37 @@ public sealed class AdminClientClassicGroupDescriptionTests
         {
             release.TrySetResult();
             await cancellation.CancelAsync();
-            try { await operation; }
+            try
+            {
+                await operation;
+            }
             catch (OperationCanceledException) { }
         }
 
         async ValueTask WaitForOtherRequest(CancellationToken token)
         {
             if (Interlocked.Increment(ref started) == 2)
+            {
                 bothStarted.TrySetResult();
+            }
             await release.Task.WaitAsync(token);
         }
 
         async ValueTask<FindCoordinatorResponse> Find(string group, CancellationToken token)
         {
             if (discovery)
+            {
                 await WaitForOtherRequest(token);
+            }
             return Coordinator(group, group == "first" ? 1 : 2);
         }
 
         async ValueTask<DescribeGroupsResponse> Describe(string group, CancellationToken token)
         {
             if (!discovery)
+            {
                 await WaitForOtherRequest(token);
+            }
             return new() { Groups = [Group(group, group == "first" ? ErrorCode.None : ErrorCode.GroupAuthorizationFailed)] };
         }
     }
@@ -173,11 +191,19 @@ public sealed class AdminClientClassicGroupDescriptionTests
         var assignment = AssignmentBytes();
         Respond(connection, new DescribeGroupsResponseGroup
         {
-            GroupId = "group", GroupState = "Stable", ProtocolType = protocol, ProtocolData = "selected",
-            AuthorizedOperations = 123, Members = [new DescribeGroupsResponseMember
+            GroupId = "group",
+            GroupState = "Stable",
+            ProtocolType = protocol,
+            ProtocolData = "selected",
+            AuthorizedOperations = 123,
+            Members = [new DescribeGroupsResponseMember
             {
-                MemberId = "member", GroupInstanceId = "instance", ClientId = "client", ClientHost = "host",
-                MemberMetadata = [4, 5], MemberAssignment = assignment
+                MemberId = "member",
+                GroupInstanceId = "instance",
+                ClientId = "client",
+                ClientHost = "host",
+                MemberMetadata = [4, 5],
+                MemberAssignment = assignment
             }]
         });
         IAdminClient capability = admin;
@@ -198,9 +224,13 @@ public sealed class AdminClientClassicGroupDescriptionTests
         await Assert.That(member.Metadata.ToArray()).IsEquivalentTo(new byte[] { 4, 5 });
         await Assert.That(member.AssignmentData.ToArray()).IsEquivalentTo(assignment);
         if (protocol == "consumer")
+        {
             await Assert.That(member.Assignment!).IsEquivalentTo([new TopicPartition("topic", 2)]);
+        }
         else
+        {
             await Assert.That(member.Assignment).IsNull();
+        }
         await connection.DidNotReceive().SendAsync<ConsumerGroupDescribeRequest, ConsumerGroupDescribeResponse>(
             Arg.Any<ConsumerGroupDescribeRequest>(), Arg.Any<short>(), Arg.Any<CancellationToken>());
         await connection.Received(1).SendAsync<DescribeGroupsRequest, DescribeGroupsResponse>(
@@ -326,12 +356,16 @@ public sealed class AdminClientClassicGroupDescriptionTests
     public async Task CancellationDuringGroupEnumeration_IsObservedBeforeReturning(bool inMemory, bool empty)
     {
         using var cancellation = new CancellationTokenSource();
+
         IEnumerable<string> Groups()
         {
             if (!empty)
+            {
                 yield return "group";
+            }
             cancellation.Cancel();
         }
+
         if (inMemory)
         {
             await using var admin = new InMemoryAdminClient(new InMemoryKafkaCluster());
@@ -360,13 +394,17 @@ public sealed class AdminClientClassicGroupDescriptionTests
         await using var disposal = admin;
         var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         if (discovery)
+        {
             connection.SendAsync<FindCoordinatorRequest, FindCoordinatorResponse>(Arg.Any<FindCoordinatorRequest>(),
                     Arg.Any<short>(), Arg.Any<CancellationToken>())
                 .Returns(call => new ValueTask<FindCoordinatorResponse>(Wait<FindCoordinatorResponse>(call.Arg<CancellationToken>())));
+        }
         else
+        {
             connection.SendAsync<DescribeGroupsRequest, DescribeGroupsResponse>(Arg.Any<DescribeGroupsRequest>(),
                     Arg.Any<short>(), Arg.Any<CancellationToken>())
                 .Returns(call => new ValueTask<DescribeGroupsResponse>(Wait<DescribeGroupsResponse>(call.Arg<CancellationToken>())));
+        }
         using var cancellation = new CancellationTokenSource();
         var operation = admin.DescribeClassicGroupsAsync(["group"], new() { TimeoutMs = timeout ? 1000 : 30000 }, cancellation.Token).AsTask();
         if (timeout)
@@ -382,6 +420,7 @@ public sealed class AdminClientClassicGroupDescriptionTests
             cancellation.Cancel();
             await Assert.That(async () => await operation).Throws<OperationCanceledException>();
         }
+
         async Task<T> Wait<T>(CancellationToken token)
         {
             entered.TrySetResult();
@@ -399,6 +438,7 @@ public sealed class AdminClientClassicGroupDescriptionTests
         await using var disposal = admin;
         using var cancellation = new CancellationTokenSource();
         if (discovery)
+        {
             connection.SendAsync<FindCoordinatorRequest, FindCoordinatorResponse>(Arg.Any<FindCoordinatorRequest>(),
                     Arg.Any<short>(), Arg.Any<CancellationToken>())
                 .Returns(_ =>
@@ -406,7 +446,9 @@ public sealed class AdminClientClassicGroupDescriptionTests
                     cancellation.Cancel();
                     return ValueTask.FromException<FindCoordinatorResponse>(new GroupException(ErrorCode.NotCoordinator, "moved"));
                 });
+        }
         else
+        {
             connection.SendAsync<DescribeGroupsRequest, DescribeGroupsResponse>(Arg.Any<DescribeGroupsRequest>(),
                     Arg.Any<short>(), Arg.Any<CancellationToken>())
                 .Returns(_ =>
@@ -414,6 +456,7 @@ public sealed class AdminClientClassicGroupDescriptionTests
                     cancellation.Cancel();
                     return ValueTask.FromException<DescribeGroupsResponse>(new GroupException(ErrorCode.NotCoordinator, "moved"));
                 });
+        }
         await Assert.That(async () => await admin.DescribeClassicGroupsAsync(["group"],
             cancellationToken: cancellation.Token)).Throws<OperationCanceledException>();
     }
@@ -425,7 +468,9 @@ public sealed class AdminClientClassicGroupDescriptionTests
         await using var disposal = admin;
         Respond(connection, new DescribeGroupsResponseGroup
         {
-            GroupId = "group", GroupState = "Stable", ProtocolType = "consumer",
+            GroupId = "group",
+            GroupState = "Stable",
+            ProtocolType = "consumer",
             Members = [new() { MemberId = "bad", MemberAssignment = [0] },
                 new() { MemberId = "good", MemberAssignment = AssignmentBytes() }]
         });
@@ -453,7 +498,9 @@ public sealed class AdminClientClassicGroupDescriptionTests
             new() { TimeoutMs = timeout ? 1000 : 30000 }, cancellation.Token).AsTask();
         await entered.Task.WaitAsync(TimeSpan.FromSeconds(10));
         if (timeout)
+        {
             await Assert.That(async () => await operation).Throws<KafkaTimeoutException>();
+        }
         else
         {
             cancellation.Cancel();
@@ -518,7 +565,10 @@ public sealed class AdminClientClassicGroupDescriptionTests
             }));
         Respond(connection, new DescribeGroupsResponseGroup
         {
-            GroupId = "group", GroupState = "Empty", ProtocolType = "consumer", Members = []
+            GroupId = "group",
+            GroupState = "Empty",
+            ProtocolType = "consumer",
+            Members = []
         });
 
         var results = await admin.DescribeClassicGroupsAsync(["group"]);
@@ -545,7 +595,9 @@ public sealed class AdminClientClassicGroupDescriptionTests
         await Assert.That(exception.InnerException).IsNotNull();
         var cause = exception.InnerException;
         while (cause is not null and not IOException)
+        {
             cause = cause.InnerException;
+        }
         await Assert.That(cause).IsTypeOf<IOException>();
         await connection.DidNotReceive().SendAsync<DescribeGroupsRequest, DescribeGroupsResponse>(
             Arg.Any<DescribeGroupsRequest>(), Arg.Any<short>(), Arg.Any<CancellationToken>());
@@ -602,7 +654,9 @@ public sealed class AdminClientClassicGroupDescriptionTests
         var bytes = NegativeTopicNameAssignmentBytes(length);
         Respond(connection, new DescribeGroupsResponseGroup
         {
-            GroupId = "group", GroupState = "Stable", ProtocolType = "consumer",
+            GroupId = "group",
+            GroupState = "Stable",
+            ProtocolType = "consumer",
             Members = [new() { MemberId = "member", MemberAssignment = bytes }]
         });
         var member = (await admin.DescribeClassicGroupsAsync(["group"]))["group"].Description!.Members.Single();
@@ -646,7 +700,9 @@ public sealed class AdminClientClassicGroupDescriptionTests
         var bytes = buffer.WrittenSpan.ToArray();
         Respond(connection, new DescribeGroupsResponseGroup
         {
-            GroupId = "group", GroupState = "Stable", ProtocolType = "consumer",
+            GroupId = "group",
+            GroupState = "Stable",
+            ProtocolType = "consumer",
             Members = [new() { MemberId = "member", MemberAssignment = bytes }]
         });
         var member = (await admin.DescribeClassicGroupsAsync(["group"]))["group"].Description!.Members.Single();
@@ -718,13 +774,17 @@ public sealed class AdminClientClassicGroupDescriptionTests
         await Assert.That(allocated).IsLessThan(32L * emptyTopics + 1024);
         await Assert.That(assignments!.Count).IsEqualTo(includePartition ? 1 : 0);
         if (includePartition)
+        {
             await Assert.That(assignments[0]).IsEqualTo(new TopicPartition("topic", 2));
+        }
 
         var (admin, connection, _) = CreateAdmin();
         await using var disposal = admin;
         Respond(connection, new DescribeGroupsResponseGroup
         {
-            GroupId = "group", GroupState = "Stable", ProtocolType = "consumer",
+            GroupId = "group",
+            GroupState = "Stable",
+            ProtocolType = "consumer",
             Members = [new() { MemberId = "member", MemberAssignment = bytes }]
         });
         var member = (await admin.DescribeClassicGroupsAsync(["group"]))["group"].Description!.Members.Single();
@@ -738,14 +798,20 @@ public sealed class AdminClientClassicGroupDescriptionTests
         await using var disposal = admin;
         Respond(connection, new DescribeGroupsResponseGroup
         {
-            GroupId = "group", GroupState = "Stable", ProtocolType = "consumer",
+            GroupId = "group",
+            GroupState = "Stable",
+            ProtocolType = "consumer",
             Members = [new() { MemberId = "member", MemberAssignment = bytes }]
         });
         var member = (await admin.DescribeClassicGroupsAsync(["group"]))["group"].Description!.Members.Single();
         if (valid)
+        {
             await Assert.That(member.Assignment!).IsEquivalentTo([new TopicPartition("topic", 2)]);
+        }
         else
+        {
             await Assert.That(member.Assignment).IsNull();
+        }
         await Assert.That(member.AssignmentData.ToArray()).IsEquivalentTo(bytes);
     }
 
@@ -781,7 +847,9 @@ public sealed class AdminClientClassicGroupDescriptionTests
         writer.WriteString(string.Empty);
         writer.WriteInt32(partitions);
         if (partitions != 0)
+        {
             writer.WriteInt32(0);
+        }
         writer.WriteBytes([]);
         await AssertAssignmentAsync(buffer.WrittenSpan.ToArray(), valid: false);
     }
@@ -811,7 +879,9 @@ public sealed class AdminClientClassicGroupDescriptionTests
             new() { TimeoutMs = timeout ? 1000 : 30000 }, cancellation.Token).AsTask();
         await entered.Task.WaitAsync(TimeSpan.FromSeconds(10));
         if (timeout)
+        {
             await Assert.That(async () => await operation).Throws<KafkaTimeoutException>();
+        }
         else
         {
             cancellation.Cancel();
@@ -850,8 +920,13 @@ public sealed class AdminClientClassicGroupDescriptionTests
 
     private static DescribeGroupsResponseGroup Group(string id, ErrorCode code = ErrorCode.None) => new()
     {
-        GroupId = id, GroupState = "Empty", ProtocolType = "", ProtocolData = "", Members = [],
-        ErrorCode = code, ErrorMessage = code == ErrorCode.None ? null : "broker detail"
+        GroupId = id,
+        GroupState = "Empty",
+        ProtocolType = "",
+        ProtocolData = "",
+        Members = [],
+        ErrorCode = code,
+        ErrorMessage = code == ErrorCode.None ? null : "broker detail"
     };
     private static FindCoordinatorResponse Coordinator(string id, int node, ErrorCode code = ErrorCode.None) => new()
     {
@@ -876,7 +951,9 @@ public sealed class AdminClientClassicGroupDescriptionTests
         var snapshot = new MetadataResponse
         {
             Brokers = [new BrokerMetadata { NodeId = 1, Host = "localhost", Port = 9092 }],
-            ControllerId = 1, ClusterId = "test", Topics = []
+            ControllerId = 1,
+            ClusterId = "test",
+            Topics = []
         };
         connection.SendAsync<MetadataRequest, MetadataResponse>(Arg.Any<MetadataRequest>(), Arg.Any<short>(), Arg.Any<CancellationToken>())
             .Returns(new ValueTask<MetadataResponse>(snapshot));
@@ -884,14 +961,19 @@ public sealed class AdminClientClassicGroupDescriptionTests
             .Returns(call => new ValueTask<FindCoordinatorResponse>(Coordinator(call.Arg<FindCoordinatorRequest>().Key!, 1)));
         var metadata = new MetadataManager(pool, ["localhost:9092"],
             options: new MetadataOptions { MaxInitRetries = 0, EnableBackgroundRefresh = false });
-        if (initializeMetadata) metadata.Metadata.Update(snapshot);
+        if (initializeMetadata)
+        {
+            metadata.Metadata.Update(snapshot);
+        }
         metadata.SetApiVersion(ApiKey.FindCoordinator, 4, 4);
         metadata.SetApiVersion(ApiKey.DescribeGroups, describeVersion, describeVersion);
         metadata.SetApiVersion(ApiKey.ConsumerGroupDescribe, 0, 1);
         metadata.SetApiVersion(ApiKey.Metadata, 9, 13);
         return (new AdminClient(new AdminClientOptions
         {
-            BootstrapServers = ["localhost:9092"], RetryBackoffMs = 1, RetryBackoffMaxMs = 1
+            BootstrapServers = ["localhost:9092"],
+            RetryBackoffMs = 1,
+            RetryBackoffMaxMs = 1
         }, pool, metadata), connection, pool);
     }
 }

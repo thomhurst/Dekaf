@@ -75,7 +75,13 @@ public sealed class AdminClientDetailedConfigTests
         await using var client = admin;
         var observed = new Dictionary<int, ConfigResource[]>();
         foreach (var pair in connections)
-            Setup(pair.Value, incremental, resources => { observed.Add(pair.Key, resources); return Success(resources); });
+        {
+            Setup(pair.Value, incremental, resources =>
+            {
+                observed.Add(pair.Key, resources);
+                return Success(resources);
+            });
+        }
         var topic = ConfigResource.Topic("orders");
         var cluster = ConfigResource.ClusterBroker();
         var broker = ConfigResource.Broker(2);
@@ -97,7 +103,13 @@ public sealed class AdminClientDetailedConfigTests
         await using var client = admin;
         var observed = new Dictionary<int, ConfigResource[]>();
         foreach (var pair in connections)
-            Setup(pair.Value, incremental, resources => { observed.Add(pair.Key, resources); return Success(resources); });
+        {
+            Setup(pair.Value, incremental, resources =>
+            {
+                observed.Add(pair.Key, resources);
+                return Success(resources);
+            });
+        }
         var topic = ConfigResource.Topic("orders");
         var cluster = ConfigResource.ClusterBroker();
         var broker = ConfigResource.Broker(2);
@@ -105,9 +117,13 @@ public sealed class AdminClientDetailedConfigTests
         var other = ConfigResource.BrokerLogger(3);
         var input = Input(topic, cluster, broker, logger, other);
         if (incremental)
+        {
             await admin.IncrementalAlterConfigsAsync(input);
+        }
         else
+        {
             await admin.AlterConfigsAsync(Replacement(input));
+        }
         await Assert.That(observed[1]).IsEquivalentTo([topic, cluster]);
         await Assert.That(observed[2]).IsEquivalentTo([broker, logger]);
         await Assert.That(observed[3]).IsEquivalentTo([other]);
@@ -125,13 +141,17 @@ public sealed class AdminClientDetailedConfigTests
                 .Returns(call =>
                 {
                     var resources = call.Arg<DescribeConfigsRequest>().Resources.Select(static item => new ConfigResource
-                        { Type = (ConfigResourceType)item.ResourceType, Name = item.ResourceName }).ToArray();
+                    { Type = (ConfigResourceType)item.ResourceType, Name = item.ResourceName }).ToArray();
                     observed.Add(pair.Key, resources);
-                    return ValueTask.FromResult(new DescribeConfigsResponse { Results = resources.Select(resource => new DescribeConfigsResult
+                    return ValueTask.FromResult(new DescribeConfigsResponse
                     {
-                        ResourceType = (sbyte)resource.Type, ResourceName = resource.Name,
-                        Configs = [new() { Name = "node", Value = pair.Key.ToString(System.Globalization.CultureInfo.InvariantCulture) }]
-                    }).ToArray() });
+                        Results = resources.Select(resource => new DescribeConfigsResult
+                        {
+                            ResourceType = (sbyte)resource.Type,
+                            ResourceName = resource.Name,
+                            Configs = [new() { Name = "node", Value = pair.Key.ToString(System.Globalization.CultureInfo.InvariantCulture) }]
+                        }).ToArray()
+                    });
                 });
         }
         var topic = ConfigResource.Topic("orders");
@@ -161,12 +181,16 @@ public sealed class AdminClientDetailedConfigTests
                 {
                     calls.Add((pair.Key, call.Arg<CancellationToken>()));
                     var failOnce = pair.Key == 2 && calls.Count(static item => item.Node == 2) == 1;
-                    return ValueTask.FromResult(new DescribeConfigsResponse { Results = call.Arg<DescribeConfigsRequest>().Resources.Select(item => new DescribeConfigsResult
+                    return ValueTask.FromResult(new DescribeConfigsResponse
                     {
-                        ResourceType = item.ResourceType, ResourceName = item.ResourceName,
-                        ErrorCode = failOnce ? ErrorCode.NotController : ErrorCode.None,
-                        Configs = [new() { Name = "node", Value = pair.Key.ToString(System.Globalization.CultureInfo.InvariantCulture) }]
-                    }).ToArray() });
+                        Results = call.Arg<DescribeConfigsRequest>().Resources.Select(item => new DescribeConfigsResult
+                        {
+                            ResourceType = item.ResourceType,
+                            ResourceName = item.ResourceName,
+                            ErrorCode = failOnce ? ErrorCode.NotController : ErrorCode.None,
+                            Configs = [new() { Name = "node", Value = pair.Key.ToString(System.Globalization.CultureInfo.InvariantCulture) }]
+                        }).ToArray()
+                    });
                 });
         }
         var topic = ConfigResource.Topic("orders");
@@ -190,7 +214,10 @@ public sealed class AdminClientDetailedConfigTests
         var invalid = new ConfigResource { Type = ConfigResourceType.BrokerLogger, Name = "not-a-node" };
         await Assert.ThrowsAsync<ArgumentException>(() => admin.DescribeConfigsAsync([invalid]).AsTask());
         await Assert.ThrowsAsync<ArgumentException>(() => admin.IncrementalAlterConfigsAsync(Input(invalid)).AsTask());
-        foreach (var connection in connections.Values) await Assert.That(connection.ReceivedCalls()).IsEmpty();
+        foreach (var connection in connections.Values)
+        {
+            await Assert.That(connection.ReceivedCalls()).IsEmpty();
+        }
     }
 
     [Test]
@@ -207,8 +234,14 @@ public sealed class AdminClientDetailedConfigTests
         var calls = 0;
         Setup(connections[1], incremental, resources =>
         {
-            if (++calls == 1) return [(good, ErrorCode.None, null), (retry, error, "rejected")];
-            if (resources.Length != 1 || !resources[0].Equals(retry)) throw new InvalidOperationException("Successful resource replayed.");
+            if (++calls == 1)
+            {
+                return [(good, ErrorCode.None, null), (retry, error, "rejected")];
+            }
+            if (resources.Length != 1 || !resources[0].Equals(retry))
+            {
+                throw new InvalidOperationException("Successful resource replayed.");
+            }
             return Success(resources);
         });
         var result = await Invoke(admin, incremental, good, retry);
@@ -225,7 +258,11 @@ public sealed class AdminClientDetailedConfigTests
         await using var client = admin;
         var calls = 0;
         Setup(connections[1], incremental, Success);
-        Setup(connections[2], incremental, _ => { calls++; throw new IOException("lost response"); });
+        Setup(connections[2], incremental, _ =>
+        {
+            calls++;
+            throw new IOException("lost response");
+        });
         Setup(connections[3], incremental, Success);
         var first = ConfigResource.Topic("done");
         var uncertain = ConfigResource.BrokerLogger(2);
@@ -264,7 +301,11 @@ public sealed class AdminClientDetailedConfigTests
         var (admin, connections) = CreateAdmin();
         await using var client = admin;
         using var cancellation = new CancellationTokenSource();
-        Setup(connections[1], incremental, resources => { cancellation.Cancel(); return Success(resources); });
+        Setup(connections[1], incremental, resources =>
+        {
+            cancellation.Cancel();
+            return Success(resources);
+        });
         var done = ConfigResource.Topic("done");
         var later = ConfigResource.BrokerLogger(2);
         var input = Input(done, later);
@@ -290,7 +331,10 @@ public sealed class AdminClientDetailedConfigTests
         await Assert.ThrowsAsync<NotSupportedException>(() => unsupported.AlterConfigsDetailedAsync(new Dictionary<ConfigResource, IReadOnlyList<ConfigEntry>>()).AsTask());
         await Assert.ThrowsAsync<OperationCanceledException>(() => admin.IncrementalAlterConfigsDetailedAsync(Input(ConfigResource.Topic("t")), cancellationToken: new(true)).AsTask());
         await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() => admin.AlterConfigsDetailedAsync(Replacement(Input()), new() { TimeoutMs = -1 }).AsTask());
-        foreach (var connection in connections.Values) await Assert.That(connection.ReceivedCalls()).IsEmpty();
+        foreach (var connection in connections.Values)
+        {
+            await Assert.That(connection.ReceivedCalls()).IsEmpty();
+        }
     }
 
     [Test]
@@ -307,11 +351,15 @@ public sealed class AdminClientDetailedConfigTests
                 var request = call.Arg<IncrementalAlterConfigsRequest>();
                 requests.Add(request);
                 changes[0] = ConfigAlter.Set("changed", "2");
-                return ValueTask.FromResult(new IncrementalAlterConfigsResponse { Responses = [new()
+                return ValueTask.FromResult(new IncrementalAlterConfigsResponse
                 {
-                    ResourceType = (sbyte)resource.Type, ResourceName = resource.Name,
+                    Responses = [new()
+                {
+                    ResourceType = (sbyte)resource.Type,
+                    ResourceName = resource.Name,
                     ErrorCode = requests.Count == 1 ? ErrorCode.NotController : ErrorCode.None
-                }] });
+                }]
+                });
             });
         var result = await admin.IncrementalAlterConfigsDetailedAsync(new Dictionary<ConfigResource, IReadOnlyList<ConfigAlter>> { [resource] = changes }, new() { ValidateOnly = true });
         await Assert.That(result[resource].IsSuccess).IsTrue();
@@ -334,11 +382,15 @@ public sealed class AdminClientDetailedConfigTests
         var first = ConfigResource.Topic("blocked");
         var later = ConfigResource.BrokerLogger(2);
         if (incremental)
+        {
             connections[1].SendAsync<IncrementalAlterConfigsRequest, IncrementalAlterConfigsResponse>(Arg.Any<IncrementalAlterConfigsRequest>(), Arg.Any<short>(), Arg.Any<CancellationToken>())
                 .Returns(call => new ValueTask<IncrementalAlterConfigsResponse>(WaitForCancellation<IncrementalAlterConfigsResponse>(call.Arg<CancellationToken>())));
+        }
         else
+        {
             connections[1].SendAsync<AlterConfigsRequest, AlterConfigsResponse>(Arg.Any<AlterConfigsRequest>(), Arg.Any<short>(), Arg.Any<CancellationToken>())
                 .Returns(call => new ValueTask<AlterConfigsResponse>(WaitForCancellation<AlterConfigsResponse>(call.Arg<CancellationToken>())));
+        }
         var input = Input(first, later);
         var pending = incremental
             ? admin.IncrementalAlterConfigsDetailedAsync(input, new() { TimeoutMs = 1000 })
@@ -366,14 +418,18 @@ public sealed class AdminClientDetailedConfigTests
                 var request = call.Arg<AlterConfigsRequest>();
                 requests.Add(request);
                 entries[0] = new() { Name = "changed", Value = "bad" };
-                return ValueTask.FromResult(new AlterConfigsResponse { Responses = request.Resources.Select(resource => new AlterConfigsResourceResponse
+                return ValueTask.FromResult(new AlterConfigsResponse
                 {
-                    ResourceType = resource.ResourceType, ResourceName = resource.ResourceName,
-                    ErrorCode = requests.Count == 1 ? ErrorCode.NotController : ErrorCode.None
-                }).ToArray() });
+                    Responses = request.Resources.Select(resource => new AlterConfigsResourceResponse
+                    {
+                        ResourceType = resource.ResourceType,
+                        ResourceName = resource.ResourceName,
+                        ErrorCode = requests.Count == 1 ? ErrorCode.NotController : ErrorCode.None
+                    }).ToArray()
+                });
             });
         var result = await admin.AlterConfigsDetailedAsync(new Dictionary<ConfigResource, IReadOnlyList<ConfigEntry>>
-            { [first] = entries, [reset] = [] }, new() { ValidateOnly = true });
+        { [first] = entries, [reset] = [] }, new() { ValidateOnly = true });
         await Assert.That(result.Values.All(static outcome => outcome.IsSuccess)).IsTrue();
         await Assert.That(requests.Count).IsEqualTo(2);
         foreach (var request in requests)
@@ -397,7 +453,10 @@ public sealed class AdminClientDetailedConfigTests
             new Dictionary<ConfigResource, IReadOnlyList<ConfigAlter>> { [resource] = [new() { Name = "key", Operation = (ConfigAlterOperation)(-1) }] }).AsTask());
         await Assert.ThrowsAsync<ArgumentNullException>(() => admin.AlterConfigsDetailedAsync(
             new Dictionary<ConfigResource, IReadOnlyList<ConfigEntry>> { [resource] = null! }).AsTask());
-        foreach (var connection in connections.Values) await Assert.That(connection.ReceivedCalls()).IsEmpty();
+        foreach (var connection in connections.Values)
+        {
+            await Assert.That(connection.ReceivedCalls()).IsEmpty();
+        }
     }
 
     private static async Task<T> WaitForCancellation<T>(CancellationToken token)
@@ -422,21 +481,25 @@ public sealed class AdminClientDetailedConfigTests
         Func<ConfigResource[], (ConfigResource Resource, ErrorCode Code, string? Message)[]> response)
     {
         if (incremental)
+        {
             connection.SendAsync<IncrementalAlterConfigsRequest, IncrementalAlterConfigsResponse>(Arg.Any<IncrementalAlterConfigsRequest>(), Arg.Any<short>(), Arg.Any<CancellationToken>())
                 .Returns(call => ValueTask.FromResult(new IncrementalAlterConfigsResponse
                 {
                     Responses = response(call.Arg<IncrementalAlterConfigsRequest>().Resources.Select(static item => new ConfigResource
-                        { Type = (ConfigResourceType)item.ResourceType, Name = item.ResourceName }).ToArray()).Select(static item => new IncrementalAlterConfigsResourceResponse
-                        { ResourceType = (sbyte)item.Resource.Type, ResourceName = item.Resource.Name, ErrorCode = item.Code, ErrorMessage = item.Message }).ToArray()
+                    { Type = (ConfigResourceType)item.ResourceType, Name = item.ResourceName }).ToArray()).Select(static item => new IncrementalAlterConfigsResourceResponse
+                    { ResourceType = (sbyte)item.Resource.Type, ResourceName = item.Resource.Name, ErrorCode = item.Code, ErrorMessage = item.Message }).ToArray()
                 }));
+        }
         else
+        {
             connection.SendAsync<AlterConfigsRequest, AlterConfigsResponse>(Arg.Any<AlterConfigsRequest>(), Arg.Any<short>(), Arg.Any<CancellationToken>())
                 .Returns(call => ValueTask.FromResult(new AlterConfigsResponse
                 {
                     Responses = response(call.Arg<AlterConfigsRequest>().Resources.Select(static item => new ConfigResource
-                        { Type = (ConfigResourceType)item.ResourceType, Name = item.ResourceName }).ToArray()).Select(static item => new AlterConfigsResourceResponse
-                        { ResourceType = (sbyte)item.Resource.Type, ResourceName = item.Resource.Name, ErrorCode = item.Code, ErrorMessage = item.Message }).ToArray()
+                    { Type = (ConfigResourceType)item.ResourceType, Name = item.ResourceName }).ToArray()).Select(static item => new AlterConfigsResourceResponse
+                    { ResourceType = (sbyte)item.Resource.Type, ResourceName = item.Resource.Name, ErrorCode = item.Code, ErrorMessage = item.Message }).ToArray()
                 }));
+        }
     }
 
     private static (AdminClient, Dictionary<int, IKafkaConnection>) CreateAdmin()
@@ -454,8 +517,13 @@ public sealed class AdminClientDetailedConfigTests
         var pool = Substitute.For<IConnectionPool>();
         pool.GetConnectionAsync(Arg.Any<int>(), Arg.Any<CancellationToken>()).Returns(call => ValueTask.FromResult(connections[call.Arg<int>()]));
         pool.GetConnectionAsync(Arg.Any<string>(), Arg.Any<int>(), Arg.Any<CancellationToken>()).Returns(ValueTask.FromResult(connections[1]));
-        var metadata = new MetadataResponse { Brokers = connections.Keys.Select(static id => new BrokerMetadata
-            { NodeId = id, Host = $"broker-{id}", Port = 9092 }).ToArray(), ControllerId = 1, Topics = [] };
+        var metadata = new MetadataResponse
+        {
+            Brokers = connections.Keys.Select(static id => new BrokerMetadata
+            { NodeId = id, Host = $"broker-{id}", Port = 9092 }).ToArray(),
+            ControllerId = 1,
+            Topics = []
+        };
         var manager = new MetadataManager(pool, ["broker-1:9092"]);
         manager.Metadata.Update(metadata);
         manager.SetApiVersion(ApiKey.Metadata, 9, 13);
@@ -463,7 +531,9 @@ public sealed class AdminClientDetailedConfigTests
         manager.SetApiVersion(ApiKey.DescribeConfigs, 0, 4);
         manager.SetApiVersion(ApiKey.IncrementalAlterConfigs, 0, 1);
         foreach (var connection in connections.Values)
+        {
             connection.SendAsync<MetadataRequest, MetadataResponse>(Arg.Any<MetadataRequest>(), Arg.Any<short>(), Arg.Any<CancellationToken>()).Returns(ValueTask.FromResult(metadata));
+        }
         return (new AdminClient(new AdminClientOptions { BootstrapServers = ["broker-1:9092"], RetryBackoffMs = 1, RetryBackoffMaxMs = 1 }, pool, manager, ownsResources: true), connections);
     }
 }

@@ -69,21 +69,25 @@ internal sealed unsafe class AllocationFreeSpecificRecordWriter<
                     encoder.WriteDouble(((delegate* managed<T, double>)field.Getter)(value));
                     break;
                 case FieldKind.String:
-                {
-                    var fieldValue = ((delegate* managed<T, string>)field.Getter)(value);
-                    if (fieldValue is null)
-                        ThrowNullValue(field.Kind);
-                    encoder.WriteString(fieldValue);
-                    break;
-                }
+                    {
+                        var fieldValue = ((delegate* managed<T, string>)field.Getter)(value);
+                        if (fieldValue is null)
+                        {
+                            ThrowNullValue(field.Kind);
+                        }
+                        encoder.WriteString(fieldValue);
+                        break;
+                    }
                 case FieldKind.Bytes:
-                {
-                    var fieldValue = ((delegate* managed<T, byte[]>)field.Getter)(value);
-                    if (fieldValue is null)
-                        ThrowNullValue(field.Kind);
-                    encoder.WriteBytes(fieldValue);
-                    break;
-                }
+                    {
+                        var fieldValue = ((delegate* managed<T, byte[]>)field.Getter)(value);
+                        if (fieldValue is null)
+                        {
+                            ThrowNullValue(field.Kind);
+                        }
+                        encoder.WriteBytes(fieldValue);
+                        break;
+                    }
                 default:
                     throw new InvalidOperationException($"Unknown SpecificRecord field kind {field.Kind}.");
             }
@@ -98,7 +102,9 @@ internal sealed unsafe class AllocationFreeSpecificRecordWriter<
     {
         var kind = GetFieldKind(field, recordType);
         if (kind == FieldKind.Null)
+        {
             return new FieldPlan(kind, 0);
+        }
 
         var property = FindProperty(recordType, field, properties);
         if (property?.GetMethod is not { IsStatic: false, IsAbstract: false } getter ||
@@ -147,7 +153,9 @@ internal sealed unsafe class AllocationFreeSpecificRecordWriter<
         for (var i = 0; i < properties.Length; i++)
         {
             if (!string.Equals(properties[i].Name, field.Name, StringComparison.Ordinal))
+            {
                 continue;
+            }
 
             if (match is not null)
             {
@@ -161,12 +169,16 @@ internal sealed unsafe class AllocationFreeSpecificRecordWriter<
         }
 
         if (match is not null)
+        {
             return match;
+        }
 
         for (var i = 0; i < properties.Length; i++)
         {
             if (!string.Equals(properties[i].Name, field.Name, StringComparison.OrdinalIgnoreCase))
+            {
                 continue;
+            }
 
             if (match is not null)
             {

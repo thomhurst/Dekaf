@@ -312,7 +312,10 @@ public class ShareConsumerHealthCheckTests
     private sealed class Worker(IKafkaShareConsumer<string, string> consumer)
         : KafkaShareConsumerService<string, string>(consumer, NullLogger.Instance)
     {
-        public IKafkaShareConsumer<string, string> Consumer { get; } = consumer;
+        public IKafkaShareConsumer<string, string> Consumer
+        {
+            get;
+        } = consumer;
         protected override IEnumerable<string> Topics => ["orders"];
         protected override ValueTask ProcessAsync(ShareConsumeResult<string, string> record, CancellationToken cancellationToken) => ValueTask.CompletedTask;
     }
@@ -358,17 +361,17 @@ public class ShareConsumerHealthCheckTests
         bool missingHeartbeat = false,
         TimeSpan? heartbeatInterval = null,
         bool hasConsumerGroup = true) => new()
-    {
-        HasConsumerGroup = hasConsumerGroup,
-        State = state,
-        CoordinatorId = 1,
-        MemberId = memberId,
-        GenerationOrMemberEpoch = 3,
-        HeartbeatInterval = heartbeatInterval ?? TimeSpan.FromSeconds(1),
-        TimeSinceLastHeartbeat = missingHeartbeat ? null : heartbeatAge ?? TimeSpan.FromMilliseconds(100),
-        LastHeartbeatFailure = failure,
-        Assignment = assignment ?? [new TopicPartition("orders", 0)]
-    };
+        {
+            HasConsumerGroup = hasConsumerGroup,
+            State = state,
+            CoordinatorId = 1,
+            MemberId = memberId,
+            GenerationOrMemberEpoch = 3,
+            HeartbeatInterval = heartbeatInterval ?? TimeSpan.FromSeconds(1),
+            TimeSinceLastHeartbeat = missingHeartbeat ? null : heartbeatAge ?? TimeSpan.FromMilliseconds(100),
+            LastHeartbeatFailure = failure,
+            Assignment = assignment ?? [new TopicPartition("orders", 0)]
+        };
 
     private static HealthCheckContext Context(HealthStatus? failureStatus = null) => new()
     {

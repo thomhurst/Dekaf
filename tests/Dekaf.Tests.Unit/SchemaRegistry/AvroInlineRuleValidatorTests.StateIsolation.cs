@@ -65,7 +65,9 @@ public partial class AvroInlineRuleValidatorTests
         await Assert.That(depthAfterFailure).IsEqualTo(initialDepth);
         await Assert.That(depthAfterSuccess).IsEqualTo(initialDepth);
         if (malformed)
+        {
             await Assert.That(failure.Message).Contains("Could not evaluate Avro validation rules");
+        }
         else
         {
             var violation = (ValidationRulesFailedException)failure;
@@ -86,7 +88,9 @@ public partial class AvroInlineRuleValidatorTests
         var validator = new AvroInlineRuleValidator(schema);
         var payloads = new (byte[] Valid, byte[] Invalid)[workerCount];
         for (var index = 0; index < workerCount; index++)
+        {
             payloads[index] = CreateWideValidationPayloads(schema, index + 1);
+        }
 
         using var start = new Barrier(workerCount);
         using var watchdog = new CancellationTokenSource(TimeSpan.FromSeconds(10));
@@ -115,7 +119,9 @@ public partial class AvroInlineRuleValidatorTests
             await Assert.That(results[index].Failure.Violations[0].FieldPath)
                 .IsEqualTo($"$.child.items[{index}]");
             for (var previous = 0; previous < index; previous++)
+            {
                 await Assert.That(results[index].ThreadId).IsNotEqualTo(results[previous].ThreadId);
+            }
         }
     }
 
@@ -138,7 +144,9 @@ public partial class AvroInlineRuleValidatorTests
     {
         var before = GC.GetAllocatedBytesForCurrentThread();
         for (var index = 0; index < 100; index++)
+        {
             validator.Validate(payload, 42, failFast);
+        }
         return GC.GetAllocatedBytesForCurrentThread() - before;
     }
 
@@ -201,14 +209,18 @@ public partial class AvroInlineRuleValidatorTests
         var childSchema = (RecordSchema)schema.Fields[9].Schema;
         var items = new int[itemCount];
         for (var index = 0; index < items.Length; index++)
+        {
             items[index] = itemCount * 10 + index;
+        }
         var child = new GenericRecord(childSchema);
         child.Add("value", itemCount);
         child.Add("items", items);
         var record = new GenericRecord(schema);
         record.Add("marker", itemCount);
         for (var index = 0; index < 8; index++)
+        {
             record.Add(schema.Fields[index + 1].Name, index + 10);
+        }
         record.Add("child", child);
         var valid = Serialize(record, schema);
         items[^1] = -1;
@@ -216,5 +228,6 @@ public partial class AvroInlineRuleValidatorTests
     }
 
     private readonly record struct ValidationCase(AvroInlineRuleValidator Validator, byte[] Valid, byte[] Invalid);
+
     private readonly record struct ValidationWorkerResult(int ThreadId, long Allocated, ValidationRulesFailedException Failure);
 }

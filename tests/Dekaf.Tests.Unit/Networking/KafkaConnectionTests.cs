@@ -2,10 +2,10 @@ using System.Buffers;
 using System.Buffers.Binary;
 using System.Diagnostics;
 using System.Net;
-using System.Runtime.InteropServices;
 using System.Net.Security;
 using System.Net.Sockets;
 using System.Reflection;
+using System.Runtime.InteropServices;
 using System.Threading.Tasks.Sources;
 using Dekaf.Compression;
 using Dekaf.Consumer;
@@ -222,7 +222,9 @@ public sealed partial class KafkaConnectionTests
             .Select(_ => new byte[4])
             .ToArray();
         foreach (var buffer in buffers)
+        {
             sender.PendingSegments.Add(new ArraySegment<byte>(buffer));
+        }
 
         sender.BeginPendingSend();
         sender.LoadSendWindow();
@@ -454,13 +456,17 @@ public sealed partial class KafkaConnectionTests
             await ReadRequestFrameAsync(serverClient.GetStream(), cancellationToken);
 
             if (abandonBeforeCompletion)
+            {
                 response.Abandon();
+            }
 
             await callerTimeout.CancelAsync();
             if (!abandonBeforeCompletion)
             {
                 while (!response.IsCompleted)
+                {
                     await Task.Yield();
+                }
                 response.Abandon();
             }
 
@@ -630,7 +636,9 @@ public sealed partial class KafkaConnectionTests
                 cancellationToken);
 
             while (!response.IsCompleted)
+            {
                 await Task.Yield();
+            }
             var parsed = response.GetResult();
 
             await Assert.That(parsed.ErrorCode).IsEqualTo(ErrorCode.None);
@@ -683,7 +691,9 @@ public sealed partial class KafkaConnectionTests
                 cancellationToken);
 
             while (!response.IsCompleted)
+            {
                 await Task.Yield();
+            }
             var parsed = response.GetResult();
 
             await Assert.That(parsed.ErrorCode).IsEqualTo(ErrorCode.None);
@@ -859,7 +869,9 @@ public sealed partial class KafkaConnectionTests
                 cancellationToken);
 
             while (!response.IsCompleted)
+            {
                 await Task.Yield();
+            }
             var parsed = response.GetResult();
             await Assert.That(parsed.ErrorCode).IsEqualTo(ErrorCode.None);
             await Assert.That(callbackCount).IsEqualTo(1);
@@ -1084,7 +1096,9 @@ public sealed partial class KafkaConnectionTests
                 cancellationToken);
             while (!logger.Entries.Any(entry =>
                        entry.Message.Contains("late response", StringComparison.OrdinalIgnoreCase)))
+            {
                 await Task.Delay(10, cancellationToken).ConfigureAwait(false);
+            }
 
             await WriteInvalidFrameAsync(serverClient.GetStream(), cancellationToken);
             await WaitForReceiveLoopFailureAsync(logger, cancellationToken);
@@ -1142,7 +1156,9 @@ public sealed partial class KafkaConnectionTests
             await serverStream.WriteAsync(BuildEmptyFetchV16ResponseFrame(correlationId), cancellationToken);
 
             while (GetPrivateField<int>(connection, "_responseAdmissionWaiting") == 0)
+            {
                 await Task.Delay(10, cancellationToken);
+            }
 
             // Let both timers fire several times over while the frame waits for admission.
             await Task.Delay(requestTimeout * 5, cancellationToken);
@@ -1765,7 +1781,9 @@ public sealed partial class KafkaConnectionTests
         while (!logger.Entries.Any(entry =>
                    entry.Message.Contains("Error in receive loop", StringComparison.Ordinal) ||
                    entry.Message.Contains("before first response", StringComparison.Ordinal)))
+        {
             await Task.Delay(10, cancellationToken).ConfigureAwait(false);
+        }
     }
 
     private sealed class CapturingLogger<T> : ILogger<T>
@@ -1778,7 +1796,9 @@ public sealed partial class KafkaConnectionTests
             get
             {
                 lock (_gate)
+                {
                     return _entries.ToArray();
+                }
             }
         }
 
@@ -1794,7 +1814,9 @@ public sealed partial class KafkaConnectionTests
             Func<TState, Exception?, string> formatter)
         {
             lock (_gate)
+            {
                 _entries.Add(new LogEntry(logLevel, formatter(state, exception), exception));
+            }
         }
     }
 
@@ -1827,7 +1849,9 @@ public sealed partial class KafkaConnectionTests
     {
         var field = typeof(KafkaConnection).GetField(name, BindingFlags.NonPublic | BindingFlags.Instance);
         if (field is null)
+        {
             throw new InvalidOperationException($"Field '{name}' was not found.");
+        }
 
         field.SetValue(connection, value);
     }
@@ -1838,7 +1862,9 @@ public sealed partial class KafkaConnectionTests
             "SendSaslMessageAsync",
             BindingFlags.NonPublic | BindingFlags.Instance);
         if (method is null)
+        {
             throw new InvalidOperationException("SendSaslMessageAsync was not found.");
+        }
 
         var genericMethod = method.MakeGenericMethod(typeof(SaslHandshakeRequest), typeof(SaslHandshakeResponse));
         var result = genericMethod.Invoke(connection,
@@ -1863,7 +1889,9 @@ public sealed partial class KafkaConnectionTests
             "WriteFrameHoldingLockAsync",
             BindingFlags.NonPublic | BindingFlags.Instance);
         if (method is null)
+        {
             throw new InvalidOperationException("WriteFrameHoldingLockAsync was not found.");
+        }
 
         var writeTask = (Task)method.Invoke(connection, [buffer, 4, false, null])!;
         return (writeTask, writeLock);
@@ -1879,7 +1907,9 @@ public sealed partial class KafkaConnectionTests
             "AwaitFrameWriteAsync",
             BindingFlags.NonPublic | BindingFlags.Instance);
         if (method is null)
+        {
             throw new InvalidOperationException("AwaitFrameWriteAsync was not found.");
+        }
 
         var result = method.Invoke(connection, [writeTask, 1, callerOwnsTimeout, cancellationToken]);
         await ((ValueTask)result!).ConfigureAwait(false);
@@ -1895,7 +1925,9 @@ public sealed partial class KafkaConnectionTests
             "AwaitBorrowedFrameWriteAsync",
             BindingFlags.NonPublic | BindingFlags.Instance);
         if (method is null)
+        {
             throw new InvalidOperationException("AwaitBorrowedFrameWriteAsync was not found.");
+        }
 
         var result = method.Invoke(connection, [writeTask, 1, callerOwnsTimeout, cancellationToken]);
         await ((ValueTask)result!).ConfigureAwait(false);
@@ -1908,7 +1940,9 @@ public sealed partial class KafkaConnectionTests
             "BuildRemoteCertificateValidationCallback",
             BindingFlags.NonPublic | BindingFlags.Instance);
         if (method is null)
+        {
             throw new InvalidOperationException("BuildRemoteCertificateValidationCallback was not found.");
+        }
 
         return (RemoteCertificateValidationCallback?)method.Invoke(connection, null);
     }
@@ -1919,7 +1953,9 @@ public sealed partial class KafkaConnectionTests
             "OnReceiveTimeout",
             BindingFlags.NonPublic | BindingFlags.Instance);
         if (method is null)
+        {
             throw new InvalidOperationException("OnReceiveTimeout was not found.");
+        }
 
         method.Invoke(connection, null);
     }
@@ -1928,7 +1964,9 @@ public sealed partial class KafkaConnectionTests
     {
         var field = typeof(KafkaConnection).GetField(name, BindingFlags.NonPublic | BindingFlags.Instance);
         if (field is null)
+        {
             throw new InvalidOperationException($"Field '{name}' was not found.");
+        }
 
         return (T)field.GetValue(connection)!;
     }
@@ -1950,8 +1988,14 @@ public sealed partial class KafkaConnectionTests
     {
         private readonly MemoryStream _response = CreateSizePrefixStream(responseSize);
 
-        public int BytesWritten { get; private set; }
-        public int ReadCalls { get; private set; }
+        public int BytesWritten
+        {
+            get; private set;
+        }
+        public int ReadCalls
+        {
+            get; private set;
+        }
 
         public override bool CanRead => true;
         public override bool CanSeek => false;
@@ -2073,12 +2117,17 @@ public sealed partial class KafkaConnectionTests
 
     private sealed class DisposeTrackingStream : MemoryStream
     {
-        public int DisposeCount { get; private set; }
+        public int DisposeCount
+        {
+            get; private set;
+        }
 
         protected override void Dispose(bool disposing)
         {
             if (disposing)
+            {
                 DisposeCount++;
+            }
 
             base.Dispose(disposing);
         }
@@ -2086,7 +2135,10 @@ public sealed partial class KafkaConnectionTests
 
     private sealed class ThrowingDisposeStream : MemoryStream
     {
-        public bool DisposeAttempted { get; private set; }
+        public bool DisposeAttempted
+        {
+            get; private set;
+        }
 
         protected override void Dispose(bool disposing)
         {
@@ -2108,7 +2160,10 @@ public sealed partial class KafkaConnectionTests
 
     private sealed class ThrowingWriteStream : Stream
     {
-        public int DisposeCount { get; private set; }
+        public int DisposeCount
+        {
+            get; private set;
+        }
 
         public override bool CanRead => false;
         public override bool CanSeek => false;
@@ -2143,7 +2198,9 @@ public sealed partial class KafkaConnectionTests
         protected override void Dispose(bool disposing)
         {
             if (disposing)
+            {
                 DisposeCount++;
+            }
 
             base.Dispose(disposing);
         }

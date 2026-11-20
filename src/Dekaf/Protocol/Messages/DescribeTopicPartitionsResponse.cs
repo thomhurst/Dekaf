@@ -14,9 +14,18 @@ public sealed class DescribeTopicPartitionsResponse : IKafkaResponse
     public static short LowestSupportedVersion => 0;
     public static short HighestSupportedVersion => 0;
 
-    public int ThrottleTimeMs { get; init; }
-    public required IReadOnlyList<DescribeTopicPartitionsResponseTopic> Topics { get; init; }
-    public DescribeTopicPartitionsResponseCursor? NextCursor { get; init; }
+    public int ThrottleTimeMs
+    {
+        get; init;
+    }
+    public required IReadOnlyList<DescribeTopicPartitionsResponseTopic> Topics
+    {
+        get; init;
+    }
+    public DescribeTopicPartitionsResponseCursor? NextCursor
+    {
+        get; init;
+    }
 
     public static IKafkaResponse Read(ref KafkaProtocolReader reader, short version)
     {
@@ -40,12 +49,30 @@ public sealed class DescribeTopicPartitionsResponse : IKafkaResponse
 
 public sealed class DescribeTopicPartitionsResponseTopic
 {
-    public ErrorCode ErrorCode { get; init; }
-    public string? Name { get; init; }
-    public Guid TopicId { get; init; }
-    public bool IsInternal { get; init; }
-    public required IReadOnlyList<DescribeTopicPartitionsResponsePartition> Partitions { get; init; }
-    public int TopicAuthorizedOperations { get; init; } = int.MinValue;
+    public ErrorCode ErrorCode
+    {
+        get; init;
+    }
+    public string? Name
+    {
+        get; init;
+    }
+    public Guid TopicId
+    {
+        get; init;
+    }
+    public bool IsInternal
+    {
+        get; init;
+    }
+    public required IReadOnlyList<DescribeTopicPartitionsResponsePartition> Partitions
+    {
+        get; init;
+    }
+    public int TopicAuthorizedOperations
+    {
+        get; init;
+    } = int.MinValue;
 
     public static DescribeTopicPartitionsResponseTopic Read(ref KafkaProtocolReader reader)
     {
@@ -75,15 +102,42 @@ public sealed class DescribeTopicPartitionsResponseTopic
 
 public sealed class DescribeTopicPartitionsResponsePartition
 {
-    public ErrorCode ErrorCode { get; init; }
-    public int PartitionIndex { get; init; }
-    public int LeaderId { get; init; }
-    public int LeaderEpoch { get; init; } = -1;
-    public required IReadOnlyList<int> ReplicaNodes { get; init; }
-    public required IReadOnlyList<int> IsrNodes { get; init; }
-    public IReadOnlyList<int>? EligibleLeaderReplicas { get; init; }
-    public IReadOnlyList<int>? LastKnownElr { get; init; }
-    public required IReadOnlyList<int> OfflineReplicas { get; init; }
+    public ErrorCode ErrorCode
+    {
+        get; init;
+    }
+    public int PartitionIndex
+    {
+        get; init;
+    }
+    public int LeaderId
+    {
+        get; init;
+    }
+    public int LeaderEpoch
+    {
+        get; init;
+    } = -1;
+    public required IReadOnlyList<int> ReplicaNodes
+    {
+        get; init;
+    }
+    public required IReadOnlyList<int> IsrNodes
+    {
+        get; init;
+    }
+    public IReadOnlyList<int>? EligibleLeaderReplicas
+    {
+        get; init;
+    }
+    public IReadOnlyList<int>? LastKnownElr
+    {
+        get; init;
+    }
+    public required IReadOnlyList<int> OfflineReplicas
+    {
+        get; init;
+    }
 
     public static DescribeTopicPartitionsResponsePartition Read(ref KafkaProtocolReader reader)
     {
@@ -131,8 +185,14 @@ public sealed class DescribeTopicPartitionsResponsePartition
 
 public sealed class DescribeTopicPartitionsResponseCursor
 {
-    public required string TopicName { get; init; }
-    public int PartitionIndex { get; init; }
+    public required string TopicName
+    {
+        get; init;
+    }
+    public int PartitionIndex
+    {
+        get; init;
+    }
 
     public static DescribeTopicPartitionsResponseCursor? ReadNullable(ref KafkaProtocolReader reader)
     {

@@ -15,29 +15,50 @@ public sealed class ApiVersionsResponse : IKafkaResponse
     public static short LowestSupportedVersion => 0;
     public static short HighestSupportedVersion => 5;
 
-    public required ErrorCode ErrorCode { get; init; }
-    public required IReadOnlyList<ApiVersion> ApiKeys { get; init; }
-    public int ThrottleTimeMs { get; init; }
+    public required ErrorCode ErrorCode
+    {
+        get; init;
+    }
+    public required IReadOnlyList<ApiVersion> ApiKeys
+    {
+        get; init;
+    }
+    public int ThrottleTimeMs
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Features supported by the broker (v3+).
     /// </summary>
-    public IReadOnlyList<SupportedFeature>? SupportedFeatures { get; init; }
+    public IReadOnlyList<SupportedFeature>? SupportedFeatures
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The monotonically increasing epoch for finalized features (v3+).
     /// </summary>
-    public long FinalizedFeaturesEpoch { get; init; } = -1;
+    public long FinalizedFeaturesEpoch
+    {
+        get; init;
+    } = -1;
 
     /// <summary>
     /// Finalized features (v3+).
     /// </summary>
-    public IReadOnlyList<FinalizedFeature>? FinalizedFeatures { get; init; }
+    public IReadOnlyList<FinalizedFeature>? FinalizedFeatures
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Whether ZK migration is ready (v3+).
     /// </summary>
-    public bool ZkMigrationReady { get; init; }
+    public bool ZkMigrationReady
+    {
+        get; init;
+    }
 
     public static IKafkaResponse Read(ref KafkaProtocolReader reader, short version)
     {
@@ -116,7 +137,9 @@ public sealed class ApiVersionsResponse : IKafkaResponse
         var minVersion = reader.ReadInt16();
         var maxVersion = reader.ReadInt16();
         if (flexible)
+        {
             reader.SkipTaggedFields();
+        }
         return new ApiVersion(apiKey, minVersion, maxVersion);
     }
 

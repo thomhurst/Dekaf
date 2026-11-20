@@ -23,13 +23,22 @@ public class PartitionedBatchRoutingBenchmarks
     private long _offset;
 
     [Params(1, 64)]
-    public int RecordCount { get; set; }
+    public int RecordCount
+    {
+        get; set;
+    }
 
     [Params(false, true)]
-    public bool FilterAll { get; set; }
+    public bool FilterAll
+    {
+        get; set;
+    }
 
     [Params(false, true)]
-    public bool Monitored { get; set; }
+    public bool Monitored
+    {
+        get; set;
+    }
 
     [GlobalSetup]
     public void Setup()
@@ -40,10 +49,13 @@ public class PartitionedBatchRoutingBenchmarks
         _lane = Monitored
             ? CreateMonitoredLane(partition, RecordCount + 1)
             : new PartitionLane<Ignore, ReadOnlyMemory<byte>>(partition, RecordCount + 1,
-                static (_, _) => default, static _ => { }, static (_, _) => { });
+                static (_, _) => default, static _ =>
+                {
+                }, static (_, _) =>
+                {
+                });
         var runtimeType = runtime.GetType();
-        var lanes = (Dictionary<TopicPartition, PartitionLane<Ignore, ReadOnlyMemory<byte>>>)
-            runtimeType.GetField("_lanes", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(runtime)!;
+        var lanes = (Dictionary<TopicPartition, PartitionLane<Ignore, ReadOnlyMemory<byte>>>)runtimeType.GetField("_lanes", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(runtime)!;
         lanes.Add(partition, _lane);
         _route = runtimeType.GetMethod("RouteBatchAsync", BindingFlags.Instance | BindingFlags.NonPublic)!
             .CreateDelegate<Func<ConsumeBatch<Ignore, ReadOnlyMemory<byte>>, CancellationToken, ValueTask>>(runtime);
@@ -52,9 +64,13 @@ public class PartitionedBatchRoutingBenchmarks
         Serializers.Int32.Serialize(42, ref value, default);
         _records = new Record[RecordCount];
         for (var index = 0; index < _records.Length; index++)
+        {
             _records[index] = new Record { OffsetDelta = index, IsKeyNull = true, Value = value.WrittenMemory };
+        }
         if (RouteBatch() != (FilterAll ? 0 : RecordCount))
+        {
             throw new InvalidOperationException("Routing did not preserve filter decisions.");
+        }
     }
 
     // Includes batch construction and cleanup equally on both revisions. Source
@@ -95,8 +111,12 @@ public class PartitionedBatchRoutingBenchmarks
         var monitor = Activator.CreateInstance(
             laneType.Assembly.GetType("Dekaf.Consumer.PartitionedProcessingMonitor", throwOnError: true)!)!;
         Func<PartitionLane<Ignore, ReadOnlyMemory<byte>>, CancellationToken, ValueTask> commit = static (_, _) => default;
-        Action<PartitionLane<Ignore, ReadOnlyMemory<byte>>> capacityAvailable = static _ => { };
-        Action<PartitionLane<Ignore, ReadOnlyMemory<byte>>, Exception> failed = static (_, _) => { };
+        Action<PartitionLane<Ignore, ReadOnlyMemory<byte>>> capacityAvailable = static _ =>
+        {
+        };
+        Action<PartitionLane<Ignore, ReadOnlyMemory<byte>>, Exception> failed = static (_, _) =>
+        {
+        };
         return (PartitionLane<Ignore, ReadOnlyMemory<byte>>)Activator.CreateInstance(
             laneType,
             BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic,

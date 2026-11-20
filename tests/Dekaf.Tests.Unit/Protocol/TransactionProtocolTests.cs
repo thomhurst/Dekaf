@@ -613,5 +613,4 @@ public sealed class TransactionProtocolTests
     }
 
     #endregion
-
 }

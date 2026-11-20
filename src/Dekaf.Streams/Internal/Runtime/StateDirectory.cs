@@ -108,7 +108,10 @@ internal sealed class TaskDirectory(string path, FileStream lockFile, Dictionary
     public const string LockFile = ".lock";
     public const string CheckpointFile = ".checkpoint";
 
-    public string Path { get; } = path;
+    public string Path
+    {
+        get;
+    } = path;
 
     /// <summary>The offset to resume restoring <paramref name="topic"/> from, or -1 to restore from the start.</summary>
     public long CheckpointOf(string topic) => checkpoint.GetValueOrDefault(topic, -1);

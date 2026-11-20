@@ -13,22 +13,34 @@ public sealed class ApiVersionsRequest : IKafkaRequest<ApiVersionsResponse>
     /// <summary>
     /// Client software name (v3+).
     /// </summary>
-    public string? ClientSoftwareName { get; init; }
+    public string? ClientSoftwareName
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Client software version (v3+).
     /// </summary>
-    public string? ClientSoftwareVersion { get; init; }
+    public string? ClientSoftwareVersion
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Expected cluster ID (v5+, KIP-1242). Null while bootstrapping.
     /// </summary>
-    public string? ClusterId { get; init; }
+    public string? ClusterId
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Expected broker node ID (v5+, KIP-1242). -1 while bootstrapping.
     /// </summary>
-    public int NodeId { get; init; } = -1;
+    public int NodeId
+    {
+        get; init;
+    } = -1;
 
     // ApiVersions is the bootstrap API — the broker always sends the response
     // with header v0 (no tagged fields) regardless of the API version.
@@ -39,12 +51,18 @@ public sealed class ApiVersionsRequest : IKafkaRequest<ApiVersionsResponse>
     public void Write(ref KafkaProtocolWriter writer, short version)
     {
         if (!IsFlexibleVersion(version))
+        {
             return;
+        }
 
         if (string.IsNullOrEmpty(ClientSoftwareName))
+        {
             throw new InvalidOperationException("Client software name must not be empty for ApiVersions v3+.");
+        }
         if (string.IsNullOrEmpty(ClientSoftwareVersion))
+        {
             throw new InvalidOperationException("Client software version must not be empty for ApiVersions v3+.");
+        }
 
         writer.WriteCompactString(ClientSoftwareName);
         writer.WriteCompactString(ClientSoftwareVersion);
@@ -52,7 +70,9 @@ public sealed class ApiVersionsRequest : IKafkaRequest<ApiVersionsResponse>
         if (version >= 5)
         {
             if ((ClusterId is null) != (NodeId == -1))
+            {
                 throw new InvalidOperationException("ApiVersions v5 cluster ID and node ID must be specified together.");
+            }
 
             writer.WriteCompactNullableString(ClusterId);
             writer.WriteInt32(NodeId);

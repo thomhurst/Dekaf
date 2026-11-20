@@ -218,7 +218,9 @@ public sealed class ShareResponseArrayBoundsTests
     private static void WriteEmptyArraysBefore(ref KafkaProtocolWriter writer, int count)
     {
         for (var index = 0; index < count; index++)
+        {
             writer.WriteUnsignedVarInt(1);
+        }
     }
 
     private static bool UsesAbsoluteCap(ResponseArrayTarget target) =>

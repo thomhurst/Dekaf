@@ -1,11 +1,11 @@
+using System.Diagnostics;
+using System.Net;
 using Amazon.KeyManagementService;
 using Amazon.KeyManagementService.Model;
 using Amazon.Runtime;
-using System.Diagnostics;
 using Dekaf.SchemaRegistry;
 using Dekaf.SchemaRegistry.Kms.Aws;
 using NSubstitute;
-using System.Net;
 
 namespace Dekaf.Tests.Unit.SchemaRegistry;
 
@@ -256,7 +256,9 @@ public partial class AwsKmsProviderTests
         var results = await Task.WhenAll(operations);
 
         for (var index = 0; index < results.Length; index++)
+        {
             await Assert.That(results[index]).IsEquivalentTo(new byte[] { (byte)(index + 1) });
+        }
     }
 
     [Test]
@@ -436,10 +438,10 @@ public partial class AwsKmsProviderTests
     private static SchemaRegistryKmsKeyReference CreateKeyReference(
         string keyId = KeyArn,
         string type = AwsKmsProvider.DefaultType) => new()
-    {
-        KmsType = type,
-        KmsKeyId = keyId
-    };
+        {
+            KmsType = type,
+            KmsKeyId = keyId
+        };
 
     private static byte[] ReadAll(MemoryStream stream) => stream.ToArray();
 

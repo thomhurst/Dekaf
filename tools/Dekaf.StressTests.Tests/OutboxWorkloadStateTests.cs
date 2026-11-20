@@ -1,6 +1,6 @@
+using Dekaf.Outbox;
 using Dekaf.StressTests.Metrics;
 using Dekaf.StressTests.Scenarios;
-using Dekaf.Outbox;
 
 namespace Dekaf.StressTests.Tests;
 
@@ -16,9 +16,13 @@ public class OutboxWorkloadStateTests
         var state = new OutboxWorkloadState(24, 1, 42);
         await using var publisher = new ObservedOutboxPublisher(new FailedPublisher(), state);
         if (initialize)
+        {
             await Assert.That(async () => await publisher.InitializeAsync(cancellation.Token)).Throws<InvalidOperationException>();
+        }
         else
+        {
             await Assert.That(async () => await publisher.PublishAsync([], "message-id", cancellation.Token)).Throws<InvalidOperationException>();
+        }
         await Assert.That(() => state.ThrowIfFailed()).Throws<InvalidOperationException>();
     }
 
@@ -58,10 +62,14 @@ public class OutboxWorkloadStateTests
         var state = new OutboxWorkloadState(24, 1, 42);
         state.BeginCycle(new ThroughputTracker());
         for (var i = 0; i < OutboxWorkloadState.WindowSize; i++)
+        {
             await Assert.That(state.TryReserve(out _)).IsTrue();
+        }
         state.RecordCommitted(OutboxWorkloadState.WindowSize);
         for (var i = 1; i < OutboxWorkloadState.WindowSize; i++)
+        {
             state.Process(state.CreatePayload(i), 0, i - 1);
+        }
         await Assert.That(state.TryReserve(out _)).IsFalse();
         state.Process(state.CreatePayload(0), 0, OutboxWorkloadState.WindowSize - 1);
         await Assert.That(state.TryReserve(out var next)).IsTrue();

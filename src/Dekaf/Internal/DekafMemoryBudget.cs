@@ -63,7 +63,10 @@ public static class DekafMemoryBudget
     private static readonly List<IBudgetedInstance> _producers = new();
     private static readonly List<IBudgetedInstance> _consumers = new();
 
-    internal static IDekafMemoryBudget Global { get; } = new GlobalDekafMemoryBudget();
+    internal static IDekafMemoryBudget Global
+    {
+        get;
+    } = new GlobalDekafMemoryBudget();
 
     /// <summary>
     /// The total memory budget in bytes available to all Dekaf instances in the process.
@@ -81,7 +84,13 @@ public static class DekafMemoryBudget
     /// </summary>
     public static ulong TotalBudget
     {
-        get { lock (_lock) { return ComputeTotalBudgetUnlocked(); } }
+        get
+        {
+            lock (_lock)
+            {
+                return ComputeTotalBudgetUnlocked();
+            }
+        }
     }
 
     /// <summary>
@@ -90,7 +99,10 @@ public static class DekafMemoryBudget
     /// wiring a logger here can observe otherwise-silent regressions. Invoked on the
     /// thread performing bookkeeping or dispatching budget updates; handlers must not throw.
     /// </summary>
-    public static Action<Exception>? OnBookkeepingError { get; set; }
+    public static Action<Exception>? OnBookkeepingError
+    {
+        get; set;
+    }
 
     /// <summary>
     /// Override the budget with an explicit byte count.
@@ -113,8 +125,10 @@ public static class DekafMemoryBudget
     public static void SetBudget(double percentOfAvailable)
     {
         if (percentOfAvailable is not (> 0.0 and <= 1.0))
+        {
             throw new ArgumentOutOfRangeException(nameof(percentOfAvailable),
                 "Must be in the range (0.0, 1.0].");
+        }
 
         lock (_lock)
         {
@@ -142,7 +156,9 @@ public static class DekafMemoryBudget
             lock (_lock)
             {
                 if (!_producers.Remove(instance))
+                {
                     return;
+                }
                 ScheduleRebalanceUnlocked();
             }
             _dispatcher.Dispatch();
@@ -151,7 +167,11 @@ public static class DekafMemoryBudget
         {
             // Budget bookkeeping must never break disposal. Route through the
             // diagnostics hook so callers can still observe unexpected regressions.
-            try { OnBookkeepingError?.Invoke(ex); } catch { /* handler must not throw */ }
+            try
+            {
+                OnBookkeepingError?.Invoke(ex);
+            }
+            catch { /* handler must not throw */ }
         }
     }
 
@@ -172,7 +192,9 @@ public static class DekafMemoryBudget
             lock (_lock)
             {
                 if (!_consumers.Remove(instance))
+                {
                     return;
+                }
                 ScheduleRebalanceUnlocked();
             }
             _dispatcher.Dispatch();
@@ -181,7 +203,11 @@ public static class DekafMemoryBudget
         {
             // Budget bookkeeping must never break disposal. Route through the
             // diagnostics hook so callers can still observe unexpected regressions.
-            try { OnBookkeepingError?.Invoke(ex); } catch { /* handler must not throw */ }
+            try
+            {
+                OnBookkeepingError?.Invoke(ex);
+            }
+            catch { /* handler must not throw */ }
         }
     }
 
@@ -216,7 +242,11 @@ public static class DekafMemoryBudget
         {
             // Budget bookkeeping must never break disposal. Route through the
             // diagnostics hook so callers can still observe unexpected regressions.
-            try { OnBookkeepingError?.Invoke(ex); } catch { /* handler must not throw */ }
+            try
+            {
+                OnBookkeepingError?.Invoke(ex);
+            }
+            catch { /* handler must not throw */ }
         }
     }
 
@@ -239,11 +269,15 @@ public static class DekafMemoryBudget
     private static ulong ComputeTotalBudgetUnlocked()
     {
         if (_explicitBudget.HasValue)
+        {
             return _explicitBudget.Value;
+        }
 
         var available = (ulong)GC.GetGCMemoryInfo().TotalAvailableMemoryBytes;
         if (available == 0)
+        {
             return FallbackBudgetBytes;
+        }
 
         return (ulong)(available * _percentOfAvailable);
     }
@@ -288,7 +322,9 @@ public static class DekafMemoryBudget
     private static ulong ComputePerProducerLimitUnlocked()
     {
         if (_producers.Count == 0)
+        {
             return 0;
+        }
 
         var auto = AutoBudgetUnlocked();
         var share = _consumers.Count == 0 ? auto : (ulong)(auto * ProducerShareWhenBoth);
@@ -299,7 +335,9 @@ public static class DekafMemoryBudget
     private static ulong ComputePerConsumerLimitUnlocked()
     {
         if (_consumers.Count == 0)
+        {
             return 0;
+        }
 
         var auto = AutoBudgetUnlocked();
         var share = _producers.Count == 0 ? auto : (ulong)(auto * ConsumerShareWhenBoth);

@@ -34,19 +34,34 @@ public class ProducerFireHotPathBenchmarks
     private ActivityListener? _activityListener;
 
     [Params(1000)]
-    public int MessageSize { get; set; }
+    public int MessageSize
+    {
+        get; set;
+    }
 
     [Params(0, 10)]
-    public int DeliveryLatencyTargetMs { get; set; }
+    public int DeliveryLatencyTargetMs
+    {
+        get; set;
+    }
 
     [Params(1, 12)]
-    public int PartitionCount { get; set; }
+    public int PartitionCount
+    {
+        get; set;
+    }
 
     [Params(false, true)]
-    public bool TracingEnabled { get; set; }
+    public bool TracingEnabled
+    {
+        get; set;
+    }
 
     [Params(false, true)]
-    public bool UsePreparedSerializer { get; set; }
+    public bool UsePreparedSerializer
+    {
+        get; set;
+    }
 
     [GlobalSetup]
     public async Task Setup()

@@ -23,7 +23,9 @@ internal sealed class ReassignmentSequenceOracle
         _messagesPerPartition = messagesPerPartition;
         _seenSequences = new bool[partitionCount][];
         for (var partition = 0; partition < partitionCount; partition++)
+        {
             _seenSequences[partition] = new bool[messagesPerPartition];
+        }
 
         _nextLogicalSequences = new int[partitionCount];
         _nextBrokerOffsets = new long[partitionCount];
@@ -40,7 +42,9 @@ internal sealed class ReassignmentSequenceOracle
         string? value)
     {
         if ((uint)partition >= (uint)_seenSequences.Length)
+        {
             throw new InvalidOperationException($"Record for {topic} has invalid partition {partition}.");
+        }
 
         var expectedOffset = _nextBrokerOffsets[partition];
         if (offset != expectedOffset)
@@ -54,7 +58,9 @@ internal sealed class ReassignmentSequenceOracle
         if (_seenSequences[partition][sequence])
         {
             if (_allowDuplicates)
+            {
                 return;
+            }
 
             throw new InvalidOperationException(
                 $"Unexpected duplicate for {topic}-{partition}@{offset}: sequence {sequence}.");

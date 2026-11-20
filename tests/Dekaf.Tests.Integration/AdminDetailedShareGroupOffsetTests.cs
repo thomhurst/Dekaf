@@ -25,7 +25,9 @@ public sealed class AdminDetailedShareGroupOffsetTests(KafkaTestContainer kafka)
              new() { TopicPartition = second, StartOffset = 0 },
              new() { TopicPartition = absent, StartOffset = 0 }]);
         foreach (var (partition, result) in results)
+        {
             Console.WriteLine($"Share offset result: {partition}; outcome={result.Outcome}; error={result.ErrorCode}; message={result.ErrorMessage}; exception={result.Exception}");
+        }
         await Assert.That(results.Count).IsEqualTo(3);
         await Assert.That(results[first].IsSuccess).IsTrue();
         await Assert.That(results[second].IsSuccess).IsTrue();

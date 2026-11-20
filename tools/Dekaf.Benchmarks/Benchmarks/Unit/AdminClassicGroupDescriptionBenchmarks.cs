@@ -13,9 +13,15 @@ namespace Dekaf.Benchmarks.Benchmarks.Unit;
 public class AdminClassicGroupDescriptionBenchmarks
 {
     [Params(1, 16)]
-    public int Groups { get; set; }
+    public int Groups
+    {
+        get; set;
+    }
     [Params(false, true)]
-    public bool MixedOutcomes { get; set; }
+    public bool MixedOutcomes
+    {
+        get; set;
+    }
     private AdminClient _admin = null!;
     private MetadataManager _metadata = null!;
     private string[] _groups = null!;
@@ -43,12 +49,19 @@ public class AdminClassicGroupDescriptionBenchmarks
             coordinators.Add(id, new() { Coordinators = [new Coordinator { Key = id, NodeId = 1, Host = "localhost", Port = 9092 }] });
             groups[i] = new()
             {
-                GroupId = id, GroupState = "Stable", ProtocolType = MixedOutcomes ? "connect" : "consumer", ProtocolData = "range",
+                GroupId = id,
+                GroupState = "Stable",
+                ProtocolType = MixedOutcomes ? "connect" : "consumer",
+                ProtocolData = "range",
                 ErrorCode = MixedOutcomes && i == Groups - 1 ? ErrorCode.GroupAuthorizationFailed : ErrorCode.None,
                 AuthorizedOperations = 123,
                 Members = [new DescribeGroupsResponseMember
                 {
-                    MemberId = id, ClientId = "client", ClientHost = "host", MemberMetadata = assignment, MemberAssignment = assignment
+                    MemberId = id,
+                    ClientId = "client",
+                    ClientHost = "host",
+                    MemberMetadata = assignment,
+                    MemberAssignment = assignment
                 }]
             };
         }
@@ -57,14 +70,18 @@ public class AdminClassicGroupDescriptionBenchmarks
         _metadata.Metadata.Update(new MetadataResponse
         {
             Brokers = [new BrokerMetadata { NodeId = 1, Host = "localhost", Port = 9092 }],
-            ControllerId = 1, ClusterId = "fixture", Topics = []
+            ControllerId = 1,
+            ClusterId = "fixture",
+            Topics = []
         });
         _metadata.SetApiVersion(ApiKey.FindCoordinator, 4, 4);
         _metadata.SetApiVersion(ApiKey.DescribeGroups, 5, 5);
         _admin = new AdminClient(new AdminClientOptions { BootstrapServers = ["localhost:9092"] }, pool, _metadata);
         var results = await Describe();
         if (results.Count != Groups)
+        {
             throw new InvalidOperationException("A result is required for every group.");
+        }
         for (var i = 0; i < Groups; i++)
         {
             var result = results[_groups[i]];
@@ -72,7 +89,9 @@ public class AdminClassicGroupDescriptionBenchmarks
             if (result.ErrorCode != (denied ? ErrorCode.GroupAuthorizationFailed : ErrorCode.None) ||
                 (!denied && (result.Description?.Members.Count != 1 ||
                     (result.Description.Members[0].Assignment is not null) == MixedOutcomes)))
+            {
                 throw new InvalidOperationException("Invalid protocol mapping or per-group outcome.");
+            }
         }
     }
 
@@ -115,12 +134,15 @@ public class AdminClassicGroupDescriptionBenchmarks
         public Task<TResponse> SendPipelinedWithCallerTimeoutAsync<TRequest, TResponse>(TRequest request, short version, CancellationToken token = default)
             where TRequest : IKafkaRequest<TResponse> where TResponse : IKafkaResponse => throw new NotSupportedException();
     }
+
     private sealed class Pool(IKafkaConnection connection) : IConnectionPool
     {
         public ValueTask<IKafkaConnection> GetConnectionAsync(int brokerId, CancellationToken token = default) => ValueTask.FromResult(connection);
         public ValueTask<IKafkaConnection> GetConnectionAsync(string host, int port, CancellationToken token = default) => ValueTask.FromResult(connection);
         public ValueTask<IKafkaConnection> GetConnectionByIndexAsync(int brokerId, int index, CancellationToken token = default) => ValueTask.FromResult(connection);
-        public void RegisterBroker(int id, string host, int port) { }
+        public void RegisterBroker(int id, string host, int port)
+        {
+        }
         public ValueTask<int> ScaleConnectionGroupAsync(int id, int count, CancellationToken token = default) => ValueTask.FromResult(1);
         public ValueTask<IKafkaConnection?> ShrinkConnectionGroupAsync(int id, int count, CancellationToken token = default) => ValueTask.FromResult<IKafkaConnection?>(null);
         public ValueTask RemoveConnectionAsync(int id) => ValueTask.CompletedTask;

@@ -14,17 +14,26 @@ public sealed class DeleteTopicsRequest : IKafkaRequest<DeleteTopicsResponse>
     /// The names of the topics to delete (v0-v5).
     /// In v6+, use Topics instead.
     /// </summary>
-    public IReadOnlyList<string>? TopicNames { get; init; }
+    public IReadOnlyList<string>? TopicNames
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The topics to delete (v6+).
     /// </summary>
-    public IReadOnlyList<DeleteTopicState>? Topics { get; init; }
+    public IReadOnlyList<DeleteTopicState>? Topics
+    {
+        get; init;
+    }
 
     /// <summary>
     /// How long to wait in milliseconds before timing out the request.
     /// </summary>
-    public int TimeoutMs { get; init; } = 30000;
+    public int TimeoutMs
+    {
+        get; init;
+    } = 30000;
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {
@@ -60,12 +69,18 @@ public sealed class DeleteTopicState
     /// <summary>
     /// The topic name (null if deleting by ID).
     /// </summary>
-    public string? Name { get; init; }
+    public string? Name
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The topic ID (null UUID if deleting by name).
     /// </summary>
-    public Guid TopicId { get; init; }
+    public Guid TopicId
+    {
+        get; init;
+    }
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {

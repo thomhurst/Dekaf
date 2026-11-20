@@ -37,7 +37,9 @@ public class AclEnforcementTests(AclKafkaContainer kafka)
         {
             var acls = await admin.DescribeAclsAsync(filter);
             if (predicate(acls.Count))
+            {
                 return;
+            }
 
             var delayMs = Math.Min(initialDelayMs * (i + 1), 2000);
             await Task.Delay(delayMs);
@@ -215,8 +217,7 @@ public class AclEnforcementTests(AclKafkaContainer kafka)
                 break;
             }
         }
-        catch (AuthorizationException ex) when (
-            ex.ErrorCode == Dekaf.Protocol.ErrorCode.TopicAuthorizationFailed)
+        catch (AuthorizationException ex) when (ex.ErrorCode == Dekaf.Protocol.ErrorCode.TopicAuthorizationFailed)
         {
             exceptionThrown = true;
         }
@@ -329,8 +330,7 @@ public class AclEnforcementTests(AclKafkaContainer kafka)
                 break;
             }
         }
-        catch (AuthorizationException ex) when (
-            ex.ErrorCode == Dekaf.Protocol.ErrorCode.GroupAuthorizationFailed)
+        catch (AuthorizationException ex) when (ex.ErrorCode == Dekaf.Protocol.ErrorCode.GroupAuthorizationFailed)
         {
             exceptionThrown = true;
         }
@@ -528,8 +528,7 @@ public class AclEnforcementTests(AclKafkaContainer kafka)
                     Value = "value"
                 }, CancellationToken.None);
             }
-            catch (AuthorizationException ex) when (
-                ex.ErrorCode == Dekaf.Protocol.ErrorCode.TopicAuthorizationFailed ||
+            catch (AuthorizationException ex) when (ex.ErrorCode == Dekaf.Protocol.ErrorCode.TopicAuthorizationFailed ||
                 ex.ErrorCode == Dekaf.Protocol.ErrorCode.ClusterAuthorizationFailed)
             {
                 denied = true;
@@ -608,8 +607,7 @@ public class AclEnforcementTests(AclKafkaContainer kafka)
                     Value = "value"
                 }, CancellationToken.None);
             }
-            catch (AuthorizationException ex) when (
-                ex.ErrorCode == Dekaf.Protocol.ErrorCode.TopicAuthorizationFailed ||
+            catch (AuthorizationException ex) when (ex.ErrorCode == Dekaf.Protocol.ErrorCode.TopicAuthorizationFailed ||
                 ex.ErrorCode == Dekaf.Protocol.ErrorCode.ClusterAuthorizationFailed)
             {
                 deniedAgain = true;

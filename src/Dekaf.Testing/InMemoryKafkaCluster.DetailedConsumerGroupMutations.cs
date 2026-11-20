@@ -9,10 +9,15 @@ public sealed partial class InMemoryKafkaCluster
         lock (_gate)
         {
             if (_consumerGroupMembers.TryGetValue(groupId, out var members) && members.Count != 0)
+            {
                 return ErrorCode.UnknownMemberId;
+            }
             var partition = new TopicPartition(offset.Topic, offset.Partition);
             var error = GetTopicPartitionErrorUnderLock(partition);
-            if (error != ErrorCode.None) return ConsumerOffsetError(error);
+            if (error != ErrorCode.None)
+            {
+                return ConsumerOffsetError(error);
+            }
             GetOrCreateConsumerGroupOffsetsUnderLock(groupId)[partition] = offset;
             return ErrorCode.None;
         }

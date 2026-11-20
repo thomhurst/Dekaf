@@ -25,7 +25,9 @@ public sealed class ZstdCompressionRoundTripTests(KafkaTestContainer kafka) : Ka
             .UseZstdCompression()
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory());
         if (compressionLevel.HasValue)
+        {
             builder.WithCompressionLevel(compressionLevel.Value);
+        }
         await using var producer = await builder.BuildAsync();
 
         await producer.ProduceAsync(new ProducerMessage<string, string>
@@ -94,7 +96,10 @@ public sealed class ZstdCompressionRoundTripTests(KafkaTestContainer kafka) : Ka
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))
         {
             messages.Add(msg);
-            if (messages.Count >= messageCount) break;
+            if (messages.Count >= messageCount)
+            {
+                break;
+            }
         }
 
         await Assert.That(messages).Count().IsEqualTo(messageCount);
@@ -238,7 +243,10 @@ public sealed class ZstdCompressionRoundTripTests(KafkaTestContainer kafka) : Ka
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))
         {
             messages.Add(msg);
-            if (messages.Count >= expectedMessages.Count) break;
+            if (messages.Count >= expectedMessages.Count)
+            {
+                break;
+            }
         }
 
         await Assert.That(messages).Count().IsEqualTo(expectedMessages.Count);

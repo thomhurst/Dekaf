@@ -35,7 +35,9 @@ public class EfCoreOutboxStoreTests
         public string Prefix => prefix;
         protected override void OnModelCreating(ModelBuilder modelBuilder) => modelBuilder.UseDekafOutbox(new OutboxModelOptions
         {
-            MessagesTableName = prefix + "_messages", LeasesTableName = prefix + "_leases", RelaysTableName = prefix + "_relays"
+            MessagesTableName = prefix + "_messages",
+            LeasesTableName = prefix + "_leases",
+            RelaysTableName = prefix + "_relays"
         });
     }
 
@@ -58,7 +60,9 @@ public class EfCoreOutboxStoreTests
         await store.AcquireBucketLeasesAsync(Request("relay-a"));
         var rows = new OutboxMessage[1000];
         for (var index = 0; index < rows.Length; index++)
+        {
             rows[index] = NewRow(index % 4, "payload");
+        }
         await db.InsertRowsAsync(rows);
         commands.Count = 0;
         var pending = await store.GetBucketsWithPendingAsync([0, 2, 2]);
@@ -71,8 +75,14 @@ public class EfCoreOutboxStoreTests
 
     private sealed class ProbeCommands : DbCommandInterceptor
     {
-        public int Count { get; set; }
-        public string LastSql { get; private set; } = string.Empty;
+        public int Count
+        {
+            get; set;
+        }
+        public string LastSql
+        {
+            get; private set;
+        } = string.Empty;
         public override ValueTask<InterceptionResult<System.Data.Common.DbDataReader>> ReaderExecutingAsync(
             System.Data.Common.DbCommand command, CommandEventData eventData,
             InterceptionResult<System.Data.Common.DbDataReader> result, CancellationToken cancellationToken = default)
@@ -101,7 +111,11 @@ public class EfCoreOutboxStoreTests
         {
             context.AddOutboxMessage(new OutboxMessage
             {
-                MessageId = Guid.NewGuid(), Bucket = 0, Topic = "topic", Value = [1], CreatedAtUtc = timestamp
+                MessageId = Guid.NewGuid(),
+                Bucket = 0,
+                Topic = "topic",
+                Value = [1],
+                CreatedAtUtc = timestamp
             });
         }
         await context.SaveChangesAsync();
@@ -160,7 +174,9 @@ public class EfCoreOutboxStoreTests
         var owned = await store.AcquireBucketLeasesAsync(request);
         db.Time.Advance(TimeSpan.FromSeconds(61));
         if (takeover)
+        {
             await store.AcquireBucketLeasesAsync(Request("relay-b"));
+        }
         await Assert.That(await ((IOutboxLeaseRenewalStore)store).RenewBucketLeasesAsync(request, owned)).IsFalse();
     }
 
@@ -240,7 +256,9 @@ public class EfCoreOutboxStoreTests
 
         await Assert.That(straggler.Landed).IsTrue();
         await using (var context = db.CreateContext())
+        {
             await Assert.That(await context.Set<OutboxLease>().CountAsync(lease => lease.Owner == "relay-a")).IsEqualTo(0);
+        }
     }
 
     [Test]
@@ -350,7 +368,9 @@ public class EfCoreOutboxStoreTests
         await Assert.That(await cancelledRound).IsEmpty();
         await Assert.That(gate.Affected).IsEqualTo(0);
         await using (var context = db.CreateContext())
+        {
             await Assert.That(await context.Set<OutboxLease>().CountAsync(lease => lease.Owner != null)).IsEqualTo(0);
+        }
     }
 
     [Test]
@@ -412,7 +432,9 @@ public class EfCoreOutboxStoreTests
     {
         await Assert.That((await RelayAsync(db, "relay-a")).StoppedAtUtc).IsNotNull();
         await using (var context = db.CreateContext())
+        {
             await Assert.That(await context.Set<OutboxLease>().CountAsync(lease => lease.Owner == "relay-a")).IsEqualTo(0);
+        }
         await Assert.That(await store.AcquireBucketLeasesAsync(Request("relay-b"))).IsEquivalentTo(AllBuckets);
     }
 
@@ -429,7 +451,10 @@ public class EfCoreOutboxStoreTests
 
         public Task Held => _held.Task;
 
-        public int? Affected { get; private set; }
+        public int? Affected
+        {
+            get; private set;
+        }
 
         public void Arm(Func<System.Data.Common.DbCommand, bool> match) => Volatile.Write(ref _match, match);
 
@@ -456,7 +481,9 @@ public class EfCoreOutboxStoreTests
             CancellationToken cancellationToken = default)
         {
             if (ReferenceEquals(command, _gated))
+            {
                 Affected = result;
+            }
             return new(result);
         }
 
@@ -513,7 +540,9 @@ public class EfCoreOutboxStoreTests
 
         await Assert.That(owned).IsEmpty();
         await using (var context = db.CreateContext())
+        {
             await Assert.That(await context.Set<OutboxLease>().CountAsync(lease => lease.Owner == null)).IsEqualTo(2);
+        }
 
         db.Time.Advance(TimeSpan.FromSeconds(25));
         await Assert.That(await store.AcquireBucketLeasesAsync(Request("relay-a"))).IsEquivalentTo(AllBuckets);
@@ -693,7 +722,9 @@ public class EfCoreOutboxStoreTests
         for (var round = 0; round < 3; round++)
         {
             foreach (var relay in incumbents)
+            {
                 await store.AcquireBucketLeasesAsync(Request(relay, bucketCount: 2));
+            }
             db.Time.Advance(TimeSpan.FromSeconds(10));
         }
 
@@ -703,7 +734,9 @@ public class EfCoreOutboxStoreTests
         {
             await Assert.That(await store.AcquireBucketLeasesAsync(Request("relay-a", bucketCount: 2))).IsEmpty();
             foreach (var relay in incumbents)
+            {
                 await Assert.That((await store.AcquireBucketLeasesAsync(Request(relay, bucketCount: 2))).Count).IsEqualTo(1);
+            }
             db.Time.Advance(TimeSpan.FromSeconds(10));
         }
     }
@@ -783,7 +816,9 @@ public class EfCoreOutboxStoreTests
             NewRow(bucket: 3, value: "not-requested"));
 
         if (acquireFirst)
+        {
             await store.AcquireBucketLeasesAsync(Request("relay-a"));
+        }
         var pending = await store.GetBucketsWithPendingAsync([0, 1, 2]);
 
         var sorted = pending.Order().ToArray();
@@ -962,7 +997,9 @@ public class EfCoreOutboxStoreTests
             command.CommandText = "SELECT name FROM sqlite_master WHERE type='table'";
             using var reader = await command.ExecuteReaderAsync();
             while (await reader.ReadAsync())
+            {
                 tables.Add(reader.GetString(0));
+            }
         }
 
         await Assert.That(tables).Contains("custom_outbox");
@@ -1025,7 +1062,9 @@ public class EfCoreOutboxStoreTests
             CancellationToken cancellationToken = default)
         {
             if (++_calls == failOnCallNumber)
+            {
                 throw new DbUpdateException("Simulated transient save failure.");
+            }
 
             return base.SavingChangesAsync(eventData, result, cancellationToken);
         }
@@ -1043,7 +1082,9 @@ public class EfCoreOutboxStoreTests
             var builder = new DbContextOptionsBuilder<OutboxTestContext>()
                 .UseSqlite(_connection);
             if (interceptor is not null)
+            {
                 builder.AddInterceptors(interceptor);
+            }
             _options = builder.Options;
             // A SaveChanges interceptor never fires during EnsureCreated (DDL only), so the
             // shared options are safe here.
@@ -1051,7 +1092,10 @@ public class EfCoreOutboxStoreTests
             context.Database.EnsureCreated();
         }
 
-        public FakeOutboxTimeProvider Time { get; } = new();
+        public FakeOutboxTimeProvider Time
+        {
+            get;
+        } = new();
 
         public OutboxTestContext CreateContext() => new(_options);
 
@@ -1062,7 +1106,9 @@ public class EfCoreOutboxStoreTests
         {
             await using var context = CreateContext();
             foreach (var row in rows)
+            {
                 context.AddOutboxMessage(row);
+            }
             await context.SaveChangesAsync();
         }
 

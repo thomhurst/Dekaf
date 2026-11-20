@@ -1,7 +1,7 @@
 using System.Buffers.Binary;
 using Dekaf.Consumer;
-using Dekaf.Serialization;
 using Dekaf.Producer;
+using Dekaf.Serialization;
 
 namespace Dekaf.Tests.Integration;
 
@@ -57,9 +57,13 @@ public sealed class PartitionedKeyComparerIntegrationTests(KafkaTestContainer ka
         {
             ConsumeResult<ReadOnlyMemory<byte>, string>? record;
             if (singleRecord)
+            {
                 record = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(20), timeout.Token);
+            }
             else
+            {
                 record = await records.MoveNextAsync() ? records.Current : null;
+            }
             await Assert.That(record).IsNotNull();
             await Assert.That(record!.Value.Value).IsEqualTo("replaced");
             await Assert.That(record.Value.Key.IsEmpty).IsTrue();
@@ -76,16 +80,15 @@ public sealed class PartitionedKeyComparerIntegrationTests(KafkaTestContainer ka
     [Arguments(true, 2)]
     [Arguments(false, 3)]
     [Arguments(true, 3)]
-    public Task PublicHandlers_DeserializedNullStaysDistinctFromWireNull(bool batches, int keyKind)
-        => keyKind switch
-        {
-            0 => VerifyOrderingAsync(new NullKeyDeserializer<byte[]?>(), null, batches, nullAndEmpty: true),
-            1 => VerifyOrderingAsync(new NullKeyDeserializer<string?>(), null, batches, nullAndEmpty: true),
-            2 => VerifyOrderingAsync(new NullKeyDeserializer<int?>(), null, batches, nullAndEmpty: true),
-            3 => VerifyOrderingAsync(new NullKeyDeserializer<string?>(), new NullRejectingComparer(), batches,
-                nullAndEmpty: true),
-            _ => throw new ArgumentOutOfRangeException(nameof(keyKind))
-        };
+    public Task PublicHandlers_DeserializedNullStaysDistinctFromWireNull(bool batches, int keyKind) => keyKind switch
+    {
+        0 => VerifyOrderingAsync(new NullKeyDeserializer<byte[]?>(), null, batches, nullAndEmpty: true),
+        1 => VerifyOrderingAsync(new NullKeyDeserializer<string?>(), null, batches, nullAndEmpty: true),
+        2 => VerifyOrderingAsync(new NullKeyDeserializer<int?>(), null, batches, nullAndEmpty: true),
+        3 => VerifyOrderingAsync(new NullKeyDeserializer<string?>(), new NullRejectingComparer(), batches,
+            nullAndEmpty: true),
+        _ => throw new ArgumentOutOfRangeException(nameof(keyKind))
+    };
 
     [Test]
     [Arguments(false, false)]
@@ -116,7 +119,9 @@ public sealed class PartitionedKeyComparerIntegrationTests(KafkaTestContainer ka
         async ValueTask<ConsumeResult<ReadOnlyMemory<byte>, string>?> NextAsync()
         {
             if (singleRecord)
+            {
                 return await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(20), timeout.Token);
+            }
             return await records.MoveNextAsync() ? records.Current : null;
         }
 
@@ -129,7 +134,9 @@ public sealed class PartitionedKeyComparerIntegrationTests(KafkaTestContainer ka
         {
             await started.Task.WaitAsync(timeout.Token);
             if (suspendDeserializer)
+            {
                 await Assert.That(pending.IsCompleted).IsFalse();
+            }
         }
         finally
         {
@@ -157,7 +164,12 @@ public sealed class PartitionedKeyComparerIntegrationTests(KafkaTestContainer ka
             .WithBootstrapServers(KafkaContainer.BootstrapServers).BuildAsync();
         for (var offset = 0; offset < recordCount; offset++)
         {
-            var identity = offset switch { 11 => 0, 12 => 2, _ => offset };
+            var identity = offset switch
+            {
+                11 => 0,
+                12 => 2,
+                _ => offset
+            };
             var key = new byte[1024];
             BinaryPrimitives.WriteInt32LittleEndian(key.AsSpan(identity is < 2 or 13 ? 1020 : 992), identity + 1);
             await producer.ProduceAsync(topic, key, "value");
@@ -189,12 +201,23 @@ public sealed class PartitionedKeyComparerIntegrationTests(KafkaTestContainer ka
         {
             switch (record.Offset)
             {
-                case 0: await releaseFirst.Task.WaitAsync(cancellationToken); break;
-                case 1: await releaseSecond.Task.WaitAsync(cancellationToken); break;
-                case 11: equalStarted.TrySetResult(); break;
-                case 13: sentinelStarted.TrySetResult(); break;
+                case 0:
+                    await releaseFirst.Task.WaitAsync(cancellationToken);
+                    break;
+                case 1:
+                    await releaseSecond.Task.WaitAsync(cancellationToken);
+                    break;
+                case 11:
+                    equalStarted.TrySetResult();
+                    break;
+                case 13:
+                    sentinelStarted.TrySetResult();
+                    break;
             }
-            if (Interlocked.Increment(ref processed) == recordCount) complete.TrySetResult();
+            if (Interlocked.Increment(ref processed) == recordCount)
+            {
+                complete.TrySetResult();
+            }
         }, options, timeout.Token).AsTask();
         try
         {
@@ -213,7 +236,10 @@ public sealed class PartitionedKeyComparerIntegrationTests(KafkaTestContainer ka
             releaseFirst.TrySetResult();
             releaseSecond.TrySetResult();
             await timeout.CancelAsync();
-            try { await running; }
+            try
+            {
+                await running;
+            }
             catch (OperationCanceledException) when (timeout.IsCancellationRequested) { }
         }
     }
@@ -225,7 +251,10 @@ public sealed class PartitionedKeyComparerIntegrationTests(KafkaTestContainer ka
         public TKey Deserialize(ReadOnlyMemory<byte> data, SerializationContext context)
         {
             var key = inner.Deserialize(data, context);
-            if (Interlocked.Increment(ref _count) == expected) complete.TrySetResult();
+            if (Interlocked.Increment(ref _count) == expected)
+            {
+                complete.TrySetResult();
+            }
             return key;
         }
     }
@@ -302,7 +331,10 @@ public sealed class PartitionedKeyComparerIntegrationTests(KafkaTestContainer ka
         {
             releaseFirst.TrySetResult();
             await timeout.CancelAsync();
-            try { await running; }
+            try
+            {
+                await running;
+            }
             catch (OperationCanceledException) when (timeout.IsCancellationRequested)
             {
                 await Assert.That(running.IsCanceled).IsTrue();
@@ -318,7 +350,9 @@ public sealed class PartitionedKeyComparerIntegrationTests(KafkaTestContainer ka
                 Replacement, false, result.Headers, result.TimestampMs, result.TimestampType,
                 result.LeaderEpoch, Serializers.RawBytes, Serializers.String, result.IsPartitionEof);
 
-        public void OnCommit(IReadOnlyList<TopicPartitionOffset> offsets) { }
+        public void OnCommit(IReadOnlyList<TopicPartitionOffset> offsets)
+        {
+        }
     }
 
     private static TaskCompletionSource NewSignal() => new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -337,7 +371,10 @@ public sealed class PartitionedKeyComparerIntegrationTests(KafkaTestContainer ka
 
     private sealed class CustomerKey(byte id)
     {
-        public byte Id { get; } = id;
+        public byte Id
+        {
+            get;
+        } = id;
     }
 
     private sealed class NullKeyDeserializer<TKey> : IDeserializer<TKey>

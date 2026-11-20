@@ -11,7 +11,10 @@ namespace Dekaf.Consumer;
 public interface IConsumerGroupLiveness
 {
     /// <summary>Gets a point-in-time snapshot of the consumer's group liveness.</summary>
-    ConsumerGroupLiveness GroupLiveness { get; }
+    ConsumerGroupLiveness GroupLiveness
+    {
+        get;
+    }
 }
 
 /// <summary>

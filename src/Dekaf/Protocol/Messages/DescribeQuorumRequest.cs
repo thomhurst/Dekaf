@@ -10,7 +10,10 @@ public sealed class DescribeQuorumRequest : IKafkaRequest<DescribeQuorumResponse
     public static short LowestSupportedVersion => 0;
     public static short HighestSupportedVersion => 2;
 
-    public required IReadOnlyList<DescribeQuorumRequestTopic> Topics { get; init; }
+    public required IReadOnlyList<DescribeQuorumRequestTopic> Topics
+    {
+        get; init;
+    }
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {
@@ -23,8 +26,14 @@ public sealed class DescribeQuorumRequest : IKafkaRequest<DescribeQuorumResponse
 
 public sealed class DescribeQuorumRequestTopic
 {
-    public required string TopicName { get; init; }
-    public required IReadOnlyList<DescribeQuorumRequestPartition> Partitions { get; init; }
+    public required string TopicName
+    {
+        get; init;
+    }
+    public required IReadOnlyList<DescribeQuorumRequestPartition> Partitions
+    {
+        get; init;
+    }
 
     public void Write(ref KafkaProtocolWriter writer)
     {
@@ -38,7 +47,10 @@ public sealed class DescribeQuorumRequestTopic
 
 public sealed class DescribeQuorumRequestPartition
 {
-    public int PartitionIndex { get; init; }
+    public int PartitionIndex
+    {
+        get; init;
+    }
 
     public void Write(ref KafkaProtocolWriter writer)
     {

@@ -25,7 +25,9 @@ public class OutboxNotificationBenchmarks
         _notifier.NotifyCommitted();
         var ready = _notifier.WaitAsync(_timeout);
         if (!ready.IsCompletedSuccessfully)
+        {
             throw new InvalidOperationException("A notification before waiting must complete synchronously.");
+        }
         ready.GetAwaiter().GetResult();
     }
 

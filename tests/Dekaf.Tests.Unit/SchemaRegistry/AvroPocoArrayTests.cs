@@ -39,11 +39,32 @@ public sealed class AvroPocoArrayTests
 [AvroRecord(Namespace = "Dekaf.Tests")]
 internal sealed partial class PocoJaggedArrays
 {
-    public byte[][] Bytes { get; set; } = [];
-    public int[][] Values { get; set; } = [];
-    public int[][][] Deep { get; set; } = [];
-    public List<int[][]> Lists { get; set; } = [];
-    public Dictionary<string, byte[][]> Map { get; set; } = [];
-    public List<int[]>[] ArrayOfLists { get; set; } = [];
-    public byte[]?[] NullableItems { get; set; } = [];
+    public byte[][] Bytes
+    {
+        get; set;
+    } = [];
+    public int[][] Values
+    {
+        get; set;
+    } = [];
+    public int[][][] Deep
+    {
+        get; set;
+    } = [];
+    public List<int[][]> Lists
+    {
+        get; set;
+    } = [];
+    public Dictionary<string, byte[][]> Map
+    {
+        get; set;
+    } = [];
+    public List<int[]>[] ArrayOfLists
+    {
+        get; set;
+    } = [];
+    public byte[]?[] NullableItems
+    {
+        get; set;
+    } = [];
 }

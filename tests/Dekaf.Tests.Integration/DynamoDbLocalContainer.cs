@@ -22,7 +22,10 @@ public sealed class DynamoDbLocalContainer : IAsyncInitializer, IAsyncDisposable
 
     private IContainer? _container;
 
-    public string ServiceUrl { get; private set; } = string.Empty;
+    public string ServiceUrl
+    {
+        get; private set;
+    } = string.Empty;
 
     public async Task InitializeAsync()
     {

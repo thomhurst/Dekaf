@@ -76,12 +76,16 @@ public sealed class ShareBatchHeaderRoutingTests
         string[] names = [new('r', 257), new('路', 100), new('s', 512)];
         IDeserializer<int> router = Serializers.Int32;
         foreach (var name in names)
+        {
             router = new HeaderRoutingDeserializer<int>(name, Serializers.Int32,
                 new HeaderDeserializerRoute<int>("selected"u8.ToArray(), router));
+        }
         var keys = new ShareBatchHeaderKeys(RecordHeaderRoutingPlan.Create(Serializers.Int32, router)!);
 
         foreach (var name in names)
+        {
             await Assert.That(ReferenceEquals(keys.Get(Encoding.UTF8.GetBytes(name)), name)).IsTrue();
+        }
 
         // This byte length falls between configured lengths but is not itself configured.
         var unrelated = new string('u', 400);
@@ -187,7 +191,9 @@ public sealed class ShareBatchHeaderRoutingTests
         }
         var headers = new Header[count];
         for (var index = 0; index < count; index++)
+        {
             headers[index] = new Header(names[index], "selected"u8.ToArray());
+        }
         using var source = new RecordBatch
         {
             Records = [new Record { IsKeyNull = true, Value = new byte[4], Headers = headers, HeaderCount = count }]
@@ -235,7 +241,11 @@ public sealed class ShareBatchHeaderRoutingTests
                 : [new(name, "selected"u8.ToArray()), new("unrelated", "other"u8.ToArray())];
             records[index] = new Record
             {
-                OffsetDelta = index, IsKeyNull = true, Value = new byte[4], Headers = headers, HeaderCount = headers.Length
+                OffsetDelta = index,
+                IsKeyNull = true,
+                Value = new byte[4],
+                Headers = headers,
+                HeaderCount = headers.Length
             };
         }
         using var source = new RecordBatch { Records = records };
@@ -251,10 +261,14 @@ public sealed class ShareBatchHeaderRoutingTests
         var operation = consumer.ParseRecordBatchAsync(new TopicPartition("routing", 0),
             RecordBatch.Read(ref reader), acquired, 64, default);
         if (!operation.IsCompletedSuccessfully)
+        {
             throw new InvalidOperationException("The prepared parser must complete synchronously.");
+        }
         using var batch = operation.GetAwaiter().GetResult();
         foreach (var record in batch)
+        {
             _ = record.Value;
+        }
     }
 
     private sealed class ConstantDeserializer(int value) : IDeserializer<int>

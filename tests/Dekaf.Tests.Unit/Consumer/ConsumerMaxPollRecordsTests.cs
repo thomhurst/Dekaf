@@ -29,7 +29,9 @@ public sealed class ConsumerMaxPollRecordsTests
             offsets.AddRange(currentOffsets);
 
             if (offsets.Count >= 5)
+            {
                 break;
+            }
         }
 
         await Assert.That(batchCounts).IsEquivalentTo([2, 2, 1]);
@@ -53,7 +55,9 @@ public sealed class ConsumerMaxPollRecordsTests
             offsets.AddRange(currentOffsets);
 
             if (offsets.Count >= 5)
+            {
                 break;
+            }
         }
 
         await Assert.That(batchCounts).IsEquivalentTo([2, 2, 1]);
@@ -108,7 +112,9 @@ public sealed class ConsumerMaxPollRecordsTests
 
         var pendingFetches = GetPendingFetches(consumer);
         foreach (var fetch in fetches)
+        {
             pendingFetches.Enqueue(fetch);
+        }
 
         return consumer;
     }

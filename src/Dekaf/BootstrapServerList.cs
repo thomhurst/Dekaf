@@ -19,14 +19,18 @@ internal static class BootstrapServerList
         ArgumentNullException.ThrowIfNull(servers);
 
         if (servers.Length == 0)
+        {
             throw new ArgumentException("At least one bootstrap server must be specified.", nameof(servers));
+        }
 
         var normalized = new string[servers.Length];
         for (var i = 0; i < servers.Length; i++)
         {
             var server = servers[i];
             if (server is null)
+            {
                 throw new ArgumentException("Bootstrap server entries cannot be null.", nameof(servers));
+            }
 
             normalized[i] = Parse(server, nameof(servers)).Normalized;
         }
@@ -40,13 +44,17 @@ internal static class BootstrapServerList
 
         var value = server.Trim();
         if (value.Length == 0)
+        {
             throw new ArgumentException("Bootstrap server entries cannot be empty.", paramName);
+        }
 
         var schemeSeparator = value.IndexOf("://", StringComparison.Ordinal);
         if (schemeSeparator >= 0)
         {
             if (!IsValidScheme(value.AsSpan(0, schemeSeparator)))
+            {
                 throw InvalidEntry(server, paramName);
+            }
 
             // The prefix is syntax only. TLS and SASL remain controlled by their builder options.
             value = value[(schemeSeparator + 3)..];
@@ -54,7 +62,9 @@ internal static class BootstrapServerList
 
         value = value.TrimEnd('/');
         if (value.Length == 0)
+        {
             throw InvalidEntry(server, paramName);
+        }
 
         string host;
         string portText;
@@ -82,11 +92,15 @@ internal static class BootstrapServerList
         {
             var colonIndex = value.LastIndexOf(':');
             if (colonIndex <= 0 || colonIndex != value.IndexOf(':'))
+            {
                 throw InvalidEntry(server, paramName);
+            }
 
             host = value[..colonIndex];
             if (Uri.CheckHostName(host) is not (UriHostNameType.Dns or UriHostNameType.IPv4))
+            {
                 throw InvalidEntry(server, paramName);
+            }
 
             portText = value[(colonIndex + 1)..];
         }
@@ -104,7 +118,9 @@ internal static class BootstrapServerList
     private static bool IsValidScheme(ReadOnlySpan<char> scheme)
     {
         if (scheme.IsEmpty || !char.IsLetter(scheme[0]))
+        {
             return false;
+        }
 
         for (var i = 1; i < scheme.Length; i++)
         {

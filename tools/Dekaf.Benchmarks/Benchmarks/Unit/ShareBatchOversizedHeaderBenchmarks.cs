@@ -14,10 +14,16 @@ public class ShareBatchOversizedHeaderBenchmarks
     private ReadOnlyMemory<byte> _unrelated;
 
     [Params(8, 512)]
-    public int ConfiguredNameBytes { get; set; }
+    public int ConfiguredNameBytes
+    {
+        get; set;
+    }
 
     [Params(257, 512, 4096)]
-    public int UnrelatedNameBytes { get; set; }
+    public int UnrelatedNameBytes
+    {
+        get; set;
+    }
 
     [GlobalSetup]
     public void Setup()
@@ -31,7 +37,9 @@ public class ShareBatchOversizedHeaderBenchmarks
         _unrelated = Encoding.UTF8.GetBytes(unrelatedName);
         // Configured names stay consumer-owned; oversized unrelated names cannot enter the shared cache.
         if (!ReferenceEquals(_keys.Get(_configured), name) || _keys.Get(_unrelated) != unrelatedName)
+        {
             throw new InvalidOperationException("The fixture must preserve both header names.");
+        }
     }
 
     [Benchmark]

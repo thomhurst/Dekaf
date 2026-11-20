@@ -107,8 +107,14 @@ public class DekafMemoryBudgetTests
 
     private sealed class FakeInstance : IBudgetedInstance
     {
-        public ulong CurrentLimit { get; private set; }
-        public int RebalanceCount { get; private set; }
+        public ulong CurrentLimit
+        {
+            get; private set;
+        }
+        public int RebalanceCount
+        {
+            get; private set;
+        }
 
         public void OnBudgetChanged(ulong newLimit)
         {

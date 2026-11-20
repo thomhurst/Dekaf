@@ -114,7 +114,9 @@ public static class ShareGroupDeadLetterHeaders
             {
                 header = headers[i];
                 if (string.Equals(header.Key, key, StringComparison.Ordinal))
+                {
                     return !header.IsValueNull;
+                }
             }
         }
 

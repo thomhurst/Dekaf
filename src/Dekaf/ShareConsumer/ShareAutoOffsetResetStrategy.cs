@@ -8,7 +8,9 @@ internal static class ShareAutoOffsetResetStrategy
     internal static string? GetConfigValue(ShareConsumerOptions options)
     {
         if (options.AutoOffsetReset != AutoOffsetReset.ByDuration && options.AutoOffsetResetDuration is not null)
+        {
             throw new ArgumentException("AutoOffsetResetDuration requires AutoOffsetReset.ByDuration.", nameof(options));
+        }
 
         switch (options.AutoOffsetReset)
         {
@@ -20,7 +22,9 @@ internal static class ShareAutoOffsetResetStrategy
                 return "latest";
             case AutoOffsetReset.ByDuration:
                 if (options.AutoOffsetResetDuration is not { } duration)
+                {
                     throw new ArgumentException("AutoOffsetResetDuration must be set for AutoOffsetReset.ByDuration.", nameof(options));
+                }
                 AutoOffsetResetStrategy.ValidateDuration(duration);
                 return "by_duration:" + XmlConvert.ToString(duration);
             default:

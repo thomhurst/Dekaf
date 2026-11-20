@@ -36,7 +36,10 @@ public class HostedShareWorkloadTests
         for (var sequence = 0; sequence < HostedShareWorkloadState.WindowSize; sequence++)
         {
             state.RecordProduced();
-            if (sequence != 0) state.Process(Payload(sequence));
+            if (sequence != 0)
+            {
+                state.Process(Payload(sequence));
+            }
         }
         await Assert.That(state.CanProduce).IsFalse();
         state.Process(Payload(0));
@@ -102,8 +105,11 @@ public class HostedShareWorkloadTests
         using var watchdog = new ProgressWatchdog(Path.GetTempPath());
         var options = new StressTestOptions
         {
-            BootstrapServers = "localhost:1", Topic = "topic", DurationMinutes = 1,
-            MessageSizeBytes = 16, EnableProducerDeliveryDiagnostics = true,
+            BootstrapServers = "localhost:1",
+            Topic = "topic",
+            DurationMinutes = 1,
+            MessageSizeBytes = 16,
+            EnableProducerDeliveryDiagnostics = true,
             ProgressWatchdog = watchdog
         };
         var builder = Kafka.CreateProducer<string, byte[]>().WithBootstrapServers(options.BootstrapServers);

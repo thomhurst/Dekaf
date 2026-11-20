@@ -44,7 +44,9 @@ internal sealed class FetchSessionHandler
         _lastDesiredPartitions = desiredPartitions;
 
         if (desiredPartitions.Count == 0 && _sessionId != 0)
+        {
             return Close();
+        }
 
         if (_sessionId == 0 || _nextEpoch == InitialSessionEpoch)
         {
@@ -66,7 +68,9 @@ internal sealed class FetchSessionHandler
                 var tp = new TopicPartition(topicName, partition.Partition);
                 var desired = CachedPartitionData.From(partition);
                 if (!_sessionPartitions.TryGetValue(tp, out var cached) || cached != desired)
+                {
                     changed.Add((topicName, topic.TopicId, partition));
+                }
             }
         }
 
@@ -96,7 +100,9 @@ internal sealed class FetchSessionHandler
         _sessionId = response.SessionId;
 
         if (_lastBuildWasFull || _sessionId != 0)
+        {
             _sessionPartitions = new Dictionary<TopicPartition, CachedPartitionData>(_lastDesiredPartitions);
+        }
 
         _sessionMetadataSnapshot = _lastBuildMetadataSnapshot;
 
@@ -164,7 +170,9 @@ internal sealed class FetchSessionHandler
         foreach (var tp in _sessionPartitions.Keys)
         {
             if (desiredPartitions.ContainsKey(tp))
+            {
                 continue;
+            }
 
             forgottenPartitions ??= [];
             if (!forgottenPartitions.TryGetValue(tp.Topic, out var partitions))
@@ -176,7 +184,9 @@ internal sealed class FetchSessionHandler
         }
 
         if (forgottenPartitions is null)
+        {
             return [];
+        }
 
         var result = new List<ForgottenTopic>(forgottenPartitions.Count);
         foreach (var kvp in forgottenPartitions)
@@ -257,7 +267,9 @@ internal sealed class FetchSessionHandler
         ClusterMetadataSnapshot? metadataSnapshot)
     {
         if (!string.IsNullOrEmpty(topic.Topic))
+        {
             return topic.Topic!;
+        }
 
         return topic.TopicId == Guid.Empty
             ? string.Empty
@@ -270,7 +282,9 @@ internal sealed class FetchSessionHandler
     private static int NextEpoch(int current)
     {
         if (current == int.MaxValue)
+        {
             return FirstIncrementalEpoch;
+        }
 
         return current < FirstIncrementalEpoch ? FirstIncrementalEpoch : current + 1;
     }

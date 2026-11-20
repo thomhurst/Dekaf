@@ -37,7 +37,10 @@ internal sealed class TransportRetryPolicy
         KafkaExceptionRule = kafkaExceptionRule;
     }
 
-    internal KafkaExceptionRetryRule KafkaExceptionRule { get; }
+    internal KafkaExceptionRetryRule KafkaExceptionRule
+    {
+        get;
+    }
 
     internal bool IsTerminal(Exception exception) => _isTerminal(exception);
 
@@ -122,16 +125,22 @@ internal static class TransportFailureClassifier
     {
         // Cancellation is never a transport failure, even when it wraps one.
         if (exception is OperationCanceledException)
+        {
             return false;
+        }
 
         // Checked before the routing failures below: it also derives from InvalidOperationException.
         if (exception is ObjectDisposedException)
+        {
             return !ownerDisposed;
+        }
 
         // The outer typed failure decides; a fatal exception that wraps a transient transport
         // failure stays fatal.
         if (policy.IsTerminal(exception))
+        {
             return false;
+        }
 
         if (exception is KafkaException kafkaException)
         {
@@ -140,14 +149,18 @@ internal static class TransportFailureClassifier
         }
 
         if (IsSocketLevelFailure(exception) || IsClientRoutingFailure(exception))
+        {
             return true;
+        }
 
         if (exception is AggregateException aggregateException)
         {
             foreach (var innerException in aggregateException.InnerExceptions)
             {
                 if (IsRetriable(innerException, policy, ownerDisposed))
+                {
                     return true;
+                }
             }
         }
 

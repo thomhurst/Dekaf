@@ -175,7 +175,9 @@ public static class ConsumerExtensions
         if (source is KafkaConsumer<TKey, TValue>.ConsumeStream stream)
         {
             await foreach (var buffered in stream.Batch(batchSize).WithCancellation(cancellationToken).ConfigureAwait(false))
+            {
                 yield return buffered;
+            }
             yield break;
         }
 

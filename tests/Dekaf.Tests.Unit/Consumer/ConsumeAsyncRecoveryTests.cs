@@ -43,7 +43,9 @@ public sealed class ConsumeAsyncRecoveryTests
 
         await Assert.That(async () =>
         {
-            await foreach (var _ in consumer.ConsumeAsync()) { }
+            await foreach (var _ in consumer.ConsumeAsync())
+            {
+            }
         }).Throws<ConsumeException>().WithMessageContaining($"{Topic}-{Partition}");
         await Assert.That(GetPendingFetchCount(consumer)).IsEqualTo(1);
 
@@ -164,7 +166,9 @@ public sealed class ConsumeAsyncRecoveryTests
         {
             var yielded = 0;
             await foreach (var _ in consumer.ConsumeAsync(cancellation.Token))
+            {
                 yielded++;
+            }
 
             await Assert.That(yielded).IsEqualTo(0);
             await Assert.That(disposeCountDuringValueDeserialization).IsEqualTo(0);
@@ -273,7 +277,9 @@ public sealed class ConsumeAsyncRecoveryTests
         var pendingFetches = (Queue<PendingFetchData>)pendingFetchesField.GetValue(consumer)!;
 
         foreach (var fetch in fetches)
+        {
             pendingFetches.Enqueue(fetch);
+        }
 
         return consumer;
     }
@@ -619,7 +625,9 @@ public sealed class ConsumeAsyncRecoveryTests
             }
 
             if (cts.IsCancellationRequested)
+            {
                 break;
+            }
         }
 
         // Assert: each position = last yielded offset + 1
@@ -919,7 +927,9 @@ public sealed class ConsumeAsyncRecoveryTests
             switch (mode)
             {
                 case EagerParseConsumeMode.ConsumeAsync:
-                    await foreach (var _ in consumer.ConsumeAsync()) { }
+                    await foreach (var _ in consumer.ConsumeAsync())
+                    {
+                    }
                     break;
                 case EagerParseConsumeMode.ConsumeOne:
                     var method = typeof(KafkaConsumer<string, string>)
@@ -936,10 +946,14 @@ public sealed class ConsumeAsyncRecoveryTests
 
                     break;
                 case EagerParseConsumeMode.ConsumeBatchAsync:
-                    await foreach (var _ in consumer.ConsumeBatchAsync()) { }
+                    await foreach (var _ in consumer.ConsumeBatchAsync())
+                    {
+                    }
                     break;
                 case EagerParseConsumeMode.ConsumeRawBatchAsync:
-                    await foreach (var _ in consumer.ConsumeRawBatchAsync()) { }
+                    await foreach (var _ in consumer.ConsumeRawBatchAsync())
+                    {
+                    }
                     break;
             }
         }
@@ -1024,7 +1038,10 @@ public sealed class ConsumeAsyncRecoveryTests
 
     private sealed class TrackingPooledMemory : IPooledMemory
     {
-        public int DisposeCount { get; private set; }
+        public int DisposeCount
+        {
+            get; private set;
+        }
         public ReadOnlyMemory<byte> Memory => ReadOnlyMemory<byte>.Empty;
 
         public void Dispose() => DisposeCount++;
@@ -1070,7 +1087,9 @@ public sealed class ConsumeAsyncRecoveryTests
             get
             {
                 if (index >= _faultAtIndex)
+                {
                     throw new ArgumentOutOfRangeException(nameof(index), $"Simulated truncated record at index {index}");
+                }
                 return _goodRecords[index];
             }
         }
@@ -1078,7 +1097,9 @@ public sealed class ConsumeAsyncRecoveryTests
         public IEnumerator<Record> GetEnumerator()
         {
             for (int i = 0; i < Count; i++)
+            {
                 yield return this[i];
+            }
         }
 
         System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => GetEnumerator();
@@ -1136,15 +1157,22 @@ public sealed class ConsumeAsyncRecoveryTests
             return _logger;
         }
 
-        public void AddProvider(ILoggerProvider provider) { }
-        public void Dispose() { }
+        public void AddProvider(ILoggerProvider provider)
+        {
+        }
+        public void Dispose()
+        {
+        }
 
         public CapturingLogger GetLogger() => _logger ?? throw new InvalidOperationException("No logger was created — CreateLogger was never called");
     }
 
     private sealed class CapturingLogger : ILogger
     {
-        public List<LogEntry> Entries { get; } = [];
+        public List<LogEntry> Entries
+        {
+            get;
+        } = [];
 
         public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
         public bool IsEnabled(LogLevel logLevel) => true;

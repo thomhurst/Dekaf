@@ -27,7 +27,10 @@ public abstract class TestBaseModule : Module<IReadOnlyList<CommandResult>>
         module.WithTimeout(TimeSpan.FromMinutes(30));
     }
 
-    protected abstract string ProjectFileName { get; }
+    protected abstract string ProjectFileName
+    {
+        get;
+    }
 
     protected sealed override async Task<IReadOnlyList<CommandResult>> ExecuteAsync(
         IModuleContext context, CancellationToken cancellationToken)

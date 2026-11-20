@@ -22,8 +22,11 @@ public sealed class AdminClientPartitionExpansionTests
             {
                 var request = call.Arg<CreatePartitionsRequest>();
                 if (++calls == 1)
+                {
                     throw new KafkaException(ErrorCode.RequestTimedOut, "ambiguous timeout");
+                }
                 if (calls == 2)
+                {
                     return ValueTask.FromResult(new CreatePartitionsResponse
                     {
                         Results =
@@ -32,18 +35,26 @@ public sealed class AdminClientPartitionExpansionTests
                             new() { Name = "still-pending", ErrorCode = ErrorCode.NotController }
                         ]
                     });
+                }
                 if (request.Topics.Count != 1 || request.Topics[0].Name != "still-pending")
+                {
                     throw new InvalidOperationException("A metadata-confirmed topic was sent again.");
+                }
                 return ValueTask.FromResult(new CreatePartitionsResponse { Results = [new() { Name = "still-pending" }] });
             });
 
         if (typed)
+        {
             await admin.CreatePartitionsAsync(new Dictionary<string, NewPartitions>
             {
-                ["retry-topic"] = new() { TotalCount = 3 }, ["still-pending"] = new() { TotalCount = 3 }
+                ["retry-topic"] = new() { TotalCount = 3 },
+                ["still-pending"] = new() { TotalCount = 3 }
             });
+        }
         else
+        {
             await admin.CreatePartitionsAsync(new Dictionary<string, int> { ["retry-topic"] = 3, ["still-pending"] = 3 });
+        }
 
         await Assert.That(calls).IsEqualTo(3);
     }
@@ -69,17 +80,24 @@ public sealed class AdminClientPartitionExpansionTests
                     return ValueTask.FromResult(new CreatePartitionsResponse { Results = successFirst ? [success, retry] : [retry, success] });
                 }
                 if (request.Topics.Count != 1 || request.Topics[0].Name != "retry-topic")
+                {
                     throw new InvalidOperationException("A confirmed topic was sent again.");
+                }
                 return ValueTask.FromResult(new CreatePartitionsResponse { Results = [new() { Name = "retry-topic" }] });
             });
 
         if (typed)
+        {
             await admin.CreatePartitionsAsync(new Dictionary<string, NewPartitions>
             {
-                ["applied"] = new() { TotalCount = 3 }, ["retry-topic"] = new() { TotalCount = 3 }
+                ["applied"] = new() { TotalCount = 3 },
+                ["retry-topic"] = new() { TotalCount = 3 }
             });
+        }
         else
+        {
             await admin.CreatePartitionsAsync(new Dictionary<string, int> { ["applied"] = 3, ["retry-topic"] = 3 });
+        }
 
         await Assert.That(calls).IsEqualTo(2);
     }
@@ -114,7 +132,9 @@ public sealed class AdminClientPartitionExpansionTests
             await Assert.That(captured.Topics[0].Assignments![0].BrokerIds[0]).IsEqualTo(3);
         }
         else
+        {
             await Assert.That(captured.Topics[0].Assignments).IsNull();
+        }
 
         VerifyWire(captured, explicitAssignments);
     }
@@ -128,23 +148,31 @@ public sealed class AdminClientPartitionExpansionTests
             request.Write(ref writer, version);
             var reader = new KafkaProtocolReader(buffer.WrittenMemory);
             if (reader.ReadUnsignedVarInt() != 2 || reader.ReadCompactString() != "retry-topic" || reader.ReadInt32() != 5)
+            {
                 throw new InvalidOperationException("Incorrect topic encoding");
+            }
             if (reader.ReadUnsignedVarInt() != (explicitAssignments ? 3u : 0u))
+            {
                 throw new InvalidOperationException("Incorrect assignment count");
+            }
             if (explicitAssignments)
             {
                 VerifyReplicaAssignment(ref reader, 3, 1);
                 VerifyReplicaAssignment(ref reader, 1, 3);
             }
             if (reader.ReadUnsignedVarInt() != 0 || reader.ReadInt32() != 1234 || !reader.ReadBoolean() || reader.ReadUnsignedVarInt() != 0 || reader.Remaining != 0)
+            {
                 throw new InvalidOperationException("Incorrect options encoding");
+            }
         }
     }
 
     private static void VerifyReplicaAssignment(ref KafkaProtocolReader reader, int firstBroker, int secondBroker)
     {
         if (reader.ReadUnsignedVarInt() != 3 || reader.ReadInt32() != firstBroker || reader.ReadInt32() != secondBroker || reader.ReadUnsignedVarInt() != 0)
+        {
             throw new InvalidOperationException("Incorrect replica order");
+        }
     }
 
     [Test]
@@ -157,7 +185,9 @@ public sealed class AdminClientPartitionExpansionTests
             .Returns(_ =>
             {
                 if (++calls == 1)
+                {
                     throw new KafkaException(ErrorCode.RequestTimedOut, "ambiguous timeout");
+                }
                 return ValueTask.FromResult(new CreatePartitionsResponse
                 {
                     Results = [new() { Name = "retry-topic", ErrorCode = ErrorCode.InvalidPartitions }]
@@ -184,8 +214,13 @@ public sealed class AdminClientPartitionExpansionTests
         await using var client = admin;
         IReadOnlyList<IReadOnlyList<int>> assignments = shape switch
         {
-            0 => [], 1 => [[]], 2 => [[1, 1]], 3 => [[-1]],
-            4 => [[1], [1, 2]], 5 => [null!], _ => [[1], [1], [1], [1], [1]]
+            0 => [],
+            1 => [[]],
+            2 => [[1, 1]],
+            3 => [[-1]],
+            4 => [[1], [1, 2]],
+            5 => [null!],
+            _ => [[1], [1], [1], [1], [1]]
         };
         var error = await Assert.ThrowsAsync<ArgumentException>(async () => await admin.CreatePartitionsAsync(
             new Dictionary<string, NewPartitions> { ["retry-topic"] = new() { TotalCount = 5, ReplicaAssignments = assignments } }));
@@ -207,10 +242,14 @@ public sealed class AdminClientPartitionExpansionTests
             {
                 var request = call.Arg<CreatePartitionsRequest>();
                 if (request.Topics[0].Assignments![0].BrokerIds[0] != (matches ? 1 : 2))
+                {
                     throw new InvalidOperationException("Retry lost original replica assignment");
+                }
                 replicas[0] = 99;
                 if (++calls == 1)
+                {
                     throw new KafkaException(ErrorCode.RequestTimedOut, "ambiguous timeout");
+                }
                 return ValueTask.FromResult(new CreatePartitionsResponse
                 {
                     Results = [new() { Name = "retry-topic", ErrorCode = ErrorCode.InvalidPartitions }]
@@ -221,7 +260,9 @@ public sealed class AdminClientPartitionExpansionTests
             ["retry-topic"] = new() { TotalCount = 3, ReplicaAssignments = [replicas] }
         };
         if (matches)
+        {
             await admin.CreatePartitionsAsync(expansion);
+        }
         else
         {
             var error = await Assert.ThrowsAsync<KafkaException>(async () => await admin.CreatePartitionsAsync(expansion));
@@ -241,7 +282,9 @@ public sealed class AdminClientPartitionExpansionTests
             {
                 var request = call.Arg<CreatePartitionsRequest>();
                 if (!request.ValidateOnly || request.TimeoutMs != 2000)
+                {
                     throw new InvalidOperationException("Retry changed validation options");
+                }
                 return ValueTask.FromResult(new CreatePartitionsResponse
                 {
                     Results = [new() { Name = "retry-topic", ErrorCode = ++calls == 1 ? ErrorCode.NotController : ErrorCode.None }]

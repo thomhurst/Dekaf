@@ -223,7 +223,10 @@ public sealed partial class ClientTelemetryReceiverIntegrationTests(TelemetryRec
                     batch.Acknowledge(record);
                 }
                 await consumer.CommitAsync(cancellationToken);
-                if (values.Count == 2) break;
+                if (values.Count == 2)
+                {
+                    break;
+                }
             }
         }
         else
@@ -232,7 +235,10 @@ public sealed partial class ClientTelemetryReceiverIntegrationTests(TelemetryRec
             {
                 values.Add(record.Value);
                 consumer.Acknowledge(record);
-                if (values.Count == 2) break;
+                if (values.Count == 2)
+                {
+                    break;
+                }
             }
             await consumer.CommitAsync(cancellationToken);
         }

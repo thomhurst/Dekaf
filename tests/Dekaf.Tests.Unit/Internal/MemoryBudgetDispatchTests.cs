@@ -79,7 +79,9 @@ public class MemoryBudgetDispatchTests
         Register(budget, instance, consumer);
         var reservation = TestBudget / 4;
         if (release)
+        {
             budget.ReserveExplicit(reservation * 2);
+        }
 
         Action change = release
             ? () => budget.ReleaseExplicit(reservation)
@@ -159,17 +161,25 @@ public class MemoryBudgetDispatchTests
     private static void Register(IDekafMemoryBudget budget, IBudgetedInstance instance, bool consumer)
     {
         if (consumer)
+        {
             budget.RegisterConsumer(instance);
+        }
         else
+        {
             budget.RegisterProducer(instance);
+        }
     }
 
     private static void Unregister(IDekafMemoryBudget budget, IBudgetedInstance instance, bool consumer)
     {
         if (consumer)
+        {
             budget.UnregisterConsumer(instance);
+        }
         else
+        {
             budget.UnregisterProducer(instance);
+        }
     }
 
     private static async Task OverlapChangesAsync(FakeInstance instance, Action first, Action latest)
@@ -196,14 +206,22 @@ public class MemoryBudgetDispatchTests
             release.Set();
             await firstTask.WaitAsync(Timeout);
             if (latestTask is not null)
+            {
                 await latestTask.WaitAsync(Timeout);
+            }
         }
     }
 
     private sealed class FakeInstance : IBudgetedInstance
     {
-        public ulong CurrentLimit { get; private set; }
-        public Action? BeforeStore { get; set; }
+        public ulong CurrentLimit
+        {
+            get; private set;
+        }
+        public Action? BeforeStore
+        {
+            get; set;
+        }
 
         public void OnBudgetChanged(ulong newLimit)
         {

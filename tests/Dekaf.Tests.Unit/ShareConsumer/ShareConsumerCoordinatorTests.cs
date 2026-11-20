@@ -42,7 +42,11 @@ public sealed partial class ShareConsumerCoordinatorTests
                 {
                     Coordinators = [new Coordinator
                     {
-                        Key = options.GroupId, NodeId = 1, Host = "broker-1", Port = 9092, ErrorCode = ErrorCode.None
+                        Key = options.GroupId,
+                        NodeId = 1,
+                        Host = "broker-1",
+                        Port = 9092,
+                        ErrorCode = ErrorCode.None
                     }]
                 });
             });
@@ -81,10 +85,16 @@ public sealed partial class ShareConsumerCoordinatorTests
             ],
             Topics = [new TopicMetadata
             {
-                ErrorCode = ErrorCode.None, Name = "first", TopicId = topicId,
+                ErrorCode = ErrorCode.None,
+                Name = "first",
+                TopicId = topicId,
                 Partitions = [new PartitionMetadata
                 {
-                    ErrorCode = ErrorCode.None, PartitionIndex = 0, LeaderId = 1, ReplicaNodes = [1], IsrNodes = [1]
+                    ErrorCode = ErrorCode.None,
+                    PartitionIndex = 0,
+                    LeaderId = 1,
+                    ReplicaNodes = [1],
+                    IsrNodes = [1]
                 }]
             }]
         });
@@ -128,7 +138,11 @@ public sealed partial class ShareConsumerCoordinatorTests
                 {
                     Coordinators = [new Coordinator
                     {
-                        Key = options.GroupId, NodeId = 1, Host = "broker-1", Port = 9092, ErrorCode = ErrorCode.None
+                        Key = options.GroupId,
+                        NodeId = 1,
+                        Host = "broker-1",
+                        Port = 9092,
+                        ErrorCode = ErrorCode.None
                     }]
                 });
             });
@@ -144,7 +158,9 @@ public sealed partial class ShareConsumerCoordinatorTests
                 }
 
                 if (call == 3)
+                {
                     recovered.TrySetResult(true);
+                }
 
                 return ValueTask.FromResult(new ShareGroupHeartbeatResponse
                 {
@@ -179,10 +195,16 @@ public sealed partial class ShareConsumerCoordinatorTests
             ],
             Topics = [new TopicMetadata
             {
-                ErrorCode = ErrorCode.None, Name = "first", TopicId = topicId,
+                ErrorCode = ErrorCode.None,
+                Name = "first",
+                TopicId = topicId,
                 Partitions = [new PartitionMetadata
                 {
-                    ErrorCode = ErrorCode.None, PartitionIndex = 0, LeaderId = 1, ReplicaNodes = [1], IsrNodes = [1]
+                    ErrorCode = ErrorCode.None,
+                    PartitionIndex = 0,
+                    LeaderId = 1,
+                    ReplicaNodes = [1],
+                    IsrNodes = [1]
                 }]
             }]
         });
@@ -226,7 +248,11 @@ public sealed partial class ShareConsumerCoordinatorTests
                 {
                     Coordinators = [new Coordinator
                     {
-                        Key = options.GroupId, NodeId = 1, Host = "broker-1", Port = 9092, ErrorCode = ErrorCode.None
+                        Key = options.GroupId,
+                        NodeId = 1,
+                        Host = "broker-1",
+                        Port = 9092,
+                        ErrorCode = ErrorCode.None
                     }]
                 });
             });
@@ -251,10 +277,16 @@ public sealed partial class ShareConsumerCoordinatorTests
             ],
             Topics = [new TopicMetadata
             {
-                ErrorCode = ErrorCode.None, Name = "first", TopicId = topicId,
+                ErrorCode = ErrorCode.None,
+                Name = "first",
+                TopicId = topicId,
                 Partitions = [new PartitionMetadata
                 {
-                    ErrorCode = ErrorCode.None, PartitionIndex = 0, LeaderId = 1, ReplicaNodes = [1], IsrNodes = [1]
+                    ErrorCode = ErrorCode.None,
+                    PartitionIndex = 0,
+                    LeaderId = 1,
+                    ReplicaNodes = [1],
+                    IsrNodes = [1]
                 }]
             }]
         });
@@ -374,7 +406,9 @@ public sealed partial class ShareConsumerCoordinatorTests
             {
                 // Unsubscribe while the join heartbeat is in flight.
                 if (Interlocked.Increment(ref heartbeatCount) == 1)
+                {
                     joining!.UpdateSubscription([]);
+                }
                 return Success(epoch: 1, assignment: null);
             },
             metrics);
@@ -414,7 +448,9 @@ public sealed partial class ShareConsumerCoordinatorTests
         await coordinator.EnsureActiveGroupAsync(cancellationToken);
         var changed = coordinator.GetAssignmentChangeTask();
         if (coordinator.State == CoordinatorState.Stable)
+        {
             await changed.WaitAsync(TimeSpan.FromSeconds(10), cancellationToken);
+        }
 
         await Assert.That(coordinator.State).IsEqualTo(CoordinatorState.Unjoined);
         await Assert.That(coordinator.Assignment.Count).IsEqualTo(0);
@@ -441,8 +477,11 @@ public sealed partial class ShareConsumerCoordinatorTests
         await using var harness = CoordinatorHarness.Create(
             new ShareConsumerOptions
             {
-                BootstrapServers = ["broker-0:9092"], GroupId = "share-timeout",
-                SessionTimeoutMs = 50, RetryBackoffMs = 1, RetryBackoffMaxMs = 1
+                BootstrapServers = ["broker-0:9092"],
+                GroupId = "share-timeout",
+                SessionTimeoutMs = 50,
+                RetryBackoffMs = 1,
+                RetryBackoffMaxMs = 1
             },
             Guid.Parse("00000000-0000-0000-0000-000000000001"),
             _ => new ShareGroupHeartbeatResponse { ErrorCode = ErrorCode.CoordinatorNotAvailable });
@@ -493,7 +532,9 @@ public sealed partial class ShareConsumerCoordinatorTests
         await coordinator.EnsureActiveGroupAsync(cancellationToken);
         var changed = coordinator.GetAssignmentChangeTask();
         if (coordinator.State == CoordinatorState.Stable)
+        {
             await changed.WaitAsync(TimeSpan.FromSeconds(10), cancellationToken);
+        }
 
         await Assert.That(coordinator.State).IsEqualTo(CoordinatorState.Unjoined);
         await Assert.That(coordinator.MemberEpoch).IsEqualTo(0);
@@ -530,7 +571,9 @@ public sealed partial class ShareConsumerCoordinatorTests
         await coordinator.EnsureActiveGroupAsync(cancellationToken);
         var changed = coordinator.GetAssignmentChangeTask();
         if (coordinator.State == CoordinatorState.Stable)
+        {
             await changed.WaitAsync(TimeSpan.FromSeconds(10), cancellationToken);
+        }
 
         await Assert.That(coordinator.State).IsEqualTo(CoordinatorState.Unjoined);
         await Assert.That(coordinator.MemberId).IsEqualTo("member-1");
@@ -568,7 +611,9 @@ public sealed partial class ShareConsumerCoordinatorTests
         await coordinator.EnsureActiveGroupAsync(cancellationToken);
         var changed = coordinator.GetAssignmentChangeTask();
         if (coordinator.State == CoordinatorState.Stable)
+        {
             await changed.WaitAsync(TimeSpan.FromSeconds(10), cancellationToken);
+        }
 
         await Assert.That(coordinator.State).IsEqualTo(CoordinatorState.Unjoined);
         await Assert.That(coordinator.MemberEpoch).IsEqualTo(0);
@@ -715,13 +760,13 @@ public sealed partial class ShareConsumerCoordinatorTests
 
     private static ShareGroupHeartbeatResponse Success(
         int epoch, ShareGroupHeartbeatAssignment? assignment, int heartbeatIntervalMs = 60_000) => new()
-    {
-        ErrorCode = ErrorCode.None,
-        MemberId = "member-1",
-        MemberEpoch = epoch,
-        HeartbeatIntervalMs = heartbeatIntervalMs,
-        Assignment = assignment
-    };
+        {
+            ErrorCode = ErrorCode.None,
+            MemberId = "member-1",
+            MemberEpoch = epoch,
+            HeartbeatIntervalMs = heartbeatIntervalMs,
+            Assignment = assignment
+        };
 
     /// <summary>
     /// A coordinator subscribed to topic "first" on a single broker that answers every
@@ -737,7 +782,10 @@ public sealed partial class ShareConsumerCoordinatorTests
             Coordinator = coordinator;
         }
 
-        public ShareConsumerCoordinator Coordinator { get; }
+        public ShareConsumerCoordinator Coordinator
+        {
+            get;
+        }
 
         public static CoordinatorHarness Create(
             ShareConsumerOptions options,
@@ -753,7 +801,11 @@ public sealed partial class ShareConsumerCoordinatorTests
                 {
                     Coordinators = [new Coordinator
                     {
-                        Key = options.GroupId, NodeId = 0, Host = "broker-0", Port = 9092, ErrorCode = ErrorCode.None
+                        Key = options.GroupId,
+                        NodeId = 0,
+                        Host = "broker-0",
+                        Port = 9092,
+                        ErrorCode = ErrorCode.None
                     }]
                 }));
             connection.SendAsync<ShareGroupHeartbeatRequest, ShareGroupHeartbeatResponse>(
@@ -770,10 +822,16 @@ public sealed partial class ShareConsumerCoordinatorTests
                 Brokers = [new BrokerMetadata { NodeId = 0, Host = "broker-0", Port = 9092 }],
                 Topics = [new TopicMetadata
                 {
-                    ErrorCode = ErrorCode.None, Name = "first", TopicId = topicId,
+                    ErrorCode = ErrorCode.None,
+                    Name = "first",
+                    TopicId = topicId,
                     Partitions = [new PartitionMetadata
                     {
-                        ErrorCode = ErrorCode.None, PartitionIndex = 0, LeaderId = 0, ReplicaNodes = [0], IsrNodes = [0]
+                        ErrorCode = ErrorCode.None,
+                        PartitionIndex = 0,
+                        LeaderId = 0,
+                        ReplicaNodes = [0],
+                        IsrNodes = [0]
                     }]
                 }]
             });

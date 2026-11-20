@@ -12,16 +12,26 @@ public class PartitionedOffsetCompletionBenchmarks
     private long _offset;
 
     [Params(64, 1024)]
-    public int Records { get; set; }
+    public int Records
+    {
+        get; set;
+    }
 
     [Params(1, 2)]
-    public int OffsetStep { get; set; }
+    public int OffsetStep
+    {
+        get; set;
+    }
 
     [GlobalSetup]
     public void Setup()
     {
         _lane = new PartitionLane<string, string>(new TopicPartition("completion", 0), 32,
-            static (_, _) => default, static _ => { }, static (_, _) => { });
+            static (_, _) => default, static _ =>
+            {
+            }, static (_, _) =>
+            {
+            });
         _batch = new ConsumeResult<string, string>[Records];
     }
 
@@ -52,7 +62,9 @@ public class PartitionedOffsetCompletionBenchmarks
         }
         _lane.EndBatch(batch, Records);
         for (var index = _batch.Length - 1; index >= 0; index--)
+        {
             _lane.MarkProcessed(_batch[index]);
+        }
         return _lane.GetCommitOffset();
     }
 

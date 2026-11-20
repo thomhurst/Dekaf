@@ -26,19 +26,37 @@ public static class AdminClientConsumerGroupMemberRemovalExtensions
 /// <summary>Identifies a member by exactly one static instance ID or dynamic member ID.</summary>
 public sealed class ConsumerGroupMemberIdentity
 {
-    public string? GroupInstanceId { get; init; }
-    public string? MemberId { get; init; }
+    public string? GroupInstanceId
+    {
+        get; init;
+    }
+    public string? MemberId
+    {
+        get; init;
+    }
 }
 
 /// <summary>Options for explicit or snapshot-based consumer-group member removal.</summary>
 public sealed class ConsumerGroupMemberRemovalOptions
 {
     /// <summary>Discovers current membership once. Cannot be combined with explicit members.</summary>
-    public bool RemoveAll { get; init; }
+    public bool RemoveAll
+    {
+        get; init;
+    }
     /// <summary>Explicit identities. A nonempty collection is required unless RemoveAll is true.</summary>
-    public IReadOnlyList<ConsumerGroupMemberIdentity> Members { get; init; } = [];
+    public IReadOnlyList<ConsumerGroupMemberIdentity> Members
+    {
+        get; init;
+    } = [];
     /// <summary>Optional audit reason sent when LeaveGroup v5 is supported.</summary>
-    public string? Reason { get; init; }
+    public string? Reason
+    {
+        get; init;
+    }
     /// <summary>End-to-end timeout, including discovery and retries. Zero requests an immediate deadline.</summary>
-    public int TimeoutMs { get; init; } = 30000;
+    public int TimeoutMs
+    {
+        get; init;
+    } = 30000;
 }

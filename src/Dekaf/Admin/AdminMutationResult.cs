@@ -18,13 +18,25 @@ public enum AdminMutationOutcome
 /// <summary>A confirmed or uncertain outcome for one administrative mutation.</summary>
 public sealed class AdminMutationResult
 {
-    public required AdminMutationOutcome Outcome { get; init; }
+    public required AdminMutationOutcome Outcome
+    {
+        get; init;
+    }
     /// <summary>The broker error code, when a response was received; otherwise null.</summary>
-    public ErrorCode? ErrorCode { get; init; }
+    public ErrorCode? ErrorCode
+    {
+        get; init;
+    }
     /// <summary>The original broker message, or an explanation for a missing response.</summary>
-    public string? ErrorMessage { get; init; }
+    public string? ErrorMessage
+    {
+        get; init;
+    }
     /// <summary>A local discovery, transport, cancellation or timeout failure, when present.</summary>
-    public Exception? Exception { get; init; }
+    public Exception? Exception
+    {
+        get; init;
+    }
     public bool IsSuccess => Outcome == AdminMutationOutcome.Succeeded;
 
     internal static AdminMutationResult FromResponse(ErrorCode code, string? message) => new()

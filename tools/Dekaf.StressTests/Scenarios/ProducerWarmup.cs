@@ -61,28 +61,65 @@ internal static class ProducerWarmup
         }
         return new ProducerWarmupSnapshot
         {
-            RequestedSeconds = seconds, WorkloadSeconds = workloadSeconds, ElapsedSeconds = elapsedSeconds,
-            CompletedMessages = completed, DrainCycles = CycleCount, Samples = samples
+            RequestedSeconds = seconds,
+            WorkloadSeconds = workloadSeconds,
+            ElapsedSeconds = elapsedSeconds,
+            CompletedMessages = completed,
+            DrainCycles = CycleCount,
+            Samples = samples
         };
     }
 }
 
 internal sealed class ProducerWarmupSnapshot
 {
-    public required int RequestedSeconds { get; init; }
-    public required double WorkloadSeconds { get; init; }
-    public required double ElapsedSeconds { get; init; }
-    public required long CompletedMessages { get; init; }
-    public required int DrainCycles { get; init; }
-    public required List<ProducerWarmupSample> Samples { get; init; }
+    public required int RequestedSeconds
+    {
+        get; init;
+    }
+    public required double WorkloadSeconds
+    {
+        get; init;
+    }
+    public required double ElapsedSeconds
+    {
+        get; init;
+    }
+    public required long CompletedMessages
+    {
+        get; init;
+    }
+    public required int DrainCycles
+    {
+        get; init;
+    }
+    public required List<ProducerWarmupSample> Samples
+    {
+        get; init;
+    }
 }
 
 internal sealed class ProducerWarmupSample
 {
-    public required double ElapsedSeconds { get; init; }
-    public required double WorkloadSeconds { get; init; }
-    public required long AcceptedMessages { get; init; }
+    public required double ElapsedSeconds
+    {
+        get; init;
+    }
+    public required double WorkloadSeconds
+    {
+        get; init;
+    }
+    public required long AcceptedMessages
+    {
+        get; init;
+    }
     // Conservative completion count: advances only after a successful full drain.
-    public required long CompletedMessages { get; init; }
-    public required RuntimeObservation Runtime { get; init; }
+    public required long CompletedMessages
+    {
+        get; init;
+    }
+    public required RuntimeObservation Runtime
+    {
+        get; init;
+    }
 }

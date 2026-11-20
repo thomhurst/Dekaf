@@ -37,23 +37,31 @@ internal sealed class Utf8StringInternCache
     internal string Intern(ReadOnlySpan<byte> utf8Bytes)
     {
         if (utf8Bytes.Length == 0)
+        {
             return string.Empty;
+        }
 
         if (utf8Bytes.Length > _maxCachedBytes)
+        {
             return Decode(utf8Bytes);
+        }
 
         if (_cacheLastEntry)
         {
             var lastEntry = Volatile.Read(ref _lastEntry);
             if (lastEntry is not null && lastEntry.Matches(utf8Bytes))
+            {
                 return lastEntry.Value;
+            }
         }
 
         var hash = XxHash64.HashToUInt64(utf8Bytes);
         if (_cache.TryGetValue(hash, out var entry) && entry.Matches(utf8Bytes))
         {
             if (_cacheLastEntry)
+            {
                 Volatile.Write(ref _lastEntry, entry);
+            }
             return entry.Value;
         }
 
@@ -64,25 +72,35 @@ internal sealed class Utf8StringInternCache
     internal string InternUncached(ReadOnlySpan<byte> utf8Bytes, ulong hash)
     {
         if (utf8Bytes.Length == 0)
+        {
             return string.Empty;
+        }
         if (utf8Bytes.Length > _maxCachedBytes)
+        {
             return Decode(utf8Bytes);
+        }
 
         var value = Decode(utf8Bytes);
         if (Volatile.Read(ref _count) >= _maxCachedEntries)
+        {
             return value;
+        }
 
         var newEntry = new CacheEntry(utf8Bytes.ToArray(), value);
         if (_cache.TryAdd(hash, newEntry))
         {
             Interlocked.Increment(ref _count);
             if (_cacheLastEntry)
+            {
                 Volatile.Write(ref _lastEntry, newEntry);
+            }
         }
         else if (_cache.TryGetValue(hash, out var entry) && entry.Matches(utf8Bytes))
         {
             if (_cacheLastEntry)
+            {
                 Volatile.Write(ref _lastEntry, entry);
+            }
             return entry.Value;
         }
 
@@ -121,7 +139,10 @@ internal sealed class Utf8StringInternCache
     private sealed class CacheEntry(byte[] utf8Bytes, string value)
     {
         private readonly byte[] _utf8Bytes = utf8Bytes;
-        internal string Value { get; } = value;
+        internal string Value
+        {
+            get;
+        } = value;
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         internal bool Matches(ReadOnlySpan<byte> utf8Bytes) => utf8Bytes.SequenceEqual(_utf8Bytes);

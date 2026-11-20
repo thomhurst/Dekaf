@@ -7,23 +7,59 @@ namespace Dekaf.Testing;
 /// </summary>
 public sealed record InMemoryRecord
 {
-    public required string Topic { get; init; }
-    public required int Partition { get; init; }
-    public required long Offset { get; init; }
-    public required byte[] Key { get; init; }
-    public required bool IsKeyNull { get; init; }
-    public required byte[] Value { get; init; }
-    public required bool IsValueNull { get; init; }
-    public IReadOnlyList<Header> Headers { get; init; } = Array.Empty<Header>();
-    public required long TimestampMs { get; init; }
+    public required string Topic
+    {
+        get; init;
+    }
+    public required int Partition
+    {
+        get; init;
+    }
+    public required long Offset
+    {
+        get; init;
+    }
+    public required byte[] Key
+    {
+        get; init;
+    }
+    public required bool IsKeyNull
+    {
+        get; init;
+    }
+    public required byte[] Value
+    {
+        get; init;
+    }
+    public required bool IsValueNull
+    {
+        get; init;
+    }
+    public IReadOnlyList<Header> Headers
+    {
+        get; init;
+    } = Array.Empty<Header>();
+    public required long TimestampMs
+    {
+        get; init;
+    }
     public DateTimeOffset Timestamp => DateTimeOffset.FromUnixTimeMilliseconds(TimestampMs);
-    internal InMemoryTransactionMarker? Transaction { get; init; }
-    internal long ShareAcquisitionId { get; init; }
+    internal InMemoryTransactionMarker? Transaction
+    {
+        get; init;
+    }
+    internal long ShareAcquisitionId
+    {
+        get; init;
+    }
 }
 
 internal sealed class InMemoryTransactionMarker
 {
-    public InMemoryTransactionState State { get; set; } = InMemoryTransactionState.Ongoing;
+    public InMemoryTransactionState State
+    {
+        get; set;
+    } = InMemoryTransactionState.Ongoing;
 }
 
 internal enum InMemoryTransactionState : byte

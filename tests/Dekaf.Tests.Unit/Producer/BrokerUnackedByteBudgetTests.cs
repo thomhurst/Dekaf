@@ -415,7 +415,9 @@ public sealed class BrokerUnackedByteBudgetTests
         // On-target delay keeps the legacy eight-quantum floor: the governor's deep descent
         // is justified only by a missed latency target.
         for (var i = 0; i < 1_000; i++)
+        {
             _ = DriveControllerEpoch(controller, ref now, ref admissionBlocks);
+        }
 
         await Assert.That(controller.WindowBytes).IsGreaterThanOrEqualTo(800);
     }
@@ -432,7 +434,9 @@ public sealed class BrokerUnackedByteBudgetTests
         // blocking then lets up-probes pass at "not worse" goodput, so the window recovers
         // instead of staying trapped under the +3% growth bar it can never clear on noise.
         for (var i = 0; i < 5_000; i++)
+        {
             _ = DriveControllerEpoch(controller, ref now, ref admissionBlocks);
+        }
 
         await Assert.That(controller.WindowBytes).IsGreaterThan(1_600);
     }
@@ -699,7 +703,9 @@ public sealed class BrokerUnackedByteBudgetTests
         Parallel.For(0, 256, _ =>
         {
             if (budget.TryReserve(10, out _))
+            {
                 Interlocked.Increment(ref successes);
+            }
         });
 
         await Assert.That(successes).IsEqualTo(160);
@@ -1143,7 +1149,9 @@ public sealed class BrokerUnackedByteBudgetTests
         _ = controller.CompleteInterval(admissionBlocks, 0, now, 0);
         _ = DriveControllerEpoch(controller, ref now, ref admissionBlocks, rttSeconds: 0.001);
         for (var i = 0; i < 1_000; i++)
+        {
             _ = DriveControllerEpoch(controller, ref now, ref admissionBlocks, rttSeconds: 0.050);
+        }
 
         await Assert.That(controller.RequestQuantumBytes).IsEqualTo(100);
         await Assert.That(controller.WindowBytes).IsGreaterThanOrEqualTo(800);
@@ -1388,7 +1396,9 @@ public sealed class BrokerUnackedByteBudgetTests
         ref long admissionBlocks)
     {
         if (controller.Phase != BrokerWindowPhase.Steady)
+        {
             throw new InvalidOperationException("Controller did not leave startup.");
+        }
     }
 
     private static void StartNextProbe(
@@ -1443,7 +1453,9 @@ public sealed class BrokerUnackedByteBudgetTests
         }
 
         if (controller.Phase != BrokerWindowPhase.Steady)
+        {
             throw new InvalidOperationException("Capacity probe did not complete.");
+        }
 
         return decision;
     }
@@ -1462,7 +1474,9 @@ public sealed class BrokerUnackedByteBudgetTests
                 ref admissionBlocks,
                 sealToSendSeconds: sealToSendSeconds);
             if (controller.Phase != BrokerWindowPhase.Steady)
+            {
                 return i;
+            }
         }
 
         throw new InvalidOperationException("No probe started within 1,000 epochs.");
@@ -1501,7 +1515,9 @@ public sealed class BrokerUnackedByteBudgetTests
     {
         now += Seconds(0.510);
         if (recordAdmissionBlock)
+        {
             admissionBlocks++;
+        }
         controller.RecordAcknowledgement(
             logicalBytes,
             rttTicks: Seconds(rttSeconds),

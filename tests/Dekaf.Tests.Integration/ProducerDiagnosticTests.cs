@@ -237,7 +237,10 @@ public sealed class ProducerDiagnosticTests(KafkaTestContainer kafka) : KafkaInt
         await foreach (var msg in consumer.ConsumeAsync(consumeCts.Token))
         {
             count++;
-            if (count >= 500) break;
+            if (count >= 500)
+            {
+                break;
+            }
         }
 
         await Assert.That(count).IsEqualTo(500);

@@ -14,7 +14,9 @@ public sealed class ContainerImageBootstrapCoordinatorTests
         Task StartAsync()
         {
             if (Interlocked.Increment(ref startupCount) == 1)
+            {
                 bootstrapStarted.SetResult();
+            }
 
             return releaseBootstrap.Task;
         }
@@ -45,7 +47,9 @@ public sealed class ContainerImageBootstrapCoordinatorTests
         Task StartAsync()
         {
             if (Interlocked.Increment(ref startupCount) == 2)
+            {
                 bothStarted.SetResult();
+            }
 
             return releaseStartups.Task;
         }

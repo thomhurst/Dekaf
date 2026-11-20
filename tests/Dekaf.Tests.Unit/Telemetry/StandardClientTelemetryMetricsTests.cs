@@ -49,7 +49,8 @@ public sealed class StandardClientTelemetryMetricsTests
                         recorder.RecordRequest(ApiKey.Fetch, 1000, 10);
                     }
                 }
-            }) { IsBackground = true };
+            })
+            { IsBackground = true };
             writers[index].Start();
         }
 
@@ -65,15 +66,24 @@ public sealed class StandardClientTelemetryMetricsTests
                 foreach (var metric in metrics)
                 {
                     observations++;
-                    if (metric.Value != 10d) inconsistent = metric.Value;
+                    if (metric.Value != 10d)
+                    {
+                        inconsistent = metric.Value;
+                    }
                 }
-                if (inconsistent.HasValue) break;
+                if (inconsistent.HasValue)
+                {
+                    break;
+                }
             }
         }
         finally
         {
             Volatile.Write(ref stop, 1);
-            foreach (var writer in writers) writer.Join();
+            foreach (var writer in writers)
+            {
+                writer.Join();
+            }
         }
 
         await Assert.That(observations).IsGreaterThan(0);
@@ -86,7 +96,15 @@ public sealed class StandardClientTelemetryMetricsTests
     {
         long now = 1000;
         var reads = 0;
-        var recorder = new StandardClientTelemetryMetrics(false, () => { reads++; return now; }, 1000);
+        var recorder = new StandardClientTelemetryMetrics(
+            false,
+            () =>
+            {
+                reads++;
+                return now;
+            },
+            1000
+        );
         var prefix = StandardClientTelemetryMetrics.FetchPrefix;
         var before = reads;
         recorder.RecordRequest(ApiKey.Fetch, 1000);

@@ -15,7 +15,10 @@ public interface IKafkaClientIdentity
     /// Gets the cluster ID from the latest accepted metadata, or <see langword="null"/>
     /// before metadata supplies one.
     /// </summary>
-    string? ClusterId { get; }
+    string? ClusterId
+    {
+        get;
+    }
 }
 
 /// <summary>
@@ -35,7 +38,10 @@ public interface IKafkaClientInstanceIdentity
     /// The value is the latest accepted immutable identity. It remains available after disposal
     /// when negotiation completed before the client stopped.
     /// </remarks>
-    Guid? ClientInstanceId { get; }
+    Guid? ClientInstanceId
+    {
+        get;
+    }
 }
 
 /// <summary>
@@ -73,68 +79,128 @@ public enum BrokerConnectionState
 public sealed class KafkaClientStatus
 {
     /// <summary>UTC time at which collection began.</summary>
-    public required DateTimeOffset CapturedAtUtc { get; init; }
+    public required DateTimeOffset CapturedAtUtc
+    {
+        get; init;
+    }
 
     /// <summary>The built-in client role.</summary>
-    public required KafkaClientRole Role { get; init; }
+    public required KafkaClientRole Role
+    {
+        get; init;
+    }
 
     /// <summary>The latest accepted Kafka cluster ID, when known.</summary>
-    public string? ClusterId { get; init; }
+    public string? ClusterId
+    {
+        get; init;
+    }
 
     /// <summary>The latest broker-assigned KIP-714 client instance ID, when known.</summary>
-    public Guid? ClientInstanceId { get; init; }
+    public Guid? ClientInstanceId
+    {
+        get; init;
+    }
 
     /// <summary>UTC time of the latest accepted metadata update, when available.</summary>
-    public DateTimeOffset? MetadataLastRefreshedAtUtc { get; init; }
+    public DateTimeOffset? MetadataLastRefreshedAtUtc
+    {
+        get; init;
+    }
 
     /// <summary>Whether the client has been closed or disposed.</summary>
-    public bool IsStopped { get; init; }
+    public bool IsStopped
+    {
+        get; init;
+    }
 
     /// <summary>Per-broker connection snapshots. Bootstrap-only endpoints are excluded.</summary>
-    public required IReadOnlyList<BrokerConnectionStatus> Brokers { get; init; }
+    public required IReadOnlyList<BrokerConnectionStatus> Brokers
+    {
+        get; init;
+    }
 
     /// <summary>Producer backlog state, populated only for producers.</summary>
-    public ProducerBacklogStatus? Producer { get; init; }
+    public ProducerBacklogStatus? Producer
+    {
+        get; init;
+    }
 
     /// <summary>Consumer group state, populated for regular and share consumers.</summary>
-    public ConsumerGroupStatus? ConsumerGroup { get; init; }
+    public ConsumerGroupStatus? ConsumerGroup
+    {
+        get; init;
+    }
 }
 
 /// <summary>Point-in-time connection state for one broker.</summary>
 public sealed class BrokerConnectionStatus
 {
     /// <summary>Broker node ID from the latest metadata.</summary>
-    public required int BrokerId { get; init; }
+    public required int BrokerId
+    {
+        get; init;
+    }
 
     /// <summary>Broker host from the latest metadata.</summary>
-    public required string Host { get; init; }
+    public required string Host
+    {
+        get; init;
+    }
 
     /// <summary>Broker port from the latest metadata.</summary>
-    public required int Port { get; init; }
+    public required int Port
+    {
+        get; init;
+    }
 
     /// <summary>Aggregate physical connection state.</summary>
-    public required BrokerConnectionState State { get; init; }
+    public required BrokerConnectionState State
+    {
+        get; init;
+    }
 
     /// <summary>Number of physical connection slots currently represented.</summary>
-    public required int ConnectionCount { get; init; }
+    public required int ConnectionCount
+    {
+        get; init;
+    }
 
     /// <summary>Number of represented physical connections currently connected.</summary>
-    public required int ConnectedConnectionCount { get; init; }
+    public required int ConnectedConnectionCount
+    {
+        get; init;
+    }
 
     /// <summary>Number of requests awaiting responses across represented connections.</summary>
-    public required int PendingRequestCount { get; init; }
+    public required int PendingRequestCount
+    {
+        get; init;
+    }
 
     /// <summary>Approximate UTC time of the latest successful request.</summary>
-    public DateTimeOffset? LastSuccessfulRequestAtUtc { get; init; }
+    public DateTimeOffset? LastSuccessfulRequestAtUtc
+    {
+        get; init;
+    }
 
     /// <summary>Approximate UTC time of the latest observed connection-state transition.</summary>
-    public DateTimeOffset? LastConnectionStateChangeAtUtc { get; init; }
+    public DateTimeOffset? LastConnectionStateChangeAtUtc
+    {
+        get; init;
+    }
 
     /// <summary>Approximate UTC time of the latest connection-attempt failure.</summary>
-    public DateTimeOffset? LastErrorAtUtc { get; init; }
+    public DateTimeOffset? LastErrorAtUtc
+    {
+        get; init;
+    }
 
     /// <summary>Latest connection-attempt failure summary.</summary>
-    public string? LastError { get; init; }
+    public string? LastError
+    {
+        get; init;
+    }
 }
 
 /// <summary>Point-in-time producer backlog and capacity state.</summary>
@@ -165,29 +231,56 @@ public readonly record struct ProducerBacklogStatus(
 public sealed class ConsumerGroupStatus
 {
     /// <summary>Whether the consumer is participating in group coordination.</summary>
-    public required bool HasConsumerGroup { get; init; }
+    public required bool HasConsumerGroup
+    {
+        get; init;
+    }
 
     /// <summary>Current coordinator state.</summary>
-    public required CoordinatorState State { get; init; }
+    public required CoordinatorState State
+    {
+        get; init;
+    }
 
     /// <summary>Current coordinator broker ID, or <c>-1</c> when unknown.</summary>
-    public required int CoordinatorId { get; init; }
+    public required int CoordinatorId
+    {
+        get; init;
+    }
 
     /// <summary>Current group member ID, when assigned.</summary>
-    public string? MemberId { get; init; }
+    public string? MemberId
+    {
+        get; init;
+    }
 
     /// <summary>Classic generation ID or consumer/share member epoch.</summary>
-    public required int GenerationOrMemberEpoch { get; init; }
+    public required int GenerationOrMemberEpoch
+    {
+        get; init;
+    }
 
     /// <summary>Configured group heartbeat interval.</summary>
-    public required TimeSpan HeartbeatInterval { get; init; }
+    public required TimeSpan HeartbeatInterval
+    {
+        get; init;
+    }
 
     /// <summary>Elapsed time since the latest successful heartbeat, when available.</summary>
-    public TimeSpan? TimeSinceLastHeartbeat { get; init; }
+    public TimeSpan? TimeSinceLastHeartbeat
+    {
+        get; init;
+    }
 
     /// <summary>Latest heartbeat failure summary, when available.</summary>
-    public string? LastHeartbeatFailure { get; init; }
+    public string? LastHeartbeatFailure
+    {
+        get; init;
+    }
 
     /// <summary>Immutable copy of the current partition assignment.</summary>
-    public required IReadOnlyList<TopicPartition> Assignment { get; init; }
+    public required IReadOnlyList<TopicPartition> Assignment
+    {
+        get; init;
+    }
 }

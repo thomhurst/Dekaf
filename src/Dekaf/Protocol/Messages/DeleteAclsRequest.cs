@@ -13,7 +13,10 @@ public sealed class DeleteAclsRequest : IKafkaRequest<DeleteAclsResponse>
     /// <summary>
     /// The filters to use when deleting ACLs.
     /// </summary>
-    public required IReadOnlyList<DeleteAclsFilter> Filters { get; init; }
+    public required IReadOnlyList<DeleteAclsFilter> Filters
+    {
+        get; init;
+    }
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {
@@ -34,37 +37,58 @@ public sealed class DeleteAclsFilter
     /// <summary>
     /// The resource type to filter on.
     /// </summary>
-    public sbyte ResourceTypeFilter { get; init; }
+    public sbyte ResourceTypeFilter
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The resource name to filter on, or null for any.
     /// </summary>
-    public string? ResourceNameFilter { get; init; }
+    public string? ResourceNameFilter
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The pattern type to filter on (v1+).
     /// </summary>
-    public sbyte PatternTypeFilter { get; init; } = 1; // Any
+    public sbyte PatternTypeFilter
+    {
+        get; init;
+    } = 1; // Any
 
     /// <summary>
     /// The principal to filter on, or null for any.
     /// </summary>
-    public string? PrincipalFilter { get; init; }
+    public string? PrincipalFilter
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The host to filter on, or null for any.
     /// </summary>
-    public string? HostFilter { get; init; }
+    public string? HostFilter
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The operation to filter on.
     /// </summary>
-    public sbyte Operation { get; init; }
+    public sbyte Operation
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The permission type to filter on.
     /// </summary>
-    public sbyte PermissionType { get; init; }
+    public sbyte PermissionType
+    {
+        get; init;
+    }
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {

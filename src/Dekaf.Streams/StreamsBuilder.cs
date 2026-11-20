@@ -23,7 +23,10 @@ public sealed class StreamsBuilder
     }
 
     /// <summary>Gets the application id.</summary>
-    public string ApplicationId { get; }
+    public string ApplicationId
+    {
+        get;
+    }
 
     /// <summary>Reads a topic as a stream of independent records.</summary>
     public IStream<TKey, TValue> Stream<TKey, TValue>(string topic, ISerde<TKey> keySerde, ISerde<TValue> valueSerde)

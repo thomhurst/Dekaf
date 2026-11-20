@@ -37,20 +37,41 @@ public class ShareConsumerPollBufferBenchmarks
     private ShareGroupHeartbeatAssignment _heartbeatAssignment = null!;
 
     [Params(1, 64)]
-    public int PartitionCount { get; set; }
+    public int PartitionCount
+    {
+        get; set;
+    }
 
     [Params(false, true)]
-    public bool Overflow { get; set; }
+    public bool Overflow
+    {
+        get; set;
+    }
 
     [Params(false, true)]
-    public bool Prepared { get; set; }
+    public bool Prepared
+    {
+        get; set;
+    }
 
     [Params(false, true)]
-    public bool RenewalBuffering { get; set; }
+    public bool RenewalBuffering
+    {
+        get; set;
+    }
 
-    internal int RecordsPerIteration { get; set; }
-    internal bool CommitCallback { get; set; }
-    internal bool SerializeRequests { get; set; }
+    internal int RecordsPerIteration
+    {
+        get; set;
+    }
+    internal bool CommitCallback
+    {
+        get; set;
+    }
+    internal bool SerializeRequests
+    {
+        get; set;
+    }
 
     [GlobalSetup]
     public async Task Setup()
@@ -63,7 +84,9 @@ public class ShareConsumerPollBufferBenchmarks
         {
             var records = new List<Record>(RecordsPerBatch);
             for (var index = 0; index < RecordsPerBatch; index++)
+            {
                 records.Add(new Record { OffsetDelta = index, IsKeyNull = true, Value = payload });
+            }
             using var batch = new RecordBatch { BaseOffset = batchIndex * RecordsPerBatch, Records = records };
             batch.Write(bytes);
         }
@@ -74,22 +97,30 @@ public class ShareConsumerPollBufferBenchmarks
         {
             partitionResponses[partitionIndex] = new ShareFetchResponsePartition
             {
-                PartitionIndex = partitionIndex, CurrentLeader = new(), RecordBytes = bytes.WrittenMemory,
+                PartitionIndex = partitionIndex,
+                CurrentLeader = new(),
+                RecordBytes = bytes.WrittenMemory,
                 AcquiredRecords = [new ShareFetchAcquiredRecords
                 {
-                    FirstOffset = 0, LastOffset = _recordsPerPartition - 1, DeliveryCount = 1
+                    FirstOffset = 0,
+                    LastOffset = _recordsPerPartition - 1,
+                    DeliveryCount = 1
                 }]
             };
             metadataPartitions[partitionIndex] = new PartitionMetadata
             {
-                PartitionIndex = partitionIndex, LeaderId = 1, ErrorCode = ErrorCode.None,
-                ReplicaNodes = [1], IsrNodes = [1]
+                PartitionIndex = partitionIndex,
+                LeaderId = 1,
+                ErrorCode = ErrorCode.None,
+                ReplicaNodes = [1],
+                IsrNodes = [1]
             };
             assignment.Add(new(Topic, partitionIndex));
         }
         var response = new ShareFetchResponse
         {
-            ErrorCode = ErrorCode.None, NodeEndpoints = [],
+            ErrorCode = ErrorCode.None,
+            NodeEndpoints = [],
             Responses = [new ShareFetchResponseTopic
             {
                 TopicId = TopicId,
@@ -99,9 +130,14 @@ public class ShareConsumerPollBufferBenchmarks
         var pool = new Pool(new Connection(response, SerializeRequests));
         var options = new ShareConsumerOptions
         {
-            BootstrapServers = ["localhost:9092"], GroupId = "poll-buffer-benchmark",
+            BootstrapServers = ["localhost:9092"],
+            GroupId = "poll-buffer-benchmark",
             AcknowledgementMode = ShareAcknowledgementMode.Explicit,
-            AcknowledgementCommitCallback = CommitCallback ? static _ => { } : null,
+            AcknowledgementCommitCallback = CommitCallback
+                ? static _ =>
+                {
+                }
+            : null,
             MaxPollRecords = Overflow ? 16 : _recordCount
         };
         _windowSize = options.MaxPollRecords;
@@ -111,7 +147,9 @@ public class ShareConsumerPollBufferBenchmarks
             Brokers = [new BrokerMetadata { NodeId = 1, Host = "localhost", Port = 9092 }],
             Topics = [new TopicMetadata
             {
-                Name = Topic, TopicId = TopicId, ErrorCode = ErrorCode.None,
+                Name = Topic,
+                TopicId = TopicId,
+                ErrorCode = ErrorCode.None,
                 Partitions = metadataPartitions
             }]
         });
@@ -127,7 +165,8 @@ public class ShareConsumerPollBufferBenchmarks
         {
             TopicPartitions = [new ShareGroupHeartbeatTopicPartitions
             {
-                TopicId = TopicId, Partitions = Enumerable.Range(0, PartitionCount).ToArray()
+                TopicId = TopicId,
+                Partitions = Enumerable.Range(0, PartitionCount).ToArray()
             }]
         };
         typeof(ShareConsumerCoordinator).GetField("_assignedPartitions", BindingFlags.Instance | BindingFlags.NonPublic)!
@@ -142,7 +181,11 @@ public class ShareConsumerPollBufferBenchmarks
             // Its offset is outside the fresh range, keeping this path active throughout.
             _consumer.Acknowledge(new ShareConsumeResult<int, ReadOnlyMemory<byte>>
             {
-                Topic = Topic, Partition = 0, Offset = _recordsPerPartition, Value = ReadOnlyMemory<byte>.Empty, DeliveryCount = 1
+                Topic = Topic,
+                Partition = 0,
+                Offset = _recordsPerPartition,
+                Value = ReadOnlyMemory<byte>.Empty,
+                DeliveryCount = 1
             }, AcknowledgeType.Renew);
             var tracker = (AcknowledgementTracker)consumerType.GetField("_ackTracker", BindingFlags.Instance | BindingFlags.NonPublic)!
                 .GetValue(_consumer)!;
@@ -155,12 +198,19 @@ public class ShareConsumerPollBufferBenchmarks
         {
             if (record.Offset != count % _recordsPerPartition || record.Partition != count / _recordsPerPartition ||
                 record.Value.Length != payload.Length)
+            {
                 throw new InvalidOperationException("Classic poll did not preserve the acquired record sequence.");
-            if (++count == _windowSize) break;
+            }
+            if (++count == _windowSize)
+            {
+                break;
+            }
         }
         if (RenewalBuffering && consumerType.GetField("_renewedRecords", BindingFlags.Instance | BindingFlags.NonPublic)!
                 .GetValue(_consumer) is not System.Collections.IDictionary { Count: 1 })
+        {
             throw new InvalidOperationException("The renewal-buffering benchmark must retain its acknowledged renewal.");
+        }
     }
 
     [Benchmark]
@@ -172,7 +222,10 @@ public class ShareConsumerPollBufferBenchmarks
         await foreach (var record in _consumer.PollAsync())
         {
             checksum += record.Offset + record.Value.Length;
-            if (++count == limit) break;
+            if (++count == limit)
+            {
+                break;
+            }
         }
         return checksum;
     }
@@ -180,8 +233,14 @@ public class ShareConsumerPollBufferBenchmarks
     internal void Resubscribe()
     {
         _expandedSubscription = !_expandedSubscription;
-        if (_expandedSubscription) _consumer.Subscribe(Topic, "additional-topic");
-        else _consumer.Subscribe(Topic);
+        if (_expandedSubscription)
+        {
+            _consumer.Subscribe(Topic, "additional-topic");
+        }
+        else
+        {
+            _consumer.Subscribe(Topic);
+        }
     }
 
     internal void RefreshAssignment() => _updateAssignment(_heartbeatAssignment);
@@ -212,9 +271,13 @@ public class ShareConsumerPollBufferBenchmarks
         public string Host => "localhost";
         public int Port => 9092;
         public bool IsConnected => true;
-        public KafkaConnectionCapabilities Capabilities { get; } = KafkaConnectionCapabilities.Create(new ApiVersionsResponse
+        public KafkaConnectionCapabilities Capabilities
         {
-            ErrorCode = ErrorCode.None, ApiKeys = [new ApiVersion(ApiKey.ShareFetch, 0, 2)]
+            get;
+        } = KafkaConnectionCapabilities.Create(new ApiVersionsResponse
+        {
+            ErrorCode = ErrorCode.None,
+            ApiKeys = [new ApiVersion(ApiKey.ShareFetch, 0, 2)]
         });
         public ValueTask<TResponse> SendAsync<TRequest, TResponse>(TRequest request, short version, CancellationToken token = default)
             where TRequest : IKafkaRequest<TResponse> where TResponse : IKafkaResponse
@@ -248,7 +311,9 @@ public class ShareConsumerPollBufferBenchmarks
         public ValueTask<IKafkaConnection> GetConnectionAsync(int brokerId, CancellationToken token = default) => ValueTask.FromResult<IKafkaConnection>(connection);
         public ValueTask<IKafkaConnection> GetConnectionAsync(string host, int port, CancellationToken token = default) => ValueTask.FromResult<IKafkaConnection>(connection);
         public ValueTask<IKafkaConnection> GetConnectionByIndexAsync(int brokerId, int index, CancellationToken token = default) => ValueTask.FromResult<IKafkaConnection>(connection);
-        public void RegisterBroker(int id, string host, int port) { }
+        public void RegisterBroker(int id, string host, int port)
+        {
+        }
         public ValueTask<int> ScaleConnectionGroupAsync(int id, int count, CancellationToken token = default) => ValueTask.FromResult(1);
         public ValueTask<IKafkaConnection?> ShrinkConnectionGroupAsync(int id, int count, CancellationToken token = default) => ValueTask.FromResult<IKafkaConnection?>(null);
         public ValueTask RemoveConnectionAsync(int id) => ValueTask.CompletedTask;

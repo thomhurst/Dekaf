@@ -41,7 +41,11 @@ public sealed class PartitionedRecordLifetimeIntegrationTests(KafkaTestContainer
         var headers = new Headers { new Header("lifetime", "original-header"u8.ToArray()) };
         await producer.ProduceAsync(new ProducerMessage<string, string>
         {
-            Topic = topic, Partition = 0, Key = "original-key", Value = "original-value", Headers = headers
+            Topic = topic,
+            Partition = 0,
+            Key = "original-key",
+            Value = "original-value",
+            Headers = headers
         });
 
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(60));
@@ -85,14 +89,19 @@ public sealed class PartitionedRecordLifetimeIntegrationTests(KafkaTestContainer
             {
                 await producer.ProduceAsync(new ProducerMessage<string, string>
                 {
-                    Topic = topic, Partition = 1, Key = "turnover", Value = value
+                    Topic = topic,
+                    Partition = 1,
+                    Key = "turnover",
+                    Value = value
                 }, timeout.Token);
             }
             await turnover.Task.WaitAsync(timeout.Token);
             release.TrySetResult();
             await Task.WhenAny(verified.Task, run).WaitAsync(timeout.Token);
             if (run.IsCompleted)
+            {
                 await run;
+            }
             await verified.Task.WaitAsync(timeout.Token);
         }
         finally

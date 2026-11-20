@@ -1,10 +1,10 @@
-using StringSet = System.Collections.Generic.IReadOnlySet<string>;
-using PartitionSet = System.Collections.Generic.IReadOnlySet<Dekaf.TopicPartition>;
 using Dekaf.Consumer;
 using Dekaf.Consumer.DeadLetter;
 using Dekaf.Producer;
 using Dekaf.Serialization;
 using NSubstitute;
+using PartitionSet = System.Collections.Generic.IReadOnlySet<Dekaf.TopicPartition>;
+using StringSet = System.Collections.Generic.IReadOnlySet<string>;
 
 namespace Dekaf.Tests.Unit.Hosting;
 
@@ -18,7 +18,11 @@ public sealed partial class KafkaConsumerServiceTests
         var consumer = new RebalanceTestConsumer();
         var registered = new TaskCompletionSource<IRebalanceListener>(TaskCreationOptions.RunContinuationsAsynchronously);
         var registration = Substitute.For<IDisposable>();
-        consumer.Register = listener => { registered.TrySetResult(listener); return registration; };
+        consumer.Register = listener =>
+        {
+            registered.TrySetResult(listener);
+            return registration;
+        };
         consumer.Inner.ConsumeAsync(Arg.Any<CancellationToken>()).Returns(call => WaitForCancellation(call.Arg<CancellationToken>()));
         // The service checks ownership against Assignment when the consumer forwards rebalance events.
         var assignment = new HashSet<TopicPartition> { new("orders-retry-1s", 0), new("orders-retry-1s", 1) };
@@ -48,9 +52,13 @@ public sealed partial class KafkaConsumerServiceTests
             var oldPostponement = pending[revoked]!;
             var retainedPostponement = pending[retained]!;
             if (lost)
+            {
                 await listener.OnPartitionsLostAsync([revoked], CancellationToken.None);
+            }
             else
+            {
                 await listener.OnPartitionsRevokedAsync([revoked], CancellationToken.None);
+            }
             await listener.OnPartitionsAssignedAsync([revoked], CancellationToken.None);
             await ProcessWithRetriesAsync(service, result, stopping.Token);
 
@@ -100,7 +108,11 @@ public sealed partial class KafkaConsumerServiceTests
         var producer = Substitute.For<IKafkaProducer<byte[]?, byte[]?>>();
         ProducerMessage<byte[]?, byte[]?>? sent = null;
         producer.ProduceAsync(Arg.Any<ProducerMessage<byte[]?, byte[]?>>(), Arg.Any<CancellationToken>())
-            .Returns(call => { sent = call.ArgAt<ProducerMessage<byte[]?, byte[]?>>(0); return new ValueTask<RecordMetadata>(default(RecordMetadata)); });
+            .Returns(call =>
+            {
+                sent = call.ArgAt<ProducerMessage<byte[]?, byte[]?>>(0);
+                return new ValueTask<RecordMetadata>(default(RecordMetadata));
+            });
         await using var service = new FailingConsumerService(consumer, ["orders"], new DeadLetterOptions
         {
             RetryTopics = retry ? new RetryTopicOptions { Delays = [TimeSpan.FromSeconds(1)] } : null
@@ -151,7 +163,11 @@ public sealed partial class KafkaConsumerServiceTests
         var producer = Substitute.For<IKafkaProducer<byte[]?, byte[]?>>();
         ProducerMessage<byte[]?, byte[]?>? sent = null;
         producer.ProduceAsync(Arg.Any<ProducerMessage<byte[]?, byte[]?>>(), Arg.Any<CancellationToken>())
-            .Returns(call => { sent = call.ArgAt<ProducerMessage<byte[]?, byte[]?>>(0); return new ValueTask<RecordMetadata>(default(RecordMetadata)); });
+            .Returns(call =>
+            {
+                sent = call.ArgAt<ProducerMessage<byte[]?, byte[]?>>(0);
+                return new ValueTask<RecordMetadata>(default(RecordMetadata));
+            });
         await using var service = new FailingConsumerService(CreateConsumerSubstitute(), ["orders"], new DeadLetterOptions
         {
             RetryTopics = new RetryTopicOptions { Delays = [TimeSpan.FromSeconds(1)] }
@@ -166,26 +182,43 @@ public sealed partial class KafkaConsumerServiceTests
         await Assert.That(sent!.Topic).IsEqualTo("orders.DLQ");
         await Assert.That(sent.Headers!.GetFirstAsString(DeadLetterHeaders.FailureCountKey)).IsEqualTo("2147483647");
     }
+
     private sealed class RebalanceTestConsumer : IKafkaConsumer<string, string>, IConsumerRebalanceEventSource,
         IConsumerOffsetStoreTimingConfiguration, IConsumerRecordOwnership<string, string>
     {
-        internal IKafkaConsumer<string, string> Inner { get; } = Substitute.For<IKafkaConsumer<string, string>>();
+        internal IKafkaConsumer<string, string> Inner
+        {
+            get;
+        } = Substitute.For<IKafkaConsumer<string, string>>();
 
         // Emulates the consumer's record ownership when set: a partition outside the assignment, or
         // assigned again since the in-flight record was fetched, has ended; one whose revocation
         // the coordinator published has a revocation pending until it leaves the assignment.
-        internal HashSet<TopicPartition>? OwnershipAssignment { get; set; }
-        internal HashSet<TopicPartition> PendingRevocations { get; } = [];
-        internal HashSet<TopicPartition> ReassignedSinceFetch { get; } = [];
+        internal HashSet<TopicPartition>? OwnershipAssignment
+        {
+            get; set;
+        }
+        internal HashSet<TopicPartition> PendingRevocations
+        {
+            get;
+        } = [];
+        internal HashSet<TopicPartition> ReassignedSinceFetch
+        {
+            get;
+        } = [];
 
         public RecordOwnership GetRecordOwnership(in ConsumeResult<string, string> result)
         {
             if (OwnershipAssignment is not { } assignment)
+            {
                 return RecordOwnership.Owned;
+            }
 
             var partition = new TopicPartition(result.Topic, result.Partition);
             if (!assignment.Contains(partition) || ReassignedSinceFetch.Contains(partition))
+            {
                 return RecordOwnership.Ended;
+            }
 
             return PendingRevocations.Contains(partition) ? RecordOwnership.RevocationPending : RecordOwnership.Owned;
         }
@@ -206,12 +239,24 @@ public sealed partial class KafkaConsumerServiceTests
             Inner.Positions.Seek(rewindTo);
             return ownership;
         }
-        internal Func<IRebalanceListener, IDisposable> Register { get; set; } = null!;
+        internal Func<IRebalanceListener, IDisposable> Register
+        {
+            get; set;
+        } = null!;
         public IDisposable RegisterRuntimeRebalanceListener(IRebalanceListener listener) => Register(listener);
         public bool IsLeavingGroup => false;
-        public OffsetCommitMode OffsetCommitMode { get; set; } = OffsetCommitMode.Manual;
-        public bool EnableAutoOffsetStore { get; set; }
-        public bool HasConsumerGroup { get; set; }
+        public OffsetCommitMode OffsetCommitMode
+        {
+            get; set;
+        } = OffsetCommitMode.Manual;
+        public bool EnableAutoOffsetStore
+        {
+            get; set;
+        }
+        public bool HasConsumerGroup
+        {
+            get; set;
+        }
         public bool StoresOffsetsOnDelivery => false;
         public StringSet Subscription => Inner.Subscription;
         public string? SubscriptionPattern => Inner.SubscriptionPattern;

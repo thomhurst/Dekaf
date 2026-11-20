@@ -55,6 +55,7 @@ public sealed class ResponseFrameReaderTests
             BuildFrame(correlationId: 2, payloadSize: 50));
         using var stream = new ScriptedReadStream([chunk]);
         using var reader = ResponseFrameTestHelpers.CreateReader(stream);
+
         ResponseFrameAdmission GetAdmission(int _) => new(pool, Discard: false);
 
         var first = await reader.ReadBoundedFrameAsync(GetAdmission);
@@ -102,6 +103,7 @@ public sealed class ResponseFrameReaderTests
         using var stream = new ScriptedReadStream([chunk]);
         var waits = new List<bool>();
         using var reader = CreateAdmissionReader(stream, waits);
+
         ResponseFrameAdmission GetAdmission(int _) => new(pool, Discard: false);
 
         var first = await reader.ReadBoundedFrameAsync(GetAdmission);
@@ -188,6 +190,7 @@ public sealed class ResponseFrameReaderTests
             BuildFrame(correlationId: 2, payloadSize: 20));
         using var stream = new ScriptedReadStream([chunk]);
         using var reader = ResponseFrameTestHelpers.CreateReader(stream);
+
         ResponseFrameAdmission GetAdmission(int correlationId) => correlationId == 1
                 ? ResponseFrameAdmission.Discarded
                 : ResponseFrameAdmission.Unrestricted;
@@ -219,7 +222,9 @@ public sealed class ResponseFrameReaderTests
         var frame = BuildFrame(correlationId: 9, payloadSize: 1000);
         var chunks = new List<byte[]>();
         for (var offset = 0; offset < frame.Length; offset += 100)
+        {
             chunks.Add(frame[offset..Math.Min(offset + 100, frame.Length)]);
+        }
         using var reader = CreateReader(out _, chunks.ToArray());
 
         var result = await reader.ReadFrameAsync();
@@ -481,8 +486,10 @@ public sealed class ResponseFrameReaderTests
             var expected = (byte)((i + 4) % 251);
             var actual = payload.Span[i];
             if (actual != expected)
+            {
                 throw new InvalidOperationException(
                     $"Payload mismatch at offset {i}: expected {expected}, actual {actual}");
+            }
         }
 
         buffer.Dispose();
@@ -534,7 +541,9 @@ internal static class ResponseFrameTestHelpers
         System.Buffers.Binary.BinaryPrimitives.WriteInt32BigEndian(frame, payloadSize);
         System.Buffers.Binary.BinaryPrimitives.WriteInt32BigEndian(frame.AsSpan(4), correlationId);
         for (var i = 8; i < frame.Length; i++)
+        {
             frame[i] = (byte)(i % 251);
+        }
         return frame;
     }
 }
@@ -582,7 +591,9 @@ internal sealed class ScriptedReadStream(
             while (!_chunks.TryDequeue(out _current))
             {
                 if (!blockAfterChunks)
+                {
                     return 0; // EOF
+                }
 
                 await _disposed.Task.WaitAsync(cancellationToken);
                 throw new ObjectDisposedException(nameof(ScriptedReadStream));
@@ -609,7 +620,9 @@ internal sealed class ScriptedReadStream(
         base.Dispose(disposing);
     }
 
-    public override void Flush() { }
+    public override void Flush()
+    {
+    }
     public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
     public override void SetLength(long value) => throw new NotSupportedException();
     public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();

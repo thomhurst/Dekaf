@@ -52,7 +52,9 @@ internal static class ConnectionHelper
                 // The fifth byte carries bits 28-31; setting bit 31 or any higher bit exceeds Int32 and
                 // would be truncated or turn the value negative.
                 if (shift == 28 && b > 0x07)
+                {
                     return (result, bytesRead, false);
+                }
 
                 return (result, bytesRead, true);
             }
@@ -71,7 +73,9 @@ internal static class ConnectionHelper
     public static void ValidateResponseFrameSize(int frameSize, int maxFrameSize)
     {
         if (frameSize < MinimumResponseFrameSize || frameSize > maxFrameSize)
+        {
             ThrowInvalidResponseFrameSize(frameSize, maxFrameSize);
+        }
     }
 
     // The stream is out of step (a non-Kafka peer, corruption, or a frame above the local cap),
@@ -215,7 +219,10 @@ public sealed partial class KafkaConnection :
     private X509Certificate2? _loadedClientCertificate;
     private string? _tlsCertificateValidationFailure;
 
-    public int BrokerId { get; private set; } = -1;
+    public int BrokerId
+    {
+        get; private set;
+    } = -1;
     public string Host => _host;
     public int Port => _port;
     public bool IsConnected => Volatile.Read(ref _disposed) == 0 && Volatile.Read(ref _connected) != 0 && (_socket?.Connected ?? false);
@@ -259,8 +266,14 @@ public sealed partial class KafkaConnection :
 
     private readonly struct PendingRequestEntry(PooledPendingRequest request, short version)
     {
-        public PooledPendingRequest Request { get; } = request;
-        public short Version { get; } = version;
+        public PooledPendingRequest Request
+        {
+            get;
+        } = request;
+        public short Version
+        {
+            get;
+        } = version;
     }
 
     private sealed class PendingRequestShard
@@ -270,8 +283,14 @@ public sealed partial class KafkaConnection :
             Requests = new Dictionary<int, PendingRequestEntry>(capacity);
         }
 
-        public object Gate { get; } = new();
-        public Dictionary<int, PendingRequestEntry> Requests { get; }
+        public object Gate
+        {
+            get;
+        } = new();
+        public Dictionary<int, PendingRequestEntry> Requests
+        {
+            get;
+        }
     }
 
     /// <remarks>
@@ -391,7 +410,9 @@ public sealed partial class KafkaConnection :
         var shards = new PendingRequestShard[shardCount];
 
         for (var i = 0; i < shards.Length; i++)
+        {
             shards[i] = new PendingRequestShard(capacityPerShard);
+        }
 
         return shards;
     }
@@ -406,20 +427,28 @@ public sealed partial class KafkaConnection :
     internal async ValueTask ConnectAsync(TimeSpan connectionTimeout, CancellationToken cancellationToken)
     {
         if (Volatile.Read(ref _disposed) != 0)
+        {
             throw new ObjectDisposedException(nameof(KafkaConnection));
+        }
 
         if (IsConnected)
+        {
             return;
+        }
 
         await SemaphoreHelper.AcquireOrThrowDisposedAsync(_connectLock, nameof(KafkaConnection), cancellationToken).ConfigureAwait(false);
         try
         {
             if (Volatile.Read(ref _disposed) != 0)
+            {
                 throw new ObjectDisposedException(nameof(KafkaConnection));
+            }
 
             // Another caller completed connection while we waited
             if (IsConnected)
+            {
                 return;
+            }
 
             await ConnectCoreAsync(connectionTimeout, cancellationToken).ConfigureAwait(false);
         }
@@ -480,7 +509,9 @@ public sealed partial class KafkaConnection :
                 await DisposeFailedTlsStreamAsync(sslStream).ConfigureAwait(false);
 
                 if (ex is not System.Security.Authentication.AuthenticationException authenticationException)
+                {
                     throw;
+                }
 
                 // TLS handshake failures surface here — primarily a rejected certificate, but .NET
                 // also throws this type for negotiation/protocol mismatches. We deliberately treat
@@ -589,10 +620,12 @@ public sealed partial class KafkaConnection :
         }
 
         if (endpoints.Count == 0)
+        {
             throw new DnsResolutionException(
                 _host,
                 _port,
                 new SocketException((int)SocketError.HostNotFound));
+        }
 
         Exception? lastException = null;
         foreach (var endpoint in endpoints)
@@ -621,7 +654,9 @@ public sealed partial class KafkaConnection :
         }
 
         if (lastException is not null)
+        {
             ExceptionDispatchInfo.Capture(lastException).Throw();
+        }
 
         throw new SocketException((int)SocketError.HostNotFound);
     }
@@ -634,9 +669,13 @@ public sealed partial class KafkaConnection :
         };
 
         if (_options.SendBufferSize > 0)
+        {
             socket.SendBufferSize = _options.SendBufferSize;
+        }
         if (_options.ReceiveBufferSize > 0)
+        {
             socket.ReceiveBufferSize = _options.ReceiveBufferSize;
+        }
         ConfigureTcpKeepAlive(socket);
 
         return socket;
@@ -719,13 +758,18 @@ public sealed partial class KafkaConnection :
         where TRequest : IKafkaRequest<TResponse>
         where TResponse : IKafkaResponse
     {
-        if (collector is null) return;
+        if (collector is null)
+        {
+            return;
+        }
         collector.RecordRequestLatency(BrokerId, started, KafkaMessageMetadata<TRequest, TResponse>.ApiKey);
         // Owned pools record throttle through BrokerThrottleState. A shared pool
         // has no collector there; attribute this response to its logical client.
         if (_telemetryMetricCollector is null && BrokerThrottlePolicy.ShouldClientThrottle(
                 KafkaMessageMetadata<TRequest, TResponse>.ApiKey, apiVersion))
+        {
             collector.RecordBrokerThrottle(KafkaMessageMetadata<TRequest, TResponse>.GetThrottleTimeMs(response));
+        }
     }
 
     ValueTask<TResponse> IKafkaRequestWriteObserverConnection.SendWithWriteObservationAsync<
@@ -776,16 +820,27 @@ public sealed partial class KafkaConnection :
     private interface IRequestObservation
     {
         void Release();
-        ClientTelemetryMetricCollector? TelemetryMetricCollector { get; }
-        bool IsReauthentication { get; }
-        Action? WriteStartedCallback { get; }
+        ClientTelemetryMetricCollector? TelemetryMetricCollector
+        {
+            get;
+        }
+        bool IsReauthentication
+        {
+            get;
+        }
+        Action? WriteStartedCallback
+        {
+            get;
+        }
         CancellationToken AfterWriteStarts(CancellationToken cancellationToken);
         CancellationToken WhileWriting(CancellationToken cancellationToken);
     }
 
     private readonly struct WriteObservation(Action? callback) : IRequestObservation
     {
-        public void Release() { }
+        public void Release()
+        {
+        }
         public ClientTelemetryMetricCollector? TelemetryMetricCollector => null;
         public bool IsReauthentication => false;
         public Action? WriteStartedCallback => callback;
@@ -795,7 +850,9 @@ public sealed partial class KafkaConnection :
 
     private readonly struct CancellationObservation(KafkaRequestWriteContext context) : IRequestObservation
     {
-        public void Release() { }
+        public void Release()
+        {
+        }
         public ClientTelemetryMetricCollector? TelemetryMetricCollector => null;
         public bool IsReauthentication => false;
         public Action? WriteStartedCallback => context.WriteStartedCallback;
@@ -809,7 +866,9 @@ public sealed partial class KafkaConnection :
     private readonly struct ResponseCancellationAfterWriteObservation(
         ClientTelemetryMetricCollector? collector, KafkaRequestWriteContext context) : IRequestObservation
     {
-        public void Release() { }
+        public void Release()
+        {
+        }
         public ClientTelemetryMetricCollector? TelemetryMetricCollector => collector;
         public bool IsReauthentication => false;
         public Action? WriteStartedCallback => context.WriteStartedCallback;
@@ -819,7 +878,9 @@ public sealed partial class KafkaConnection :
 
     private readonly struct ReauthenticationObservation(Action? callback) : IRequestObservation
     {
-        public void Release() { }
+        public void Release()
+        {
+        }
         public ClientTelemetryMetricCollector? TelemetryMetricCollector => null;
         public bool IsReauthentication => true;
         public Action? WriteStartedCallback => callback;
@@ -829,7 +890,9 @@ public sealed partial class KafkaConnection :
 
     private readonly struct TelemetryObservation(ClientTelemetryMetricCollector collector) : IRequestObservation
     {
-        public void Release() { }
+        public void Release()
+        {
+        }
         public ClientTelemetryMetricCollector? TelemetryMetricCollector => collector;
         public bool IsReauthentication => false;
         public Action? WriteStartedCallback => null;
@@ -864,25 +927,35 @@ public sealed partial class KafkaConnection :
         try
         {
             if (Volatile.Read(ref _disposed) != 0)
+            {
                 throw new ObjectDisposedException(nameof(KafkaConnection));
+            }
             if (Volatile.Read(ref _retirementState) >= 2)
+            {
                 throw new ObjectDisposedException(nameof(KafkaConnection), "Connection has been retired");
+            }
 
             if (requireReady ? !IsConnected : !(_socket?.Connected ?? false))
+            {
                 throw new InvalidOperationException("Not connected");
+            }
 
             await _brokerThrottleState.WaitAsync(cancellationToken, _pendingRequestSlotCts.Token)
                 .ConfigureAwait(false);
 
             if (_reauthenticationGate is not null && !observation.IsReauthentication)
+            {
                 await _reauthenticationGate.EnterAsync(cancellationToken).ConfigureAwait(false);
+            }
 
             try
             {
                 using var operation = TrackOperation();
 
                 if (requireReady ? !IsConnected : !(_socket?.Connected ?? false))
+                {
                     throw new InvalidOperationException("Not connected");
+                }
 
                 Touch();
                 var correlationId = Interlocked.Increment(ref s_globalCorrelationId);
@@ -961,7 +1034,9 @@ public sealed partial class KafkaConnection :
             finally
             {
                 if (_reauthenticationGate is not null && !observation.IsReauthentication)
+                {
                     _reauthenticationGate.Exit();
+                }
             }
         }
         finally
@@ -1033,7 +1108,9 @@ public sealed partial class KafkaConnection :
 
             var capabilities = KafkaConnectionCapabilities.Create(response);
             if (_metadataClusterIdentity is not null)
+            {
                 RecordApiVersionsMaxVersion(_metadataClusterIdentity, response);
+            }
 
             return capabilities;
         }
@@ -1063,7 +1140,9 @@ public sealed partial class KafkaConnection :
     private void ThrowIfRebootstrapRequired(ApiVersionsResponse response)
     {
         if (response.ErrorCode != ErrorCode.RebootstrapRequired)
+        {
             return;
+        }
 
         _metadataClusterIdentity?.RequestRebootstrap();
         throw new KafkaException(
@@ -1078,7 +1157,9 @@ public sealed partial class KafkaConnection :
         foreach (var apiVersion in response.ApiKeys)
         {
             if (apiVersion.ApiKey != ApiKey.ApiVersions)
+            {
                 continue;
+            }
 
             if (brokerRange is not null)
             {
@@ -1161,25 +1242,35 @@ public sealed partial class KafkaConnection :
         where TResponse : IKafkaResponse
     {
         if (Volatile.Read(ref _disposed) != 0)
+        {
             throw new ObjectDisposedException(nameof(KafkaConnection));
+        }
         if (Volatile.Read(ref _retirementState) >= 2)
+        {
             throw new ObjectDisposedException(nameof(KafkaConnection), "Connection has been retired");
+        }
 
         if (!IsConnected)
+        {
             throw new InvalidOperationException("Not connected");
+        }
 
         await _brokerThrottleState.WaitAsync(cancellationToken, _pendingRequestSlotCts.Token)
             .ConfigureAwait(false);
 
         if (_reauthenticationGate is not null)
+        {
             await _reauthenticationGate.EnterAsync(cancellationToken).ConfigureAwait(false);
+        }
 
         try
         {
             using var operation = TrackOperation();
 
             if (!IsConnected)
+            {
                 throw new InvalidOperationException("Not connected");
+            }
 
             Touch();
             var correlationId = Interlocked.Increment(ref s_globalCorrelationId);
@@ -1198,7 +1289,9 @@ public sealed partial class KafkaConnection :
         finally
         {
             if (_reauthenticationGate is not null)
+            {
                 _reauthenticationGate.Exit();
+            }
         }
     }
 
@@ -1324,12 +1417,18 @@ public sealed partial class KafkaConnection :
         try
         {
             if (Volatile.Read(ref _disposed) != 0)
+            {
                 throw new ObjectDisposedException(nameof(KafkaConnection));
+            }
             if (Volatile.Read(ref _retirementState) >= 2)
+            {
                 throw new ObjectDisposedException(nameof(KafkaConnection), "Connection has been retired");
+            }
 
             if (!IsConnected)
+            {
                 throw new InvalidOperationException("Not connected");
+            }
 
             await _brokerThrottleState.WaitAsync(cancellationToken, _pendingRequestSlotCts.Token)
                 .ConfigureAwait(false);
@@ -1337,14 +1436,18 @@ public sealed partial class KafkaConnection :
             // Admission covers the write only; the response completes separately.
             // Waiting for a long fetch response here would delay the reauthentication drain.
             if (_reauthenticationGate is not null)
+            {
                 await _reauthenticationGate.EnterAsync(cancellationToken).ConfigureAwait(false);
+            }
 
             try
             {
                 using var operation = TrackOperation();
 
                 if (!IsConnected)
+                {
                     throw new InvalidOperationException("Not connected");
+                }
 
                 Touch();
                 var correlationId = Interlocked.Increment(ref s_globalCorrelationId);
@@ -1417,7 +1520,9 @@ public sealed partial class KafkaConnection :
             finally
             {
                 if (_reauthenticationGate is not null)
+                {
                     _reauthenticationGate.Exit();
+                }
             }
         }
         finally
@@ -1432,12 +1537,16 @@ public sealed partial class KafkaConnection :
         bool responseReceived)
     {
         if (!TryRemovePendingRequest(correlationId, out var removed))
+        {
             return;
+        }
 
         Debug.Assert(ReferenceEquals(removed.Request, pending));
         _pendingRequestPool.Return(removed.Request);
         if (!responseReceived)
+        {
             _cancelledCorrelationIds.TryAdd(correlationId);
+        }
     }
 
     internal static int GetPipelinedResponsePoolCount<
@@ -1580,9 +1689,13 @@ public sealed partial class KafkaConnection :
             _pendingTask = pending.AsValueTask();
             var awaiter = _pendingTask.GetAwaiter();
             if (awaiter.IsCompleted)
+            {
                 CompletePendingResponse();
+            }
             else
+            {
                 awaiter.UnsafeOnCompleted(_pendingContinuation);
+            }
         }
 
         private void CompletePendingResponse()
@@ -1700,14 +1813,18 @@ public sealed partial class KafkaConnection :
             {
                 var readiness = GetReturnReadiness(state);
                 if ((readiness & (ConsumerReady | ExternalOwnerRetained)) != 0)
+                {
                     return false;
+                }
 
                 var observed = Interlocked.CompareExchange(
                     ref _returnState,
                     state | ExternalOwnerRetained,
                     state);
                 if (observed == state)
+                {
                     return true;
+                }
 
                 state = observed;
             }
@@ -1776,10 +1893,14 @@ public sealed partial class KafkaConnection :
             var readiness = GetReturnReadiness(state);
             var required = ReturnReady;
             if ((readiness & ExternalOwnerRetained) != 0)
+            {
                 required |= ExternalOwnerReady;
+            }
 
             if ((previous & required) != required && (readiness & required) == required)
+            {
                 ReturnToPool();
+            }
         }
 
         private static int PackReturnState(int generation, int readiness) =>
@@ -1813,7 +1934,9 @@ public sealed partial class KafkaConnection :
             _telemetryMetricCollector = null;
 
             if (_ownershipGeneration == MaxOwnershipGeneration)
+            {
                 return false;
+            }
 
             _core.Reset();
             _ownershipGeneration++;
@@ -1972,11 +2095,13 @@ public sealed partial class KafkaConnection :
         // Managed unpooled ShareFetch views already keep their array alive. Only
         // pooled storage or an active budget reservation needs a retained owner.
         if (apiKey == ApiKey.Fetch || (apiKey == ApiKey.ShareFetch && (pooledBuffer.IsPooled || reservation is not null)))
+        {
             return ParseFetchResponse<TRequest, TResponse>(
                 pooledBuffer,
                 apiVersion,
                 checkCrcs,
                 reservation);
+        }
 
         try
         {
@@ -2019,7 +2144,9 @@ public sealed partial class KafkaConnection :
         where TResponse : IKafkaResponse
     {
         if (typeof(TResponse) == typeof(ShareFetchResponse))
+        {
             return (TResponse)(object)ParseShareFetchResponse(pooledBuffer, apiVersion, reservation);
+        }
 
         var memoryOwner = pooledBuffer.TransferOwnership(reservation);
         using var parsingScope = ResponseParsingContext.SetPooledMemory(memoryOwner, checkCrcs);
@@ -2136,7 +2263,9 @@ public sealed partial class KafkaConnection :
         where TResponse : IKafkaResponse
     {
         if (request is not IKafkaRequestBodySizeHint { RequestBodySizeHint: > 0 } sizeHint)
+        {
             return DefaultPreSerializeInitialCapacity;
+        }
 
         var hintedCapacity = Math.Min(
             (long)Array.MaxLength - MessageSizePrefixLength,
@@ -2270,10 +2399,14 @@ public sealed partial class KafkaConnection :
         suffixLength = 0;
 
         if (!request.TryGetSingleBatch(out var topic, out var partition, out var batch))
+        {
             return false;
+        }
 
         if (!batch.CanWriteSegmented(partition.Compression))
+        {
             return false;
+        }
 
         using var metadataWriter = RentedBufferWriter.Rent(
             DefaultPreSerializeInitialCapacity,
@@ -2293,32 +2426,54 @@ public sealed partial class KafkaConnection :
 
         var flexible = ProduceRequest.IsFlexibleVersion(apiVersion);
         if (flexible)
+        {
             writer.WriteCompactNullableString(request.TransactionalId);
+        }
         else
+        {
             writer.WriteString(request.TransactionalId);
+        }
         writer.WriteInt16(request.Acks);
         writer.WriteInt32(request.TimeoutMs);
         if (flexible)
+        {
             writer.WriteUnsignedVarInt(2); // one topic, compact count is item count + 1
+        }
         else
+        {
             writer.WriteInt32(1);
+        }
         if (apiVersion >= ProduceRequest.TopicIdVersion)
+        {
             writer.WriteUuid(topic.TopicId);
+        }
         else if (flexible)
+        {
             writer.WriteCompactString(topic.Name);
+        }
         else
+        {
             writer.WriteString(topic.Name);
+        }
         if (flexible)
+        {
             writer.WriteUnsignedVarInt(2); // one partition
+        }
         else
+        {
             writer.WriteInt32(1);
+        }
         writer.WriteInt32(partition.Index);
 
         var encodedBatchSize = batch.GetEncodedSize(partition.Compression);
         if (flexible)
+        {
             writer.WriteUnsignedVarInt(checked(encodedBatchSize + 1));
+        }
         else
+        {
             writer.WriteInt32(encodedBatchSize);
+        }
         if (!batch.TryWriteSegmentedHeader(
                 metadataWriter,
                 partition.Compression,
@@ -2389,16 +2544,22 @@ public sealed partial class KafkaConnection :
 
             var socket = _socket ?? throw new InvalidOperationException("Not connected");
             if (_stream is null)
+            {
                 throw new InvalidOperationException("Not connected");
+            }
 
             if (Volatile.Read(ref _disposed) != 0)
+            {
                 throw new ObjectDisposedException(nameof(KafkaConnection));
+            }
 
             var pendingSegmentCount = suffixLength > 0 ? 2 : 1;
             foreach (var memory in encodedRecords)
             {
                 if (memory.Length > 0)
+                {
                     pendingSegmentCount = checked(pendingSegmentCount + 1);
+                }
             }
 
             var sender = _scatterGatherSender ??= new SocketScatterGatherSender(pendingSegmentCount);
@@ -2408,10 +2569,14 @@ public sealed partial class KafkaConnection :
             foreach (var memory in encodedRecords)
             {
                 if (memory.Length > 0 && MemoryMarshal.TryGetArray(memory, out var segment))
+                {
                     pendingSegments.Add(segment);
+                }
             }
             if (suffixLength > 0)
+            {
                 pendingSegments.Add(new ArraySegment<byte>(metadataArray, suffixOffset, suffixLength));
+            }
 
             requestWriteStarted?.Invoke();
             sender.BeginPendingSend();
@@ -2420,7 +2585,9 @@ public sealed partial class KafkaConnection :
                 sender.LoadSendWindow();
                 var bytesSent = await sender.SendAsync(socket).ConfigureAwait(false);
                 if (bytesSent <= 0)
+                {
                     throw new IOException("Socket closed while writing a Kafka request frame.");
+                }
 
                 sender.ConsumeSentBytes(bytesSent);
             }
@@ -2462,13 +2629,17 @@ public sealed partial class KafkaConnection :
         try
         {
             if (_stream is null)
+            {
                 throw new InvalidOperationException("Not connected");
+            }
 
             // A previous write on this connection may have faulted mid-frame, leaving the
             // outgoing stream misaligned. Writers already queued on _writeLock must not append
             // another frame to a poisoned stream.
             if (Volatile.Read(ref _disposed) != 0)
+            {
                 throw new ObjectDisposedException(nameof(KafkaConnection));
+            }
 
             requestWriteStarted?.Invoke();
             await _stream.WriteAsync(serializedData.AsMemory(0, length), CancellationToken.None).ConfigureAwait(false);
@@ -2545,9 +2716,13 @@ public sealed partial class KafkaConnection :
             catch (OperationCanceledException)
             {
                 if (payloadIsBorrowed)
+                {
                     await AbortAndObserveFrameWriteAsync(writeTask).ConfigureAwait(false);
+                }
                 else
+                {
                     AbandonFrameWrite(writeTask, correlationId);
+                }
 
                 LogFlushTimeout(_options.RequestTimeout.TotalMilliseconds, correlationId, BrokerId);
 
@@ -2565,18 +2740,26 @@ public sealed partial class KafkaConnection :
             catch (OperationCanceledException)
             {
                 if (payloadIsBorrowed)
+                {
                     await AbortAndObserveFrameWriteAsync(writeTask).ConfigureAwait(false);
+                }
                 else
+                {
                     AbandonFrameWrite(writeTask, correlationId);
+                }
 
                 throw new OperationCanceledException(cancellationToken);
             }
             catch (TimeoutException)
             {
                 if (payloadIsBorrowed)
+                {
                     await AbortAndObserveFrameWriteAsync(writeTask).ConfigureAwait(false);
+                }
                 else
+                {
                     AbandonFrameWrite(writeTask, correlationId);
+                }
 
                 LogFlushTimeout(_options.RequestTimeout.TotalMilliseconds, correlationId, BrokerId);
 
@@ -2594,7 +2777,9 @@ public sealed partial class KafkaConnection :
     private async Task AbortAndObserveFrameWriteAsync(Task writeTask)
     {
         if (!writeTask.IsCompleted)
+        {
             AbortAfterWriteFailure();
+        }
 
         try
         {
@@ -2681,7 +2866,9 @@ public sealed partial class KafkaConnection :
         // Capture the reader so a concurrent reconnect can never swap it mid-loop.
         var frameReader = _frameReader;
         if (frameReader is null)
+        {
             return;
+        }
 
         if (_responseMemoryAdmissionsEnabled)
         {
@@ -2749,9 +2936,13 @@ public sealed partial class KafkaConnection :
         catch (Exception ex)
         {
             if (!_hasReceivedResponse)
+            {
                 LogReceiveLoopEndedBeforeFirstResponse(ex, _host, _port);
+            }
             else
+            {
                 LogReceiveLoopError(ex);
+            }
 
             MarkDisposed(); // Prevent new requests from being queued on a dead connection
             FailAllPendingRequests(ex);
@@ -2826,9 +3017,13 @@ public sealed partial class KafkaConnection :
         catch (Exception ex)
         {
             if (!_hasReceivedResponse)
+            {
                 LogReceiveLoopEndedBeforeFirstResponse(ex, _host, _port);
+            }
             else
+            {
                 LogReceiveLoopError(ex);
+            }
 
             MarkDisposed();
             FailAllPendingRequests(ex);
@@ -2853,7 +3048,9 @@ public sealed partial class KafkaConnection :
         LogReceivedBytes(bytesRead, _host, _port);
 
         if (Volatile.Read(ref _receiveTimeoutDeadlineTimestamp) != 0)
+        {
             Volatile.Write(ref _receiveTimeoutDeadlineTimestamp, GetReceiveTimeoutDeadlineTimestamp());
+        }
     }
 
     private KafkaException CreateReceiveTimeoutException()
@@ -2910,13 +3107,19 @@ public sealed partial class KafkaConnection :
         lock (shard.Gate)
         {
             if (!shard.Requests.TryGetValue(correlationId, out var pending))
+            {
                 return ResponseFrameAdmission.Discarded;
+            }
 
             if (!pending.Request.TryGetResponseMemoryPool(pending.Version, out var memoryPool))
+            {
                 return ResponseFrameAdmission.Discarded;
+            }
 
             if (memoryPool is null)
+            {
                 return ResponseFrameAdmission.Unrestricted;
+            }
 
             _admissionRequest = pending;
             Volatile.Write(ref _responseAdmissionInProgress, 1);
@@ -2945,7 +3148,9 @@ public sealed partial class KafkaConnection :
             // Restamp before clearing the flag: a timer that observes the cleared flag also
             // observes a deadline that starts from admission, not from the last byte read.
             if (Volatile.Read(ref _receiveTimeoutDeadlineTimestamp) != 0)
+            {
                 Volatile.Write(ref _receiveTimeoutDeadlineTimestamp, GetReceiveTimeoutDeadlineTimestamp());
+            }
             Volatile.Write(ref _responseAdmissionWaiting, 0);
             request.Request?.EndAdmissionWait(request.Version);
         }
@@ -2969,17 +3174,23 @@ public sealed partial class KafkaConnection :
     private ValueTask ReservePendingRequestSlotAsync(CancellationToken cancellationToken)
     {
         if (!TryEnterPendingRequestSlotOperation())
+        {
             throw new ObjectDisposedException(nameof(KafkaConnection));
+        }
 
         try
         {
             if (Volatile.Read(ref _disposed) != 0)
+            {
                 throw new ObjectDisposedException(nameof(KafkaConnection));
+            }
 
             if (_pendingRequestSlots.Wait(0, cancellationToken))
             {
                 if (Volatile.Read(ref _disposed) == 0)
+                {
                     return default;
+                }
 
                 _pendingRequestSlots.Release();
                 throw new ObjectDisposedException(nameof(KafkaConnection));
@@ -3000,12 +3211,16 @@ public sealed partial class KafkaConnection :
     private async ValueTask ReservePendingRequestSlotSlowAsync(CancellationToken cancellationToken)
     {
         if (!TryEnterPendingRequestSlotOperation())
+        {
             throw new ObjectDisposedException(nameof(KafkaConnection));
+        }
 
         try
         {
             if (Volatile.Read(ref _disposed) != 0)
+            {
                 throw new ObjectDisposedException(nameof(KafkaConnection));
+            }
 
             using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(
                 cancellationToken,
@@ -3014,7 +3229,9 @@ public sealed partial class KafkaConnection :
             await _pendingRequestSlots.WaitAsync(linkedCts.Token).ConfigureAwait(false);
 
             if (Volatile.Read(ref _disposed) == 0)
+            {
                 return;
+            }
 
             _pendingRequestSlots.Release();
             throw new ObjectDisposedException(nameof(KafkaConnection));
@@ -3040,7 +3257,9 @@ public sealed partial class KafkaConnection :
     private void ReleasePendingRequestSlot()
     {
         if (!TryEnterPendingRequestSlotOperation())
+        {
             return;
+        }
 
         try
         {
@@ -3083,11 +3302,15 @@ public sealed partial class KafkaConnection :
     private bool TryEnterPendingRequestSlotOperation()
     {
         if (Volatile.Read(ref _pendingRequestSlotsClosed) != 0)
+        {
             return false;
+        }
 
         Interlocked.Increment(ref _pendingRequestSlotOperationCount);
         if (Volatile.Read(ref _pendingRequestSlotsClosed) == 0)
+        {
             return true;
+        }
 
         ExitPendingRequestSlotOperation();
         return false;
@@ -3119,7 +3342,9 @@ public sealed partial class KafkaConnection :
         lock (shard.Gate)
         {
             if (!shard.Requests.TryAdd(correlationId, new PendingRequestEntry(request, request.Version)))
+            {
                 throw new InvalidOperationException($"Duplicate pending request correlation id {correlationId}.");
+            }
         }
 
         Interlocked.Increment(ref _pendingRequestCount);
@@ -3153,7 +3378,9 @@ public sealed partial class KafkaConnection :
             {
                 TrySignalReauthenticationResponsesDrained();
                 if (Volatile.Read(ref _disposed) != 0)
+                {
                     Volatile.Read(ref _pendingRequestsDrained)?.TrySetResult();
+                }
             }
 
             // No timer work on the response path: the armed timer evaluates the
@@ -3169,7 +3396,9 @@ public sealed partial class KafkaConnection :
     private Task WaitForPendingRequestsDrainedAsync()
     {
         if (GetPendingRequestCount() == 0)
+        {
             return Task.CompletedTask;
+        }
 
         var drained = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         Volatile.Write(ref _pendingRequestsDrained, drained);
@@ -3177,7 +3406,9 @@ public sealed partial class KafkaConnection :
         // Close the race where the final owner removed its request before the
         // completion source was published.
         if (GetPendingRequestCount() == 0)
+        {
             drained.TrySetResult();
+        }
 
         return drained.Task;
     }
@@ -3187,7 +3418,9 @@ public sealed partial class KafkaConnection :
         // Request admission is paused, but pipelined sends leave the SASL gate after writing.
         // Drain their responses before putting a handshake behind a locally blocked fetch.
         if (!HasPendingRequests() && Volatile.Read(ref _responseAdmissionInProgress) == 0)
+        {
             return;
+        }
 
         var drained = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         Volatile.Write(ref _reauthenticationResponsesDrained, drained);
@@ -3207,7 +3440,9 @@ public sealed partial class KafkaConnection :
     {
         var drained = Volatile.Read(ref _reauthenticationResponsesDrained);
         if (drained is not null)
+        {
             TryCompleteReauthenticationResponsesDrained(drained);
+        }
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
@@ -3216,7 +3451,9 @@ public sealed partial class KafkaConnection :
         // Caller cancellation can remove the last request after its pool is selected,
         // before the wait callback runs. Only the receive loop can finish admission.
         if (!HasPendingRequests() && Volatile.Read(ref _responseAdmissionInProgress) == 0)
+        {
             drained.TrySetResult();
+        }
     }
 
     private bool HasPendingRequests() => Volatile.Read(ref _pendingRequestCount) != 0;
@@ -3224,11 +3461,15 @@ public sealed partial class KafkaConnection :
     private bool TryAcquireLease()
     {
         if (Volatile.Read(ref _retirementState) != 0 || Volatile.Read(ref _disposed) != 0)
+        {
             return false;
+        }
 
         Interlocked.Increment(ref _leaseCount);
         if (Volatile.Read(ref _retirementState) == 0 && Volatile.Read(ref _disposed) == 0)
+        {
             return true;
+        }
 
         ReleaseLease();
         return false;
@@ -3244,7 +3485,9 @@ public sealed partial class KafkaConnection :
     {
         Interlocked.Increment(ref _activeOperationCount);
         if (Volatile.Read(ref _retirementState) < 2 && Volatile.Read(ref _disposed) == 0)
+        {
             return new TrackedOperation(this);
+        }
 
         EndTrackedOperation();
         throw new ObjectDisposedException(nameof(KafkaConnection), "Connection has been retired");
@@ -3282,7 +3525,9 @@ public sealed partial class KafkaConnection :
         // a callback reclaiming the armed slot could evaluate a stale past deadline with
         // a request pending and spuriously expire the connection.
         if (Interlocked.CompareExchange(ref _receiveTimeoutArmed, 1, 0) == 0)
+        {
             ArmReceiveTimeoutTimer(_options.RequestTimeout);
+        }
     }
 
     private void ArmReceiveTimeoutTimer(TimeSpan dueTime)
@@ -3290,7 +3535,9 @@ public sealed partial class KafkaConnection :
         lock (_receiveTimeoutGate)
         {
             if (Volatile.Read(ref _disposed) != 0)
+            {
                 return;
+            }
 
             try
             {
@@ -3308,7 +3555,9 @@ public sealed partial class KafkaConnection :
         Volatile.Write(ref _receiveTimeoutDeadlineTimestamp, 0);
         var timer = Volatile.Read(ref _receiveTimeoutTimer);
         if (timer is null)
+        {
             return;
+        }
 
         try
         {
@@ -3323,13 +3572,17 @@ public sealed partial class KafkaConnection :
     {
         var existing = Volatile.Read(ref _receiveTimeoutTimer);
         if (existing is not null)
+        {
             return existing;
+        }
 
         var created = new Timer(static state => ((KafkaConnection)state!).OnReceiveTimeout(), this,
             Timeout.InfiniteTimeSpan, Timeout.InfiniteTimeSpan);
         existing = Interlocked.CompareExchange(ref _receiveTimeoutTimer, created, null);
         if (existing is null)
+        {
             return created;
+        }
 
         created.Dispose();
         return existing;
@@ -3340,7 +3593,9 @@ public sealed partial class KafkaConnection :
         while (true)
         {
             if (Volatile.Read(ref _disposed) != 0)
+            {
                 return;
+            }
 
             var deadlineTimestamp = Volatile.Read(ref _receiveTimeoutDeadlineTimestamp);
             if (HasPendingRequests() && deadlineTimestamp != 0)
@@ -3368,7 +3623,9 @@ public sealed partial class KafkaConnection :
                 // is published before the flag clears, so a changed deadline means fresh
                 // progress: evaluate it again instead of expiring on the stale value.
                 if (Volatile.Read(ref _receiveTimeoutDeadlineTimestamp) != deadlineTimestamp)
+                {
                     continue;
+                }
 
                 Volatile.Write(ref _receiveTimeoutExpired, 1);
 
@@ -3389,10 +3646,14 @@ public sealed partial class KafkaConnection :
             // reclaims the armed slot and loops to evaluate it.
             Interlocked.Exchange(ref _receiveTimeoutArmed, 0);
             if (!HasPendingRequests() || Volatile.Read(ref _receiveTimeoutDeadlineTimestamp) == 0)
+            {
                 return;
+            }
 
             if (Interlocked.CompareExchange(ref _receiveTimeoutArmed, 1, 0) != 0)
+            {
                 return;
+            }
         }
     }
 
@@ -3403,7 +3664,9 @@ public sealed partial class KafkaConnection :
         // The gate never ordered this lock-free field; the _disposed check inside
         // ArmReceiveTimeoutTimer is the real protection.
         if (Volatile.Read(ref _receiveTimeoutDeadlineTimestamp) == 0)
+        {
             return;
+        }
 
         ArmReceiveTimeoutTimer(TimeSpan.FromSeconds(remainingTimestamp / (double)Stopwatch.Frequency));
     }
@@ -3460,7 +3723,9 @@ public sealed partial class KafkaConnection :
             {
                 count = shard.Requests.Count;
                 if (count == 0)
+                {
                     continue;
+                }
 
                 snapshot = ArrayPool<PendingRequestEntry>.Shared.Rent(count);
                 shard.Requests.Values.CopyTo(snapshot, 0);
@@ -3605,11 +3870,15 @@ public sealed partial class KafkaConnection :
     private X509CertificateCollection? BuildClientCertificates(TlsConfig? tlsConfig)
     {
         if (tlsConfig is null)
+        {
             return null;
+        }
 
         var clientCert = LoadClientCertificateWithOwnership(tlsConfig);
         if (clientCert is null)
+        {
             return null;
+        }
 
         var certificates = new X509CertificateCollection();
         certificates.Add(clientCert);
@@ -3619,28 +3888,38 @@ public sealed partial class KafkaConnection :
     private void ConfigureTcpKeepAlive(Socket socket)
     {
         if (!_options.EnableTcpKeepAlive)
+        {
             return;
+        }
 
         TrySetSocketOption(socket, SocketOptionLevel.Socket, SocketOptionName.KeepAlive, 1);
 
 #if !NETSTANDARD2_0
         var keepAliveTimeSeconds = ToPositiveSeconds(_options.TcpKeepAliveTime);
         if (keepAliveTimeSeconds > 0)
+        {
             TrySetSocketOption(socket, SocketOptionLevel.Tcp, SocketOptionName.TcpKeepAliveTime, keepAliveTimeSeconds);
+        }
 
         var keepAliveIntervalSeconds = ToPositiveSeconds(_options.TcpKeepAliveInterval);
         if (keepAliveIntervalSeconds > 0)
+        {
             TrySetSocketOption(socket, SocketOptionLevel.Tcp, SocketOptionName.TcpKeepAliveInterval, keepAliveIntervalSeconds);
+        }
 
         if (_options.TcpKeepAliveRetryCount > 0)
+        {
             TrySetSocketOption(socket, SocketOptionLevel.Tcp, SocketOptionName.TcpKeepAliveRetryCount, _options.TcpKeepAliveRetryCount);
+        }
 #endif
     }
 
     private static int ToPositiveSeconds(TimeSpan value)
     {
         if (value <= TimeSpan.Zero)
+        {
             return 0;
+        }
 
         return (int)Math.Min(Math.Ceiling(value.TotalSeconds), int.MaxValue);
     }
@@ -3665,7 +3944,9 @@ public sealed partial class KafkaConnection :
     private static bool HasCustomCaCertificate(TlsConfig? tlsConfig)
     {
         if (tlsConfig is null)
+        {
             return false;
+        }
 
         return tlsConfig.CaCertificatePath is not null ||
                tlsConfig.CaCertificateObject is not null ||
@@ -3813,7 +4094,9 @@ public sealed partial class KafkaConnection :
     private static X509Certificate2 PreparePemClientCertificate(X509Certificate2 certificate)
     {
         if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+        {
             return certificate;
+        }
 
         byte[]? pkcs12 = null;
         try
@@ -3836,7 +4119,9 @@ public sealed partial class KafkaConnection :
         finally
         {
             if (pkcs12 is not null)
+            {
                 CryptographicOperations.ZeroMemory(pkcs12);
+            }
             certificate.Dispose();
         }
     }
@@ -3916,7 +4201,9 @@ public sealed partial class KafkaConnection :
 
         // If there are no policy errors, the certificate is valid
         if (sslPolicyErrors == SslPolicyErrors.None)
+        {
             return true;
+        }
 
         // If the only error is an untrusted root, validate against our custom CA
         if (sslPolicyErrors == SslPolicyErrors.RemoteCertificateChainErrors && chain is not null)
@@ -3997,13 +4284,17 @@ public sealed partial class KafkaConnection :
         }
 
         if (chain.ChainElements.Count == 0)
+        {
             return false;
+        }
 
         var rootCert = chain.ChainElements[chain.ChainElements.Count - 1].Certificate;
         foreach (var caCert in trustedCaCertificates)
         {
             if (string.Equals(rootCert.Thumbprint, caCert.Thumbprint, StringComparison.OrdinalIgnoreCase))
+            {
                 return true;
+            }
         }
 
         return false;
@@ -4012,7 +4303,9 @@ public sealed partial class KafkaConnection :
     private async ValueTask PerformSaslAuthenticationAsync(CancellationToken cancellationToken)
     {
         if (_stream is null)
+        {
             throw new InvalidOperationException("Not connected");
+        }
 
         LogStartingSaslAuthentication(_options.SaslMechanism);
 
@@ -4088,13 +4381,17 @@ public sealed partial class KafkaConnection :
                 sessionLifetimeMs = authResponse.SessionLifetimeMs;
 
                 if (authenticator.IsComplete)
+                {
                     break;
+                }
 
                 var challenge = authResponse.AuthBytes;
                 var response = authenticator.EvaluateChallenge(challenge);
 
                 if (response is null)
+                {
                     break;
+                }
 
                 // A final client token still needs to reach the broker even if evaluating
                 // the challenge marked the authenticator complete (for example GSSAPI).
@@ -4205,7 +4502,9 @@ public sealed partial class KafkaConnection :
 
         // Disposal may have released the previous timer before this one was published.
         if (Volatile.Read(ref _disposed) != 0)
+        {
             timer.Dispose();
+        }
     }
 
     /// <summary>
@@ -4221,7 +4520,9 @@ public sealed partial class KafkaConnection :
     {
         var expiry = _saslSessionState?.SessionExpiryTime;
         if (expiry is null || !IsConnected)
+        {
             return 0;
+        }
 
         var failures = ++_reauthFailures;
         var remainingMs = (long)(expiry.Value - DateTimeOffset.UtcNow).TotalMilliseconds;
@@ -4284,16 +4585,22 @@ public sealed partial class KafkaConnection :
     internal async Task PerformReauthenticationAsync()
     {
         if (Volatile.Read(ref _disposed) != 0 || !IsConnected)
+        {
             return;
+        }
 
         if (_reauthenticating)
+        {
             return;
+        }
 
         // Only one re-authentication at a time
         try
         {
             if (!await _reauthLock.WaitAsync(0).ConfigureAwait(false))
+            {
                 return;
+            }
         }
         catch (ObjectDisposedException)
         {
@@ -4337,7 +4644,9 @@ public sealed partial class KafkaConnection :
         }
 
         if (retryDelayMs > 0)
+        {
             ArmReauthenticationTimer(retryDelayMs);
+        }
     }
 
     /// <summary>
@@ -4350,7 +4659,9 @@ public sealed partial class KafkaConnection :
     private async ValueTask<long> PerformSaslReauthExchangeAsync(CancellationToken cancellationToken)
     {
         if (!IsConnected)
+        {
             throw new InvalidOperationException("Not connected");
+        }
 
         // Resolve dynamic credentials once per re-authentication attempt.
         var authenticator = await CreateSaslAuthenticatorAsync(cancellationToken).ConfigureAwait(false);
@@ -4411,13 +4722,17 @@ public sealed partial class KafkaConnection :
                 sessionLifetimeMs = authResponse.SessionLifetimeMs;
 
                 if (authenticator.IsComplete)
+                {
                     break;
+                }
 
                 var challenge = authResponse.AuthBytes;
                 var response = authenticator.EvaluateChallenge(challenge);
 
                 if (response is null)
+                {
                     break;
+                }
 
                 // A final client token still needs to reach the broker even if evaluating
                 // the challenge marked the authenticator complete (for example GSSAPI).
@@ -4492,7 +4807,9 @@ public sealed partial class KafkaConnection :
         where TResponse : IKafkaResponse
     {
         if (_stream is null)
+        {
             throw new InvalidOperationException("Not connected");
+        }
 
         var correlationId = Interlocked.Increment(ref s_globalCorrelationId);
         var headerVersion = KafkaMessageMetadata<TRequest, TResponse>.GetRequestHeaderVersion(apiVersion);
@@ -4596,7 +4913,9 @@ public sealed partial class KafkaConnection :
         {
             var read = await stream.ReadAsync(buffer[totalRead..], cancellationToken).ConfigureAwait(false);
             if (read == 0)
+            {
                 throw new IOException("Connection closed unexpectedly");
+            }
             totalRead += read;
         }
     }
@@ -4619,15 +4938,23 @@ public sealed partial class KafkaConnection :
                 Math.Max(MaximumSegmentsPerSend, pendingSegmentCapacity));
         }
 
-        public List<ArraySegment<byte>> PendingSegments { get; }
-        public List<ArraySegment<byte>> Segments { get; } = new(MaximumSegmentsPerSend);
+        public List<ArraySegment<byte>> PendingSegments
+        {
+            get;
+        }
+        public List<ArraySegment<byte>> Segments
+        {
+            get;
+        } = new(MaximumSegmentsPerSend);
 
         public bool HasPendingSegments => _pendingSegmentIndex < PendingSegments.Count;
 
         public void EnsurePendingSegmentCapacity(int capacity)
         {
             if (PendingSegments.Capacity < capacity)
+            {
                 PendingSegments.Capacity = capacity;
+            }
         }
 
         public void BeginPendingSend()
@@ -4685,7 +5012,9 @@ public sealed partial class KafkaConnection :
             try
             {
                 if (socket.SendAsync(_eventArgs))
+                {
                     return new ValueTask<int>(this, _core.Version);
+                }
 
                 var bytesTransferred = GetSynchronousResult();
                 _eventArgs.BufferList = null;
@@ -4701,7 +5030,9 @@ public sealed partial class KafkaConnection :
         private int GetSynchronousResult()
         {
             if (_eventArgs.SocketError != SocketError.Success)
+            {
                 throw new SocketException((int)_eventArgs.SocketError);
+            }
 
             return _eventArgs.BytesTransferred;
         }
@@ -4710,9 +5041,13 @@ public sealed partial class KafkaConnection :
         {
             eventArgs.BufferList = null;
             if (eventArgs.SocketError == SocketError.Success)
+            {
                 _core.SetResult(eventArgs.BytesTransferred);
+            }
             else
+            {
                 _core.SetException(new SocketException((int)eventArgs.SocketError));
+            }
         }
 
         public int GetResult(short token) => _core.GetResult(token);
@@ -4871,7 +5206,6 @@ public sealed partial class KafkaConnection :
         _cancelledCorrelationIds.Clear();
     }
 
-
     #region Logging
 
     [LoggerMessage(Level = LogLevel.Debug, Message = "Connecting to {Host}:{Port}")]
@@ -4998,44 +5332,68 @@ public sealed class ConnectionOptions
     /// <summary>
     /// Whether to use TLS.
     /// </summary>
-    public bool UseTls { get; init; }
+    public bool UseTls
+    {
+        get; init;
+    }
 
     /// <summary>
     /// TLS configuration for SSL/mTLS connections.
     /// When set, <see cref="UseTls"/> is automatically treated as true.
     /// </summary>
-    public TlsConfig? TlsConfig { get; init; }
+    public TlsConfig? TlsConfig
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Custom certificate validation callback.
     /// </summary>
-    public RemoteCertificateValidationCallback? RemoteCertificateValidationCallback { get; init; }
+    public RemoteCertificateValidationCallback? RemoteCertificateValidationCallback
+    {
+        get; init;
+    }
 
     /// <summary>
     /// SASL authentication mechanism.
     /// </summary>
-    public SaslMechanism SaslMechanism { get; init; } = SaslMechanism.None;
+    public SaslMechanism SaslMechanism
+    {
+        get; init;
+    } = SaslMechanism.None;
 
     /// <summary>
     /// SASL username for PLAIN and SCRAM authentication.
     /// </summary>
-    public string? SaslUsername { get; init; }
+    public string? SaslUsername
+    {
+        get; init;
+    }
 
     /// <summary>
     /// SASL password for PLAIN and SCRAM authentication.
     /// </summary>
-    public string? SaslPassword { get; init; }
+    public string? SaslPassword
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Dynamic credential provider for PLAIN and SCRAM authentication.
     /// Invoked once for each initial authentication and re-authentication attempt.
     /// </summary>
-    public Func<CancellationToken, ValueTask<SaslCredentials>>? SaslCredentialProvider { get; init; }
+    public Func<CancellationToken, ValueTask<SaslCredentials>>? SaslCredentialProvider
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Whether SCRAM authentication uses Kafka delegation token credentials.
     /// </summary>
-    public bool SaslScramTokenAuth { get; init; }
+    public bool SaslScramTokenAuth
+    {
+        get; init;
+    }
 
     private int _saslScramMaxIterations = ScramAuthenticator.DefaultMaxIterations;
 
@@ -5057,87 +5415,132 @@ public sealed class ConnectionOptions
     /// <summary>
     /// GSSAPI (Kerberos) configuration. Required when SaslMechanism is Gssapi.
     /// </summary>
-    public GssapiConfig? GssapiConfig { get; init; }
+    public GssapiConfig? GssapiConfig
+    {
+        get; init;
+    }
 
     /// <summary>
     /// OAuth bearer configuration for OAUTHBEARER authentication.
     /// </summary>
-    public OAuthBearerConfig? OAuthBearerConfig { get; init; }
+    public OAuthBearerConfig? OAuthBearerConfig
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Custom OAuth bearer token provider function for OAUTHBEARER authentication.
     /// Takes precedence over <see cref="OAuthBearerConfig"/> if both are specified.
     /// </summary>
-    public Func<CancellationToken, ValueTask<OAuthBearerToken>>? OAuthBearerTokenProvider { get; init; }
+    public Func<CancellationToken, ValueTask<OAuthBearerToken>>? OAuthBearerTokenProvider
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Static OAuth bearer token for OAUTHBEARER authentication.
     /// Use this for pre-obtained tokens; for dynamic token retrieval, use OAuthBearerTokenProvider instead.
     /// </summary>
-    public OAuthBearerToken? OAuthBearerToken { get; init; }
+    public OAuthBearerToken? OAuthBearerToken
+    {
+        get; init;
+    }
 
     /// <summary>
     /// AWS_MSK_IAM configuration.
     /// </summary>
-    public AwsMskIamConfig? AwsMskIamConfig { get; init; }
+    public AwsMskIamConfig? AwsMskIamConfig
+    {
+        get; init;
+    }
 
     /// <summary>
     /// SASL re-authentication configuration (KIP-368).
     /// When enabled (default), connections will proactively re-authenticate
     /// before SASL session credentials expire.
     /// </summary>
-    public SaslReauthenticationConfig? SaslReauthenticationConfig { get; init; }
+    public SaslReauthenticationConfig? SaslReauthenticationConfig
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Send buffer size in bytes.
     /// </summary>
-    public int SendBufferSize { get; init; }
+    public int SendBufferSize
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Receive buffer size in bytes.
     /// </summary>
-    public int ReceiveBufferSize { get; init; }
+    public int ReceiveBufferSize
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Whether to enable TCP keepalive on broker sockets.
     /// </summary>
-    public bool EnableTcpKeepAlive { get; init; } = DefaultEnableTcpKeepAlive;
+    public bool EnableTcpKeepAlive
+    {
+        get; init;
+    } = DefaultEnableTcpKeepAlive;
 
     /// <summary>
     /// Idle time before TCP keepalive probes start. Unsupported platforms ignore this.
     /// </summary>
-    public TimeSpan TcpKeepAliveTime { get; init; } = DefaultTcpKeepAliveTime;
+    public TimeSpan TcpKeepAliveTime
+    {
+        get; init;
+    } = DefaultTcpKeepAliveTime;
 
     /// <summary>
     /// Interval between TCP keepalive probes. Unsupported platforms ignore this.
     /// </summary>
-    public TimeSpan TcpKeepAliveInterval { get; init; } = DefaultTcpKeepAliveInterval;
+    public TimeSpan TcpKeepAliveInterval
+    {
+        get; init;
+    } = DefaultTcpKeepAliveInterval;
 
     /// <summary>
     /// Number of TCP keepalive probes before the connection is considered dead.
     /// Unsupported platforms ignore this.
     /// </summary>
-    public int TcpKeepAliveRetryCount { get; init; } = DefaultTcpKeepAliveRetryCount;
+    public int TcpKeepAliveRetryCount
+    {
+        get; init;
+    } = DefaultTcpKeepAliveRetryCount;
 
     /// <summary>
     /// Minimum segment size for pipe.
     /// No longer used: the receive path reads frames directly into pooled response
     /// buffers instead of going through a pipe. Retained for compatibility.
     /// </summary>
-    public int MinimumSegmentSize { get; init; } = 4096;
+    public int MinimumSegmentSize
+    {
+        get; init;
+    } = 4096;
 
     /// <summary>
     /// Minimum read size for pipe reader.
     /// No longer used: the receive path reads frames directly into pooled response
     /// buffers instead of going through a pipe. Retained for compatibility.
     /// </summary>
-    public int MinimumReadSize { get; init; } = 256;
+    public int MinimumReadSize
+    {
+        get; init;
+    } = 256;
 
     /// <summary>
     /// Initial socket connection setup timeout.
     /// Equivalent to Kafka's <c>socket.connection.setup.timeout.ms</c>.
     /// </summary>
-    public TimeSpan ConnectionTimeout { get; init; } = DefaultConnectionTimeout;
+    public TimeSpan ConnectionTimeout
+    {
+        get; init;
+    } = DefaultConnectionTimeout;
 
     /// <summary>
     /// Maximum socket connection setup timeout after consecutive failures.
@@ -5153,19 +5556,28 @@ public sealed class ConnectionOptions
     /// <summary>
     /// Request timeout.
     /// </summary>
-    public TimeSpan RequestTimeout { get; init; } = TimeSpan.FromSeconds(30);
+    public TimeSpan RequestTimeout
+    {
+        get; init;
+    } = TimeSpan.FromSeconds(30);
 
     /// <summary>
     /// Initial delay before reconnecting to a broker after a connection failure.
     /// Equivalent to Kafka's <c>reconnect.backoff.ms</c>. Set to zero to disable the delay.
     /// </summary>
-    public TimeSpan ReconnectBackoff { get; init; } = TimeSpan.FromMilliseconds(50);
+    public TimeSpan ReconnectBackoff
+    {
+        get; init;
+    } = TimeSpan.FromMilliseconds(50);
 
     /// <summary>
     /// Maximum delay before reconnecting to a broker after repeated connection failures.
     /// Equivalent to Kafka's <c>reconnect.backoff.max.ms</c>.
     /// </summary>
-    public TimeSpan ReconnectBackoffMax { get; init; } = TimeSpan.FromSeconds(1);
+    public TimeSpan ReconnectBackoffMax
+    {
+        get; init;
+    } = TimeSpan.FromSeconds(1);
 
     /// <summary>
     /// Maximum idle time before an unused connection is closed. Set to -1 to disable.
@@ -5179,17 +5591,26 @@ public sealed class ConnectionOptions
     /// <summary>
     /// Maximum in-flight requests per connection. Used internally to derive pool sizes.
     /// </summary>
-    internal int MaxInFlightRequestsPerConnection { get; init; } = 5;
+    internal int MaxInFlightRequestsPerConnection
+    {
+        get; init;
+    } = 5;
 
     /// <summary>
     /// Controls how broker hostnames are resolved before connecting.
     /// </summary>
-    public ClientDnsLookup ClientDnsLookup { get; init; } = ClientDnsLookup.UseAllDnsIps;
+    public ClientDnsLookup ClientDnsLookup
+    {
+        get; init;
+    } = ClientDnsLookup.UseAllDnsIps;
 
     /// <summary>
     /// DNS resolver used by connections. Internal for deterministic tests.
     /// </summary>
-    internal ClientDnsEndpointResolver DnsResolver { get; init; } = ClientDnsEndpointResolver.Default;
+    internal ClientDnsEndpointResolver DnsResolver
+    {
+        get; init;
+    } = ClientDnsEndpointResolver.Default;
 
     internal const int DefaultConnectionsMaxIdleMs = 540000;
     internal static readonly TimeSpan DefaultConnectionTimeout = TimeSpan.FromSeconds(30);
@@ -5201,7 +5622,9 @@ public sealed class ConnectionOptions
     internal static int ValidateConnectionsMaxIdleMs(int value, string paramName)
     {
         if (value < -1)
+        {
             throw new ArgumentOutOfRangeException(paramName, "ConnectionsMaxIdleMs must be -1 or greater.");
+        }
 
         return value;
     }
@@ -5209,12 +5632,16 @@ public sealed class ConnectionOptions
     internal static int ToConnectionsMaxIdleMs(TimeSpan value, string paramName)
     {
         if (value == Timeout.InfiniteTimeSpan)
+        {
             return -1;
+        }
 
         if (value < TimeSpan.Zero)
+        {
             throw new ArgumentOutOfRangeException(
                 paramName,
                 "Connections max idle must be non-negative, or Timeout.InfiniteTimeSpan to disable.");
+        }
 
         ArgumentOutOfRangeException.ThrowIfGreaterThan(value.TotalMilliseconds, int.MaxValue, paramName);
         return (int)value.TotalMilliseconds;
@@ -5274,10 +5701,22 @@ internal sealed class ResponseBufferPool
     private readonly bool _monitorNativeMemoryPressure;
 #endif
 
-    internal ArrayPool<byte> Pool { get; }
-    internal int MaxArrayLength { get; }
-    internal int ManagedArraysPerBucket { get; }
-    internal int MaxRetainedNativeBuffers { get; }
+    internal ArrayPool<byte> Pool
+    {
+        get;
+    }
+    internal int MaxArrayLength
+    {
+        get;
+    }
+    internal int ManagedArraysPerBucket
+    {
+        get;
+    }
+    internal int MaxRetainedNativeBuffers
+    {
+        get;
+    }
     internal int RetainedNativeBufferCount => Volatile.Read(ref _retainedNativeBufferCount);
 
     internal ResponseBufferPool(
@@ -5336,7 +5775,9 @@ internal sealed class ResponseBufferPool
     private static int RoundUpToMiBTier(long value)
     {
         if (value >= int.MaxValue)
+        {
             return int.MaxValue;
+        }
 
         var rounded = ((value + SizeTierBytes - 1) / SizeTierBytes) * SizeTierBytes;
         return rounded >= int.MaxValue ? int.MaxValue : (int)rounded;
@@ -5382,17 +5823,23 @@ internal sealed class ResponseBufferPool
 
         // Pressure can begin after the first check but before this buffer is published.
         if (Volatile.Read(ref _highNativeMemoryPressure) != 0)
+        {
             TrimNativeBuffers();
+        }
     }
 
     internal int TrimNativeBuffers()
     {
         var released = 0;
         foreach (var bucket in _nativeBuckets.Values)
+        {
             released += bucket.Trim();
+        }
 
         if (released > 0)
+        {
             Interlocked.Add(ref _retainedNativeBufferCount, -released);
+        }
         return released;
     }
 
@@ -5404,7 +5851,9 @@ internal sealed class ResponseBufferPool
         var isHigh = IsHighMemoryLoad(memoryLoadBytes, highMemoryLoadThresholdBytes);
         var wasHigh = Interlocked.Exchange(ref _highNativeMemoryPressure, isHigh ? 1 : 0) != 0;
         if (isHigh && !wasHigh)
+        {
             TrimNativeBuffers();
+        }
     }
 
 #if !NETSTANDARD2_0
@@ -5413,7 +5862,9 @@ internal sealed class ResponseBufferPool
         // Sampling is demand-driven to avoid one background timer per shared pool. An idle
         // pool remains bounded by MaxRetainedNativeBuffers and trims on its next return.
         if (!_monitorNativeMemoryPressure)
+        {
             return;
+        }
 
         var now = Environment.TickCount64;
         var nextRefresh = Volatile.Read(ref _nextNativeMemoryPressureRefresh);
@@ -5436,7 +5887,9 @@ internal sealed class ResponseBufferPool
     private static int RoundUpToPowerOfTwo(int value)
     {
         if (value > 1 << 30)
+        {
             return value;
+        }
 
         var rounded = (uint)(value - 1);
         rounded |= rounded >> 1;
@@ -5483,7 +5936,9 @@ internal sealed unsafe class NativeResponseBuffer : MemoryManager<byte>
     private int _capacity;
     private int _disposed = 1;
 
-    private NativeResponseBuffer() { }
+    private NativeResponseBuffer()
+    {
+    }
 
     internal IntPtr Address => _pointer;
 
@@ -5510,14 +5965,18 @@ internal sealed unsafe class NativeResponseBuffer : MemoryManager<byte>
         return new MemoryHandle((byte*)_pointer + elementIndex, default, this);
     }
 
-    public override void Unpin() { }
+    public override void Unpin()
+    {
+    }
 
     internal void Return() => Dispose(disposing: true);
 
     protected override void Dispose(bool disposing)
     {
         if (Interlocked.Exchange(ref _disposed, 1) != 0)
+        {
             return;
+        }
 
         var pool = _pool!;
         var pointer = _pointer;
@@ -5532,7 +5991,9 @@ internal sealed unsafe class NativeResponseBuffer : MemoryManager<byte>
     private sealed class NativeResponseBufferPool() : ObjectPool<NativeResponseBuffer>(maxPoolSize: 256)
     {
         protected override NativeResponseBuffer Create() => new();
-        protected override void Reset(NativeResponseBuffer item) { }
+        protected override void Reset(NativeResponseBuffer item)
+        {
+        }
     }
 }
 
@@ -5572,8 +6033,14 @@ internal readonly struct PooledResponseBuffer : IDisposable
     }
 
     public byte[] Buffer => _buffer ?? throw new InvalidOperationException("Response uses native memory.");
-    public int Length { get; }
-    public bool IsPooled { get; }
+    public int Length
+    {
+        get;
+    }
+    public bool IsPooled
+    {
+        get;
+    }
     internal bool UsesNativeMemory => _nativeBuffer is not null;
 
     public ReadOnlyMemory<byte> Data => _nativeBuffer is not null
@@ -5647,7 +6114,9 @@ internal sealed class PooledResponseMemory : IPooledMemory
     private int _pooled;
     private int _disposed = 1;
 
-    private PooledResponseMemory() { }
+    private PooledResponseMemory()
+    {
+    }
 
     internal static PooledResponseMemory Create(
         byte[] buffer,
@@ -5710,7 +6179,9 @@ internal sealed class PooledResponseMemory : IPooledMemory
     public void Dispose()
     {
         if (Interlocked.Exchange(ref _disposed, 1) != 0)
+        {
             return;
+        }
 
         // The disposal claim above grants exclusive access until this owner returns
         // to the pool. Clearing each field needs no additional atomic operation.
@@ -5735,7 +6206,9 @@ internal sealed class PooledResponseMemory : IPooledMemory
         }
 
         if (Volatile.Read(ref _pooled) != 0)
+        {
             s_pool.Return(this);
+        }
     }
 
     private readonly struct MemoryPoolPolicy
@@ -5743,7 +6216,9 @@ internal sealed class PooledResponseMemory : IPooledMemory
     {
         public PooledResponseMemory Create() => new();
 
-        public void Destroy(PooledResponseMemory item) { }
+        public void Destroy(PooledResponseMemory item)
+        {
+        }
 
         public bool TryReset(PooledResponseMemory item)
         {
@@ -5938,7 +6413,9 @@ internal sealed class PooledPendingRequest : IValueTaskSource<PooledResponseBuff
     private void OnCancelled()
     {
         if (TryDeferTimeoutForAdmission())
+        {
             return;
+        }
 
         TrySetCanceled(_cancellationToken);
     }
@@ -5972,7 +6449,9 @@ internal sealed class PooledPendingRequest : IValueTaskSource<PooledResponseBuff
         // requests sent after the wait began. Check only on timeout, not on frame dispatch.
         // Once deferred, the connection receive watchdog bounds broker silence after admission.
         if (_admissionConnection?.IsResponseAdmissionWaiting == true)
+        {
             TryBeginAdmissionWait(version);
+        }
         if (callerToken.IsCancellationRequested
             || Interlocked.CompareExchange(
                 ref _admissionState,
@@ -6281,4 +6760,3 @@ internal sealed class PooledPendingRequest : IValueTaskSource<PooledResponseBuff
         _core.OnCompleted(continuation, state, token, flags);
     }
 }
-

@@ -30,10 +30,15 @@ public sealed class ConsumerRackAwarenessIntegrationTests(RackAwareKafkaContaine
             for (var offset = 0; offset < recordsPerPartition; offset++)
             {
                 for (var partition = 0; partition < partitions; partition++)
+                {
                     await producer.FireAsync(new ProducerMessage<string, byte[]>
                     {
-                        Topic = topic, Partition = partition, Key = "key", Value = value
+                        Topic = topic,
+                        Partition = partition,
+                        Key = "key",
+                        Value = value
                     });
+                }
             }
             await producer.FlushAsync(timeout.Token);
         }
@@ -64,7 +69,9 @@ public sealed class ConsumerRackAwarenessIntegrationTests(RackAwareKafkaContaine
         {
             var expected = nextOffsets[record.Partition];
             if (record.Offset != expected || expected >= recordsPerPartition)
+            {
                 throw new InvalidOperationException($"Partition {record.Partition}: got {record.Offset}, expected {expected}.");
+            }
             nextOffsets[record.Partition]++;
             consumed++;
         }
@@ -74,9 +81,13 @@ public sealed class ConsumerRackAwarenessIntegrationTests(RackAwareKafkaContaine
             await foreach (var records in consumer.ConsumeBatchAsync(timeout.Token))
             {
                 foreach (var record in records)
+                {
                     Verify(record);
+                }
                 if (consumed == partitions * recordsPerPartition)
+                {
                     break;
+                }
             }
         }
         else
@@ -85,7 +96,9 @@ public sealed class ConsumerRackAwarenessIntegrationTests(RackAwareKafkaContaine
             {
                 Verify(record);
                 if (consumed == partitions * recordsPerPartition)
+                {
                     break;
+                }
             }
         }
         await Assert.That(nextOffsets.All(static offset => offset == recordsPerPartition)).IsTrue();

@@ -20,7 +20,9 @@ public class InMemoryShareCloseTests
             first.Subscribe("topic");
             var record = await first.PollAsync().FirstAsync();
             if (explicitAccept)
+            {
                 first.Acknowledge(record);
+            }
         }
 
         await using var second = new InMemoryShareConsumer<string, string>(cluster, new InMemoryShareConsumerOptions { AutoOffsetReset = AutoOffsetReset.Earliest });

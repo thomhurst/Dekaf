@@ -175,10 +175,16 @@ public partial class OutboxMetricTests
 
     private sealed class SamplingStore : MetricStore, IOutboxMetricsStore
     {
-        internal required Func<int, CancellationToken, ValueTask<OutboxPendingMetrics?>> Query { get; init; }
+        internal required Func<int, CancellationToken, ValueTask<OutboxPendingMetrics?>> Query
+        {
+            get; init;
+        }
         internal int Calls;
         internal bool QueryCancelled;
-        internal Channel<int> Started { get; } = Channel.CreateUnbounded<int>();
+        internal Channel<int> Started
+        {
+            get;
+        } = Channel.CreateUnbounded<int>();
         internal async Task WaitForQueryAsync()
         {
             using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));

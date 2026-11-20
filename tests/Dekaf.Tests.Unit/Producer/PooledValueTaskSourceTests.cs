@@ -471,7 +471,9 @@ public class PooledValueTaskSourceTests
             {
                 barrier.SignalAndWait();
                 if (source.TrySetResult(value))
+                {
                     Interlocked.Increment(ref successCount);
+                }
             }));
         }
 
@@ -482,7 +484,9 @@ public class PooledValueTaskSourceTests
             {
                 barrier.SignalAndWait();
                 if (source.TrySetException(new InvalidOperationException("test")))
+                {
                     Interlocked.Increment(ref successCount);
+                }
             }));
         }
 
@@ -597,9 +601,13 @@ public class PooledValueTaskSourceTests
         });
 
         if (succeeds)
+        {
             source.SetResult(42);
+        }
         else
+        {
             source.SetException(operationException);
+        }
 
         var thrown = await Assert.ThrowsAsync<InvalidOperationException>(async () =>
             await source.Task.ConfigureAwait(false));
@@ -645,15 +653,23 @@ public class PooledValueTaskSourceTests
         });
 
         if (!completeBeforeObservation)
+        {
             source.ObserveForFireAndForget();
+        }
 
         if (succeeds)
+        {
             source.SetResult(42);
+        }
         else
+        {
             source.SetException(operationException);
+        }
 
         if (completeBeforeObservation)
+        {
             source.ObserveForFireAndForget();
+        }
 
         await handlerRan.Task.WaitAsync(TimeSpan.FromSeconds(30)).ConfigureAwait(false);
         // Pool publication happens after the callback and cleanup, so reuse also synchronizes
@@ -1083,7 +1099,9 @@ public class PooledValueTaskSourceTests
 
             await Assert.That(continuationFinished.Wait(TimeSpan.FromSeconds(5))).IsTrue();
             if (continuationException is not null)
+            {
                 ExceptionDispatchInfo.Capture(continuationException).Throw();
+            }
 
             await Assert.That(result).IsTrue();
         }
@@ -1233,17 +1251,23 @@ public class PooledValueTaskSourceTests
 
         completionThread.Start();
         if (!completionStarted.Task.Wait(TimeSpan.FromSeconds(5)))
+        {
             throw new TimeoutException("Completion probe thread did not start.");
+        }
 
         var completedBeforeRelease = completionReturned.Task.Wait(TimeSpan.FromSeconds(2));
 
         releaseContinuation.SetResult();
 
         if (!completionReturned.Task.Wait(TimeSpan.FromSeconds(30)))
+        {
             throw new TimeoutException("Completion did not return after releasing continuation.");
+        }
 
         if (completionException is not null)
+        {
             ExceptionDispatchInfo.Capture(completionException).Throw();
+        }
         await continuationFinished.Task.WaitAsync(TimeSpan.FromSeconds(30)).ConfigureAwait(false);
 
         await Assert.That(completedBeforeRelease).IsTrue();
@@ -1266,10 +1290,14 @@ public class PooledValueTaskSourceTests
         {
             var source = pool.Rent();
             if (ReferenceEquals(source, expected))
+            {
                 return source;
+            }
 
             if (Environment.TickCount64 > deadline)
+            {
                 throw new TimeoutException("The expected source was not returned to the pool.");
+            }
 
             await Task.Yield();
         }

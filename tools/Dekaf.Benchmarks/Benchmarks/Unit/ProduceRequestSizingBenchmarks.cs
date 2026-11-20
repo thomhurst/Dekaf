@@ -9,7 +9,10 @@ namespace Dekaf.Benchmarks.Benchmarks.Unit;
 public class ProduceRequestSizingBenchmarks
 {
     [Params("a", "topic-name-longer-than-a-topic-id")]
-    public string Topic { get; set; } = null!;
+    public string Topic
+    {
+        get; set;
+    } = null!;
 
     [Benchmark]
     public int GetSingleBatchRequestBodySize() =>

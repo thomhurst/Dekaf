@@ -76,30 +76,48 @@ public readonly struct MessageFailureContext<TKey, TValue>
     /// <summary>
     /// Gets the failed record.
     /// </summary>
-    public ConsumeResult<TKey, TValue> Result { get; }
+    public ConsumeResult<TKey, TValue> Result
+    {
+        get;
+    }
 
     /// <summary>
     /// Gets the exception thrown by message processing.
     /// </summary>
-    public Exception ProcessingException { get; }
+    public Exception ProcessingException
+    {
+        get;
+    }
 
     /// <summary>
     /// Gets the one-based processing attempt number for this delivery.
     /// </summary>
-    public int AttemptNumber { get; }
+    public int AttemptNumber
+    {
+        get;
+    }
 
     /// <summary>
     /// Gets the cumulative failure count, including retry-topic deliveries.
     /// </summary>
-    public int FailureCount { get; }
+    public int FailureCount
+    {
+        get;
+    }
 
     /// <summary>
     /// Gets the operation that left the message without a durable outcome.
     /// </summary>
-    public MessageFailureStage Stage { get; }
+    public MessageFailureStage Stage
+    {
+        get;
+    }
 
     /// <summary>
     /// Gets the retry-topic or dead-letter routing exception, when routing failed.
     /// </summary>
-    public Exception? RoutingException { get; }
+    public Exception? RoutingException
+    {
+        get;
+    }
 }

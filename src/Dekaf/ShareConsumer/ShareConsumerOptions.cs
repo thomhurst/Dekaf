@@ -1,10 +1,10 @@
 using System.Net.Security;
-using Dekaf.Networking;
 using Dekaf.Consumer;
+using Dekaf.Networking;
 using Dekaf.Retry;
-using Dekaf.Telemetry;
 using Dekaf.Security;
 using Dekaf.Security.Sasl;
+using Dekaf.Telemetry;
 
 namespace Dekaf.ShareConsumer;
 
@@ -18,25 +18,37 @@ public sealed class ShareConsumerOptions
 
     /// <summary>Application metrics registered when the consumer is constructed.</summary>
     /// <remarks>Registrations are snapshotted by the consumer. Only broker-requested prefixes are collected.</remarks>
-    public IReadOnlyList<ApplicationTelemetryMetric> ApplicationMetrics { get; init; } = [];
+    public IReadOnlyList<ApplicationTelemetryMetric> ApplicationMetrics
+    {
+        get; init;
+    } = [];
 
 
     /// <summary>
     /// Bootstrap servers (host:port,host:port).
     /// </summary>
-    public required IReadOnlyList<string> BootstrapServers { get; init; }
+    public required IReadOnlyList<string> BootstrapServers
+    {
+        get; init;
+    }
 
     internal const string DefaultClientId = "dekaf-share-consumer";
 
     /// <summary>
     /// Client ID.
     /// </summary>
-    public string? ClientId { get; init; } = DefaultClientId;
+    public string? ClientId
+    {
+        get; init;
+    } = DefaultClientId;
 
     /// <summary>
     /// Share group ID. Required for share consumers.
     /// </summary>
-    public required string GroupId { get; init; }
+    public required string GroupId
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Optional group-level share.auto.offset.reset policy, applied during initialization before joining.
@@ -44,10 +56,16 @@ public sealed class ShareConsumerOptions
     /// and ByDuration. This changes the policy for every member, requires group ALTER_CONFIGS,
     /// and does not rewind an existing delivery window.
     /// </summary>
-    public AutoOffsetReset? AutoOffsetReset { get; init; }
+    public AutoOffsetReset? AutoOffsetReset
+    {
+        get; init;
+    }
 
     /// <summary>Non-negative lookback used with ByDuration. Otherwise must be null.</summary>
-    public TimeSpan? AutoOffsetResetDuration { get; init; }
+    public TimeSpan? AutoOffsetResetDuration
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Optional group-level errors.deadletterqueue.topic.name (KIP-1191), applied during initialization
@@ -57,7 +75,10 @@ public sealed class ShareConsumerOptions
     /// The name must be a valid topic name that does not start with "__"; the topic must have
     /// errors.deadletterqueue.group.enable=true.
     /// </summary>
-    public string? DeadLetterQueueTopic { get; init; }
+    public string? DeadLetterQueueTopic
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Optional group-level errors.deadletterqueue.copy.record.enable (KIP-1191), applied during
@@ -65,43 +86,67 @@ public sealed class ShareConsumerOptions
     /// record; false writes a null key and value. Kafka 4.4.0 writes only the context headers either way.
     /// Null preserves the broker configuration, whose default is false.
     /// </summary>
-    public bool? DeadLetterQueueCopyRecord { get; init; }
+    public bool? DeadLetterQueueCopyRecord
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The rack ID of the consumer, used for rack-aware assignment.
     /// </summary>
-    public string? RackId { get; init; }
+    public string? RackId
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Minimum number of bytes the broker should accumulate before returning a fetch response.
     /// </summary>
-    public int FetchMinBytes { get; init; } = 1;
+    public int FetchMinBytes
+    {
+        get; init;
+    } = 1;
 
     /// <summary>
     /// Maximum number of bytes the broker will return in a fetch response.
     /// </summary>
-    public int FetchMaxBytes { get; init; } = 52428800; // 50 MiB
+    public int FetchMaxBytes
+    {
+        get; init;
+    } = 52428800; // 50 MiB
 
     /// <summary>
     /// Maximum number of bytes per partition in a fetch response.
     /// </summary>
-    public int MaxPartitionFetchBytes { get; init; } = 1048576; // 1 MiB
+    public int MaxPartitionFetchBytes
+    {
+        get; init;
+    } = 1048576; // 1 MiB
 
     /// <summary>
     /// Maximum time in milliseconds the broker will wait for FetchMinBytes to be satisfied.
     /// </summary>
-    public int FetchMaxWaitMs { get; init; } = 200;
+    public int FetchMaxWaitMs
+    {
+        get; init;
+    } = 200;
 
     /// <summary>
     /// Maximum number of records returned per poll.
     /// </summary>
-    public int MaxPollRecords { get; init; } = 500;
+    public int MaxPollRecords
+    {
+        get; init;
+    } = 500;
 
     /// <summary>
     /// Controls whether records are acknowledged implicitly or only through Acknowledge.
     /// Equivalent to Kafka's share.acknowledgement.mode.
     /// </summary>
-    public ShareAcknowledgementMode AcknowledgementMode { get; init; } = ShareAcknowledgementMode.Implicit;
+    public ShareAcknowledgementMode AcknowledgementMode
+    {
+        get; init;
+    } = ShareAcknowledgementMode.Implicit;
 
     /// <summary>
     /// Callback invoked synchronously after an inline or standalone acknowledgement commit
@@ -110,65 +155,98 @@ public sealed class ShareConsumerOptions
     /// ignored. The result span is valid only for the callback invocation. The callback must
     /// remain non-blocking and must not re-enter the consumer.
     /// </summary>
-    public ShareAcknowledgementCommitCallback? AcknowledgementCommitCallback { get; init; }
+    public ShareAcknowledgementCommitCallback? AcknowledgementCommitCallback
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Controls ShareFetch record acquisition behavior.
     /// Equivalent to Kafka's share.acquire.mode.
     /// </summary>
-    public ShareAcquireMode ShareAcquireMode { get; init; } = ShareAcquireMode.BatchOptimized;
+    public ShareAcquireMode ShareAcquireMode
+    {
+        get; init;
+    } = ShareAcquireMode.BatchOptimized;
 
     /// <summary>
     /// Session timeout in milliseconds. The coordinator will remove the member if no heartbeat
     /// is received within this interval.
     /// </summary>
-    public int SessionTimeoutMs { get; init; } = 45000;
+    public int SessionTimeoutMs
+    {
+        get; init;
+    } = 45000;
 
     /// <summary>
     /// Initial heartbeat interval in milliseconds. The broker may adjust this via heartbeat responses.
     /// </summary>
-    public int HeartbeatIntervalMs { get; init; } = 3000;
+    public int HeartbeatIntervalMs
+    {
+        get; init;
+    } = 3000;
 
     /// <summary>
     /// Request timeout in milliseconds for protocol requests.
     /// </summary>
-    public int RequestTimeoutMs { get; init; } = 30000;
+    public int RequestTimeoutMs
+    {
+        get; init;
+    } = 30000;
 
     /// <summary>
     /// Initial delay in milliseconds for retrying failed broker requests.
     /// Equivalent to Kafka's <c>retry.backoff.ms</c>.
     /// </summary>
-    public int RetryBackoffMs { get; init; } = 100;
+    public int RetryBackoffMs
+    {
+        get; init;
+    } = 100;
 
     /// <summary>
     /// Maximum delay in milliseconds for retrying repeatedly failed broker requests.
     /// Equivalent to Kafka's <c>retry.backoff.max.ms</c>.
     /// </summary>
-    public int RetryBackoffMaxMs { get; init; } = 1000;
+    public int RetryBackoffMaxMs
+    {
+        get; init;
+    } = 1000;
 
     /// <summary>
     /// Initial delay in milliseconds before reconnecting to a broker after a connection failure.
     /// Equivalent to Kafka's <c>reconnect.backoff.ms</c>. Set to 0 to disable the delay.
     /// </summary>
-    public int ReconnectBackoffMs { get; init; } = 50;
+    public int ReconnectBackoffMs
+    {
+        get; init;
+    } = 50;
 
     /// <summary>
     /// Maximum delay in milliseconds before reconnecting to a broker after repeated failures.
     /// Equivalent to Kafka's <c>reconnect.backoff.max.ms</c>.
     /// </summary>
-    public int ReconnectBackoffMaxMs { get; init; } = 1000;
+    public int ReconnectBackoffMaxMs
+    {
+        get; init;
+    } = 1000;
 
     /// <summary>
     /// Maximum idle time in milliseconds before unused broker connections are closed.
     /// Default is 9 minutes, below Kafka's default broker-side 10 minute idle timeout.
     /// Set to -1 to disable client-side idle connection reaping.
     /// </summary>
-    public int ConnectionsMaxIdleMs { get; init; } = ConnectionOptions.DefaultConnectionsMaxIdleMs;
+    public int ConnectionsMaxIdleMs
+    {
+        get; init;
+    } = ConnectionOptions.DefaultConnectionsMaxIdleMs;
 
     /// <summary>
     /// Maximum time allowed for socket connection setup, including TLS/SASL handshakes.
     /// </summary>
-    public TimeSpan ConnectionTimeout { get; init; } = ConnectionOptions.DefaultConnectionTimeout;
+    public TimeSpan ConnectionTimeout
+    {
+        get; init;
+    } = ConnectionOptions.DefaultConnectionTimeout;
 
     /// <summary>
     /// Maximum connection setup timeout after consecutive failures. Defaults to
@@ -184,60 +262,96 @@ public sealed class ShareConsumerOptions
     /// <summary>
     /// Whether to enable TCP keepalive on broker sockets.
     /// </summary>
-    public bool EnableTcpKeepAlive { get; init; } = ConnectionOptions.DefaultEnableTcpKeepAlive;
+    public bool EnableTcpKeepAlive
+    {
+        get; init;
+    } = ConnectionOptions.DefaultEnableTcpKeepAlive;
 
     /// <summary>
     /// Idle time before TCP keepalive probes start. Unsupported platforms ignore this.
     /// </summary>
-    public TimeSpan TcpKeepAliveTime { get; init; } = ConnectionOptions.DefaultTcpKeepAliveTime;
+    public TimeSpan TcpKeepAliveTime
+    {
+        get; init;
+    } = ConnectionOptions.DefaultTcpKeepAliveTime;
 
     /// <summary>
     /// Interval between TCP keepalive probes. Unsupported platforms ignore this.
     /// </summary>
-    public TimeSpan TcpKeepAliveInterval { get; init; } = ConnectionOptions.DefaultTcpKeepAliveInterval;
+    public TimeSpan TcpKeepAliveInterval
+    {
+        get; init;
+    } = ConnectionOptions.DefaultTcpKeepAliveInterval;
 
     /// <summary>
     /// Number of TCP keepalive probes before the connection is considered dead.
     /// Unsupported platforms ignore this.
     /// </summary>
-    public int TcpKeepAliveRetryCount { get; init; } = ConnectionOptions.DefaultTcpKeepAliveRetryCount;
+    public int TcpKeepAliveRetryCount
+    {
+        get; init;
+    } = ConnectionOptions.DefaultTcpKeepAliveRetryCount;
 
     /// <summary>
     /// Whether to use TLS for broker connections.
     /// </summary>
-    public bool UseTls { get; init; }
+    public bool UseTls
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Custom TLS configuration.
     /// </summary>
-    public TlsConfig? TlsConfig { get; init; }
+    public TlsConfig? TlsConfig
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Custom TLS certificate validation callback.
     /// </summary>
-    public RemoteCertificateValidationCallback? RemoteCertificateValidationCallback { get; init; }
+    public RemoteCertificateValidationCallback? RemoteCertificateValidationCallback
+    {
+        get; init;
+    }
 
     /// <summary>
     /// SASL authentication mechanism.
     /// </summary>
-    public SaslMechanism SaslMechanism { get; init; } = SaslMechanism.None;
+    public SaslMechanism SaslMechanism
+    {
+        get; init;
+    } = SaslMechanism.None;
 
     /// <summary>
     /// SASL username for PLAIN/SCRAM authentication.
     /// </summary>
-    public string? SaslUsername { get; init; }
+    public string? SaslUsername
+    {
+        get; init;
+    }
 
     /// <summary>
     /// SASL password for PLAIN/SCRAM authentication.
     /// </summary>
-    public string? SaslPassword { get; init; }
+    public string? SaslPassword
+    {
+        get; init;
+    }
 
-    public Func<CancellationToken, ValueTask<SaslCredentials>>? SaslCredentialProvider { get; init; }
+    public Func<CancellationToken, ValueTask<SaslCredentials>>? SaslCredentialProvider
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Whether SCRAM authentication uses Kafka delegation token credentials.
     /// </summary>
-    public bool SaslScramTokenAuth { get; init; }
+    public bool SaslScramTokenAuth
+    {
+        get; init;
+    }
 
     private int _saslScramMaxIterations = ScramAuthenticator.DefaultMaxIterations;
 
@@ -259,58 +373,91 @@ public sealed class ShareConsumerOptions
     /// <summary>
     /// GSSAPI (Kerberos) configuration.
     /// </summary>
-    public GssapiConfig? GssapiConfig { get; init; }
+    public GssapiConfig? GssapiConfig
+    {
+        get; init;
+    }
 
     /// <summary>
     /// OAuth Bearer configuration.
     /// </summary>
-    public OAuthBearerConfig? OAuthBearerConfig { get; init; }
+    public OAuthBearerConfig? OAuthBearerConfig
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Custom OAuth Bearer token provider.
     /// </summary>
-    public Func<CancellationToken, ValueTask<OAuthBearerToken>>? OAuthBearerTokenProvider { get; init; }
+    public Func<CancellationToken, ValueTask<OAuthBearerToken>>? OAuthBearerTokenProvider
+    {
+        get; init;
+    }
 
     /// <summary>
     /// AWS_MSK_IAM configuration.
     /// </summary>
-    public AwsMskIamConfig? AwsMskIamConfig { get; init; }
+    public AwsMskIamConfig? AwsMskIamConfig
+    {
+        get; init;
+    }
 
     /// <summary>
     /// TCP socket send buffer size in bytes. 0 uses the system default.
     /// </summary>
-    public int SocketSendBufferBytes { get; init; }
+    public int SocketSendBufferBytes
+    {
+        get; init;
+    }
 
     /// <summary>
     /// TCP socket receive buffer size in bytes. 0 uses the system default.
     /// </summary>
-    public int SocketReceiveBufferBytes { get; init; }
+    public int SocketReceiveBufferBytes
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Number of TCP connections per broker.
     /// </summary>
-    public int ConnectionsPerBroker { get; init; } = 2;
+    public int ConnectionsPerBroker
+    {
+        get; init;
+    } = 2;
 
     /// <summary>
     /// Controls how broker hostnames are resolved before connecting.
     /// </summary>
-    public ClientDnsLookup ClientDnsLookup { get; init; } = ClientDnsLookup.UseAllDnsIps;
+    public ClientDnsLookup ClientDnsLookup
+    {
+        get; init;
+    } = ClientDnsLookup.UseAllDnsIps;
 
     /// <summary>
     /// Whether new broker connections verify the expected cluster and node identity (KIP-1242).
     /// Default is true.
     /// </summary>
-    public bool MetadataClusterCheckEnabled { get; init; } = true;
+    public bool MetadataClusterCheckEnabled
+    {
+        get; init;
+    } = true;
 
     /// <summary>
     /// Maximum time in milliseconds spent retrying initial bootstrap DNS resolution.
     /// Corresponds to Kafka's <c>bootstrap.resolve.timeout.ms</c>, but defaults to 120000 (the original
     /// KIP-909 value) where Kafka 4.4 defaults to 0. Zero resolves once with no deadline.
     /// </summary>
-    public int BootstrapResolveTimeoutMs { get; init; } = 120000;
+    public int BootstrapResolveTimeoutMs
+    {
+        get; init;
+    } = 120000;
 
     /// <summary>
     /// Custom retry policy for transient errors.
     /// </summary>
-    public IRetryPolicy? RetryPolicy { get; init; }
+    public IRetryPolicy? RetryPolicy
+    {
+        get; init;
+    }
 }

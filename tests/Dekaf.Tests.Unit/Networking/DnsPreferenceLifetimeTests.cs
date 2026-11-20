@@ -16,10 +16,16 @@ public sealed class DnsPreferenceLifetimeTests
         var resolver = new ClientDnsEndpointResolver(new Lookup());
         var hosts = Enumerable.Range(0, 4096).Select(index => $"broker-{index}.example").ToArray();
         if (concurrent)
+        {
             Parallel.For(0, hosts.Length, index => resolver.MarkSuccessful(hosts[index], 9092, ClientDnsLookup.UseAllDnsIps, Second));
+        }
         else
+        {
             foreach (var host in hosts)
+            {
                 resolver.MarkSuccessful(host, 9092, ClientDnsLookup.UseAllDnsIps, Second);
+            }
+        }
 
         // Count externally observable preferences, independent of cache representation/hash collisions.
         var retained = 0;
@@ -27,7 +33,9 @@ public sealed class DnsPreferenceLifetimeTests
         {
             var endpoints = await resolver.ResolveAsync(host, 9092, ClientDnsLookup.UseAllDnsIps, default);
             if (endpoints[0].Address.Equals(Second))
+            {
                 retained++;
+            }
         }
         await Assert.That(retained).IsGreaterThan(0);
         await Assert.That(retained).IsLessThanOrEqualTo(1024);
@@ -59,7 +67,9 @@ public sealed class DnsPreferenceLifetimeTests
     {
         var resolver = new ClientDnsEndpointResolver(new Lookup());
         for (var index = 0; index < 10000; index++)
+        {
             resolver.MarkSuccessful("stable.example", 9092, ClientDnsLookup.UseAllDnsIps, index % 2 == 0 ? First : Second);
+        }
         var endpoints = await resolver.ResolveAsync("stable.example", 9092, ClientDnsLookup.UseAllDnsIps, default);
         await Assert.That(endpoints[0].Address).IsEqualTo(Second);
     }
@@ -84,7 +94,10 @@ public sealed class DnsPreferenceLifetimeTests
 
     private sealed class Lookup : IDnsLookup
     {
-        internal IPAddress[] Addresses { get; set; } = [First, Second];
+        internal IPAddress[] Addresses
+        {
+            get; set;
+        } = [First, Second];
         public ValueTask<IPAddress[]> GetHostAddressesAsync(string host, CancellationToken cancellationToken) => ValueTask.FromResult(Addresses);
         public ValueTask<IPHostEntry> GetHostEntryAsync(string host, CancellationToken cancellationToken) =>
             ValueTask.FromResult(new IPHostEntry { HostName = "canonical.example", AddressList = Addresses });

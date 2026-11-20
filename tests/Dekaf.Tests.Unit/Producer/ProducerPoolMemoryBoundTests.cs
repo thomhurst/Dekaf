@@ -169,31 +169,43 @@ public class ProducerPoolMemoryBoundTests
         var violations = new List<string>();
 
         foreach (var available in availableMemory)
-        foreach (var buffer in bufferMemory)
-        foreach (var batchSize in batchSizes)
         {
-            var options = new ProducerOptions
+            foreach (var buffer in bufferMemory)
             {
-                BootstrapServers = ["localhost:9092"],
-                BatchSize = batchSize,
-                BufferMemory = (ulong)buffer,
-            };
-            var arena = ProducerOptions.GetEffectiveArenaCapacity(batchSize, 0);
-            var poolSize = RecordAccumulator.ComputePoolSize(options, available);
-            var memoryBound = RecordAccumulator.ComputeMemoryBoundedPoolSize(options, available);
-            var retainedBudget = Math.Max(
-                available > 0 ? Math.Min(buffer, available / RecordAccumulator.RetainedMemoryDivisor) : buffer,
-                arena);
-            var label = $"available={available} buffer={buffer} batch={batchSize} pool={poolSize}";
+                foreach (var batchSize in batchSizes)
+                {
+                    var options = new ProducerOptions
+                    {
+                        BootstrapServers = ["localhost:9092"],
+                        BatchSize = batchSize,
+                        BufferMemory = (ulong)buffer,
+                    };
+                    var arena = ProducerOptions.GetEffectiveArenaCapacity(batchSize, 0);
+                    var poolSize = RecordAccumulator.ComputePoolSize(options, available);
+                    var memoryBound = RecordAccumulator.ComputeMemoryBoundedPoolSize(options, available);
+                    var retainedBudget = Math.Max(
+                        available > 0 ? Math.Min(buffer, available / RecordAccumulator.RetainedMemoryDivisor) : buffer,
+                        arena);
+                    var label = $"available={available} buffer={buffer} batch={batchSize} pool={poolSize}";
 
-            if (poolSize < RecordAccumulator.MinimumPoolSize || poolSize > BatchArena.MaxPoolSizeCap)
-                violations.Add($"{label}: outside [{RecordAccumulator.MinimumPoolSize}, {BatchArena.MaxPoolSizeCap}]");
-            if (poolSize > memoryBound)
-                violations.Add($"{label}: above memory bound {memoryBound}");
-            if ((long)poolSize * arena > retainedBudget)
-                violations.Add($"{label}: retains {(long)poolSize * arena} bytes over budget {retainedBudget}");
-            if (RecordAccumulator.ComputeRetainedArenaBytes(options, available) != retainedBudget)
-                violations.Add($"{label}: byte budget {RecordAccumulator.ComputeRetainedArenaBytes(options, available)} != {retainedBudget}");
+                    if (poolSize < RecordAccumulator.MinimumPoolSize || poolSize > BatchArena.MaxPoolSizeCap)
+                    {
+                        violations.Add($"{label}: outside [{RecordAccumulator.MinimumPoolSize}, {BatchArena.MaxPoolSizeCap}]");
+                    }
+                    if (poolSize > memoryBound)
+                    {
+                        violations.Add($"{label}: above memory bound {memoryBound}");
+                    }
+                    if ((long)poolSize * arena > retainedBudget)
+                    {
+                        violations.Add($"{label}: retains {(long)poolSize * arena} bytes over budget {retainedBudget}");
+                    }
+                    if (RecordAccumulator.ComputeRetainedArenaBytes(options, available) != retainedBudget)
+                    {
+                        violations.Add($"{label}: byte budget {RecordAccumulator.ComputeRetainedArenaBytes(options, available)} != {retainedBudget}");
+                    }
+                }
+            }
         }
 
         await Assert.That(violations).IsEmpty();
@@ -208,17 +220,21 @@ public class ProducerPoolMemoryBoundTests
         var violations = new List<string>();
 
         foreach (var buffer in bufferMemory)
-        foreach (var batchSize in batchSizes)
         {
-            var previous = 0;
-            foreach (var available in availableMemory)
+            foreach (var batchSize in batchSizes)
             {
-                var poolSize = RecordAccumulator.ComputePoolSize(
-                    CreateOptions(buffer, batchSize),
-                    available);
-                if (poolSize < previous)
-                    violations.Add($"buffer={buffer} batch={batchSize} available={available}: {poolSize} < {previous}");
-                previous = poolSize;
+                var previous = 0;
+                foreach (var available in availableMemory)
+                {
+                    var poolSize = RecordAccumulator.ComputePoolSize(
+                        CreateOptions(buffer, batchSize),
+                        available);
+                    if (poolSize < previous)
+                    {
+                        violations.Add($"buffer={buffer} batch={batchSize} available={available}: {poolSize} < {previous}");
+                    }
+                    previous = poolSize;
+                }
             }
         }
 
@@ -306,11 +322,15 @@ public class ProducerPoolMemoryBoundTests
         for (var i = 0; i < 512; i++)
         {
             if (retained.TryReserve(DefaultArenaCapacity))
+            {
                 accepted++;
+            }
         }
 
         for (var i = 0; i < 512; i++)
+        {
             retained.TryReserve(18_432);
+        }
 
         await Assert.That(accepted).IsEqualTo((int)(budget / DefaultArenaCapacity));
         await Assert.That(retained.RetainedBytes).IsLessThanOrEqualTo(budget);
@@ -353,7 +373,9 @@ public class ProducerPoolMemoryBoundTests
         var retained = new RetainedByteBudget();
         retained.SetLimit(4L * DefaultArenaCapacity);
         for (var i = 0; i < 4; i++)
+        {
             retained.TryReserve(DefaultArenaCapacity);
+        }
 
         retained.SetLimit(2L * DefaultArenaCapacity);
         var whileOver = retained.TryReserve(DefaultArenaCapacity);
@@ -457,7 +479,9 @@ public class ProducerPoolMemoryBoundTests
                 cancellationToken.ThrowIfCancellationRequested();
                 var registration = limits.Register(new ArenaPoolLimit(i, i, i * MiB));
                 if (limits.Current.RetainedBytes < i * MiB)
+                {
                     throw new InvalidOperationException("Effective limit fell below a live request.");
+                }
                 limits.Unregister(registration);
             }
         }, cancellationToken)));
@@ -532,7 +556,10 @@ public class ProducerPoolMemoryBoundTests
 
     private sealed class TrackingDisposable : IDisposable
     {
-        public int DisposeCount { get; private set; }
+        public int DisposeCount
+        {
+            get; private set;
+        }
 
         public void Dispose() => DisposeCount++;
     }
@@ -604,8 +631,16 @@ public class ProducerPoolMemoryBoundTests
         retained.SetLimit(DefaultArenaCapacity);
         var created = 0;
 
-        var first = retained.ReserveThenCreate(DefaultArenaCapacity, bytes => { created++; return new object(); });
-        var second = retained.ReserveThenCreate(DefaultArenaCapacity, bytes => { created++; return new object(); });
+        var first = retained.ReserveThenCreate(DefaultArenaCapacity, bytes =>
+        {
+            created++;
+            return new object();
+        });
+        var second = retained.ReserveThenCreate(DefaultArenaCapacity, bytes =>
+        {
+            created++;
+            return new object();
+        });
 
         await Assert.That(first).IsNotNull();
         await Assert.That(second).IsNull();
@@ -656,7 +691,9 @@ public class ProducerPoolMemoryBoundTests
 
                 var size = random.Next(1, 4) * DefaultArenaCapacity / 3;
                 if (!retained.TryReserve(size))
+                {
                     continue;
+                }
 
                 mine.Push(size);
                 RatchetUp(ref heldPeak, Interlocked.Add(ref held, size));
@@ -684,7 +721,9 @@ public class ProducerPoolMemoryBoundTests
         {
             current = Volatile.Read(ref location);
             if (value <= current)
+            {
                 return;
+            }
         }
         while (Interlocked.CompareExchange(ref location, value, current) != current);
     }
@@ -854,7 +893,9 @@ public class ProducerPoolMemoryBoundTests
             {
                 start.Wait(cancellationToken);
                 for (var i = 0; i < 20; i++)
+                {
                     accumulator.SetMaxBufferMemory((ulong)(i % 2 == 0 ? 64 : 8) * 1024 * 1024);
+                }
             }, cancellationToken);
             var dispose = Task.Run(async () =>
             {
@@ -877,7 +918,9 @@ public class ProducerPoolMemoryBoundTests
             .Select(_ => pool.Rent(new TopicPartition("pool-memory-bound", 0), partitionCount: 1))
             .ToList();
         foreach (var batch in batches)
+        {
             FillCompleteAndReturn(pool, readyPool, batch);
+        }
         var pooledBefore = pool.ApproximateCount;
 
         pool.SetRetentionLimit(2);
@@ -886,7 +929,9 @@ public class ProducerPoolMemoryBoundTests
             .Select(_ => pool.Rent(new TopicPartition("pool-memory-bound", 0), partitionCount: 1))
             .ToList();
         foreach (var batch in rented)
+        {
             FillCompleteAndReturn(pool, readyPool, batch);
+        }
 
         await Assert.That(pooledBefore).IsEqualTo(8);
         await Assert.That(pooledAfterLowering).IsEqualTo(0);
@@ -904,7 +949,9 @@ public class ProducerPoolMemoryBoundTests
             .Select(_ => pool.Rent(new TopicPartition("pool-memory-bound", 0), partitionCount: 1))
             .ToList();
         foreach (var batch in batches)
+        {
             FillCompleteAndReturn(pool, readyPool, batch);
+        }
 
         await Assert.That(pool.MaxPoolSize).IsGreaterThanOrEqualTo(6);
         await Assert.That(pool.ApproximateCount).IsEqualTo(6);
@@ -1021,7 +1068,9 @@ public class ProducerPoolMemoryBoundTests
             .Select(i => pool.Rent(new TopicPartition("pool-memory-bound", i), partitionCount: 1))
             .ToList();
         foreach (var batch in batches)
+        {
             FillCompleteAndReturn(pool, readyPool, batch);
+        }
         var afterReturns = pool.RetainedCount;
 
         var rented = pool.Rent(new TopicPartition("pool-memory-bound", 0), partitionCount: 1);
@@ -1181,12 +1230,16 @@ public class ProducerPoolMemoryBoundTests
     {
         var queue = new BatchArrayReuseQueue(maxSize: 8);
         for (var i = 0; i < 8; i++)
+        {
             queue.EnqueueOrReturn(ProducerContainerPools.CompletionSources.Rent(16));
+        }
 
         queue.SetRetentionLimit(2);
         var afterLowering = queue.RetainedCount;
         for (var i = 0; i < 5; i++)
+        {
             queue.EnqueueOrReturn(ProducerContainerPools.CompletionSources.Rent(16));
+        }
         var afterRefill = queue.RetainedCount;
         var dequeued = queue.TryDequeue(out _);
 
@@ -1203,7 +1256,9 @@ public class ProducerPoolMemoryBoundTests
         queue.SetRetentionLimit(64);
 
         for (var i = 0; i < 6; i++)
+        {
             queue.EnqueueOrReturn(ProducerContainerPools.CompletionSources.Rent(16));
+        }
 
         await Assert.That(queue.RetainedCount).IsEqualTo(2);
     }
@@ -1221,18 +1276,26 @@ public class ProducerPoolMemoryBoundTests
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 if (random.Next(2) == 0)
+                {
                     queue.EnqueueOrReturn(ProducerContainerPools.CompletionSources.Rent(16));
+                }
                 else if (queue.TryDequeue(out var array))
+                {
                     ProducerContainerPools.CompletionSources.Return(array, clearArray: false);
+                }
                 if (random.Next(64) == 0)
+                {
                     queue.SetRetentionLimit(random.Next(1, 17));
+                }
             }
         }, cancellationToken)));
         var limitAtEnd = 1;
         queue.SetRetentionLimit(limitAtEnd);
         var drained = 0;
         while (queue.TryDequeue(out _))
+        {
             drained++;
+        }
 
         await Assert.That(drained).IsLessThanOrEqualTo(limitAtEnd);
         await Assert.That(queue.RetainedCount).IsEqualTo(0);
@@ -1291,7 +1354,9 @@ public class ProducerPoolMemoryBoundTests
         var queue = pool.ArrayReuseQueueForTest;
 
         for (var i = 0; i < 8; i++)
+        {
             queue.EnqueueOrReturn(ProducerContainerPools.CompletionSources.Rent(16));
+        }
 
         await Assert.That(queue.RetainedCount).IsEqualTo(6);
     }
@@ -1550,7 +1615,9 @@ public class ProducerPoolMemoryBoundTests
         using (var threads = ReturningThreads.Start(workerCount, () =>
                {
                    for (var i = 0; i < cyclesPerWorker; i++)
+                   {
                        created.Add(RentFillAndReturn(pool, readyPool));
+                   }
                    return new WeakReference(null);
                }))
         {
@@ -1632,7 +1699,9 @@ public class ProducerPoolMemoryBoundTests
             callback: null,
             PartitionBatch.EstimateRecordSize(0, value.Length, null, 0));
         if (!result.Success)
+        {
             throw new InvalidOperationException("Record did not fit in an empty batch.");
+        }
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
@@ -1651,7 +1720,9 @@ public class ProducerPoolMemoryBoundTests
             callback: null,
             PartitionBatch.EstimateRecordSize(0, value.Length, null, 0));
         if (!result.Success)
+        {
             throw new InvalidOperationException("Record did not fit in an empty batch.");
+        }
 
         var ready = batch.Complete() ?? throw new InvalidOperationException("Batch did not complete.");
         ready.CompleteSend(0, DateTimeOffset.UnixEpoch);
@@ -1726,7 +1797,9 @@ public class ProducerPoolMemoryBoundTests
         {
             var threads = new ReturningThreads(count, action);
             foreach (var thread in threads._threads)
+            {
                 thread.Start();
+            }
             return threads;
         }
 
@@ -1734,14 +1807,18 @@ public class ProducerPoolMemoryBoundTests
         {
             _returned.Wait(cancellationToken);
             if (_failure is not null)
+            {
                 throw new InvalidOperationException("A returning thread failed.", _failure);
+            }
         }
 
         public void Dispose()
         {
             _release.Set();
             foreach (var thread in _threads)
+            {
                 thread.Join();
+            }
             _returned.Dispose();
             _release.Dispose();
         }

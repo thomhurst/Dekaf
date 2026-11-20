@@ -331,6 +331,7 @@ public sealed class GlobalInterceptorOrderingTests
 
     // Wrapper types to differentiate multiple interceptor names in DI
     public sealed record InterceptorName(string Name);
+
     public sealed record SecondInterceptorName(string Name);
 
     // Open generic producer interceptor that can be resolved via ActivatorUtilities
@@ -351,7 +352,9 @@ public sealed class GlobalInterceptorOrderingTests
             return message;
         }
 
-        public void OnAcknowledgement(RecordMetadata metadata, Exception? exception) { }
+        public void OnAcknowledgement(RecordMetadata metadata, Exception? exception)
+        {
+        }
     }
 
     public sealed class SecondOrderTrackingProducerInterceptor<TKey, TValue> : IProducerInterceptor<TKey, TValue>
@@ -371,7 +374,9 @@ public sealed class GlobalInterceptorOrderingTests
             return message;
         }
 
-        public void OnAcknowledgement(RecordMetadata metadata, Exception? exception) { }
+        public void OnAcknowledgement(RecordMetadata metadata, Exception? exception)
+        {
+        }
     }
 
     // Open generic consumer interceptor
@@ -392,7 +397,9 @@ public sealed class GlobalInterceptorOrderingTests
             return result;
         }
 
-        public void OnCommit(IReadOnlyList<TopicPartitionOffset> offsets) { }
+        public void OnCommit(IReadOnlyList<TopicPartitionOffset> offsets)
+        {
+        }
     }
 
     public sealed class SecondOrderTrackingConsumerInterceptor<TKey, TValue> : IConsumerInterceptor<TKey, TValue>
@@ -412,7 +419,9 @@ public sealed class GlobalInterceptorOrderingTests
             return result;
         }
 
-        public void OnCommit(IReadOnlyList<TopicPartitionOffset> offsets) { }
+        public void OnCommit(IReadOnlyList<TopicPartitionOffset> offsets)
+        {
+        }
     }
 
     // Non-generic interceptor used from per-instance registration
@@ -425,7 +434,9 @@ public sealed class GlobalInterceptorOrderingTests
             return message;
         }
 
-        public void OnAcknowledgement(RecordMetadata metadata, Exception? exception) { }
+        public void OnAcknowledgement(RecordMetadata metadata, Exception? exception)
+        {
+        }
     }
 
     private sealed class NamedConsumerInterceptor(string name, List<string> callOrder)
@@ -437,7 +448,9 @@ public sealed class GlobalInterceptorOrderingTests
             return result;
         }
 
-        public void OnCommit(IReadOnlyList<TopicPartitionOffset> offsets) { }
+        public void OnCommit(IReadOnlyList<TopicPartitionOffset> offsets)
+        {
+        }
     }
 
     #endregion

@@ -30,13 +30,21 @@ internal sealed class OutboxCommitObserver
         Transactions = new TransactionObserver(this);
     }
 
-    internal SaveChangesInterceptor SaveChanges { get; }
-    internal DbTransactionInterceptor Transactions { get; }
+    internal SaveChangesInterceptor SaveChanges
+    {
+        get;
+    }
+    internal DbTransactionInterceptor Transactions
+    {
+        get;
+    }
 
     private void Saving(DbContext? context)
     {
         if (context is null)
+        {
             return;
+        }
         var pending = _saves.GetValue(context, _createPendingSave);
         pending.Stop(context);
         pending.Refresh();
@@ -50,7 +58,9 @@ internal sealed class OutboxCommitObserver
     private static bool HasAddedOutboxRows(IStateManager stateManager, HashSet<int>? buckets)
     {
         if (stateManager.ChangedCount == 0)
+        {
             return false;
+        }
         var entries = stateManager.GetEntriesForState(added: true);
         if (entries is Dictionary<object, InternalEntityEntry>.ValueCollection added)
         {
@@ -59,7 +69,9 @@ internal sealed class OutboxCommitObserver
                 if (entry.Entity is OutboxMessage message)
                 {
                     if (buckets is null)
+                    {
                         return true;
+                    }
                     buckets.Add(message.Bucket);
                 }
             }
@@ -70,7 +82,9 @@ internal sealed class OutboxCommitObserver
             if (entry.Entity is OutboxMessage message)
             {
                 if (buckets is null)
+                {
                     return true;
+                }
                 buckets.Add(message.Bucket);
             }
         }
@@ -81,10 +95,14 @@ internal sealed class OutboxCommitObserver
     private void Saved(DbContext? context)
     {
         if (context is null || !_saves.TryGetValue(context, out var pending))
+        {
             return;
+        }
         pending.Stop(context);
         if (!pending.HasRows)
+        {
             return;
+        }
         pending.HasRows = false;
         if (context.Database.CurrentTransaction is { } transaction)
         {
@@ -107,9 +125,13 @@ internal sealed class OutboxCommitObserver
     private void Notify(HashSet<int>? buckets)
     {
         if (buckets is not null && _notifier is IOutboxBucketNotifier notifier)
+        {
             notifier.NotifyCommitted(buckets);
+        }
         else
+        {
             _notifier.NotifyCommitted();
+        }
     }
 
     internal void ObserveAmbientCommit(Transaction transaction, HashSet<int>? buckets = null)
@@ -127,7 +149,9 @@ internal sealed class OutboxCommitObserver
     private void Committed(DbTransaction transaction)
     {
         if (_transactions.TryGetValue(transaction, out var pending) && _transactions.Remove(transaction))
+        {
             pending.Notify(this);
+        }
     }
 
     // The context-keyed weak table permits its value to cache a context-scoped service
@@ -138,7 +162,10 @@ internal sealed class OutboxCommitObserver
         private readonly IStateManager _stateManager;
         private readonly EventHandler<DetectedChangesEventArgs> _detected;
         public bool HasRows;
-        public HashSet<int>? Buckets { get; }
+        public HashSet<int>? Buckets
+        {
+            get;
+        }
 
         public PendingSave(DbContext context, bool captureBuckets)
         {
@@ -173,16 +200,22 @@ internal sealed class OutboxCommitObserver
             lock (this)
             {
                 if (buckets is null)
+                {
                     _broadcast = true;
+                }
                 else
                 {
                     // The common single-bucket transaction needs no separate set allocation.
                     foreach (var bucket in buckets)
                     {
                         if (_singleBucket == -1)
+                        {
                             _singleBucket = bucket;
+                        }
                         else if (_singleBucket != bucket)
+                        {
                             (_buckets ??= new HashSet<int> { _singleBucket }).Add(bucket);
+                        }
                     }
                 }
             }
@@ -193,9 +226,13 @@ internal sealed class OutboxCommitObserver
             lock (this)
             {
                 if (!_broadcast && _buckets is null && owner._notifier is IOutboxBucketNotifier notifier)
+                {
                     notifier.NotifyCommitted(_singleBucket);
+                }
                 else
+                {
                     owner.Notify(_broadcast ? null : _buckets);
+                }
             }
         }
     }
@@ -204,7 +241,10 @@ internal sealed class OutboxCommitObserver
     {
         private readonly OutboxCommitObserver _owner;
         private readonly Transaction _transaction;
-        public PendingCommit Pending { get; } = new();
+        public PendingCommit Pending
+        {
+            get;
+        } = new();
 
         public AmbientCommit(OutboxCommitObserver owner, Transaction transaction)
         {
@@ -218,7 +258,9 @@ internal sealed class OutboxCommitObserver
             _transaction.TransactionCompleted -= OnCompleted;
             _owner._ambientTransactions.Remove(_transaction);
             if (args.Transaction?.TransactionInformation.Status == TransactionStatus.Committed)
+            {
                 Pending.Notify(_owner);
+            }
         }
     }
 

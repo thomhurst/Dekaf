@@ -159,7 +159,9 @@ internal sealed class ProgressWatchdog : IDisposable
         {
             ObjectDisposedException.ThrowIf(_disposed, this);
             if (_activeRun is not null)
+            {
                 throw new InvalidOperationException("Progress watchdog already tracks an active scenario.");
+            }
 
             var detector = new StallDetector(_captureAfter, _exitAfter);
             detector.Reset(throughput.MessageCount, _clock.Elapsed);
@@ -194,7 +196,9 @@ internal sealed class ProgressWatchdog : IDisposable
         lock (_sync)
         {
             if (_disposed)
+            {
                 return;
+            }
 
             _disposed = true;
             _activeRun = null;
@@ -202,7 +206,9 @@ internal sealed class ProgressWatchdog : IDisposable
         }
 
         if (_thread.Join(StackCaptureTimeout + (_diagnosticsCaptureTimeout * 2) + TimeSpan.FromSeconds(5)))
+        {
             _wakeUp.Dispose();
+        }
     }
 
     private void Run()
@@ -215,18 +221,24 @@ internal sealed class ProgressWatchdog : IDisposable
             lock (_sync)
             {
                 if (_disposed)
+                {
                     return;
+                }
 
                 activeRun = _activeRun;
             }
 
             if (activeRun is null)
+            {
                 continue;
+            }
 
             var now = _clock.Elapsed;
             var action = activeRun.Detector.Observe(activeRun.Throughput.MessageCount, now);
             if (action == StallAction.None || !IsCurrent(activeRun.RegistrationId))
+            {
                 continue;
+            }
 
             try
             {
@@ -248,7 +260,9 @@ internal sealed class ProgressWatchdog : IDisposable
     private bool IsCurrent(long registrationId)
     {
         lock (_sync)
+        {
             return _activeRun?.RegistrationId == registrationId;
+        }
     }
 
     private void StopTracking(long registrationId)
@@ -256,7 +270,9 @@ internal sealed class ProgressWatchdog : IDisposable
         lock (_sync)
         {
             if (_activeRun?.RegistrationId != registrationId)
+            {
                 return;
+            }
 
             _activeRun = null;
             _wakeUp.Set();
@@ -340,7 +356,9 @@ internal sealed class ProgressWatchdog : IDisposable
 
         using var process = new Process { StartInfo = startInfo };
         if (!process.Start())
+        {
             throw new InvalidOperationException("dotnet-stack failed to start.");
+        }
 
         var standardOutput = process.StandardOutput.ReadToEndAsync();
         var standardError = process.StandardError.ReadToEndAsync();
@@ -354,9 +372,13 @@ internal sealed class ProgressWatchdog : IDisposable
         Task.WaitAll(standardOutput, standardError);
         var body = new StringBuilder(standardOutput.Result);
         if (!string.IsNullOrWhiteSpace(standardError.Result))
+        {
             body.AppendLine().AppendLine("dotnet-stack stderr:").Append(standardError.Result);
+        }
         if (!exited)
+        {
             body.AppendLine().AppendLine($"dotnet-stack timed out after {StackCaptureTimeout}.");
+        }
 
         return body.ToString();
     }
@@ -368,7 +390,9 @@ internal sealed class ProgressWatchdog : IDisposable
         TimeSpan stalledFor)
     {
         if (activeRun.CaptureProducerDiagnostics is null)
+        {
             return;
+        }
 
         ProducerDeliveryDiagnosticsSnapshot? snapshot = null;
         Exception? captureException = null;
@@ -437,7 +461,9 @@ internal sealed class ProgressWatchdog : IDisposable
         TimeSpan stalledFor)
     {
         if (activeRun.CaptureConsumerDiagnostics is null)
+        {
             return;
+        }
 
         ConsumerDiagnosticSnapshot? snapshot = null;
         Exception? captureException = null;
@@ -530,7 +556,9 @@ internal sealed class ProgressWatchdog : IDisposable
         var invalid = Path.GetInvalidFileNameChars();
         var builder = new StringBuilder(value.Length);
         foreach (var character in value)
+        {
             builder.Append(invalid.Contains(character) || char.IsWhiteSpace(character) ? '-' : char.ToLowerInvariant(character));
+        }
         return builder.ToString();
     }
 

@@ -295,7 +295,10 @@ public sealed class AdminDescribeTopicPartitionsTests
                 _metadataManager);
         }
 
-        public AdminClient Client { get; }
+        public AdminClient Client
+        {
+            get;
+        }
 
         public void Enqueue(DescribeTopicPartitionsResponse response) => _responses.Enqueue(response);
 

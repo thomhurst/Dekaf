@@ -25,7 +25,10 @@ public class AccumulatorAppendBenchmarks
     private Task _drainerTask = null!;
 
     [Params(100, 1000)]
-    public int MessageSize { get; set; }
+    public int MessageSize
+    {
+        get; set;
+    }
 
     [GlobalSetup]
     public void Setup()
@@ -71,7 +74,9 @@ public class AccumulatorAppendBenchmarks
             LingerMs = 0,
         });
         for (var i = 0; i < 10_000; i++)
+        {
             AppendAndRecycleOneBatch(ts);
+        }
 
         // Start background drainer to prevent buffer from filling
         _drainerCts = new CancellationTokenSource();
@@ -82,7 +87,11 @@ public class AccumulatorAppendBenchmarks
     public async Task Cleanup()
     {
         _drainerCts.Cancel();
-        try { await _drainerTask.ConfigureAwait(false); } catch (OperationCanceledException) { }
+        try
+        {
+            await _drainerTask.ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) { }
         await _accumulator.DisposeAsync().ConfigureAwait(false);
         await _secondAccumulator.DisposeAsync().ConfigureAwait(false);
         await _rotationAccumulator.DisposeAsync().ConfigureAwait(false);
@@ -151,7 +160,9 @@ public class AccumulatorAppendBenchmarks
     {
         var ts = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
         for (var i = 0; i < 100; i++)
+        {
             AppendAndRecycleOneBatch(ts);
+        }
     }
 
     private void AppendAndRecycleOneBatch(long ts)
@@ -207,7 +218,9 @@ public class AccumulatorAppendBenchmarks
 
             // Drain periodically to release memory and return arenas/arrays to pools
             if (i % msgsPerBatch == msgsPerBatch - 1)
+            {
                 DrainAll(accumulator);
+            }
         }
         DrainAll(accumulator);
     }

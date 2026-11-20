@@ -52,7 +52,10 @@ public sealed class ShareConsumerSubscriptionTests
         fixture.Consumer.Subscribe("second");
         fixture.Response = _ => ValueTask.FromException<ShareGroupHeartbeatResponse>(
             cancelled ? new OperationCanceledException() : new IOException("send failed"));
-        try { await fixture.Heartbeat(); }
+        try
+        {
+            await fixture.Heartbeat();
+        }
         catch (Exception ex) when (ex is IOException or OperationCanceledException) { }
         fixture.Response = _ => new(Fixture.Success());
         await fixture.Heartbeat();
@@ -85,7 +88,9 @@ public sealed class ShareConsumerSubscriptionTests
         await fixture.Heartbeat();
         var memberId = fixture.Coordinator.MemberId;
         if (unknownCoordinator)
+        {
             fixture.MarkCoordinatorUnknown();
+        }
         fixture.Consumer.Unsubscribe();
         await fixture.WaitForPendingRelease();
         await Assert.That(fixture.Requests[^1].MemberEpoch).IsEqualTo(-1);
@@ -189,7 +194,10 @@ public sealed class ShareConsumerSubscriptionTests
         var failed = false;
         fixture.Response = request =>
         {
-            if (request.MemberEpoch == 0) return new(joined.Task);
+            if (request.MemberEpoch == 0)
+            {
+                return new(joined.Task);
+            }
             if (request.SubscribedTopicNames is { Count: 0 })
             {
                 if (failFirstPublication && !failed)
@@ -223,13 +231,30 @@ public sealed class ShareConsumerSubscriptionTests
         private static readonly MethodInfo SendHeartbeat = typeof(ShareConsumerCoordinator).GetMethod(
             "SendShareGroupHeartbeatAsync", BindingFlags.Instance | BindingFlags.NonPublic)!;
         private readonly MetadataManager _metadata;
-        public KafkaShareConsumer<string, string> Consumer { get; }
-        public ShareConsumerCoordinator Coordinator { get; }
-        public List<ShareGroupHeartbeatRequest> Requests { get; } = [];
-        public int FetchRequests { get; private set; }
-        public int CoordinatorLookups { get; private set; }
-        public Func<ShareGroupHeartbeatRequest, ValueTask<ShareGroupHeartbeatResponse>> Response { get; set; }
-            = _ => new(Success());
+        public KafkaShareConsumer<string, string> Consumer
+        {
+            get;
+        }
+        public ShareConsumerCoordinator Coordinator
+        {
+            get;
+        }
+        public List<ShareGroupHeartbeatRequest> Requests
+        {
+            get;
+        } = [];
+        public int FetchRequests
+        {
+            get; private set;
+        }
+        public int CoordinatorLookups
+        {
+            get; private set;
+        }
+        public Func<ShareGroupHeartbeatRequest, ValueTask<ShareGroupHeartbeatResponse>> Response
+        {
+            get; set;
+        } = _ => new(Success());
 
         public Fixture()
         {
@@ -259,7 +284,10 @@ public sealed class ShareConsumerSubscriptionTests
                     {
                         Coordinators = [new Coordinator
                         {
-                            Key = options.GroupId, NodeId = 1, Host = "localhost", Port = 9092
+                            Key = options.GroupId,
+                            NodeId = 1,
+                            Host = "localhost",
+                            Port = 9092
                         }]
                     };
                 });
@@ -276,11 +304,16 @@ public sealed class ShareConsumerSubscriptionTests
                 Brokers = [new BrokerMetadata { NodeId = 1, Host = "localhost", Port = 9092 }],
                 Topics = [new TopicMetadata
                 {
-                    ErrorCode = ErrorCode.None, Name = "first", TopicId = Guid.NewGuid(),
+                    ErrorCode = ErrorCode.None,
+                    Name = "first",
+                    TopicId = Guid.NewGuid(),
                     Partitions = [new PartitionMetadata
                     {
-                        ErrorCode = ErrorCode.None, PartitionIndex = 0, LeaderId = 1,
-                        ReplicaNodes = [1], IsrNodes = [1]
+                        ErrorCode = ErrorCode.None,
+                        PartitionIndex = 0,
+                        LeaderId = 1,
+                        ReplicaNodes = [1],
+                        IsrNodes = [1]
                     }]
                 }]
             });

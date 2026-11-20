@@ -28,7 +28,9 @@ public sealed class ProducerFlushCancellationTests(ProducerHealthKafkaContainer 
         {
             // Cached metadata allows append while the paused broker cannot acknowledge delivery.
             for (var index = 0; index < 10; index++)
+            {
                 await producer.FireAsync(topic, $"key-{index}", $"value-{index}");
+            }
 
             var cancelledFlush = producer.FlushAsync(flushCancellation.Token).AsTask();
             survivingFlush = producer.FlushAsync(cancellationToken).AsTask();
@@ -44,7 +46,9 @@ public sealed class ProducerFlushCancellationTests(ProducerHealthKafkaContainer 
         {
             await kafka.SetPausedAsync(false);
             if (survivingFlush is not null)
+            {
                 await survivingFlush.WaitAsync(cancellationToken);
+            }
         }
 
         await using var consumer = await Kafka.CreateConsumer<string, string>()
@@ -60,7 +64,9 @@ public sealed class ProducerFlushCancellationTests(ProducerHealthKafkaContainer 
             received.Add(record!.Value.Key!, record.Value.Value);
         }
         for (var index = 0; index < 10; index++)
+        {
             await Assert.That(received[$"key-{index}"]).IsEqualTo($"value-{index}");
+        }
         var offsets = await consumer.QueryWatermarkOffsetsAsync(new TopicPartition(topic, 0), cancellationToken);
         await Assert.That(offsets.High).IsEqualTo(11L);
     }

@@ -1146,22 +1146,43 @@ internal sealed class ActiveTask
         PurgedOffsets = new long[Sources.Length];
     }
 
-    public TaskId Id { get; }
+    public TaskId Id
+    {
+        get;
+    }
 
-    public StreamTask Task { get; }
+    public StreamTask Task
+    {
+        get;
+    }
 
-    public TaskDirectory? Directory { get; }
+    public TaskDirectory? Directory
+    {
+        get;
+    }
 
-    public TopicPartition[] Sources { get; }
+    public TopicPartition[] Sources
+    {
+        get;
+    }
 
     /// <summary>The next offset to process per source partition; committed as the group's offset.</summary>
-    public long[] NextOffsets { get; }
+    public long[] NextOffsets
+    {
+        get;
+    }
 
     /// <summary>Per source partition, the offset up to which consumed repartition records were deleted.</summary>
-    public long[] PurgedOffsets { get; }
+    public long[] PurgedOffsets
+    {
+        get;
+    }
 
     /// <summary>Whether the task processed records since the last commit.</summary>
-    public bool Dirty { get; set; }
+    public bool Dirty
+    {
+        get; set;
+    }
 
     public int SourceIndex(string topic)
     {

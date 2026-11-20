@@ -17,22 +17,34 @@ public sealed class DescribeClientQuotasResponse : IKafkaResponse
     /// <summary>
     /// The duration in milliseconds for which the request was throttled due to quota violation.
     /// </summary>
-    public int ThrottleTimeMs { get; init; }
+    public int ThrottleTimeMs
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The message-level error code, or 0 if there was no error.
     /// </summary>
-    public ErrorCode ErrorCode { get; init; }
+    public ErrorCode ErrorCode
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The message-level error message, or null if there was no error.
     /// </summary>
-    public string? ErrorMessage { get; init; }
+    public string? ErrorMessage
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The matching quota entries, or null when the broker returns no entry array.
     /// </summary>
-    public IReadOnlyList<DescribeClientQuotasResponseEntry>? Entries { get; init; }
+    public IReadOnlyList<DescribeClientQuotasResponseEntry>? Entries
+    {
+        get; init;
+    }
 
     public static IKafkaResponse Read(ref KafkaProtocolReader reader, short version)
     {
@@ -82,12 +94,18 @@ public sealed class DescribeClientQuotasResponseEntry
     /// <summary>
     /// Entity components for the quota entry.
     /// </summary>
-    public required IReadOnlyList<DescribeClientQuotasEntityData> Entity { get; init; }
+    public required IReadOnlyList<DescribeClientQuotasEntityData> Entity
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Quota key/value pairs for the entity.
     /// </summary>
-    public required IReadOnlyList<DescribeClientQuotasValueData> Values { get; init; }
+    public required IReadOnlyList<DescribeClientQuotasValueData> Values
+    {
+        get; init;
+    }
 
     public static DescribeClientQuotasResponseEntry Read(ref KafkaProtocolReader reader, short version)
     {
@@ -137,12 +155,18 @@ public sealed class DescribeClientQuotasEntityData
     /// <summary>
     /// Entity type name: user, client-id, or ip.
     /// </summary>
-    public required string EntityType { get; init; }
+    public required string EntityType
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Entity name, or null for the default entity.
     /// </summary>
-    public string? EntityName { get; init; }
+    public string? EntityName
+    {
+        get; init;
+    }
 
     public static DescribeClientQuotasEntityData Read(ref KafkaProtocolReader reader, short version)
     {
@@ -171,12 +195,18 @@ public sealed class DescribeClientQuotasValueData
     /// <summary>
     /// Quota key.
     /// </summary>
-    public required string Key { get; init; }
+    public required string Key
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Quota value.
     /// </summary>
-    public required double Value { get; init; }
+    public required double Value
+    {
+        get; init;
+    }
 
     public static DescribeClientQuotasValueData Read(ref KafkaProtocolReader reader, short version)
     {

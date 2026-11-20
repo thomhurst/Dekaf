@@ -21,9 +21,13 @@ public sealed class PooledCompletionSourceMetricsTests
         using var listener = CreateCompletionExceptionListener((instrument, measurement) =>
         {
             if (instrument == "dekaf.producer.inline_continuation.exceptions")
+            {
                 Interlocked.Add(ref inlineExceptions, measurement);
+            }
             else if (instrument == "dekaf.producer.completion_source.faults")
+            {
                 Interlocked.Add(ref sourceFaults, measurement);
+            }
         });
 
         await using var pool = new ValueTaskSourcePool<RecordMetadata>(maxPoolSize: 1);
@@ -45,7 +49,9 @@ public sealed class PooledCompletionSourceMetricsTests
         using var listener = CreateCompletionExceptionListener((instrument, measurement) =>
         {
             if (instrument == "dekaf.producer.inline_continuation.exceptions")
+            {
                 Interlocked.Add(ref recordedExceptions, measurement);
+            }
         });
 
         await using var pool = new ValueTaskSourcePool<RecordMetadata>(maxPoolSize: 1);
@@ -77,9 +83,13 @@ public sealed class PooledCompletionSourceMetricsTests
         using var listener = CreateCompletionExceptionListener((instrument, measurement) =>
         {
             if (instrument == "dekaf.producer.inline_continuation.exceptions")
+            {
                 Interlocked.Add(ref inlineExceptions, measurement);
+            }
             else if (instrument == "dekaf.producer.completion_source.faults")
+            {
                 Interlocked.Add(ref sourceFaults, measurement);
+            }
         });
 
         // An ungrouped producer test can emit the same process-wide instruments
@@ -88,7 +98,8 @@ public sealed class PooledCompletionSourceMetricsTests
         {
             DekafMetrics.InlineContinuationExceptions.Add(100);
             DekafMetrics.CompletionSourceFaults.Add(100);
-        }) { IsBackground = true };
+        })
+        { IsBackground = true };
         otherThread.Start();
         var joined = otherThread.Join(TimeSpan.FromSeconds(10));
 
@@ -119,7 +130,9 @@ public sealed class PooledCompletionSourceMetricsTests
         listener.SetMeasurementEventCallback<long>((instrument, measurement, _, _) =>
         {
             if (Environment.CurrentManagedThreadId == measurementThreadId)
+            {
                 onMeasurement(instrument.Name, measurement);
+            }
         });
         listener.Start();
         return listener;
@@ -138,20 +151,20 @@ public sealed class PooledCompletionSourceMetricsTests
     private static bool Complete(
         PooledValueTaskSource<RecordMetadata> source,
         CompletionKind completionKind) => completionKind switch
-    {
-        CompletionKind.Result => PooledCompletionSource.TrySetResult(source, new RecordMetadata
         {
-            Topic = "test-topic",
-            Partition = 0,
-            Offset = 0,
-            Timestamp = DateTimeOffset.UnixEpoch
-        }),
-        CompletionKind.Exception => PooledCompletionSource.TrySetException(
-            source,
-            new InvalidOperationException("expected source failure")),
-        CompletionKind.Canceled => PooledCompletionSource.TrySetCanceled(source, CancellationToken.None),
-        _ => throw new ArgumentOutOfRangeException(nameof(completionKind))
-    };
+            CompletionKind.Result => PooledCompletionSource.TrySetResult(source, new RecordMetadata
+            {
+                Topic = "test-topic",
+                Partition = 0,
+                Offset = 0,
+                Timestamp = DateTimeOffset.UnixEpoch
+            }),
+            CompletionKind.Exception => PooledCompletionSource.TrySetException(
+                source,
+                new InvalidOperationException("expected source failure")),
+            CompletionKind.Canceled => PooledCompletionSource.TrySetCanceled(source, CancellationToken.None),
+            _ => throw new ArgumentOutOfRangeException(nameof(completionKind))
+        };
 
     public enum CompletionKind
     {

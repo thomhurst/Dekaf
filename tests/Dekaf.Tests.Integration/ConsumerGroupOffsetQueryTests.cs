@@ -65,9 +65,13 @@ public sealed class ConsumerGroupOffsetQueryTests(KafkaTestContainer kafka) : Tr
         var pending = admin.ListConsumerGroupOffsetsAsync(specs,
             new ListConsumerGroupOffsetsOptions { RequireStable = true }, cancellationToken).AsTask();
         if (commit)
+        {
             await transaction.CommitAsync(cancellationToken);
+        }
         else
+        {
             await transaction.AbortAsync(cancellationToken);
+        }
         var stable = await pending;
         await Assert.That(stable[group].Offsets[new(topic, 0)].Offset).IsEqualTo(commit ? after : before);
         await Assert.That(stable[group].Offsets[new(topic, 0)].ErrorCode).IsEqualTo(Protocol.ErrorCode.None);
@@ -91,7 +95,9 @@ public sealed class ConsumerGroupOffsetQueryTests(KafkaTestContainer kafka) : Tr
                 {
                     var groups = await admin.DescribeConsumerGroupsAsync([group], readiness.Token);
                     if (!groups.ContainsKey(group))
+                    {
                         throw new InvalidOperationException($"Coordinator description omitted group '{group}'.");
+                    }
                     return;
                 }
                 catch (GroupException exception) when (exception.ErrorCode == Protocol.ErrorCode.GroupIdNotFound)

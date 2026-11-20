@@ -122,21 +122,39 @@ public sealed class AvroPocoInteropIntegrationTests(KafkaWithSchemaRegistryConta
 internal sealed partial class PocoInteropRecord
 {
     [AvroField(Name = "id", Order = 0)]
-    public int Id { get; init; }
+    public int Id
+    {
+        get; init;
+    }
 
     [AvroField(Name = "name", Order = 1)]
-    public required string Name { get; init; }
+    public required string Name
+    {
+        get; init;
+    }
 
     [AvroField(Name = "note", Order = 2, DefaultJson = "null")]
-    public string? Note { get; init; }
+    public string? Note
+    {
+        get; init;
+    }
 
     [AvroField(Name = "amount", Order = 3, Precision = 8, Scale = 2)]
-    public decimal Amount { get; init; }
+    public decimal Amount
+    {
+        get; init;
+    }
 }
 
 [AvroRecord(Namespace = "Dekaf.Tests")]
 internal sealed partial class PocoJaggedInteropRecord
 {
-    public byte[][] Bytes { get; init; } = [];
-    public int[][] Values { get; init; } = [];
+    public byte[][] Bytes
+    {
+        get; init;
+    } = [];
+    public int[][] Values
+    {
+        get; init;
+    } = [];
 }

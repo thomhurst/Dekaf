@@ -15,12 +15,18 @@ public sealed class CreateAclsResponse : IKafkaResponse
     /// <summary>
     /// The duration in milliseconds for which the request was throttled due to quota violation.
     /// </summary>
-    public int ThrottleTimeMs { get; init; }
+    public int ThrottleTimeMs
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The results for each ACL creation.
     /// </summary>
-    public required IReadOnlyList<AclCreationResult> Results { get; init; }
+    public required IReadOnlyList<AclCreationResult> Results
+    {
+        get; init;
+    }
 
     public static IKafkaResponse Read(ref KafkaProtocolReader reader, short version)
     {
@@ -51,12 +57,18 @@ public sealed class AclCreationResult
     /// <summary>
     /// The error code, or 0 if there was no error.
     /// </summary>
-    public ErrorCode ErrorCode { get; init; }
+    public ErrorCode ErrorCode
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The error message, or null if there was no error.
     /// </summary>
-    public string? ErrorMessage { get; init; }
+    public string? ErrorMessage
+    {
+        get; init;
+    }
 
     public static AclCreationResult Read(ref KafkaProtocolReader reader, short version)
     {

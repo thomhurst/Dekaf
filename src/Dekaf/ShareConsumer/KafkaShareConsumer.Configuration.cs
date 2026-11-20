@@ -15,11 +15,17 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue>
 
         List<ConfigAlter>? alters = null;
         if (autoOffsetReset is not null)
+        {
             (alters ??= []).Add(ConfigAlter.Set("share.auto.offset.reset", autoOffsetReset));
+        }
         if (options.DeadLetterQueueTopic is { } deadLetterQueueTopic)
+        {
             (alters ??= []).Add(ConfigAlter.Set(ShareDeadLetterQueueConfiguration.TopicNameConfig, deadLetterQueueTopic));
+        }
         if (options.DeadLetterQueueCopyRecord is { } copyRecord)
+        {
             (alters ??= []).Add(ConfigAlter.Set(ShareDeadLetterQueueConfiguration.CopyRecordConfig, copyRecord ? "true" : "false"));
+        }
         return alters;
     }
 

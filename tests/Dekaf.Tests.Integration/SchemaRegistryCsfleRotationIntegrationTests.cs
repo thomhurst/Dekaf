@@ -58,7 +58,9 @@ public sealed class SchemaRegistryCsfleRotationIntegrationTests
         await Assert.That(BinaryPrimitives.ReadInt32BigEndian(versionTwo.AsSpan(1, 4))).IsEqualTo(2);
         context = CreateContext(algorithm, rotate: true);
         if (!reuseWriter)
+        {
             writer = CreateHandler(client);
+        }
 
         var versionThree = writer.TransformSerializedPayload(payload, context).ToArray();
 
@@ -117,11 +119,26 @@ public sealed class SchemaRegistryCsfleRotationIntegrationTests
             ExpireLatestVersion();
         }
 
-        internal string AlgorithmName { get; }
-        internal List<string> Requests { get; } = [];
-        internal List<int> RegisteredVersions { get; } = [];
-        internal int RegistrationAttempts { get; private set; }
-        internal TimeSpan VersionTwoAge { get; init; }
+        internal string AlgorithmName
+        {
+            get;
+        }
+        internal List<string> Requests
+        {
+            get;
+        } = [];
+        internal List<int> RegisteredVersions
+        {
+            get;
+        } = [];
+        internal int RegistrationAttempts
+        {
+            get; private set;
+        }
+        internal TimeSpan VersionTwoAge
+        {
+            get; init;
+        }
 
         internal void AddVersion(int version) => _versions.Add(version,
             (Convert.ToBase64String(Enumerable.Repeat((byte)version, AlgorithmName == "AES256_SIV" ? 64 : 32).ToArray()),
@@ -139,9 +156,13 @@ public sealed class SchemaRegistryCsfleRotationIntegrationTests
             var uri = request.RequestUri!;
             Requests.Add(uri.PathAndQuery);
             if (Requests.Count > 32)
+            {
                 throw new InvalidOperationException("DEK resolution did not converge within 32 HTTP requests.");
+            }
             if (request.Method == HttpMethod.Get && uri.AbsolutePath == "/dek-registry/v1/keks/payments-kek")
+            {
                 return Json(HttpStatusCode.OK, """{"name":"payments-kek","kmsType":"local-kms","kmsKeyId":"local://payments"}""");
+            }
 
             int version;
             if (request.Method == HttpMethod.Post && uri.AbsolutePath == "/dek-registry/v1/keks/payments-kek/deks")
@@ -151,24 +172,34 @@ public sealed class SchemaRegistryCsfleRotationIntegrationTests
                 var root = body.RootElement;
                 version = root.TryGetProperty("version", out var requestedVersion) ? requestedVersion.GetInt32() : 1;
                 if (_versions.ContainsKey(version))
+                {
                     return Json(HttpStatusCode.Conflict, """{"error_code":40972,"message":"DEK already exists"}""");
+                }
                 var timestamp = DateTimeOffset.UtcNow.Subtract(version == 2 ? VersionTwoAge : TimeSpan.Zero).ToUnixTimeMilliseconds();
                 _versions.Add(version, (null, root.GetProperty("encryptedKeyMaterial").GetString(), timestamp));
                 RegisteredVersions.Add(version);
             }
             else if (request.Method == HttpMethod.Get && uri.AbsolutePath == DekPath)
+            {
                 version = 1; // Confluent's versionless endpoint defaults to v1, not latest.
+            }
             else if (request.Method == HttpMethod.Get && uri.AbsolutePath.StartsWith(DekPath + "/versions/", StringComparison.Ordinal))
             {
                 version = int.Parse(uri.AbsolutePath.AsSpan((DekPath + "/versions/").Length), System.Globalization.CultureInfo.InvariantCulture);
                 if (version == -1)
+                {
                     version = _versions.Keys.Max();
+                }
             }
             else
+            {
                 throw new InvalidOperationException($"Unexpected registry request: {request.Method} {uri}");
+            }
 
             if (!_versions.TryGetValue(version, out var dek))
+            {
                 return Json(HttpStatusCode.NotFound, """{"error_code":40471,"message":"DEK not found"}""");
+            }
             return Json(HttpStatusCode.OK, $$"""
                 {"kekName":"payments-kek","subject":"orders-value","version":{{version}},"algorithm":"{{AlgorithmName}}",
                  "keyMaterial":{{(dek.Key is null ? "null" : $"\"{dek.Key}\"")}},

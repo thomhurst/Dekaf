@@ -16,7 +16,9 @@ internal static class StreamsSmoke
             .SelectMany<string>(static (_, sentence, sink) =>
             {
                 foreach (var word in sentence.Split(' '))
+                {
                     sink.Add(word);
+                }
             });
         words.GroupBy(static (_, word) => word, Serializers.String, Serializers.String)
             .Count("word-counts")
@@ -53,7 +55,9 @@ internal static class StreamsSmoke
                 || windowed.Count != 1 || windowed[0].Key.Start != 0 || windowed[0].Value != 2
                 || lengths.Count != 3 || lengths[2].Value != 13
                 || !driver.GetKeyValueStore<string, long>("word-counts").TryGet("aot", out var aot) || aot != 1)
+            {
                 throw new InvalidOperationException("Dekaf.Streams topology produced unexpected results under Native AOT.");
+            }
         }
 
         var directory = Path.Combine(Path.GetTempPath(), $"dekaf-aot-streams-{Guid.NewGuid():N}");
@@ -61,15 +65,21 @@ internal static class StreamsSmoke
         {
             var context = new StateStoreContext("aot-streams", "store", "0", 0, directory);
             using (var store = ZoneTreeStateStoreEngine.Instance.CreateKeyValueStore(context))
+            {
                 store.Put([1, 2], [3]);
+            }
             using var reopened = ZoneTreeStateStoreEngine.Instance.CreateKeyValueStore(context);
             if (!reopened.TryGet([1, 2], out var value) || value.Length != 1 || value.Span[0] != 3)
+            {
                 throw new InvalidOperationException("ZoneTree state store lost its data under Native AOT.");
+            }
         }
         finally
         {
             if (Directory.Exists(directory))
+            {
                 Directory.Delete(directory, recursive: true);
+            }
         }
     }
 }

@@ -19,7 +19,9 @@ public sealed partial class ShareConsumerRenewalTests
         {
             OnSend = cancellation.Cancel
         };
-        await using var fixture = CreateFixture(connection, acknowledgementCommitCallback: static _ => { });
+        await using var fixture = CreateFixture(connection, acknowledgementCommitCallback: static _ =>
+        {
+        });
         // Assign the leaderless partition too: an acknowledgement outside the assignment is
         // drained by a commit before the fetch (#4045), not carried inline.
         PrepareForPoll(fixture.Consumer, new TopicPartition("topic", 0), new TopicPartition("missing-topic", 0));
@@ -136,7 +138,9 @@ public sealed partial class ShareConsumerRenewalTests
         while (queue.GetValue(fixture.Consumer) is not System.Collections.ICollection { Count: > 0 })
         {
             if (DateTime.UtcNow > deadline)
+            {
                 throw new TimeoutException("The abandoned request never excluded its Renew.");
+            }
             await Task.Delay(10);
         }
 

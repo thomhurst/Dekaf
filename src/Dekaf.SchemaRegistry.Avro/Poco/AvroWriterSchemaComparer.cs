@@ -25,26 +25,38 @@ internal static class AvroWriterSchemaComparer
         HashSet<(AvroWriterSchema, AvroWriterSchema)> inProgress)
     {
         if (ReferenceEquals(left, right))
+        {
             return true;
+        }
         if (left.Tag != right.Tag)
+        {
             return false;
+        }
         if (left.IsNamed && !string.Equals(left.Fullname, right.Fullname, StringComparison.Ordinal))
+        {
             return false;
+        }
 
         switch (left.Tag)
         {
             case AvroWriterSchemaTag.Record:
                 if (left.Fields.Length != right.Fields.Length)
+                {
                     return false;
+                }
                 // Recursive records compare equal on re-entry, as Apache.Avro does.
                 if (!inProgress.Add((left, right)))
+                {
                     return true;
+                }
                 try
                 {
                     for (var index = 0; index < left.Fields.Length; index++)
                     {
                         if (!FieldEquals(left.Fields[index], right.Fields[index], inProgress))
+                        {
                             return false;
+                        }
                     }
                 }
                 finally
@@ -54,23 +66,33 @@ internal static class AvroWriterSchemaComparer
                 break;
             case AvroWriterSchemaTag.Enumeration:
                 if (!left.Symbols.AsSpan().SequenceEqual(right.Symbols))
+                {
                     return false;
+                }
                 break;
             case AvroWriterSchemaTag.Fixed:
                 if (left.Size != right.Size)
+                {
                     return false;
+                }
                 break;
             case AvroWriterSchemaTag.Array or AvroWriterSchemaTag.Map or AvroWriterSchemaTag.Logical:
                 if (!Equals(left.Child!, right.Child!, inProgress))
+                {
                     return false;
+                }
                 break;
             case AvroWriterSchemaTag.Union:
                 if (left.Branches.Length != right.Branches.Length)
+                {
                     return false;
+                }
                 for (var index = 0; index < left.Branches.Length; index++)
                 {
                     if (!Equals(left.Branches[index], right.Branches[index], inProgress))
+                    {
                         return false;
+                    }
                 }
                 break;
         }
@@ -99,7 +121,9 @@ internal static class AvroWriterSchemaComparer
         (string Name, JsonElement Value)[] right)
     {
         if (left.Length != right.Length)
+        {
             return false;
+        }
         for (var index = 0; index < left.Length; index++)
         {
             var found = false;
@@ -108,13 +132,17 @@ internal static class AvroWriterSchemaComparer
                 if (string.Equals(left[index].Name, right[candidate].Name, StringComparison.Ordinal))
                 {
                     if (!JsonEquals(left[index].Value, right[candidate].Value, orderedObjects: true))
+                    {
                         return false;
+                    }
                     found = true;
                     break;
                 }
             }
             if (!found)
+            {
                 return false;
+            }
         }
         return true;
     }
@@ -123,7 +151,9 @@ internal static class AvroWriterSchemaComparer
     {
         var leftKind = Normalize(left.ValueKind);
         if (leftKind != Normalize(right.ValueKind))
+        {
             return false;
+        }
 
         switch (leftKind)
         {
@@ -135,13 +165,17 @@ internal static class AvroWriterSchemaComparer
                 return NumberEquals(left.GetRawText(), right.GetRawText());
             case JsonValueKind.Array:
                 if (left.GetArrayLength() != right.GetArrayLength())
+                {
                     return false;
+                }
                 var leftItems = left.EnumerateArray();
                 var rightItems = right.EnumerateArray();
                 while (leftItems.MoveNext() && rightItems.MoveNext())
                 {
                     if (!JsonEquals(leftItems.Current, rightItems.Current, orderedObjects))
+                    {
                         return false;
+                    }
                 }
                 return true;
             default:
@@ -161,9 +195,13 @@ internal static class AvroWriterSchemaComparer
         {
             var hasLeft = l.MoveNext();
             if (hasLeft != r.MoveNext())
+            {
                 return false;
+            }
             if (!hasLeft)
+            {
                 return true;
+            }
             if (!string.Equals(l.Current.Name, r.Current.Name, StringComparison.Ordinal) ||
                 !JsonEquals(l.Current.Value, r.Current.Value, orderedObjects: true))
             {
@@ -186,7 +224,9 @@ internal static class AvroWriterSchemaComparer
         }
 
         foreach (var _ in right.EnumerateObject())
+        {
             count--;
+        }
         return count == 0;
     }
 
@@ -194,7 +234,9 @@ internal static class AvroWriterSchemaComparer
     {
         var leftIsFloat = IsFloat(left);
         if (leftIsFloat != IsFloat(right))
+        {
             return false;
+        }
         if (leftIsFloat)
         {
             return double.Parse(left, NumberStyles.Float, CultureInfo.InvariantCulture) ==

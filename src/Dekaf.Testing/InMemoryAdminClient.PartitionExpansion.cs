@@ -20,7 +20,9 @@ public sealed partial class InMemoryAdminClient : IPartitionExpansionAdminClient
         var topics = AdminClient.BuildPartitionExpansionTopics(newPartitions);
 
         if (topics.Count == 0)
+        {
             await ApplyAdminFaultAsync(cancellationToken).ConfigureAwait(false);
+        }
 
         foreach (var topic in topics)
         {

@@ -62,7 +62,10 @@ public class PooledAppendCommitBenchmarks
     private Thread _drainerThread = null!;
 
     [Params(false, true)]
-    public bool Transactional { get; set; }
+    public bool Transactional
+    {
+        get; set;
+    }
 
     [GlobalSetup]
     public void Setup()
@@ -122,7 +125,9 @@ public class PooledAppendCommitBenchmarks
     {
         var timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
         for (var i = 0; i < AppendsPerInvoke; i++)
+        {
             Append(_accumulator, _generation, timestamp, ValueSize);
+        }
     }
 
     [Benchmark(OperationsPerInvoke = AppendsPerInvoke)]
@@ -183,11 +188,15 @@ public class PooledAppendCommitBenchmarks
         foreach (var method in typeof(RecordAccumulator).GetMethods(BindingFlags.Instance | BindingFlags.NonPublic))
         {
             if (method.Name != nameof(RecordAccumulator.AppendAsync))
+            {
                 continue;
+            }
 
             var parameters = method.GetParameters();
             if (parameters.Length == 12 && parameters[11].Name == "transactionalGeneration")
+            {
                 return method.CreateDelegate<GenerationAppend>();
+            }
         }
 
         // A revision without the generation argument: the same append, without the check.
@@ -225,16 +234,22 @@ public class PooledAppendCommitBenchmarks
         {
             // Non-short-circuit OR: drain one batch from each accumulator per pass.
             if (TryRecycle(_accumulator) | TryRecycle(_rotationAccumulator))
+            {
                 spinner.Reset();
+            }
             else
+            {
                 spinner.SpinOnce();
+            }
         }
     }
 
     private static bool TryRecycle(RecordAccumulator accumulator)
     {
         if (!accumulator.TryDrainPublishedBatch(out var batch))
+        {
             return false;
+        }
 
         accumulator.OnBatchExitsPipeline(batch);
         accumulator.ReleaseMemory(batch.DataSize);

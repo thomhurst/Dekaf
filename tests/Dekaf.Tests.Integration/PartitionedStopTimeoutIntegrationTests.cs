@@ -30,7 +30,10 @@ public sealed class PartitionedStopTimeoutIntegrationTests(KafkaTestContainer ka
         {
             await producer.ProduceAsync(new ProducerMessage<string, string>
             {
-                Topic = topic, Partition = partition, Key = "key", Value = $"value-{partition}"
+                Topic = topic,
+                Partition = partition,
+                Key = "key",
+                Value = $"value-{partition}"
             });
         }
 
@@ -51,7 +54,9 @@ public sealed class PartitionedStopTimeoutIntegrationTests(KafkaTestContainer ka
                 {
                     cancelled[partition].TrySetResult();
                     if (partition == 0)
+                    {
                         releaseCallback.Wait();
+                    }
                 });
                 started[partition].TrySetResult();
                 await releaseHandler.Task;

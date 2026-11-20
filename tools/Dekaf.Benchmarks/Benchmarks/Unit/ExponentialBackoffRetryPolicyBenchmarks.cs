@@ -10,10 +10,16 @@ public class ExponentialBackoffRetryPolicyBenchmarks
     private ExponentialBackoffRetryPolicy _policy = null!;
 
     [Params(2, 6, 65)]
-    public int Attempt { get; set; }
+    public int Attempt
+    {
+        get; set;
+    }
 
     [Params(false, true)]
-    public bool Jitter { get; set; }
+    public bool Jitter
+    {
+        get; set;
+    }
 
     [GlobalSetup]
     public void Setup() => _policy = Create(Jitter);

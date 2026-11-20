@@ -15,7 +15,9 @@ internal static class AvroSchemaReferenceResolver
         CancellationToken cancellationToken)
     {
         if (schema.References is not { Count: > 0 })
+        {
             return AvroSchema.Parse(schema.SchemaString);
+        }
         var names = await ResolveAsync(schemaRegistry, schema, cancellationToken).ConfigureAwait(false);
         return AvroSchema.Parse(schema.SchemaString, names);
     }
@@ -74,18 +76,26 @@ internal static class AvroSchemaReferenceResolver
         CancellationToken cancellationToken)
     {
         if (schema.References is not { Count: > 0 } references)
+        {
             return;
+        }
         if (depth >= MaxReferenceDepth)
+        {
             throw new InvalidOperationException($"Avro schema reference depth exceeds {MaxReferenceDepth}.");
+        }
 
         for (var index = 0; index < references.Count; index++)
         {
             var reference = references[index];
             var key = new ReferenceKey(reference.Subject, reference.Version);
             if (resolved.Contains(key))
+            {
                 continue;
+            }
             if (!visiting.Add(key))
+            {
                 throw new InvalidOperationException("Cyclic Avro schema references are not supported.");
+            }
 
             var registered = await schemaRegistry.GetSchemaBySubjectAsync(
                     reference.Subject,
@@ -93,7 +103,9 @@ internal static class AvroSchemaReferenceResolver
                     cancellationToken)
                 .ConfigureAwait(false);
             if (registered.Schema.SchemaType != SchemaType.Avro)
+            {
                 throw new InvalidOperationException($"Schema {registered.Id} is {registered.Schema.SchemaType}, not Avro.");
+            }
             await ResolveAsync(
                     schemaRegistry,
                     registered.Schema,

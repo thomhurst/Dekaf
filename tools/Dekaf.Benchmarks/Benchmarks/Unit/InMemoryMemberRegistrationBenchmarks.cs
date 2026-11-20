@@ -14,10 +14,16 @@ public class InMemoryMemberRegistrationBenchmarks
     private ConsumerGroupMemberIdentity[] _identities = null!;
 
     [Params(32, 1024)]
-    public int Members { get; set; }
+    public int Members
+    {
+        get; set;
+    }
 
     [Params(false, true)]
-    public bool Static { get; set; }
+    public bool Static
+    {
+        get; set;
+    }
 
     [GlobalSetup]
     public void Setup()
@@ -41,11 +47,15 @@ public class InMemoryMemberRegistrationBenchmarks
     public int RegisterAndRemove()
     {
         for (var index = 0; index < Members; index++)
+        {
             _cluster.RegisterConsumerGroupMember("group", _memberIds[index], [], out _,
                 Static ? _instanceIds[index] : null);
+        }
         var result = _cluster.RemoveConsumerGroupMembers("group", _identities);
         if (!result.Succeeded || result.Members.Count != Members)
+        {
             throw new InvalidOperationException("The fixture must remove every registered member.");
+        }
         return result.Members.Count;
     }
 }

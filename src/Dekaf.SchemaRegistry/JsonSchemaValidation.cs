@@ -80,22 +80,34 @@ public sealed class JsonSchemaValidationOptions
     /// <summary>
     /// Validation locations. Default is both serialization and deserialization.
     /// </summary>
-    public JsonSchemaValidationMode Mode { get; init; } = JsonSchemaValidationMode.Both;
+    public JsonSchemaValidationMode Mode
+    {
+        get; init;
+    } = JsonSchemaValidationMode.Both;
 
     /// <summary>
     /// Factory that compiles and caches JSON Schema validators.
     /// </summary>
-    public required IJsonSchemaValidatorFactory ValidatorFactory { get; init; }
+    public required IJsonSchemaValidatorFactory ValidatorFactory
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Selects when inline <c>confluent:rules</c> constraints run. Default is disabled.
     /// </summary>
-    public ValidationRulesExecution ValidationRulesExecution { get; init; }
+    public ValidationRulesExecution ValidationRulesExecution
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Stops the inline schema walk after its first violation when enabled.
     /// </summary>
-    public bool ValidationRulesFailFast { get; init; }
+    public bool ValidationRulesFailFast
+    {
+        get; init;
+    }
 
     internal IJsonSchemaValidatorFactory? GetSerializerFactory()
     {
@@ -120,7 +132,9 @@ public sealed class JsonSchemaValidationOptions
         ValidateRulesExecution();
 
         if (ValidationRulesExecution == ValidationRulesExecution.Disabled)
+        {
             return null;
+        }
         if (ruleExecutor is not null and not SchemaRegistryRuleExecutor &&
             !ReferenceEquals(ruleExecutor, SchemaRegistryMigrationRunner.MarkerRuleExecutor))
         {
@@ -147,7 +161,9 @@ public sealed class JsonSchemaValidationOptions
     private void ValidateMode()
     {
         if ((Mode & ~JsonSchemaValidationMode.Both) != 0)
+        {
             throw new ArgumentOutOfRangeException(nameof(Mode), Mode, "Unsupported JSON Schema validation mode.");
+        }
     }
 }
 
@@ -211,10 +227,14 @@ internal sealed class JsonSchemaValidationPipelineValidator(
     public void Validate(ReadOnlyMemory<byte> payload, int schemaId)
     {
         if (execution == ValidationRulesExecution.BeforeDomainRules)
+        {
             rulesValidator.ValidateRules(payload, schemaId, failFast);
+        }
         schemaValidator?.Validate(payload.Span, schemaId);
         if (execution == ValidationRulesExecution.AfterDomainRules)
+        {
             rulesValidator.ValidateRules(payload, schemaId, failFast);
+        }
     }
 }
 
@@ -242,15 +262,24 @@ public sealed class JsonSchemaValidationException : KafkaException
     /// <summary>
     /// Schema Registry schema ID used for validation.
     /// </summary>
-    public int SchemaId { get; }
+    public int SchemaId
+    {
+        get;
+    }
 
     /// <summary>
     /// JSON Schema keyword that rejected the payload.
     /// </summary>
-    public string Keyword { get; }
+    public string Keyword
+    {
+        get;
+    }
 
     /// <summary>
     /// JSON path of the rejected value.
     /// </summary>
-    public string JsonPath { get; }
+    public string JsonPath
+    {
+        get;
+    }
 }

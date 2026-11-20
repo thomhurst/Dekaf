@@ -31,17 +31,25 @@ public sealed partial class InMemoryKafkaCluster
         lock (_gate)
         {
             if (_classicGroupDescriptions?.TryGetValue(groupId, out var snapshot) == true)
+            {
                 return CopyClassicGroupDescription(snapshot, includeAuthorizedOperations);
+            }
             if (!_consumerGroupOffsets.ContainsKey(groupId) || _consumerGroupGenerations.ContainsKey(groupId) ||
                 _streamsGroupIds?.Contains(groupId) == true)
+            {
                 return AdminClient.ClassicGroupError(groupId, ErrorCode.GroupIdNotFound);
+            }
             return new ClassicGroupDescriptionResult
             {
                 GroupId = groupId,
                 Description = new ClassicGroupDescription
                 {
-                    GroupId = groupId, ProtocolType = "", ProtocolData = "", State = "Empty",
-                    CoordinatorId = 0, Members = []
+                    GroupId = groupId,
+                    ProtocolType = "",
+                    ProtocolData = "",
+                    State = "Empty",
+                    CoordinatorId = 0,
+                    Members = []
                 }
             };
         }
@@ -58,15 +66,21 @@ public sealed partial class InMemoryKafkaCluster
             ArgumentNullException.ThrowIfNull(member.MemberId);
             members[i] = new DescribeGroupsResponseMember
             {
-                MemberId = member.MemberId, GroupInstanceId = member.GroupInstanceId,
-                ClientId = member.ClientId, ClientHost = member.ClientHost,
-                MemberMetadata = member.Metadata.ToArray(), MemberAssignment = member.AssignmentData.ToArray()
+                MemberId = member.MemberId,
+                GroupInstanceId = member.GroupInstanceId,
+                ClientId = member.ClientId,
+                ClientHost = member.ClientHost,
+                MemberMetadata = member.Metadata.ToArray(),
+                MemberAssignment = member.AssignmentData.ToArray()
             };
         }
         return AdminClient.MapClassicGroup(new DescribeGroupsResponseGroup
         {
-            GroupId = source.GroupId, GroupState = source.State, ProtocolType = source.ProtocolType,
-            ProtocolData = source.ProtocolData, Members = members,
+            GroupId = source.GroupId,
+            GroupState = source.State,
+            ProtocolType = source.ProtocolType,
+            ProtocolData = source.ProtocolData,
+            Members = members,
             AuthorizedOperations = source.AuthorizedOperations ?? int.MinValue
         }, source.CoordinatorId, includeAuthorizedOperations);
     }

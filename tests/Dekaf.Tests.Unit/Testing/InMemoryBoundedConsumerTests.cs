@@ -406,7 +406,9 @@ public sealed class InMemoryBoundedConsumerTests
     {
         var results = new List<ConsumeResult<string, string>>();
         await foreach (var record in records)
+        {
             results.Add(record);
+        }
         return results;
     }
 
@@ -415,7 +417,9 @@ public sealed class InMemoryBoundedConsumerTests
     {
         var values = new List<string>();
         await foreach (var record in records)
+        {
             values.Add(record.Value);
+        }
         return values;
     }
 

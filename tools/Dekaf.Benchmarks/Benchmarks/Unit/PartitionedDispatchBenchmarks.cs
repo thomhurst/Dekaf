@@ -23,10 +23,16 @@ public class PartitionedDispatchBenchmarks
     private int _handled;
 
     [ParamsAllValues]
-    public DispatchScenario Scenario { get; set; }
+    public DispatchScenario Scenario
+    {
+        get; set;
+    }
 
     [Params(false, true)]
-    public bool SuspendFirstHandler { get; set; }
+    public bool SuspendFirstHandler
+    {
+        get; set;
+    }
 
     [GlobalSetup]
     public async Task Setup()
@@ -81,14 +87,20 @@ public class PartitionedDispatchBenchmarks
         var suspended = !processing.IsCompleted && _handled != 0;
         _release?.TrySetResult();
         if (SuspendFirstHandler && !processing.IsCompleted)
+        {
             throw new InvalidOperationException("The suspended dispatch did not resume inline.");
+        }
         await processing.AsTask().WaitAsync(TimeSpan.FromSeconds(30));
         if (SuspendFirstHandler && !suspended)
+        {
             throw new InvalidOperationException("The first handler did not suspend dispatch.");
+        }
         var checkpoint = lane.GetCommitOffset();
         if (_handled != RecordCount || checkpoint is not { Offset: RecordCount, LeaderEpoch: 7 }
             || lane.TryReadMessage(out _))
+        {
             throw new InvalidOperationException("Dispatch lost records or produced an incorrect checkpoint.");
+        }
         return checkpoint.Value.Offset;
     }
 
@@ -105,7 +117,9 @@ public class PartitionedDispatchBenchmarks
     {
         var first = _handled == 0;
         for (var index = 0; index < records.Count; index++)
+        {
             Observe(records[index]);
+        }
         return first && _release is not null ? new ValueTask(_release.Task) : default;
     }
 
@@ -113,7 +127,9 @@ public class PartitionedDispatchBenchmarks
     {
         var offset = checked((int)record.Offset);
         if (_seen[offset] || record.Offset <= _lastByKey[record.Key])
+        {
             throw new InvalidOperationException("A record was duplicated or its key was processed out of order.");
+        }
         _seen[offset] = true;
         _lastByKey[record.Key] = record.Offset;
         _handled++;
@@ -150,7 +166,9 @@ public class PartitionedOffsetTrackingBenchmarks
     {
         var lane = CreateDeliveredLane();
         foreach (var record in _delivered)
+        {
             lane.MarkProcessed(record);
+        }
         return CheckCheckpoint(lane);
     }
 
@@ -162,7 +180,9 @@ public class PartitionedOffsetTrackingBenchmarks
         // completions have accumulated. This exercises the real gap-tracking collections.
         lane.MarkProcessed(_delivered[0]);
         for (var index = RecordCount - 1; index >= 1; index--)
+        {
             lane.MarkProcessed(_delivered[index]);
+        }
         return CheckCheckpoint(lane);
     }
 
@@ -176,7 +196,9 @@ public class PartitionedOffsetTrackingBenchmarks
         for (var index = 0; index < RecordCount; index++)
         {
             if (!lane.TryReadMessage(out _delivered[index]))
+            {
                 throw new InvalidOperationException("Missing published record.");
+            }
         }
         return lane;
     }
@@ -185,7 +207,9 @@ public class PartitionedOffsetTrackingBenchmarks
     {
         var checkpoint = lane.GetCommitOffset();
         if (checkpoint is not { Offset: RecordCount, LeaderEpoch: 7 })
+        {
             throw new InvalidOperationException("Completion tracking produced an incorrect checkpoint.");
+        }
         return checkpoint.Value.Offset;
     }
 }
@@ -194,7 +218,11 @@ internal static class PartitionedBenchmarkInput
 {
     internal static PartitionLane<int, int> CreateLane(int capacity) => new(
         new TopicPartition("dispatch", 0), capacity,
-        static (_, _) => default, static _ => { }, static (_, _) => { });
+        static (_, _) => default, static _ =>
+        {
+        }, static (_, _) =>
+        {
+        });
 
     internal static void EnqueueRecords(PartitionLane<int, int> lane, ConsumeResult<int, int>[] records)
     {
@@ -205,7 +233,9 @@ internal static class PartitionedBenchmarkInput
             foreach (var record in records)
             {
                 if (!lane.TryEnqueue(record, batch))
+                {
                     throw new InvalidOperationException("The bounded input did not fit in the partition queue.");
+                }
                 published++;
             }
         }

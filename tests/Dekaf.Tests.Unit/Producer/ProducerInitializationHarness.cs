@@ -21,13 +21,34 @@ internal sealed class ProducerInitializationHarness : IAsyncDisposable
     private readonly ConnectionPool _pool;
     private readonly MetadataManager _metadata;
     public MetadataManager Metadata => _metadata;
-    public KafkaProducer<string, string> Producer { get; }
-    public Dictionary<int, IKafkaConnection> Connections { get; } = [];
-    public int[] BrokerIds { get; }
-    public List<int> ConnectionAttempts { get; } = [];
-    public List<(int BrokerId, InitProducerIdRequest Request)> Requests { get; } = [];
-    public Func<int, CancellationToken, ValueTask<IKafkaConnection>> Connect { get; set; }
-    public Func<int, CancellationToken, ValueTask<InitProducerIdResponse>> Send { get; set; } = (_, _) => ValueTask.FromResult(Success());
+    public KafkaProducer<string, string> Producer
+    {
+        get;
+    }
+    public Dictionary<int, IKafkaConnection> Connections
+    {
+        get;
+    } = [];
+    public int[] BrokerIds
+    {
+        get;
+    }
+    public List<int> ConnectionAttempts
+    {
+        get;
+    } = [];
+    public List<(int BrokerId, InitProducerIdRequest Request)> Requests
+    {
+        get;
+    } = [];
+    public Func<int, CancellationToken, ValueTask<IKafkaConnection>> Connect
+    {
+        get; set;
+    }
+    public Func<int, CancellationToken, ValueTask<InitProducerIdResponse>> Send
+    {
+        get; set;
+    } = (_, _) => ValueTask.FromResult(Success());
 
     public ProducerInitializationHarness(
         int maxBlockMs = 5000,
@@ -42,7 +63,9 @@ internal sealed class ProducerInitializationHarness : IAsyncDisposable
             (id, _, _, _, token) =>
             {
                 lock (ConnectionAttempts)
+                {
                     ConnectionAttempts.Add(id);
+                }
                 return Connect(id, token);
             });
         _metadata = metadataOptions is null
@@ -89,7 +112,9 @@ internal sealed class ProducerInitializationHarness : IAsyncDisposable
             CloseTimeoutMs = 100
         }, Serializers.String, Serializers.String, _pool, _metadata, DekafMemoryBudget.Global);
         if (manualMaxBlock)
+        {
             Producer.ArmIdempotentInitializationBudgetForTesting = budget => Volatile.Write(ref _maxBlockBudget, budget);
+        }
     }
 
     private CancellationTokenSource? _maxBlockBudget;

@@ -28,11 +28,17 @@ public sealed class PartitionIdTelemetryTests(KafkaTestContainer kafka) : KafkaI
             ActivityStopped = activity =>
             {
                 if (activity.GetTagItem(DekafDiagnostics.MessagingDestinationName) as string != topic)
+                {
                     return;
+                }
                 if (activity.Kind == ActivityKind.Producer)
+                {
                     sendSpans.Add(activity);
+                }
                 else if (activity.Kind is ActivityKind.Consumer or ActivityKind.Client)
+                {
                     consumeSpans.Add(activity);
+                }
             }
         };
         ActivitySource.AddActivityListener(listener);

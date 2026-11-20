@@ -74,7 +74,9 @@ public class PartitionedOffsetGapTests
     {
         var lane = CreateLane();
         for (var index = 0; index < 10_000; index++)
+        {
             lane.MarkProcessed(Deliver(lane, 10 + index * 2L, index));
+        }
         await Assert.That(lane.GetCommitOffset()).IsEqualTo(new TopicPartitionOffset("gaps", 0, 20_009, 9_999));
         await Assert.That(Ranges(lane).Count).IsEqualTo(0);
     }
@@ -85,7 +87,9 @@ public class PartitionedOffsetGapTests
         var lane = CreateLane();
         var first = Deliver(lane, 10, 1);
         for (var index = 1; index < 10_000; index++)
+        {
             lane.MarkProcessed(Deliver(lane, 10 + index * 2L, index));
+        }
         await Assert.That(lane.GetCommitOffset()).IsNull();
         await Assert.That(Ranges(lane).Count).IsEqualTo(1);
         lane.MarkProcessed(first);
@@ -118,7 +122,9 @@ public class PartitionedOffsetGapTests
                 lane.MarkProcessed(messages[index]);
                 done[index] = true;
                 while (prefix + 1 < count && done[prefix + 1])
+                {
                     prefix++;
+                }
                 // Repeat arbitrary prior completions, including interiors of merged ranges.
                 lane.MarkProcessed(messages[index]);
                 TopicPartitionOffset? expected = prefix < 0 ? null
@@ -146,14 +152,18 @@ public class PartitionedOffsetGapTests
                 var message = new ConsumeResult<string, string>("gaps", 0, 10 + index * 2L,
                     "key", "value", null, 0, TimestampType.CreateTime, index);
                 while (!lane.TryEnqueueForTest(message))
+                {
                     await lane.WaitToWriteAsync(timeout.Token);
+                }
             }
         }, timeout.Token);
         for (var index = 0; index < count; index++)
         {
             ConsumeResult<string, string> message;
             while (!lane.TryReadMessage(out message))
+            {
                 await lane.WaitToReadMessageAsync(timeout.Token);
+            }
             lane.MarkProcessed(message);
         }
         await writer.WaitAsync(timeout.Token);
@@ -165,7 +175,11 @@ public class PartitionedOffsetGapTests
     public async Task RejectedEnqueue_DoesNotBecomeDeliveredPredecessor()
     {
         var lane = new PartitionLane<string, string>(new TopicPartition("gaps", 0), 1,
-            static (_, _) => default, static _ => { }, static (_, _) => { });
+            static (_, _) => default, static _ =>
+            {
+            }, static (_, _) =>
+            {
+            });
         var first = new ConsumeResult<string, string>("gaps", 0, 10, "key", "value", null, 0,
             TimestampType.CreateTime, 1);
         var rejected = new ConsumeResult<string, string>("gaps", 0, 12, "key", "value", null, 0,
@@ -191,14 +205,20 @@ public class PartitionedOffsetGapTests
     }
 
     private static PartitionLane<string, string> CreateLane() =>
-        new(new TopicPartition("gaps", 0), 16, static (_, _) => default, static _ => { }, static (_, _) => { });
+        new(new TopicPartition("gaps", 0), 16, static (_, _) => default, static _ =>
+        {
+        }, static (_, _) =>
+        {
+        });
 
     private static ConsumeResult<string, string> Deliver(PartitionLane<string, string> lane, long offset, int epoch)
     {
         var message = new ConsumeResult<string, string>("gaps", 0, offset, "key", "value", null, 0,
             TimestampType.CreateTime, epoch);
         if (!lane.TryEnqueueForTest(message) || !lane.TryReadMessage(out var delivered))
+        {
             throw new InvalidOperationException("Test lane did not deliver the expected record.");
+        }
         return delivered;
     }
 }

@@ -58,7 +58,9 @@ public class StreamsProducerCollectorBenchmarks
 
         _accumulator = _producer.RecordAccumulator;
         if (_accumulator.GetBrokerUnackedBudget(brokerId: 0) is { } budget)
+        {
             SetInstanceField(budget, "_budgetBytes", FixtureCapacityBytes);
+        }
 
         _collector = new ProducerCollector(_producer);
         _drainerCts = new CancellationTokenSource();

@@ -1,5 +1,5 @@
-using System.Diagnostics.CodeAnalysis;
 using System.Collections.Concurrent;
+using System.Diagnostics.CodeAnalysis;
 using Dekaf.Consumer;
 using Dekaf.Metadata;
 using Dekaf.Networking;
@@ -24,28 +24,39 @@ public sealed class AdaptiveFetchSizingIntegrationTests(KafkaTestContainer kafka
             .WithBootstrapServers(KafkaContainer.BootstrapServers).WithBatchSize(16 * 1024).BuildAsync(cancellationToken))
         {
             for (var index = 0; index < count; index++)
+            {
                 await producer.FireAsync(topic, index.ToString(System.Globalization.CultureInfo.InvariantCulture), new string('x', 8192));
+            }
             await producer.FlushAsync(cancellationToken);
         }
 
         var options = new AdaptiveFetchSizingOptions
         {
-            MinPartitionFetchBytes = 32 * 1024, InitialPartitionFetchBytes = 64 * 1024, MaxPartitionFetchBytes = 256 * 1024,
-            MinFetchMaxBytes = 64 * 1024, InitialFetchMaxBytes = 128 * 1024, MaxFetchMaxBytes = 512 * 1024,
+            MinPartitionFetchBytes = 32 * 1024,
+            InitialPartitionFetchBytes = 64 * 1024,
+            MaxPartitionFetchBytes = 256 * 1024,
+            MinFetchMaxBytes = 64 * 1024,
+            InitialFetchMaxBytes = 128 * 1024,
+            MaxFetchMaxBytes = 512 * 1024,
             StableWindowCount = 1,
             // Make the grow signal insensitive to runner scheduling; pressure still takes precedence.
-            GrowThreshold = 10000, ShrinkThreshold = 20000
+            GrowThreshold = 10000,
+            ShrinkThreshold = 20000
         };
         var clientId = $"adaptive-fetch-{Guid.NewGuid():N}";
         await using var pool = new FetchObservingPool(new ConnectionPool(clientId, new ConnectionOptions()));
         await using var metadata = new MetadataManager(pool, [KafkaContainer.BootstrapServers]);
         await using var consumer = new KafkaConsumer<string, string>(new ConsumerOptions
         {
-            BootstrapServers = [KafkaContainer.BootstrapServers], ClientId = clientId,
+            BootstrapServers = [KafkaContainer.BootstrapServers],
+            ClientId = clientId,
             AutoOffsetReset = AutoOffsetReset.Earliest,
-            EnableAdaptiveFetchSizing = true, AdaptiveFetchSizingOptions = options,
-            QueuedMinMessages = memoryPressure ? 1000 : 1, QueuedMaxMessagesKbytes = 32,
-            EnableFetchSessions = false, PrefetchPipelineDepth = 1
+            EnableAdaptiveFetchSizing = true,
+            AdaptiveFetchSizingOptions = options,
+            QueuedMinMessages = memoryPressure ? 1000 : 1,
+            QueuedMaxMessagesKbytes = 32,
+            EnableFetchSessions = false,
+            PrefetchPipelineDepth = 1
         }, Serializers.String, Serializers.String, pool, metadata);
         await consumer.InitializeAsync(cancellationToken);
         consumer.Assign(new TopicPartition(topic, 0));
@@ -84,7 +95,10 @@ public sealed class AdaptiveFetchSizingIntegrationTests(KafkaTestContainer kafka
 
     private sealed class FetchObservingPool(ConnectionPool inner) : IConnectionPool
     {
-        public ConcurrentQueue<(int TotalBytes, int PartitionBytes)> Requests { get; } = new();
+        public ConcurrentQueue<(int TotalBytes, int PartitionBytes)> Requests
+        {
+            get;
+        } = new();
         public async ValueTask<IKafkaConnection> GetConnectionAsync(int brokerId, CancellationToken cancellationToken = default) =>
             new ObservedConnection(this, await inner.GetConnectionAsync(brokerId, cancellationToken));
         public async ValueTask<IKafkaConnection> GetConnectionByIndexAsync(int brokerId, int index, CancellationToken cancellationToken = default) =>
@@ -134,9 +148,15 @@ public sealed class AdaptiveFetchSizingIntegrationTests(KafkaTestContainer kafka
             private void Observe<TRequest>(TRequest request)
             {
                 if (request is FetchRequest fetch)
+                {
                     foreach (var topic in fetch.Topics)
+                    {
                         foreach (var partition in topic.Partitions)
+                        {
                             owner.Requests.Enqueue((fetch.MaxBytes, partition.PartitionMaxBytes));
+                        }
+                    }
+                }
             }
 
             public ValueTask SendFireAndForgetAsync<

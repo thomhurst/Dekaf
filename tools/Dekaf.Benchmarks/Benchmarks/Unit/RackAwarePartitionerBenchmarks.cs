@@ -14,7 +14,10 @@ public class RackAwarePartitionerBenchmarks
     private IUniformStickyPartitioner _uniformPartitioner = null!;
 
     [Params(10, 10_000)]
-    public int PartitionCount { get; set; }
+    public int PartitionCount
+    {
+        get; set;
+    }
 
     [GlobalSetup]
     public void Setup()
@@ -29,7 +32,9 @@ public class RackAwarePartitionerBenchmarks
         _uniformPartitioner = _partitioner;
         var localPartitions = new int[PartitionCount / 10];
         for (var i = 0; i < localPartitions.Length; i++)
+        {
             localPartitions[i] = i * 10;
+        }
         _uniformPartitioner.SetRackLocalPartitionsProvider((_, _, _) => localPartitions);
     }
 

@@ -16,22 +16,34 @@ public sealed class OffsetFetchRequest : IKafkaRequest<OffsetFetchResponse>
     /// <summary>
     /// The group ID.
     /// </summary>
-    public required string GroupId { get; init; }
+    public required string GroupId
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Topics to fetch offsets for. Null means all topics.
     /// </summary>
-    public IReadOnlyList<OffsetFetchRequestTopic>? Topics { get; init; }
+    public IReadOnlyList<OffsetFetchRequestTopic>? Topics
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Multiple groups (v8+).
     /// </summary>
-    public IReadOnlyList<OffsetFetchRequestGroup>? Groups { get; init; }
+    public IReadOnlyList<OffsetFetchRequestGroup>? Groups
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Whether to require stable offsets (v7+).
     /// </summary>
-    public bool RequireStable { get; init; }
+    public bool RequireStable
+    {
+        get; init;
+    }
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {
@@ -84,16 +96,29 @@ public sealed class OffsetFetchRequest : IKafkaRequest<OffsetFetchResponse>
 /// </summary>
 public sealed class OffsetFetchRequestTopic
 {
-    public required string Name { get; init; }
-    public Guid TopicId { get; init; }
-    public required IReadOnlyList<int> PartitionIndexes { get; init; }
+    public required string Name
+    {
+        get; init;
+    }
+    public Guid TopicId
+    {
+        get; init;
+    }
+    public required IReadOnlyList<int> PartitionIndexes
+    {
+        get; init;
+    }
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {
         if (version >= OffsetFetchRequest.TopicIdVersion)
+        {
             writer.WriteUuid(TopicId);
+        }
         else
+        {
             writer.WriteCompactString(Name);
+        }
 
         writer.WriteCompactArray(
             PartitionIndexes,
@@ -108,10 +133,22 @@ public sealed class OffsetFetchRequestTopic
 /// </summary>
 public sealed class OffsetFetchRequestGroup
 {
-    public required string GroupId { get; init; }
-    public string? MemberId { get; init; }
-    public int MemberEpoch { get; init; } = -1;
-    public IReadOnlyList<OffsetFetchRequestTopic>? Topics { get; init; }
+    public required string GroupId
+    {
+        get; init;
+    }
+    public string? MemberId
+    {
+        get; init;
+    }
+    public int MemberEpoch
+    {
+        get; init;
+    } = -1;
+    public IReadOnlyList<OffsetFetchRequestTopic>? Topics
+    {
+        get; init;
+    }
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {

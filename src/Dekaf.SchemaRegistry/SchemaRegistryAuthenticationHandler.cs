@@ -56,7 +56,9 @@ internal sealed class SchemaRegistryAuthenticationHandler : DelegatingHandler
                 ? _customTokenAuthenticator.GetTokenAsync(cancellationToken)
                 : _configuredTokenProvider!(cancellationToken);
             if (!token.IsCompletedSuccessfully)
+            {
                 return SendWithTokenAsync(request, token, cancellationToken);
+            }
 
             request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token.Result.TokenValue);
         }

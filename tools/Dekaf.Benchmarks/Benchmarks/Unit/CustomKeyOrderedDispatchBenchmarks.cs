@@ -14,20 +14,31 @@ public class CustomKeyOrderedDispatchBenchmarks
     [Params(KeyOrderedDispatchBenchmarks.KeyPattern.Repeated,
         KeyOrderedDispatchBenchmarks.KeyPattern.Distinct,
         KeyOrderedDispatchBenchmarks.KeyPattern.PendingPairs)]
-    public KeyOrderedDispatchBenchmarks.KeyPattern Pattern { get; set; }
+    public KeyOrderedDispatchBenchmarks.KeyPattern Pattern
+    {
+        get; set;
+    }
 
     [Params(1, 16)]
-    public int BatchSize { get; set; }
+    public int BatchSize
+    {
+        get; set;
+    }
 
     [Params(128, 262144)]
-    public int RecordCount { get; set; }
+    public int RecordCount
+    {
+        get; set;
+    }
 
     [GlobalSetup]
     public Task Setup()
     {
         _dispatch = new KeyOrderedDispatchBenchmarks
         {
-            Pattern = Pattern, BatchSize = BatchSize, RecordCount = RecordCount,
+            Pattern = Pattern,
+            BatchSize = BatchSize,
+            RecordCount = RecordCount,
             KeyComparer = new Int32Comparer()
         };
         return _dispatch.Setup();

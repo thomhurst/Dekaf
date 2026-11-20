@@ -213,23 +213,56 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     /// </summary>
     internal readonly struct PendingResponse
     {
-        public PipelinedResponse<ProduceResponse> ResponseTask { get; }
-        public ReadyBatch[] Batches { get; }
-        public int[] BatchGenerations { get; }
-        public Guid[]? TopicIds { get; }
-        public short ApiVersion { get; }
-        public int Count { get; }
-        public long EncodedBytes { get; }
-        public long DataBytes { get; }
-        public long RequestStartTime { get; }
-        public BrokerUnackedByteBudget.DeliverySnapshot DeliverySnapshotAtSend { get; }
+        public PipelinedResponse<ProduceResponse> ResponseTask
+        {
+            get;
+        }
+        public ReadyBatch[] Batches
+        {
+            get;
+        }
+        public int[] BatchGenerations
+        {
+            get;
+        }
+        public Guid[]? TopicIds
+        {
+            get;
+        }
+        public short ApiVersion
+        {
+            get;
+        }
+        public int Count
+        {
+            get;
+        }
+        public long EncodedBytes
+        {
+            get;
+        }
+        public long DataBytes
+        {
+            get;
+        }
+        public long RequestStartTime
+        {
+            get;
+        }
+        public BrokerUnackedByteBudget.DeliverySnapshot DeliverySnapshotAtSend
+        {
+            get;
+        }
 
         /// <summary>
         /// The connection the request was written to. The slot's pinned connection can be
         /// replaced while this response is still pending, so a request timeout retires this
         /// one and not whatever is pinned by then.
         /// </summary>
-        public IKafkaConnection? Connection { get; }
+        public IKafkaConnection? Connection
+        {
+            get;
+        }
 
         /// <summary>
         /// Task-backed fallbacks keep a reference-typed claim because PendingResponse is
@@ -237,7 +270,10 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         /// versioned response source, which cannot return to its pool until arrays release.
         /// Both forms prevent two copies from returning the same arrays (#2187).
         /// </summary>
-        private ArrayReturnGuard? ReturnGuard { get; }
+        private ArrayReturnGuard? ReturnGuard
+        {
+            get;
+        }
 
         public PendingResponse(
             PipelinedResponse<ProduceResponse> responseTask,
@@ -309,7 +345,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         {
             var ownershipClaim = responseTask.TryRetainExternalOwner();
             if (ownershipClaim == ExternalOwnershipClaimResult.Rejected)
+            {
                 ThrowExternalOwnershipClaimRejected();
+            }
 
             return new PendingResponse(
                 responseTask,
@@ -358,11 +396,15 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         public bool TryReturnArrays()
         {
             if (!TryClaimArrayOwnership())
+            {
                 return false;
+            }
 
             ArrayPool<int>.Shared.Return(BatchGenerations);
             if (TopicIds is not null)
+            {
                 ArrayPool<Guid>.Shared.Return(TopicIds);
+            }
             ArrayPool<ReadyBatch>.Shared.Return(Batches, clearArray: true);
             return true;
         }
@@ -553,18 +595,24 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         private static int IndexAfterOlderRetries(List<BatchReference> queue, long arrivalOrder)
         {
             if (arrivalOrder == 0)
+            {
                 return 0;
+            }
 
             var index = 0;
             for (var i = 0; i < queue.Count; i++)
             {
                 var queued = queue[i];
                 if (!queued.IsCurrentIncarnation() || !queued.Batch.IsRetry)
+                {
                     continue;
+                }
 
                 var queuedArrivalOrder = queued.Batch.SenderArrivalOrder;
                 if (queuedArrivalOrder != 0 && queuedArrivalOrder < arrivalOrder)
+                {
                     index = i + 1;
+                }
             }
 
             return index;
@@ -619,7 +667,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             {
                 var queuedArrivalOrder = queue[insertIdx].Batch.SenderArrivalOrder;
                 if (arrivalOrder != 0 && queuedArrivalOrder != 0 && queuedArrivalOrder > arrivalOrder)
+                {
                     break;
+                }
                 insertIdx++;
             }
 
@@ -634,7 +684,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             while (insertIdx < queue.Count
                 && queue[insertIdx].Batch.IsLoopExitRedelivery
                 && queue[insertIdx].Batch.LoopExitRedeliveryOrder <= batchRef.Batch.LoopExitRedeliveryOrder)
+            {
                 insertIdx++;
+            }
 
             queue.Insert(insertIdx, batchRef);
             TrackAddedBatch(batchRef);
@@ -648,7 +700,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         public void DrainTo(List<BatchReference> destination)
         {
             if (_hasReaddedPrefix)
+            {
                 _hasReaddedPrefix = false;
+            }
 
             if (!_mayContainUnreadyBatch)
             {
@@ -656,7 +710,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 {
                     var queue = kvp.Value;
                     for (var i = 0; i < queue.Count; i++)
+                    {
                         destination.Add(queue[i]);
+                    }
                     queue.Clear();
                 }
 
@@ -684,25 +740,35 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 }
 
                 for (var i = 0; i < readyCount; i++)
+                {
                     destination.Add(queue[i]);
+                }
 
                 if (readyCount == queue.Count)
+                {
                     queue.Clear();
+                }
                 else if (readyCount > 0)
+                {
                     queue.RemoveRange(0, readyCount);
+                }
 
                 _count -= readyCount;
             }
 
             _mayContainUnreadyBatch = hasUnreadyBatch;
             if (_count == 0)
+            {
                 _earliestCreatedTicks = long.MaxValue;
+            }
         }
 
         public void Clear()
         {
             foreach (var kvp in _partitions)
+            {
                 kvp.Value.Clear();
+            }
             _count = 0;
             _earliestCreatedTicks = long.MaxValue;
             _mayContainUnreadyBatch = false;
@@ -713,7 +779,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             queue.RemoveAt(index);
             _count--;
             if (_count == 0)
+            {
                 _earliestCreatedTicks = long.MaxValue;
+            }
         }
 
         /// <summary>Clears one partition's queue in a single pass, keeping the count in sync.</summary>
@@ -722,7 +790,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             _count -= queue.Count;
             queue.Clear();
             if (_count == 0)
+            {
                 _earliestCreatedTicks = long.MaxValue;
+            }
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -750,12 +820,16 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         public bool HasRetry(TopicPartition topicPartition)
         {
             if (!_partitions.TryGetValue(topicPartition, out var queue))
+            {
                 return false;
+            }
 
             for (var i = 0; i < queue.Count; i++)
             {
                 if (queue[i].IsCurrentIncarnation() && queue[i].Batch.IsRetry)
+                {
                     return true;
+                }
             }
 
             return false;
@@ -1085,8 +1159,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         Action<int> setProduceApiVersion,
         Func<bool> isTransactional,
         Func<ReadyBatch[], int, Action<Exception?>, HashSet<TopicPartition>, HashSet<TopicPartition>,
-            TransactionPartitionEnrollmentResult>?
-            tryEnsurePartitionsInTransaction,
+            TransactionPartitionEnrollmentResult>? tryEnsurePartitionsInTransaction,
         Func<short, CancellationToken, ValueTask<ProducerIdAndEpoch>>? bumpEpoch,
         Func<ProducerIdAndEpoch>? getProducerState,
         Action<ReadyBatch, int>? rerouteBatch,
@@ -1192,12 +1265,16 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         _pendingResponsesByConnection = new List<PendingResponse>[connectionCapacity];
         _pendingResponseBytesByConnection = new long[connectionCapacity];
         for (var i = 0; i < connectionCapacity; i++)
+        {
             _pendingResponsesByConnection[i] = new List<PendingResponse>();
+        }
 
         _responseCompletionCallback = () =>
         {
             if (ShouldPublishResponseReadyEvent(Volatile.Read(ref _totalMaxInFlight)))
+            {
                 _eventChannel.Writer.TryWrite(SendLoopEvent.ResponseReady());
+            }
             _anyResponseCompleted.Signal();
         };
         _senderRetryReadyCallback = _anyResponseCompleted.Signal;
@@ -1223,10 +1300,14 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     {
         if (_retainedConnectionGroupPool is null
             || Volatile.Read(ref _disposed) != 0)
+        {
             return;
+        }
 
         if (_retainedConnectionIndices[connectionIndex])
+        {
             return;
+        }
 
         lock (_retainedConnectionIndicesLock)
         {
@@ -1246,12 +1327,16 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     private void ReleaseConnectionIndex(int connectionIndex)
     {
         if (_retainedConnectionGroupPool is null)
+        {
             return;
+        }
 
         lock (_retainedConnectionIndicesLock)
         {
             if (!_retainedConnectionIndices[connectionIndex])
+            {
                 return;
+            }
 
             _retainedConnectionIndices[connectionIndex] = false;
             _retainedConnectionIndexCount--;
@@ -1262,7 +1347,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     private void ReleaseConnectionIndices()
     {
         if (_retainedConnectionGroupPool is null)
+        {
             return;
+        }
 
         lock (_retainedConnectionIndicesLock)
         {
@@ -1271,7 +1358,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                  connectionIndex++)
             {
                 if (!_retainedConnectionIndices[connectionIndex])
+                {
                     continue;
+                }
 
                 _retainedConnectionIndices[connectionIndex] = false;
                 _retainedConnectionIndexCount--;
@@ -1305,7 +1394,10 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     internal void RequestCancellation()
     {
         _eventChannel.Writer.TryComplete();
-        try { _cts.Cancel(); }
+        try
+        {
+            _cts.Cancel();
+        }
         catch (ObjectDisposedException) { /* CTS already disposed by a concurrent DisposeAsync */ }
     }
 
@@ -1346,16 +1438,22 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         }
 
         if (rejectedIndex < 0)
+        {
             return;
+        }
 
         // Channel completion during disposal keeps the existing fail behavior. A batch that
         // raced an unexpected loop exit is handed to the replacement sender instead.
         for (var i = rejectedIndex; i < batches.Count; i++)
         {
             if (rerouteRejected)
+            {
                 RerouteRejectedBatch(batches[i], batches[i].Generation);
+            }
             else
+            {
                 FailEnqueuedBatch(batches[i], batches[i].Generation);
+            }
         }
     }
 
@@ -1369,7 +1467,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     internal void Enqueue(ReadyBatch batch, int expectedGeneration)
     {
         if (!batch.TryAcquireResourcePin(expectedGeneration))
+        {
             return;
+        }
 
         var reroute = false;
         var enqueued = false;
@@ -1408,9 +1508,13 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         }
 
         if (reroute)
+        {
             RerouteRejectedBatch(batch, expectedGeneration);
+        }
         else if (!enqueued)
+        {
             FailEnqueuedBatch(batch, expectedGeneration);
+        }
     }
 
     private void RerouteRejectedBatch(ReadyBatch batch, int expectedGeneration)
@@ -1428,7 +1532,10 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             }
             catch (Exception ex)
             {
-                try { FailAndCleanupBatch(batch, expectedGeneration, ex); }
+                try
+                {
+                    FailAndCleanupBatch(batch, expectedGeneration, ex);
+                }
                 catch (Exception cleanupEx) { LogBatchCleanupStepFailed(cleanupEx, _brokerId); }
                 return;
             }
@@ -1440,7 +1547,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     private void FailEnqueuedBatch(ReadyBatch batch, int expectedGeneration)
     {
         if (!batch.TryAcquireResourcePin(expectedGeneration))
+        {
             return;
+        }
 
         try
         {
@@ -1513,7 +1622,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         var scratches = new ProduceRequestScratch[connectionCapacity];
         scratches[0] = requestScratch; // Reuse the existing one for index 0
         for (var c = 1; c < _connectionCount; c++)
+        {
             scratches[c] = new ProduceRequestScratch(_options, _compressionCodecs, maxCoalesce);
+        }
 
         var connectionBuckets = new ConnectionBucket[connectionCapacity];
         for (var c = 0; c < _connectionCount; c++)
@@ -1552,7 +1663,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             ? new CancellationTokenSource[connectionCapacity]
             : Array.Empty<CancellationTokenSource>();
         for (var c = 0; c < _connectionCount && c < bucketTimeoutCts.Length; c++)
+        {
             bucketTimeoutCts[c] = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        }
 
         // Register shutdown token once — persists for the lifetime of the send loop.
         // Zero per-wait allocation: the signal uses an internal reusable timer for the
@@ -1562,7 +1675,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         async ValueTask AwaitPendingSingleConnectionFireAndForgetSendAsync()
         {
             if (!hasPendingSingleConnectionFireAndForgetSend)
+            {
                 return;
+            }
 
             await pendingSingleConnectionFireAndForgetSend.ConfigureAwait(false);
             pendingSingleConnectionFireAndForgetSend = default;
@@ -1588,7 +1703,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 // completed responses here handles them. Batch events stay in the channel
                 // and are read lazily during coalescing (step 5) to avoid O(n²) carry-over growth.
                 if (Volatile.Read(ref _totalPendingResponseCount) > 0)
+                {
                     ProcessCompletedResponses(carryOver, cancellationToken, responseLookup);
+                }
 
                 // ── 2. Pick up send-failed retries ──
                 // Process these through the common retriable-error path. In particular, a
@@ -1607,7 +1724,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                             networkRetryPrepared: true);
                     }
                     else
+                    {
                         LogStaleRetryBatchSkipped(_instanceId, _brokerId);
+                    }
                 }
 
                 // Crash-recovered batches predate all work already owned by this replacement
@@ -1631,7 +1750,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 // After both retry intakes, so a send-failed retry or a crash-recovered retry
                 // of the same partition is already in carry-over when the mute is decided.
                 while (_deferredUnmutes.TryDequeue(out var deferredUnmute))
+                {
                     UnmuteUnlessRetryQueued(deferredUnmute, carryOver);
+                }
 
                 // ── 3. Handle timed-out requests (Java handleTimedOutRequests pattern) ──
                 var pendingResponseCount = Volatile.Read(ref _totalPendingResponseCount);
@@ -1668,10 +1789,14 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                         // by up to max.block.ms for every batch of this broker.
                         var bump = _bumpEpoch((short)staleEpoch, cancellationToken);
                         if (bump.IsCompleted)
+                        {
                             await bump.ConfigureAwait(false);
+                        }
                         else
+                        {
                             await AwaitProducerIdResetAsync(bump.AsTask(), carryOver, staleEpoch, cancellationToken)
                                 .ConfigureAwait(false);
+                        }
                     }
                     catch (OperationCanceledException)
                     {
@@ -1696,7 +1821,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 // stamps in step 6 must agree on the state, or a partition could restart at
                 // sequence 0 under a state newer than the one its pending batches carry.
                 if (_getProducerState is not null)
+                {
                     RefreshIterationProducerState(carryOver);
+                }
 
                 // ── 4b. Adaptive connection scaling ──
                 if (_adaptiveScalingEnabled)
@@ -1739,12 +1866,16 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 }
 
                 if (_connectionCount > 1)
+                {
                     await AwaitPendingSingleConnectionFireAndForgetSendAsync().ConfigureAwait(false);
+                }
 
                 // ── 5. Coalesce ──
                 coalescedPartitions.Clear();
                 if (_partitionsWithRequeuedRetry.Count > 0)
+                {
                     _partitionsWithRequeuedRetry.Clear();
+                }
                 coalescedCount = 0;
                 coalescedRequestBudgetUsed = 0;
 
@@ -1765,7 +1896,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 drainList.Clear();
                 var hadCarryOver = carryOver.Count > 0;
                 if (hadCarryOver)
+                {
                     carryOver.DrainTo(drainList);
+                }
 
                 for (var i = 0; i < drainList.Count; i++)
                 {
@@ -1802,7 +1935,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                             {
                                 channelCarryOvers++;
                                 if (channelCarryOvers >= carryOverBudget && _rerouteBarriersPending == 0)
+                                {
                                     break;
+                                }
                             }
                         }
                         else if (evt.Type == SendLoopEventType.RerouteBarrier)
@@ -1827,10 +1962,14 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 }
 
                 if (carryOver.Count > 0)
+                {
                     SweepExpiredCarryOver(carryOver);
+                }
 
                 if (carryOver.Count > 0 || coalescedCount == maxCoalesce)
+                {
                     RecordSendLoopPressureIfScaleUseful();
+                }
 
                 // ── 5b. Form a request wave across known partitions ──
                 // Sealed batches for one producer wave reach this broker over hundreds of
@@ -1924,7 +2063,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
                 // ── 6. Send or wait ──
                 if (_partitionsRerouting is not null)
+                {
                     CompletePartitionReroutes(carryOver);
+                }
 
                 var sentThisIteration = false;
                 var requeuedBlockedBuckets = false;
@@ -1959,7 +2100,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                             pendingBytes = Interlocked.Read(ref _totalPendingResponseBytes);
                             if (pendingCount < _totalMaxInFlight
                                 && (_connectionCount > 1 || pendingBytes < _totalMaxInFlightBytes))
+                            {
                                 break;
+                            }
 
                             // Wait for any pending response to complete.
                             // Cannot use eventReader.WaitToReadAsync here — the channel may
@@ -2041,7 +2184,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                             SweepExpiredCarryOver(carryOver);
 
                             if (carryOver.Count == 0)
+                            {
                                 continue;
+                            }
 
                             var nextDeadlineMs = ComputeNextWakeupMs(carryOver);
 
@@ -2082,7 +2227,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     {
                         coalescedCount = CompactCurrentBatches(coalescedBatches, coalescedGenerations, coalescedCount);
                         if (coalescedCount == 0)
+                        {
                             continue;
+                        }
 
                         if (_isTransactional() && _tryEnsurePartitionsInTransaction is not null)
                         {
@@ -2119,7 +2266,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                                     carryOver,
                                     _transactionEnrollmentPendingPartitions);
                                 if (coalescedCount == 0)
+                                {
                                     continue;
+                                }
                             }
                         }
 
@@ -2140,7 +2289,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
                         LogSendingCoalesced(_brokerId, coalescedCount);
                         for (var si = 0; si < coalescedCount; si++)
+                        {
                             coalescedBatches[si].AppendDiag('S');
+                        }
                         if (_connectionCount == 1)
                         {
                             // === Single-connection fast path (no grouping overhead) ===
@@ -2153,9 +2304,13 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                             {
                                 var batch = coalescedBatches[i];
                                 if (batch.IsCurrentIncarnation(coalescedGenerations[i]))
+                                {
                                     batchesToSend[countToSend++] = batch;
+                                }
                                 else
+                                {
                                     LogStaleBatchInSendSkipped(_instanceId, _brokerId);
+                                }
                             }
                             Array.Clear(coalescedBatches, 0, coalescedCount);
                             Array.Clear(coalescedGenerations, 0, coalescedCount);
@@ -2197,7 +2352,10 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                                     }
                                     catch
                                     {
-                                        try { await currentSend.ConfigureAwait(false); }
+                                        try
+                                        {
+                                            await currentSend.ConfigureAwait(false);
+                                        }
                                         catch { }
                                         throw;
                                     }
@@ -2251,7 +2409,10 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                             var remainingBuckets = 0;
                             for (var c = 0; c < _connectionCount; c++)
                             {
-                                if (connectionBuckets[c].HasBatches) remainingBuckets++;
+                                if (connectionBuckets[c].HasBatches)
+                                {
+                                    remainingBuckets++;
+                                }
                             }
 
                             MarkDispatchableBuckets(connectionBuckets, carryOver);
@@ -2261,7 +2422,10 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                             var pendingSendCount = 0;
                             for (var c = 0; c < _connectionCount; c++)
                             {
-                                if (!connectionBuckets[c].Dispatch) continue;
+                                if (!connectionBuckets[c].Dispatch)
+                                {
+                                    continue;
+                                }
                                 connectionBuckets[c].Dispatch = false;
 
                                 ResetBucketTimeout(ref bucketTimeoutCts[c], cancellationToken);
@@ -2271,7 +2435,10 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
                             var completedSends = await AwaitParallelSendsAsync(parallelSends, pendingSendCount)
                                 .ConfigureAwait(false);
-                            if (completedSends > 0) sentThisIteration = true;
+                            if (completedSends > 0)
+                            {
+                                sentThisIteration = true;
+                            }
                             remainingBuckets -= completedSends;
 
                             // Do not wait here for a saturated connection. Requeue its batches
@@ -2283,7 +2450,10 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                                 for (var c = 0; c < _connectionCount; c++)
                                 {
                                     ref var bucket = ref connectionBuckets[c];
-                                    if (!bucket.HasBatches) continue;
+                                    if (!bucket.HasBatches)
+                                    {
+                                        continue;
+                                    }
 
                                     MoveCoalescedToCarryOver(
                                         bucket.Batches, bucket.Generations, ref bucket.Count, carryOver);
@@ -2316,7 +2486,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
                 // ── 7. Compute timeout and wait ──
                 if (transactionEnrollmentReady)
+                {
                     continue;
+                }
 
                 var waitPendingCount = Volatile.Read(ref _totalPendingResponseCount);
                 if (carryOver.Count == 0
@@ -2339,7 +2511,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                         if (!_sendFailedRetries.IsEmpty
                             || !_loopExitRedeliveries.IsEmpty
                             || !_deferredUnmutes.IsEmpty)
+                        {
                             continue;
+                        }
                     }
 
                     ReleaseRetainedConnectionsIfBrokerIdle();
@@ -2419,7 +2593,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                         // next iteration — not in this one.
                         if (!await eventReader.WaitToReadAsync(cancellationToken)
                             .ConfigureAwait(false))
+                        {
                             break;
+                        }
                     }
                     else if (requeuedBlockedBuckets)
                     {
@@ -2502,14 +2678,21 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
             try
             {
-                try { await AwaitPendingSingleConnectionFireAndForgetSendAsync().ConfigureAwait(false); }
+                try
+                {
+                    await AwaitPendingSingleConnectionFireAndForgetSendAsync().ConfigureAwait(false);
+                }
                 catch (Exception ex) { LogSendLoopFailed(ex, _brokerId); }
 
                 sendTimeoutCts.Dispose();
                 for (var c = 0; c < singleConnectionFireAndForgetTimeoutCts.Length; c++)
+                {
                     singleConnectionFireAndForgetTimeoutCts[c].Dispose();
+                }
                 for (var c = 0; c < bucketTimeoutCts.Length; c++)
+                {
                     bucketTimeoutCts[c]?.Dispose();
+                }
                 _eventChannel.Writer.TryComplete();
 
                 // Shutdown (close/disposal) permanently fails surviving batches — the producer
@@ -2519,7 +2702,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 // Idempotent sequencing keeps redelivery of already-written requests safe — the
                 // batch keeps its sequence and the broker dedupes.
                 if (redeliver)
+                {
                     LogSendLoopExitRedelivery(_brokerId);
+                }
 
                 var disposedException = new ObjectDisposedException(nameof(BrokerSender));
                 var recoveredBatches = redeliver ? new List<BatchReference>() : null;
@@ -2537,28 +2722,34 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 while (_loopExitRedeliveries.TryDequeue(out var redelivery))
                 {
                     if (redelivery.Batch.IsCurrentIncarnation(redelivery.Generation))
+                    {
                         CollectOrFailOnLoopExit(
                             new BatchReference(redelivery.Batch, redelivery.Generation),
                             redeliver, disposedException,
                             recoveredBatches, recoveredBatchSet);
+                    }
                 }
 
                 while (_sendFailedRetries.TryDequeue(out var retry))
                 {
                     if (retry.Batch.IsCurrentIncarnation(retry.Generation))
+                    {
                         CollectOrFailOnLoopExit(
                             new BatchReference(retry.Batch, retry.Generation),
                             redeliver, disposedException,
                             recoveredBatches, recoveredBatchSet);
+                    }
                 }
 
                 for (var i = 0; i < coalescedCount; i++)
                 {
                     if (coalescedBatches[i].IsCurrentIncarnation(coalescedGenerations[i]))
+                    {
                         CollectOrFailOnLoopExit(
                             new BatchReference(coalescedBatches[i], coalescedGenerations[i]),
                             redeliver, disposedException,
                             recoveredBatches, recoveredBatchSet);
+                    }
                 }
                 Array.Clear(coalescedBatches, 0, coalescedCount);
                 Array.Clear(coalescedGenerations, 0, coalescedCount);
@@ -2574,8 +2765,10 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     {
                         var batchRef = evt.GetBatchReference();
                         if (batchRef.IsCurrentIncarnation())
+                        {
                             CollectOrFailOnLoopExit(batchRef, redeliver, disposedException,
                                 recoveredBatches, recoveredBatchSet);
+                        }
                     }
                 }
 
@@ -2587,8 +2780,10 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     {
                         var batchRef = recoveredBatches[i];
                         if (batchRef.IsCurrentIncarnation())
+                        {
                             RedeliverOrFailOnLoopExit(batchRef.Batch, batchRef.Generation,
                                 redeliver: true, disposedException);
+                        }
                     }
                 }
             }
@@ -2597,7 +2792,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 if (crashBarriers is not null)
                 {
                     for (var i = 0; i < crashBarriers.Count; i++)
+                    {
                         _accumulator.UnmutePartition(crashBarriers[i]);
+                    }
                 }
 
                 // Unmute all partitions this BrokerSender had muted in the accumulator.
@@ -2606,7 +2803,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 // partitions. This causes orphaned batch timeouts on slow CI runners where
                 // transient connection errors kill the send loop while retries are pending.
                 foreach (var (tp, _) in _mutedPartitions)
+                {
                     _accumulator.UnmutePartition(tp);
+                }
                 _mutedPartitions.Clear();
                 Interlocked.Exchange(ref _mutedPartitionCount, 0);
                 Interlocked.Exchange(ref _mutedPartitionHighWatermark, 0);
@@ -2644,7 +2843,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         // First sight of the batch in this send loop: its place in its partition's retry order
         // (PartitionCarryOver.AddAfterRetries). One increment and one field write per batch.
         if (!fromCarryOver)
+        {
             batch.SenderArrivalOrder = ++_nextArrivalOrder;
+        }
 
         RefreshPartitionRouting();
 
@@ -2678,7 +2879,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 && _partitionsWithRequeuedRetry.TryGetValue(batch.TopicPartition, out var olderRetryNotBefore))
             {
                 if (olderRetryNotBefore > batch.RetryNotBefore)
+                {
                     batch.RetryNotBefore = olderRetryNotBefore;
+                }
                 RequeueBatch(carryOver, batchRef, fromCarryOver);
                 return;
             }
@@ -2712,7 +2915,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     LogRetryRerouted(_brokerId, batch.TopicPartition.Topic, batch.TopicPartition.Partition, leader.NodeId);
                     batch.RetryNotBefore = 0;
                     if (!batch.IsLoopExitRedelivery)
+                    {
                         batch.IsRetry = false;
+                    }
                     if (!_isIdempotent && _muteOnSend)
                     {
                         (_partitionsRerouting ??= []).Add(batch.TopicPartition);
@@ -2720,9 +2925,13 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                         // enqueued, including batches detached before this partition was muted.
                         _rerouteBarriersPending++;
                         if (_requestRerouteBarrier is not null)
+                        {
                             _requestRerouteBarrier(this);
+                        }
                         else
+                        {
                             PublishRerouteBarrier();
+                        }
                     }
                     else
                     {
@@ -2804,7 +3013,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             // Another sender can release its handoff mute during this pass. Reserve the
             // partition so a later channel batch cannot overtake this carried-over batch.
             if (!locallyMuted)
+            {
                 coalescedPartitions.Add(batch.TopicPartition);
+            }
 
             LogPartitionMuted(_brokerId, batch.TopicPartition.Topic, batch.TopicPartition.Partition);
             batch.AppendDiag('O');
@@ -2826,7 +3037,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 carryOver,
                 fromCarryOver,
                 out var normalBatchRequestBodySize))
+        {
             return;
+        }
 
         // Ensure at most one batch per partition per coalesced request
         if (!coalescedPartitions.Add(batch.TopicPartition))
@@ -2851,21 +3064,27 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     private void CompletePartitionReroutes(PartitionCarryOver carryOver)
     {
         if (_rerouteBarriersPending > 0)
+        {
             return;
+        }
 
         foreach (var topicPartition in _partitionsRerouting!)
         {
             // An unready split suffix or a retry still in backoff can span passes. Its
             // successors stay behind the source mute until that suffix has transferred.
             if (carryOver.Partitions.TryGetValue(topicPartition, out var queue) && queue.Count > 0)
+            {
                 continue;
+            }
 
             UnmutePartition(topicPartition);
             _partitionsRerouting.Remove(topicPartition);
         }
 
         if (_partitionsRerouting.Count == 0)
+        {
             _partitionsRerouting = null;
+        }
     }
 
     /// <summary>
@@ -2878,7 +3097,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         bool isTransactional)
     {
         if (!isTransactional || coalescedCount != 1)
+        {
             return true;
+        }
 
         var batch = coalescedBatches[0];
         return batch.RecordCount != 1 || batch.CompletionSourcesCount != 1;
@@ -2902,7 +3123,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     internal static (int QuietMicroseconds, int MaximumMicroseconds) SelectWaveCoalesceBounds(int lingerMs)
     {
         if (lingerMs == 0)
+        {
             return (ZeroLingerWaveCoalesceQuietMicroseconds, ZeroLingerWaveCoalesceMaxMicroseconds);
+        }
 
         var lingerMicroseconds = (long)lingerMs * 1_000;
         var quietMicroseconds = Math.Clamp(
@@ -2924,7 +3147,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         ref int additionalBatchCount)
     {
         if (additionalBatchCount > 0)
+        {
             maximumArrivalGap = Math.Max(maximumArrivalGap, now - previousArrival);
+        }
 
         previousArrival = now;
         additionalBatchCount++;
@@ -2940,7 +3165,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         // Thereafter, stop paying the full quiet interval after the final sibling while
         // retaining enough slack for a sibling delayed by up to twice the widest observed gap.
         if (additionalBatchCount < 2)
+        {
             return configuredQuietTicks;
+        }
 
         var minimumTailTicks = Math.Max(1, configuredQuietTicks / WaveCoalesceTailDivisor);
         var arrivalTailTicks = maximumArrivalGapTicks * WaveCoalesceGapMultiplier;
@@ -2959,7 +3186,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     {
         var oldestBatchTimestamp = long.MaxValue;
         for (var i = 0; i < count; i++)
+        {
             oldestBatchTimestamp = Math.Min(oldestBatchTimestamp, batches[i].GovernedOriginTicks);
+        }
 
         return oldestBatchTimestamp == long.MaxValue ? 0 : oldestBatchTimestamp;
     }
@@ -2967,16 +3196,22 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     internal static long GetCommonAdmissionGeneration(ReadyBatch[] batches, int count)
     {
         if (count <= 0)
+        {
             return 0;
+        }
 
         var generation = batches[0].AdmissionGeneration;
         if (generation <= 0)
+        {
             return 0;
+        }
 
         for (var i = 1; i < count; i++)
         {
             if (batches[i].AdmissionGeneration != generation)
+            {
                 return 0;
+            }
         }
 
         return generation;
@@ -3005,7 +3240,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 : ProduceRequestSizeCalculator.DefaultMaxRequestSize;
             if (coalescedCount == 0
                 || coalescedRequestBudgetUsed + batchRequestBodySize <= maxRequestSize)
+            {
                 return false;
+            }
         }
 
         var batch = batchRef.Batch;
@@ -3021,9 +3258,13 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         bool fromCarryOver)
     {
         if (fromCarryOver)
+        {
             carryOver.ReAddBeforeUnreadySuffix(batchRef);
+        }
         else
+        {
             carryOver.Add(batchRef);
+        }
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -3054,7 +3295,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         {
             var batch = batches[readIdx];
             if (batch is null)
+            {
                 continue;
+            }
 
             batches[writeIdx] = batch;
             generations[writeIdx] = generations[readIdx];
@@ -3107,7 +3350,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             if (!batch.TryAcquireResourcePin(generation))
             {
                 if (!_accumulator.TryCleanupFailedPreSerializationBatch(batch, generation))
+                {
                     LogStaleBatchInSendSkipped(_instanceId, _brokerId);
+                }
                 continue;
             }
 
@@ -3128,7 +3373,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     private static void ReleaseResourcePins(ReadyBatch[] batches, int count)
     {
         for (var i = 0; i < count; i++)
+        {
             batches[i]?.ReleaseResourcePin();
+        }
     }
 
     private ValueTask<PipelinedResponse<ProduceResponse>> SendPipelinedAfterWriteAsync(
@@ -3170,7 +3417,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             {
                 batch.IsRetry = false;
                 if (!carryOver.HasRetry(batch.TopicPartition))
+                {
                     UnmutePartition(batch.TopicPartition);
+                }
             }
         }
     }
@@ -3192,7 +3441,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 && _pendingResponsesByConnection[c].Count < _maxInFlight
                 && Interlocked.Read(ref _pendingResponseBytesByConnection[c]) < _maxInFlightBytesPerConnection;
             if (bucket.Dispatch)
+            {
                 FinalizeCoalescedRetries(bucket.Batches, bucket.Count, carryOver);
+            }
         }
     }
 
@@ -3249,7 +3500,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             _inflightTracker, topicPartition, recordBatch.Records.Count, recordBatch.BaseSequence,
             ref stampState, out var restarted);
         if (entry is null)
+        {
             return false;
+        }
 
         batch.InflightEntry = entry;
         recordBatch.BaseSequence = entry.BaseSequence;
@@ -3263,7 +3516,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             }
 
             if (restarted)
+            {
                 LogSequenceRestarted(_brokerId, topicPartition.Topic, topicPartition.Partition, stampState!.ProducerId, stampState.Epoch);
+            }
             return true;
         }
 
@@ -3291,7 +3546,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         _sequenceRestartHoldArmed = true;
         _previousStateBatchInflight = true;
         if (_muteOnSend && !batch.IsLoopExitRedelivery)
+        {
             UnmuteUnlessRetryQueued(topicPartition, carryOver);
+        }
 
         LogSequenceRestartHeld(_brokerId, topicPartition.Topic, topicPartition.Partition, _iterationProducerState!.Epoch);
         _onSequenceRestartHeld?.Invoke(topicPartition);
@@ -3335,7 +3592,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         {
             var remainingTicks = deadlineTicks - Stopwatch.GetTimestamp();
             if (remainingTicks < 0)
+            {
                 break;
+            }
 
             var remainingMs = (long)(remainingTicks / StopwatchTicksPerMillisecond) + 1;
             try
@@ -3367,7 +3626,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             {
                 var batchRef = queue[i];
                 if (batchRef.IsCurrentIncarnation())
+                {
                     earliestCreatedTicks = Math.Min(earliestCreatedTicks, batchRef.Batch.StopwatchCreatedTicks);
+                }
             }
         }
 
@@ -3380,7 +3641,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 for (var j = 0; j < pending.Count; j++)
                 {
                     if (pending.IsSameIncarnation(j))
+                    {
                         earliestCreatedTicks = Math.Min(earliestCreatedTicks, pending.Batches[j].StopwatchCreatedTicks);
+                    }
                 }
             }
         }
@@ -3409,7 +3672,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         }
 
         if (!_sequenceRestartHoldArmed)
+        {
             return;
+        }
 
         _partitionsPendingUnderPreviousState.Clear();
         var retryKeepsPreviousStamp = false;
@@ -3428,7 +3693,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         }
 
         if (!_previousStateBatchInflight)
+        {
             UnregisterInflightCompletionWake();
+        }
 
         _sequenceRestartHoldArmed = retryKeepsPreviousStamp
             || _partitionsPendingUnderPreviousState.Count > 0
@@ -3438,7 +3705,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     private void RegisterInflightCompletionWake()
     {
         if (_inflightCompletionWakeRegistered)
+        {
             return;
+        }
 
         _inflightTracker.AddCompletionWaiter(_inflightCompletionWake);
         _inflightCompletionWakeRegistered = true;
@@ -3447,7 +3716,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     private void UnregisterInflightCompletionWake()
     {
         if (!_inflightCompletionWakeRegistered)
+        {
             return;
+        }
 
         _inflightTracker.RemoveCompletionWaiter(_inflightCompletionWake);
         _inflightCompletionWakeRegistered = false;
@@ -3470,7 +3741,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         HashSet<TopicPartition> partitions)
     {
         if (carryOver.Count == 0)
+        {
             return false;
+        }
 
         var retryKeepsPreviousStamp = false;
         foreach (var queue in carryOver.Partitions.Values)
@@ -3480,13 +3753,17 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             {
                 var batchRef = queue[i];
                 if (!batchRef.IsCurrentIncarnation())
+                {
                     continue;
+                }
 
                 if (KeepsPreviousStateStamp(batchRef.Batch, state))
                 {
                     retryKeepsPreviousStamp = true;
                     if (isOldest)
+                    {
                         partitions.Add(batchRef.Batch.TopicPartition);
+                    }
                 }
 
                 isOldest = false;
@@ -3532,12 +3809,16 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 for (var j = 0; j < pending.Count; j++)
                 {
                     if (!pending.IsSameIncarnation(j))
+                    {
                         continue;
+                    }
 
                     var batch = pending.Batches[j];
                     var recordBatch = batch.RecordBatch;
                     if (recordBatch.ProducerEpoch != state.Epoch || recordBatch.ProducerId != state.ProducerId)
+                    {
                         partitions.Add(batch.TopicPartition);
+                    }
                 }
             }
         }
@@ -3568,7 +3849,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         var topicPartition = batch.TopicPartition;
         var pendingHere = _partitionsPendingUnderPreviousState.Contains(topicPartition);
         if (!pendingHere && !_previousStateBatchInflight)
+        {
             return false;
+        }
 
         var state = _iterationProducerState!;
         if (!_accumulator.HasStaleSequenceState(topicPartition, state))
@@ -3581,7 +3864,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         }
 
         if (KeepsPreviousStateStamp(batch, state))
+        {
             return false;
+        }
 
         // Only a batch ahead of this one in the partition holds it: a batch that was sent and then
         // definitively rejected (its own entry completed) restarts the partition ahead of any
@@ -3636,9 +3921,13 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
             var batchReference = new BatchReference(batch, generation);
             if (batch.IsRetry)
+            {
                 carryOver.AddFirst(batchReference);
+            }
             else
+            {
                 carryOver.AddAfterRetries(batchReference);
+            }
         }
 
         Array.Clear(batches, 0, count);
@@ -3668,9 +3957,13 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             {
                 var batchReference = new BatchReference(batch, generation);
                 if (batch.IsRetry)
+                {
                     carryOver.AddFirst(batchReference);
+                }
                 else
+                {
                     carryOver.AddAfterRetries(batchReference);
+                }
                 continue;
             }
 
@@ -3692,7 +3985,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         foreach (var topicPartition in pendingPartitions)
         {
             if (!carryOver.Partitions.TryGetValue(topicPartition, out var queue))
+            {
                 continue;
+            }
 
             // Forward scan + single ClearQueue: repeated RemoveAt(0) would be O(n²), and
             // the queue can hold a deep retry backlog (bounded by BufferMemory, not
@@ -3777,7 +4072,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     private void FinalizeFailedTransactionEnrollmentRetry(ReadyBatch batch)
     {
         if (!batch.IsRetry)
+        {
             return;
+        }
 
         batch.IsRetry = false;
         UnmutePartition(batch.TopicPartition);
@@ -3786,12 +4083,16 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     private void ObserveBrokerThrottleFallback(int throttleTimeMs)
     {
         if (_connectionPool is IBrokerThrottleProvider)
+        {
             return;
+        }
 
         _onBrokerThrottle?.Invoke(throttleTimeMs);
 
         if (throttleTimeMs <= 0)
+        {
             return;
+        }
 
         var now = _getTimestamp();
         var delayTicks = (long)Math.Ceiling(
@@ -3801,16 +4102,22 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             : now + delayTicks;
 
         if (throttleUntil > _fallbackBrokerThrottleUntilTimestamp)
+        {
             _fallbackBrokerThrottleUntilTimestamp = throttleUntil;
+        }
     }
 
     private int GetRemainingBrokerThrottleMs()
     {
         if (_connectionPool is IBrokerThrottleProvider throttleProvider)
+        {
             return throttleProvider.GetRemainingBrokerThrottleMilliseconds(_brokerId);
+        }
 
         if (_fallbackBrokerThrottleUntilTimestamp == 0)
+        {
             return 0;
+        }
 
         var remainingTicks = _fallbackBrokerThrottleUntilTimestamp - _getTimestamp();
         if (remainingTicks <= 0)
@@ -3847,7 +4154,10 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         for (var connIdx = 0; connIdx < _pendingResponsesByConnection.Length; connIdx++)
         {
             var pendingList = _pendingResponsesByConnection[connIdx];
-            if (pendingList.Count == 0) continue;
+            if (pendingList.Count == 0)
+            {
+                continue;
+            }
 
             var removedAny = false;
             // First entry this scan skipped as incomplete. A connection completes its responses
@@ -3866,7 +4176,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 if (!pending.ResponseTask.IsCompleted)
                 {
                     if (firstSkipped < 0)
+                    {
                         firstSkipped = i;
+                    }
                     continue;
                 }
 
@@ -3917,7 +4229,10 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                                 }
                                 catch (Exception batchEx)
                                 {
-                                    try { FailAndCleanupBatch(batches[j], ex); }
+                                    try
+                                    {
+                                        FailAndCleanupBatch(batches[j], ex);
+                                    }
                                     catch (Exception cleanupEx) { LogBatchCleanupStepFailed(cleanupEx, _brokerId); }
                                     LogBatchCleanupStepFailed(batchEx, _brokerId);
                                 }
@@ -3960,9 +4275,13 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                             for (var p = 0; p < topicResp.PartitionCount; p++)
                             {
                                 if (topicResp.PartitionResponses[p].ErrorCode != ErrorCode.None)
+                                {
                                     allPartitionsSucceeded = false;
+                                }
                                 else
+                                {
                                     anyPartitionSucceeded = true;
+                                }
                                 responseLookup ??= new Dictionary<ProduceResponseKey, ProduceResponsePartitionData>();
                                 var responseKey = pending.ApiVersion >= ProduceRequest.TopicIdVersion
                                     ? ProduceResponseKey.FromId(topicResp.TopicId, topicResp.PartitionResponses[p].Index)
@@ -4017,11 +4336,17 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     // A ??=-allocated lookup (reusable was null) is a throwaway local, so only
                     // the caller's reused dictionary ever needs clearing. Guarded like every
                     // other step here so a throw cannot skip the pooled-array returns below.
-                    try { reusableResponseLookup?.Clear(); }
+                    try
+                    {
+                        reusableResponseLookup?.Clear();
+                    }
                     catch (Exception clearEx) { LogBatchCleanupStepFailed(clearEx, _brokerId); }
                     if (responseToReturn is not null)
                     {
-                        try { responseToReturn.Return(); }
+                        try
+                        {
+                            responseToReturn.Return();
+                        }
                         catch (Exception returnEx) { LogBatchCleanupStepFailed(returnEx, _brokerId); }
                     }
 
@@ -4053,13 +4378,17 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     CompleteMigrations(connIdx);
 
                     if (!_hasMigratingPartitions)
+                    {
                         LogPartitionMigrationComplete(_brokerId, beforeCount);
+                    }
                 }
             }
         }
 
         if (anyAckedThisPass)
+        {
             _unackedBudget!.CompleteAckedPass(lastAckTimestamp);
+        }
     }
 
     /// <summary>
@@ -4083,7 +4412,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         {
             var batch = batches[j];
             if (batch is null)
+            {
                 continue;
+            }
 
             // Detect batch object recycling: if the batch was returned to pool AND
             // re-Initialize'd (new topic, _returnedToPool reset to 0), IsReturnedToPool
@@ -4246,8 +4577,13 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                         : KafkaException.FromErrorCode(partitionResponse.ErrorCode,
                             $"Produce failed: {partitionResponse.ErrorCode}");
                     if (_muteOnSend)
+                    {
                         UnmutePartition(batch.TopicPartition);
-                    try { CompleteInflightEntry(batch); }
+                    }
+                    try
+                    {
+                        CompleteInflightEntry(batch);
+                    }
                     catch (Exception cleanupEx) { LogBatchCleanupStepFailed(cleanupEx, _brokerId); }
                     // The acknowledgement sees the exception the records were failed with: the
                     // failure report can replace a fatal fence of an identity an abort has since
@@ -4279,12 +4615,17 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 // This matches Java Kafka's conservative muting: partitions stay muted until the
                 // retry batch is actually re-sent, not when a sibling batch succeeds.
                 if (_muteOnSend)
+                {
                     UnmutePartition(batch.TopicPartition);
+                }
                 LogBatchCompleted(_brokerId, expectedTopic, expectedPartition, partitionResponse.BaseOffset);
                 var timestamp = partitionResponse.LogAppendTimeMs > 0
                     ? DateTimeOffset.FromUnixTimeMilliseconds(partitionResponse.LogAppendTimeMs)
                     : DateTimeOffset.UtcNow;
-                try { CompleteInflightEntry(batch); }
+                try
+                {
+                    CompleteInflightEntry(batch);
+                }
                 catch (Exception cleanupEx) { LogBatchCleanupStepFailed(cleanupEx, _brokerId); }
                 // Before CompleteSend: the completion resumes a serial awaited caller whose
                 // next append reads the undelivered count (app-limited bypass, #2510) —
@@ -4342,7 +4683,10 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         for (var connIdx = 0; connIdx < _pendingResponsesByConnection.Length; connIdx++)
         {
             var pendingList = _pendingResponsesByConnection[connIdx];
-            if (pendingList.Count == 0) continue;
+            if (pendingList.Count == 0)
+            {
+                continue;
+            }
 
             // Check if ANY pending response in this connection's list has exceeded the request timeout.
             var hasTimedOut = false;
@@ -4356,7 +4700,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             }
 
             if (!hasTimedOut)
+            {
                 continue;
+            }
 
             // Request timeout detected — invalidate connection and process ALL pending batches
             // for this connection. Must process ALL entries (not just the timed-out one) because
@@ -4380,7 +4726,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             {
                 var pending = ClaimPendingResponseAt(connIdx, entryIdx);
                 if (pending.IsClaimed)
+                {
                     continue;
+                }
                 try
                 {
                     // Only the connection a timed-out request was written to: the slot may
@@ -4394,7 +4742,10 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
                     for (var j = 0; j < pending.Count; j++)
                     {
-                        if (!pending.IsSameIncarnation(j)) continue;
+                        if (!pending.IsSameIncarnation(j))
+                        {
+                            continue;
+                        }
                         var batch = pending.Batches[j];
 
                         batch.AppendDiag('T'); // Timed-out request
@@ -4423,13 +4774,19 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                             }
                             catch (Exception batchEx)
                             {
-                                try { FailAndCleanupBatch(batch, batchEx); }
+                                try
+                                {
+                                    FailAndCleanupBatch(batch, batchEx);
+                                }
                                 catch (Exception cleanupEx) { LogBatchCleanupStepFailed(cleanupEx, _brokerId); }
                             }
                         }
                     }
 
-                    try { pending.ResponseTask.Abandon(); }
+                    try
+                    {
+                        pending.ResponseTask.Abandon();
+                    }
                     catch (Exception abandonEx) { LogBatchCleanupStepFailed(abandonEx, _brokerId); }
                 }
                 catch
@@ -4446,7 +4803,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             pendingList.Clear();
 
             if (_hasMigratingPartitions)
+            {
                 CompleteMigrations(connIdx);
+            }
 
             // After clearing all entries due to timeout, trim the internal array to
             // prevent capacity from ratcheting up across repeated timeout/recovery cycles.
@@ -4480,7 +4839,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             {
                 var deadline = pendingList[i].RequestStartTime + _options.RequestTimeoutTicks;
                 if (deadline < earliestTicks)
+                {
                     earliestTicks = deadline;
+                }
             }
         }
 
@@ -4492,24 +4853,34 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             {
                 var batchRef = queue[i];
                 if (!batchRef.IsCurrentIncarnation())
+                {
                     continue;
+                }
 
                 var batch = batchRef.Batch;
                 if (batch.RetryNotBefore > 0 && batch.RetryNotBefore < earliestTicks)
+                {
                     earliestTicks = batch.RetryNotBefore;
+                }
 
                 var deadlineTicks = batch.StopwatchCreatedTicks + deliveryTimeoutTicks;
                 if (deadlineTicks < earliestTicks)
+                {
                     earliestTicks = deadlineTicks;
+                }
             }
         }
 
         if (earliestTicks >= long.MaxValue)
+        {
             return int.MaxValue;
+        }
 
         var delayTicks = earliestTicks - now;
         if (delayTicks <= 0)
+        {
             return 0;
+        }
 
         return Math.Max(1, (int)(delayTicks * 1000.0 / Stopwatch.Frequency));
     }
@@ -4524,11 +4895,15 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     private void ArmRequestTimeoutWake(PartitionCarryOver carryOver)
     {
         if (Volatile.Read(ref _requestTimeoutWakeArmed) != 0)
+        {
             return;
+        }
 
         var wakeupMs = ComputeNextWakeupMs(carryOver);
         if (wakeupMs == int.MaxValue)
+        {
             return;
+        }
 
         _requestTimeoutWakeTimer ??= new Timer(
             static state => ((BrokerSender)state!).OnRequestTimeoutWake(),
@@ -4566,7 +4941,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             for (var i = 0; i < pendingResponses.Count; i++)
             {
                 if (now >= pendingResponses[i].RequestStartTime + requestTimeoutTicks)
+                {
                     return true;
+                }
             }
         }
 
@@ -4645,7 +5022,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         // Also mute in accumulator so Ready/Drain skips this partition — prevents the
         // sender loop from draining newer batches that would jump the retry queue.
         if (!networkRetryPrepared && !batch.IsLoopExitRedelivery)
+        {
             MutePartition(batch.TopicPartition);
+        }
 
         // An OutOfOrderSequenceNumber behind a rejected predecessor is a gap that the predecessor's
         // resend closes, not lost sequence state: no epoch bump.
@@ -4663,7 +5042,10 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 (int)batch.RecordBatch.ProducerEpoch, -1);
 
             // Complete inflight entry — will be re-registered after epoch bump
-            try { CompleteInflightEntry(batch); }
+            try
+            {
+                CompleteInflightEntry(batch);
+            }
             catch (Exception cleanupEx) { LogBatchCleanupStepFailed(cleanupEx, _brokerId); }
 
             // Apply backoff to prevent tight retry loops if the epoch bump doesn't
@@ -4710,7 +5092,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         // The batch is resent with its stamp unchanged, so a successor answered with
         // OutOfOrderSequenceNumber before this resend is answered waits behind it.
         if (batch.InflightEntry is { } keptEntry)
+        {
             Volatile.Write(ref keptEntry.Resent, true);
+        }
 
         // Insert after existing retries but before non-retry carry-over batches.
         // When ProcessCompletedResponses processes multiple responses (R1, R2, ...)
@@ -4736,7 +5120,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         var recordBatch = batch.RecordBatch;
         var baseSequence = recordBatch.BaseSequence;
         if (baseSequence < 0)
+        {
             return false;
+        }
 
         if (carryOver.Partitions.TryGetValue(batch.TopicPartition, out var queue))
         {
@@ -4744,7 +5130,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             {
                 var queued = queue[i];
                 if (!queued.IsCurrentIncarnation() || ReferenceEquals(queued.Batch, batch))
+                {
                     continue;
+                }
 
                 // Only a batch resent with its stamp closes the gap: a split child, or a retry
                 // that kept its in-flight entry. A retry that gave its entry up for an epoch bump
@@ -4867,7 +5255,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         // every later liveness check still compares the matching batch/generation pair.
         var generations = ArrayPool<int>.Shared.Rent(count);
         for (var i = 0; i < count; i++)
+        {
             generations[i] = batches[i].Generation;
+        }
 
         // Tracks whether PendingResponse was added to _pendingResponsesByConnection.
         // Once added, ProcessCompletedResponses owns the batches array AND the generations
@@ -5018,7 +5408,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             // If orphan trace shows 'S' but no 'G' (Got connection), the hang is at
             // GetConnectionLeaseAtIndexAsync (connection creation or write lock contention).
             for (var i = 0; i < count; i++)
+            {
                 batches[i].AppendDiag('G');
+            }
 
             var apiVersion = EnsureApiVersion(connection);
 
@@ -5036,7 +5428,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             {
                 // Build coalesced ProduceRequest (reuses pre-allocated scratch structures)
                 if (apiVersion >= ProduceRequest.TopicIdVersion)
+                {
                     topicIds = ArrayPool<Guid>.Shared.Rent(count);
+                }
                 var request = scratch.Build(batches, generations, topicIds, count, (short)apiVersion,
                     _metadataManager, StandardTelemetryMetrics, requestStartTime);
                 request.TelemetryMetricCollector = TelemetryMetricCollector;
@@ -5056,7 +5450,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     if (_muteOnSend)
                     {
                         for (var i = 0; i < count; i++)
+                        {
                             UnmutePartition(batches[i].TopicPartition);
+                        }
                     }
 
                     // Clear batch references from scratch arrays (see ClearReferences() doc for exception-path semantics)
@@ -5081,7 +5477,10 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                         // Same pre-CompleteSend ordering as the acked path (#2510).
                         _accumulator.MarkBatchDeliveryComplete(batch);
                         batch.CompleteSend(-1, fireAndForgetTimestamp);
-                        try { _onAcknowledgement?.Invoke(batch.TopicPartition, -1, fireAndForgetTimestamp, batch.CompletionSourcesCount, null); }
+                        try
+                        {
+                            _onAcknowledgement?.Invoke(batch.TopicPartition, -1, fireAndForgetTimestamp, batch.CompletionSourcesCount, null);
+                        }
                         catch (Exception ackEx) { LogBatchCleanupStepFailed(ackEx, _brokerId); }
                     }
 
@@ -5090,7 +5489,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     for (var i = 0; i < count; i++)
                     {
                         if (batches[i] is not null)
+                        {
                             CleanupBatch(batches[i]);
+                        }
                     }
 
                     ArrayPool<ReadyBatch>.Shared.Return(batches, clearArray: true);
@@ -5202,7 +5603,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 // Diagnostic: mark batches as successfully pipelined to _pendingResponsesByConnection.
                 // If an orphan trace shows 'S' but no 'W' (Wire), the batch never reached here.
                 for (var i = 0; i < count; i++)
+                {
                     batches[i]?.AppendDiag('W');
+                }
 
                 // Signal the send loop to wake up and poll when the response arrives.
                 // Only a lightweight signal — actual processing happens in ProcessCompletedResponses.
@@ -5257,7 +5660,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 // Skip batches recycled by a racing owner (e.g. ForceFailAllInFlightBatches
                 // during disposal) — failing a re-rented batch would fail its new owner's data.
                 if (batch is null || !batch.IsCurrentIncarnation(generations[i]))
+                {
                     continue;
+                }
 
                 FailAndCleanupBatch(batch, new ObjectDisposedException(nameof(BrokerSender)));
             }
@@ -5267,7 +5672,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             // Only return array if PendingResponse was NOT added. If it was, ProcessCompletedResponses
             // owns the array and will return it when processing the (faulted/cancelled) response.
             if (!pendingResponseAdded)
+            {
                 ArrayPool<ReadyBatch>.Shared.Return(batches, clearArray: true);
+            }
         }
         catch (BrokerVersionException ex)
         {
@@ -5277,7 +5684,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             {
                 var batch = batches[i];
                 if (batch is null || !batch.IsCurrentIncarnation(generations[i]))
+                {
                     continue;
+                }
 
                 FailAndCleanupBatch(batch, ex);
             }
@@ -5285,7 +5694,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             scratch.ClearReferences();
 
             if (!pendingResponseAdded)
+            {
                 ArrayPool<ReadyBatch>.Shared.Return(batches, clearArray: true);
+            }
         }
         catch (AuthenticationException ex) when (IsFatalAuthenticationFailure(ex, _options))
         {
@@ -5298,17 +5709,24 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             {
                 var batch = batches[i];
                 if (batch is null || !batch.IsCurrentIncarnation(generations[i]))
+                {
                     continue;
+                }
 
                 DeferUnmuteUnlessRetryQueued(batch.TopicPartition);
-                try { FailAndCleanupBatch(batch, ex); }
+                try
+                {
+                    FailAndCleanupBatch(batch, ex);
+                }
                 catch (Exception cleanupEx) { LogBatchCleanupStepFailed(cleanupEx, _brokerId); }
             }
 
             scratch.ClearReferences();
 
             if (!pendingResponseAdded)
+            {
                 ArrayPool<ReadyBatch>.Shared.Return(batches, clearArray: true);
+            }
         }
         catch (Exception ex)
         {
@@ -5319,9 +5737,13 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 // Nothing is pinned or broken yet: the setup is still running. Say so once
                 // per setup at Warning, then keep the follow-up waits at Debug.
                 if (notReady.SetupStartedByThisSend)
+                {
                     LogConnectionSetupOutlivesSendBudget(_brokerId, notReady.ConnectionIndex, notReady.WaitedMs);
+                }
                 else
+                {
                     LogConnectionSetupStillPending(_brokerId, notReady.ConnectionIndex, notReady.WaitedMs);
+                }
             }
             else if (ex is not LocalTopicIdMissException)
             {
@@ -5338,7 +5760,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 // the flag resets when the pooled object is re-rented — so compare against the
                 // generation snapshot taken at send start (#1570).
                 if (batch is null || !batch.IsCurrentIncarnation(generations[i]))
+                {
                     continue;
+                }
 
                 batch.AppendDiag('Z'); // Diagnostic: send failed, entering retry/fail path
                 try
@@ -5377,7 +5801,10 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     // Per-batch exception must not skip remaining batches.
                     // Fall back to permanent failure for this batch.
                     LogBatchCleanupStepFailed(batchEx, _brokerId);
-                    try { FailAndCleanupBatch(batch, ex); }
+                    try
+                    {
+                        FailAndCleanupBatch(batch, ex);
+                    }
                     catch (Exception cleanupEx) { LogBatchCleanupStepFailed(cleanupEx, _brokerId); }
                 }
             }
@@ -5385,7 +5812,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             scratch.ClearReferences();
 
             if (!pendingResponseAdded)
+            {
                 ArrayPool<ReadyBatch>.Shared.Return(batches, clearArray: true);
+            }
         }
         finally
         {
@@ -5395,7 +5824,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             {
                 responseTask.Abandon();
                 if (topicIds is not null)
+                {
                     ArrayPool<Guid>.Shared.Return(topicIds);
+                }
                 ArrayPool<int>.Shared.Return(generations);
             }
         }
@@ -5408,17 +5839,23 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         {
             var batch = batches[i];
             if (batch is null)
+            {
                 continue;
+            }
 
             if (length > 0)
+            {
                 length += 2;
+            }
 
             length = checked(length + batch.TopicPartition.Topic.Length + 1);
             length = checked(length + GetPartitionFormattedLength(batch.TopicPartition.Partition));
         }
 
         if (length == 0)
+        {
             return string.Empty;
+        }
 
         return string.Create(
             length,
@@ -5430,7 +5867,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 {
                     var batch = state.Batches[i];
                     if (batch is null)
+                    {
                         continue;
+                    }
 
                     if (position > 0)
                     {
@@ -5447,7 +5886,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                             destination[position..],
                             out var partitionLength,
                             provider: CultureInfo.CurrentCulture))
+                    {
                         throw new InvalidOperationException("Partition could not be formatted.");
+                    }
 
                     position += partitionLength;
                 }
@@ -5496,7 +5937,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         // Parallel connection buckets may still be sending. Begin recovery here so a blocked
         // sibling write cannot postpone metadata refresh or the start of retry backoff.
         if (!batch.IsLoopExitRedelivery)
+        {
             MutePartition(batch.TopicPartition);
+        }
         var delayMs = ApplyRetryBackoff(batch);
         LogRetriableErrorWithBackoff(ErrorCode.NetworkException, batch.TopicPartition.Topic,
             batch.TopicPartition.Partition, delayMs);
@@ -5542,12 +5985,24 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             $"Connection {connectionIndex} to broker {brokerId} is not ready after {waitedMs}ms; " +
             "the connection setup continues and the batches wait for it")
     {
-        public int ConnectionIndex { get; } = connectionIndex;
-        public int WaitedMs { get; } = waitedMs;
-        public bool SetupStartedByThisSend { get; } = setupStartedByThisSend;
+        public int ConnectionIndex
+        {
+            get;
+        } = connectionIndex;
+        public int WaitedMs
+        {
+            get;
+        } = waitedMs;
+        public bool SetupStartedByThisSend
+        {
+            get;
+        } = setupStartedByThisSend;
     }
 
-    internal Telemetry.ClientTelemetryMetricCollector? TelemetryMetricCollector { get; init; }
+    internal Telemetry.ClientTelemetryMetricCollector? TelemetryMetricCollector
+    {
+        get; init;
+    }
     private Telemetry.StandardClientTelemetryMetrics? StandardTelemetryMetrics => TelemetryMetricCollector?.StandardMetrics;
 
     /// <summary>
@@ -5855,9 +6310,13 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         {
             var batch = bucket.Batches[i];
             if (batch.IsCurrentIncarnation(bucket.Generations[i]))
+            {
                 batchesToSend[countToSend++] = batch;
+            }
             else
+            {
                 LogStaleBatchInSendSkipped(_instanceId, _brokerId);
+            }
         }
         bucket.Clear();
 
@@ -5964,7 +6423,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     {
         var metadataPartitions = _metadataManager.GetPartitionsForNode(_brokerId);
         if (ReferenceEquals(metadataPartitions, _partitionRoutingSnapshot))
+        {
             return;
+        }
 
         _rankedPartitions.Clear();
         _rankedPartitionSet.Clear();
@@ -5991,7 +6452,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             {
                 var topicPartition = _rankedPartitions[i];
                 if (_partitionOrdinals.TryAdd(topicPartition, _nextStablePartitionOrdinal))
+                {
                     _nextStablePartitionOrdinal++;
+                }
             }
 
             _partitionRoutingSnapshot = metadataPartitions;
@@ -6002,7 +6465,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         {
             var topicPartition = _rankedPartitions[newOrdinal];
             if (!_partitionOrdinals.TryGetValue(topicPartition, out var oldOrdinal))
+            {
                 continue;
+            }
 
             var oldConnection = oldOrdinal % _connectionCount;
             var newConnection = newOrdinal % _connectionCount;
@@ -6023,19 +6488,25 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             {
                 var oldConnection = oldOrdinal % _connectionCount;
                 if (HasInflightForPartition(oldConnection, topicPartition))
+                {
                     AddMigratingPartition(topicPartition, oldConnection);
+                }
             }
         }
 
         _partitionOrdinals.Clear();
         for (var ordinal = 0; ordinal < _rankedPartitions.Count; ordinal++)
+        {
             _partitionOrdinals.Add(_rankedPartitions[ordinal], ordinal);
+        }
         _nextStablePartitionOrdinal = _rankedPartitions.Count;
 
         lock (_migrationRemovalBuffer)
         {
             if (_migrationRemovalBuffer.Capacity < _migratingPartitions.Count)
+            {
                 _migrationRemovalBuffer.Capacity = _migratingPartitions.Count;
+            }
         }
 
         _partitionRoutingSnapshot = metadataPartitions;
@@ -6058,7 +6529,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     private bool HasInflightForPartition(int connectionIndex, TopicPartition topicPartition)
     {
         if ((uint)connectionIndex >= (uint)_pendingResponsesByConnection.Length)
+        {
             return false;
+        }
 
         var pendingList = _pendingResponsesByConnection[connectionIndex];
         for (var i = 0; i < pendingList.Count; i++)
@@ -6070,7 +6543,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 // are nulled out before PendingResponse captures the array.
                 if (pr.IsSameIncarnation(j)
                     && pr.Batches[j].TopicPartition == topicPartition)
+                {
                     return true;
+                }
             }
         }
         return false;
@@ -6087,7 +6562,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         }
 
         lock (_migrationRemovalBuffer)
+        {
             return _migratingPartitions.TryGetValue(topicPartition, out connectionIndex);
+        }
     }
 
     private void AddMigratingPartition(TopicPartition topicPartition, int connectionIndex)
@@ -6102,7 +6579,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     private int GetMigratingPartitionCount()
     {
         lock (_migrationRemovalBuffer)
+        {
             return _migratingPartitions.Count;
+        }
     }
 
     private void ClearMigratingPartitions()
@@ -6131,15 +6610,21 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             foreach (var (topicPartition, oldConnection) in _migratingPartitions)
             {
                 if (oldConnection != connectionIndex)
+                {
                     continue;
+                }
 
                 // Empty connection is the common completion case and avoids rescanning batches.
                 if (pendingList.Count == 0 || !HasInflightForPartition(connectionIndex, topicPartition))
+                {
                     _migrationRemovalBuffer.Add(topicPartition);
+                }
             }
 
             for (var i = 0; i < _migrationRemovalBuffer.Count; i++)
+            {
                 _migratingPartitions.Remove(_migrationRemovalBuffer[i]);
+            }
 
             _hasMigratingPartitions = _migratingPartitions.Count > 0;
         }
@@ -6166,18 +6651,24 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 var newConn = routeKey % newConnCount;
 
                 if (oldConn != newConn && HasInflightForPartition(oldConn, tp))
+                {
                     _migratingPartitions.TryAdd(tp, oldConn);
+                }
             }
 
             if (_migrationRemovalBuffer.Capacity < _migratingPartitions.Count)
+            {
                 _migrationRemovalBuffer.Capacity = _migratingPartitions.Count;
+            }
 
             _hasMigratingPartitions = _migratingPartitions.Count > 0;
         }
 
         var migratingPartitionCount = GetMigratingPartitionCount();
         if (migratingPartitionCount > 0)
+        {
             LogPartitionMigrationStarted(_brokerId, migratingPartitionCount, oldConnCount, newConnCount);
+        }
     }
 
     /// <summary>
@@ -6240,7 +6731,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             var connection = await pending.ConfigureAwait(false);
             _pinnedConnections[connIdx] = connection;
             if (KafkaConnectionLease.TryAcquire(connection, out var lease))
+            {
                 return lease;
+            }
 
             // The pool handed out a retiring connection; give it a moment to publish the
             // replacement before asking again.
@@ -6257,7 +6750,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             || !_canPhysicallyShrinkConnections
             || _hasScaledConnectionGroup;
         if (usesIndexedGroup)
+        {
             RetainConnectionIndex(connIdx);
+        }
 
         var acquisition = usesIndexedGroup
             ? _connectionPool.GetConnectionByIndexAsync(_brokerId, connIdx, _cts.Token).AsTask()
@@ -6285,14 +6780,18 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         {
             var pending = _pendingConnections[i];
             if (pending is null)
+            {
                 continue;
+            }
 
             _pendingConnections[i] = null;
             (pendingTasks ??= []).Add(pending);
         }
 
         if (pendingTasks is null)
+        {
             return;
+        }
 
         try
         {
@@ -6336,12 +6835,16 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     private void MutePartitionsForSend(ReadyBatch[] batches, int count)
     {
         if (!_muteOnSend)
+        {
             return;
+        }
 
         for (var i = 0; i < count; i++)
         {
             if (!batches[i].IsLoopExitRedelivery)
+            {
                 MutePartition(batches[i].TopicPartition);
+            }
         }
     }
 
@@ -6357,7 +6860,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     private void UnmuteUnlessRetryQueued(TopicPartition tp, PartitionCarryOver carryOver)
     {
         if (!carryOver.HasRetry(tp) && !(_partitionsRerouting?.Contains(tp) ?? false))
+        {
             UnmutePartition(tp);
+        }
     }
 
     /// <summary>
@@ -6389,7 +6894,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         {
             var original = Interlocked.CompareExchange(ref target, value, current);
             if (original == current)
+            {
                 return;
+            }
 
             current = original;
         }
@@ -6401,12 +6908,16 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     private static bool PrepareLoopExitRedelivery(ReadyBatch batch, int expectedGeneration)
     {
         if (!batch.TryAcquireResourcePin(expectedGeneration))
+        {
             return false;
+        }
 
         try
         {
             if (!batch.IsCurrentIncarnation(expectedGeneration))
+            {
                 return false;
+            }
 
             batch.IsRetry = true;
             batch.AppendDiag('Y');
@@ -6508,7 +7019,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         var now = _getTimestamp();
         var deliveryTimeoutTicks = _options.DeliveryTimeoutTicks;
         if (!carryOver.MayContainExpiredBatch(now, deliveryTimeoutTicks))
+        {
             return;
+        }
 
         var earliestCreatedTicks = long.MaxValue;
 
@@ -6529,7 +7042,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 if (now < createdTicks + deliveryTimeoutTicks)
                 {
                     if (createdTicks < earliestCreatedTicks)
+                    {
                         earliestCreatedTicks = createdTicks;
+                    }
                     continue;
                 }
 
@@ -6570,7 +7085,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         var pending = pendingList[index];
         pendingList[index] = default;
         if (pending.IsClaimed)
+        {
             return pending;
+        }
 
         Interlocked.Decrement(ref _totalPendingResponseCount);
         Interlocked.Add(ref _totalPendingResponseBytes, -pending.EncodedBytes);
@@ -6585,13 +7102,17 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         {
             var pending = pendingResponses[readIndex];
             if (pending.IsClaimed)
+            {
                 continue;
+            }
 
             pendingResponses[writeIndex++] = pending;
         }
 
         if (writeIndex < pendingResponses.Count)
+        {
             pendingResponses.RemoveRange(writeIndex, pendingResponses.Count - writeIndex);
+        }
     }
 
     private void QueueDetachedPendingResponseForLoopExit(in PendingResponse pending)
@@ -6599,7 +7120,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         for (var i = 0; i < pending.Count; i++)
         {
             if (pending.IsSameIncarnation(i))
+            {
                 _loopExitRedeliveries.Enqueue((pending.Batches[i], pending.BatchGenerations[i]));
+            }
         }
     }
 
@@ -6619,14 +7142,18 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             {
                 var pending = ClaimPendingResponseAt(connectionIndex, entryIdx);
                 if (pending.IsClaimed)
+                {
                     continue;
+                }
 
                 try
                 {
                     for (var i = 0; i < pending.Count; i++)
                     {
                         if (!pending.IsSameIncarnation(i))
+                        {
                             continue;
+                        }
 
                         try
                         {
@@ -6643,7 +7170,10 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                         }
                     }
 
-                    try { pending.ResponseTask.Abandon(); }
+                    try
+                    {
+                        pending.ResponseTask.Abandon();
+                    }
                     catch (Exception abandonEx) { LogBatchCleanupStepFailed(abandonEx, _brokerId); }
                 }
                 finally
@@ -6670,8 +7200,10 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             {
                 var batchRef = queue[i];
                 if (batchRef.IsCurrentIncarnation())
+                {
                     CollectOrFailOnLoopExit(batchRef, redeliver, disposedException,
                         recoveredBatches, recoveredBatchSet);
+                }
             }
         }
     }
@@ -6684,7 +7216,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         HashSet<(ReadyBatch Batch, int Generation)>? recoveredBatchSet)
     {
         if (!batchRef.IsCurrentIncarnation())
+        {
             return;
+        }
 
         if (!redeliver)
         {
@@ -6694,10 +7228,14 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         }
 
         if (!recoveredBatchSet!.Add((batchRef.Batch, batchRef.Generation)))
+        {
             return;
+        }
 
         if (RegisterLoopExitRecovery(batchRef.Batch, batchRef.Generation))
+        {
             recoveredBatches!.Add(batchRef);
+        }
     }
 
     /// <summary>
@@ -6721,7 +7259,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         try
         {
             if (!batch.IsCurrentIncarnation(expectedGeneration))
+            {
                 return;
+            }
 
             if (!redeliver)
             {
@@ -6740,15 +7280,22 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             }
 
             if (!RegisterLoopExitRecovery(batch, expectedGeneration))
+            {
                 return;
+            }
 
             if (!PrepareLoopExitRedelivery(batch, expectedGeneration))
+            {
                 return;
+            }
             _rerouteBatch!(batch, expectedGeneration);
         }
         catch (Exception cleanupEx)
         {
-            try { FailAndCleanupBatch(batch, expectedGeneration, cleanupEx); }
+            try
+            {
+                FailAndCleanupBatch(batch, expectedGeneration, cleanupEx);
+            }
             catch (Exception failEx) { LogBatchCleanupStepFailed(failEx, _brokerId); }
             LogBatchCleanupStepFailed(cleanupEx, _brokerId);
         }
@@ -6757,14 +7304,19 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     private void FailAndCleanupBatch(ReadyBatch batch, Exception ex)
     {
         FailBatch(batch, ex, sendCompletionClaimed: false);
-        try { CleanupBatch(batch); }
+        try
+        {
+            CleanupBatch(batch);
+        }
         catch (Exception cleanupEx) { LogBatchCleanupStepFailed(cleanupEx, _brokerId); }
     }
 
     private void FailAndCleanupBatch(ReadyBatch batch, int expectedGeneration, Exception ex)
     {
         if (!batch.TryAcquireResourcePin(expectedGeneration))
+        {
             return;
+        }
 
         var sendCompletionClaimed = false;
         try
@@ -6777,17 +7329,25 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         }
 
         if (!sendCompletionClaimed)
+        {
             return;
+        }
 
         try
         {
             FailBatch(batch, ex, sendCompletionClaimed: true);
-            try { CleanupBatchResources(batch); }
+            try
+            {
+                CleanupBatchResources(batch);
+            }
             catch (Exception cleanupEx) { LogBatchCleanupStepFailed(cleanupEx, _brokerId); }
         }
         finally
         {
-            try { _accumulator.CompleteTerminalBookkeepingAndReturnReadyBatch(batch); }
+            try
+            {
+                _accumulator.CompleteTerminalBookkeepingAndReturnReadyBatch(batch);
+            }
             catch (Exception returnEx) { LogBatchCleanupStepFailed(returnEx, _brokerId); }
         }
     }
@@ -6800,7 +7360,10 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         // If batch.Fail throws, CleanupBatch must still run to release memory and return the batch.
         // A single unwrapped throw here causes the caller's loop to skip remaining batches,
         // leaking their completion sources and causing producer hangs (deadlocks).
-        try { CompleteInflightEntry(batch); }
+        try
+        {
+            CompleteInflightEntry(batch);
+        }
         catch (Exception cleanupEx) { LogBatchCleanupStepFailed(cleanupEx, _brokerId); }
         var deliveredException = ex;
         try
@@ -6888,7 +7451,10 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
         // ReturnReadyBatch is idempotent (atomic _returnedToPool flag), so this is safe
         // even if ForceFailAllInFlightBatches races during disposal.
-        try { _accumulator.ReturnReadyBatch(batch); }
+        try
+        {
+            _accumulator.ReturnReadyBatch(batch);
+        }
         catch (Exception returnEx) { LogBatchCleanupStepFailed(returnEx, _brokerId); }
     }
 
@@ -6916,7 +7482,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         try
         {
             if (!pending.TryReturnArrays())
+            {
                 LogPendingResponseArraysAlreadyReturned(_instanceId, _brokerId);
+            }
         }
         catch (Exception returnEx)
         {
@@ -6949,7 +7517,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     {
         var recoveredCount = Interlocked.Exchange(ref _deferredPendingResponseCleanupCount, 0);
         if (recoveredCount == 0)
+        {
             return;
+        }
 
         Diagnostics.DekafMetrics.PendingResponseCleanupRecovered.Add(recoveredCount, BrokerIdTags());
     }
@@ -6962,7 +7532,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     public async ValueTask DisposeAsync()
     {
         if (Interlocked.Exchange(ref _disposed, 1) != 0)
+        {
             return;
+        }
 
         try
         {
@@ -7073,9 +7645,13 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         try
         {
             if (_canPhysicallyShrinkConnections)
+            {
                 await drainTask.ConfigureAwait(false);
+            }
             else
+            {
                 await drainTask.WaitAsync(_disposalDrainTimeout).ConfigureAwait(false);
+            }
         }
         catch (TimeoutException ex)
         {
@@ -7083,7 +7659,10 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             // WaitAsync bounds DisposeAsync only. The drain retains connection ownership
             // and must continue until sibling leases and operations finish.
             _ = drainTask.ContinueWith(
-                static (task, _) => { _ = task.Exception; },
+                static (task, _) =>
+                {
+                    _ = task.Exception;
+                },
                 null,
                 CancellationToken.None,
                 TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
@@ -7146,7 +7725,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         if (_pendingScaleTask is not null)
         {
             if (!_pendingScaleTask.IsCompleted)
+            {
                 return 0; // Still connecting — send loop continues unblocked
+            }
 
             var task = _pendingScaleTask;
 
@@ -7170,7 +7751,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                         && Volatile.Read(ref _totalPendingResponseCount) > 0)
                     {
                         if (carryOver.Count > 0)
+                        {
                             SweepExpiredCarryOver(carryOver);
+                        }
 
                         return ScaleUpAwaitingSlotZeroDrain;
                     }
@@ -7192,7 +7775,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         if (_pendingShrinkTask is not null)
         {
             if (!_pendingShrinkTask.IsCompleted)
+            {
                 return 0; // Still shrinking — send loop continues unblocked
+            }
 
             var task = _pendingShrinkTask;
             _pendingShrinkTask = null;
@@ -7247,13 +7832,17 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
         // Cooldown applies to both scale-up and scale-down
         if (now - _lastScaleTimeTicks < _scaleCooldownMs)
+        {
             return 0;
+        }
 
         // A previous scale-down is still retiring its removed connection — hold off on any
         // new scale event until it drains, so slot indices stay unambiguous (a scale-up
         // would re-activate the retiring slot while its old connection is still pinned).
         if (_retiringConnection is not null)
+        {
             return 0;
+        }
 
         var utilization = _accumulator.BufferUtilization;
         var bufferPressureDelta = _accumulator.BufferPressureEvents - _lastPressureSnapshot;
@@ -7318,7 +7907,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             _lowUtilizationStartTicks = 0;
 
             if (_connectionCount >= _maxConnectionsPerBroker)
+            {
                 return 0; // At ceiling — cannot scale up, but scale-down remains active
+            }
 
             var targetCount = ComputeScaleTarget(scalePressureDelta, _connectionCount, _maxConnectionsPerBroker);
 
@@ -7326,10 +7917,14 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             // count can never receive traffic — they'd sit idle and immediately arm
             // scale-down churn. Cap the target at the partitions this broker serves.
             if (_knownPartitions.Count > 0 && targetCount > _knownPartitions.Count)
+            {
                 targetCount = Math.Max(_connectionCount, _knownPartitions.Count);
+            }
 
             if (targetCount <= _connectionCount)
+            {
                 return 0; // Cap left nothing to add
+            }
 
             // Launch connection creation in the background — send loop continues immediately
             _lastScaleTimeTicks = now;
@@ -7376,7 +7971,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         }
 
         if (now - _lowUtilizationStartTicks < _scaleDownSustainedMs)
+        {
             return 0; // Not sustained long enough
+        }
 
         // Low buffer occupancy can mean the expanded connection group is keeping up, not
         // that it is idle. Mute-on-send limits each active partition to one request, so
@@ -7409,7 +8006,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         // moving a non-idempotent partition while its old request remains unacknowledged can
         // reorder broker appends just as surely as it can violate idempotent sequence order.
         if (_totalPendingResponseCount > 0)
+        {
             return 0;
+        }
 
         // Sustained low utilization with no in-flight on the connection being removed —
         // initiate scale-down.
@@ -7494,7 +8093,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     {
         var observationCount = _partitionLimitedDiagnosticObservationCount;
         if (observationCount == 0)
+        {
             return;
+        }
 
         var observedDurationMs = _lastPartitionLimitedDiagnosticMs == 0
             ? 0
@@ -7522,21 +8123,27 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     private bool HasMutedPartitionLoad(PartitionCarryOver carryOver, bool hasUnreadEvent)
     {
         if ((_isIdempotent && !_muteOnSend) || _mutedPartitions.IsEmpty)
+        {
             return false;
+        }
 
         // The channel is unified, so its unread tail can include wake-up signals as
         // well as batches. For the non-idempotent acks=all workload this guard targets,
         // conservatively defer until the single reader can classify the tail. Idempotent
         // producers retain their existing ability to shrink under continuous traffic.
         if (hasUnreadEvent)
+        {
             return true;
+        }
 
         foreach (var (topicPartition, _) in _mutedPartitions)
         {
             if ((carryOver.Partitions.TryGetValue(topicPartition, out var carryOverQueue)
                  && carryOverQueue.Count > 0)
                 || _accumulator.HasQueuedBatches(topicPartition))
+            {
                 return true;
+            }
         }
 
         return false;
@@ -7602,7 +8209,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     private bool IsFirstSlotZeroIdentitySwap()
     {
         if (_connectionCount != 1 || _hasScaledConnectionGroup)
+        {
             return false;
+        }
 
         var pinnedConnection = _pinnedConnections[0];
         // Custom pools cannot prove group identity, so preserve the correctness fence.
@@ -7634,7 +8243,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
         var pendingOnRemoved = _pendingResponsesByConnection[removedIdx].Count;
         if (pendingOnRemoved > 0)
+        {
             LogScaleDownSlotNotEmpty(_brokerId, removedIdx, pendingOnRemoved);
+        }
 
         // Safe to set without checking the previous value: a parked retiring connection
         // blocks all new scale events, so ApplyScaleDown is never called while a prior
@@ -7668,7 +8279,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         }
 
         if (_drainingConnection is null)
+        {
             return;
+        }
 
         var connection = _drainingConnection;
         _drainingConnection = null;

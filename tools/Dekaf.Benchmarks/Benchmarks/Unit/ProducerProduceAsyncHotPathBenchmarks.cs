@@ -37,10 +37,16 @@ public class ProducerProduceAsyncHotPathBenchmarks
     private ProducerMessage<string, string>[] _messages = null!;
 
     [Params(1, 12)]
-    public int PartitionCount { get; set; }
+    public int PartitionCount
+    {
+        get; set;
+    }
 
     [Params(false, true)]
-    public bool Transactional { get; set; }
+    public bool Transactional
+    {
+        get; set;
+    }
 
     [GlobalSetup]
     public async Task Setup()
@@ -68,7 +74,9 @@ public class ProducerProduceAsyncHotPathBenchmarks
         SeedMetadata(_producer, PartitionCount);
         SetInstanceField(_producer, "_initialized", true);
         if (Transactional)
+        {
             _producer._transactionState = TransactionState.InTransaction;
+        }
         _accumulator = _producer.RecordAccumulator;
 
         var value = new string('x', 100);
@@ -84,7 +92,9 @@ public class ProducerProduceAsyncHotPathBenchmarks
         }
 
         for (var i = 0; i < 20; i++)
+        {
             ProduceBatch();
+        }
     }
 
     [GlobalCleanup]
@@ -97,7 +107,9 @@ public class ProducerProduceAsyncHotPathBenchmarks
     public void ProduceBatch()
     {
         for (var i = 0; i < ProducesPerInvoke; i++)
+        {
             _pending[i] = _producer.ProduceAsync(_messages[i]);
+        }
 
         // Seal and complete the batches on this thread; no continuation is registered, so
         // completing the pooled sources schedules nothing. GetResult returns each source to its
@@ -106,7 +118,9 @@ public class ProducerProduceAsyncHotPathBenchmarks
         {
             var pending = _pending[i];
             while (!pending.IsCompleted)
+            {
                 CompletePublishedBatches();
+            }
 
             pending.GetAwaiter().GetResult();
             _pending[i] = default;
@@ -119,7 +133,9 @@ public class ProducerProduceAsyncHotPathBenchmarks
         // here so awaited produces complete.
         var expire = _accumulator.ExpireLingerAsync(CancellationToken.None);
         if (!expire.IsCompletedSuccessfully)
+        {
             expire.AsTask().GetAwaiter().GetResult();
+        }
 
         var timestamp = DateTimeOffset.UnixEpoch;
         while (_accumulator.TryDrainPublishedBatch(out var batch))

@@ -80,7 +80,9 @@ public sealed class PartitionReassignmentIntegrationTests(RackAwareKafkaContaine
         finally
         {
             if (brokerStopped)
+            {
                 await kafka.StartBrokerAsync(nodeId: 3, CancellationToken.None).ConfigureAwait(false);
+            }
         }
     }
 
@@ -172,7 +174,9 @@ public sealed class PartitionReassignmentIntegrationTests(RackAwareKafkaContaine
         finally
         {
             if (brokerStopped)
+            {
                 await kafka.StartBrokerAsync(nodeId: 3, CancellationToken.None).ConfigureAwait(false);
+            }
         }
     }
 
@@ -221,7 +225,9 @@ public sealed class PartitionReassignmentIntegrationTests(RackAwareKafkaContaine
         finally
         {
             if (brokerStopped)
+            {
                 await kafka.StartBrokerAsync(nodeId: 3, CancellationToken.None).ConfigureAwait(false);
+            }
         }
     }
 
@@ -231,7 +237,9 @@ public sealed class PartitionReassignmentIntegrationTests(RackAwareKafkaContaine
         await using var admin = kafka.CreateAdminClient();
         var assignments = new Dictionary<int, IReadOnlyList<int>>(PartitionCount);
         for (var partition = 0; partition < PartitionCount; partition++)
+        {
             assignments.Add(partition, InitialReplicas);
+        }
 
         await admin.CreateTopicsAsync(
         [
@@ -295,7 +303,9 @@ public sealed class PartitionReassignmentIntegrationTests(RackAwareKafkaContaine
                 {
                     productionStarted.TrySetResult();
                     if (resumeProduction is not null)
+                    {
                         await resumeProduction.WaitAsync(cancellationToken).ConfigureAwait(false);
+                    }
                 }
             }
         }
@@ -315,7 +325,9 @@ public sealed class PartitionReassignmentIntegrationTests(RackAwareKafkaContaine
             var result = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(10), cancellationToken)
                 .ConfigureAwait(false);
             if (result is null)
+            {
                 continue;
+            }
 
             var record = result.Value;
             var expectedOffset = nextOffsets[record.Partition];
@@ -366,7 +378,9 @@ public sealed class PartitionReassignmentIntegrationTests(RackAwareKafkaContaine
             var trailing = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(2), cancellationToken)
                 .ConfigureAwait(false);
             if (trailing is null)
+            {
                 break;
+            }
 
             var record = trailing.Value;
             oracle.Observe(topic, record.Partition, record.Offset, record.Key, record.Value);
@@ -457,7 +471,9 @@ public sealed class PartitionReassignmentIntegrationTests(RackAwareKafkaContaine
                         cancellationToken: token)
                     .ConfigureAwait(false);
                 if (active.Count != 0)
+                {
                     return false;
+                }
 
                 var descriptions = await admin.DescribeTopicsAsync([topic], token).ConfigureAwait(false);
                 return descriptions[topic].Partitions.All(partition =>
@@ -484,7 +500,9 @@ public sealed class PartitionReassignmentIntegrationTests(RackAwareKafkaContaine
         try
         {
             while (!await predicate(timeout.Token).ConfigureAwait(false))
+            {
                 await Task.Delay(TimeSpan.FromMilliseconds(200), timeout.Token).ConfigureAwait(false);
+            }
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {

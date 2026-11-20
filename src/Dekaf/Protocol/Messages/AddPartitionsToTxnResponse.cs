@@ -20,17 +20,26 @@ public sealed class AddPartitionsToTxnResponse : IKafkaResponse
     /// <summary>
     /// Throttle time in milliseconds.
     /// </summary>
-    public int ThrottleTimeMs { get; init; }
+    public int ThrottleTimeMs
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Top-level error code (v4+ only). Defaults to None.
     /// </summary>
-    public ErrorCode ErrorCode { get; init; }
+    public ErrorCode ErrorCode
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The results for each topic.
     /// </summary>
-    public required IReadOnlyList<AddPartitionsToTxnTopicResult> Results { get; init; }
+    public required IReadOnlyList<AddPartitionsToTxnTopicResult> Results
+    {
+        get; init;
+    }
 
     public static IKafkaResponse Read(ref KafkaProtocolReader reader, short version)
     {
@@ -103,8 +112,14 @@ public sealed class AddPartitionsToTxnResponse : IKafkaResponse
 /// </summary>
 public sealed class AddPartitionsToTxnTopicResult
 {
-    public required string Name { get; init; }
-    public required IReadOnlyList<AddPartitionsToTxnPartitionResult> Partitions { get; init; }
+    public required string Name
+    {
+        get; init;
+    }
+    public required IReadOnlyList<AddPartitionsToTxnPartitionResult> Partitions
+    {
+        get; init;
+    }
 
     public static AddPartitionsToTxnTopicResult Read(ref KafkaProtocolReader reader, short version)
     {
@@ -131,8 +146,14 @@ public sealed class AddPartitionsToTxnTopicResult
 /// </summary>
 public sealed class AddPartitionsToTxnPartitionResult
 {
-    public required int PartitionIndex { get; init; }
-    public required ErrorCode ErrorCode { get; init; }
+    public required int PartitionIndex
+    {
+        get; init;
+    }
+    public required ErrorCode ErrorCode
+    {
+        get; init;
+    }
 
     public static AddPartitionsToTxnPartitionResult Read(ref KafkaProtocolReader reader, short version)
     {

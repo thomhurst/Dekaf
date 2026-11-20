@@ -17,12 +17,18 @@ public sealed class DescribeConfigsResponse : IKafkaResponse
     /// <summary>
     /// The duration in milliseconds for which the request was throttled due to quota violation.
     /// </summary>
-    public int ThrottleTimeMs { get; init; }
+    public int ThrottleTimeMs
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The results for each resource.
     /// </summary>
-    public required IReadOnlyList<DescribeConfigsResult> Results { get; init; }
+    public required IReadOnlyList<DescribeConfigsResult> Results
+    {
+        get; init;
+    }
 
     public static IKafkaResponse Read(ref KafkaProtocolReader reader, short version)
     {
@@ -53,27 +59,42 @@ public sealed class DescribeConfigsResult
     /// <summary>
     /// The error code, or 0 if there was no error.
     /// </summary>
-    public ErrorCode ErrorCode { get; init; }
+    public ErrorCode ErrorCode
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The error message, or null if there was no error.
     /// </summary>
-    public string? ErrorMessage { get; init; }
+    public string? ErrorMessage
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The resource type.
     /// </summary>
-    public sbyte ResourceType { get; init; }
+    public sbyte ResourceType
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The resource name.
     /// </summary>
-    public required string ResourceName { get; init; }
+    public required string ResourceName
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Each listed configuration.
     /// </summary>
-    public required IReadOnlyList<DescribeConfigsResourceResult> Configs { get; init; }
+    public required IReadOnlyList<DescribeConfigsResourceResult> Configs
+    {
+        get; init;
+    }
 
     public static DescribeConfigsResult Read(ref KafkaProtocolReader reader, short version)
     {
@@ -115,47 +136,74 @@ public sealed class DescribeConfigsResourceResult
     /// <summary>
     /// The configuration name.
     /// </summary>
-    public required string Name { get; init; }
+    public required string Name
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The configuration value.
     /// </summary>
-    public string? Value { get; init; }
+    public string? Value
+    {
+        get; init;
+    }
 
     /// <summary>
     /// True if the configuration is read-only.
     /// </summary>
-    public bool ReadOnly { get; init; }
+    public bool ReadOnly
+    {
+        get; init;
+    }
 
     /// <summary>
     /// True if the configuration is not set (v0 only, deprecated).
     /// </summary>
-    public bool IsDefault { get; init; }
+    public bool IsDefault
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The configuration source (v1+).
     /// </summary>
-    public sbyte ConfigSource { get; init; } = -1;
+    public sbyte ConfigSource
+    {
+        get; init;
+    } = -1;
 
     /// <summary>
     /// True if this configuration is sensitive.
     /// </summary>
-    public bool IsSensitive { get; init; }
+    public bool IsSensitive
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The synonyms for this configuration key (v1+).
     /// </summary>
-    public IReadOnlyList<DescribeConfigsSynonym>? Synonyms { get; init; }
+    public IReadOnlyList<DescribeConfigsSynonym>? Synonyms
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The configuration data type (v3+).
     /// </summary>
-    public sbyte ConfigType { get; init; }
+    public sbyte ConfigType
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The configuration documentation (v3+).
     /// </summary>
-    public string? Documentation { get; init; }
+    public string? Documentation
+    {
+        get; init;
+    }
 
     public static DescribeConfigsResourceResult Read(ref KafkaProtocolReader reader, short version)
     {
@@ -212,17 +260,26 @@ public sealed class DescribeConfigsSynonym
     /// <summary>
     /// The synonym name.
     /// </summary>
-    public required string Name { get; init; }
+    public required string Name
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The synonym value.
     /// </summary>
-    public string? Value { get; init; }
+    public string? Value
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The source of this configuration.
     /// </summary>
-    public sbyte Source { get; init; }
+    public sbyte Source
+    {
+        get; init;
+    }
 
     public static DescribeConfigsSynonym Read(ref KafkaProtocolReader reader, short version)
     {

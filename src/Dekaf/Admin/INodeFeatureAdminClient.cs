@@ -13,10 +13,16 @@ public interface INodeFeatureAdminClient
 public sealed class DescribeFeaturesOptions
 {
     /// <summary>The broker or controller ID to query. Null selects an arbitrary broker or the active controller.</summary>
-    public int? NodeId { get; init; }
+    public int? NodeId
+    {
+        get; init;
+    }
 
     /// <summary>Total operation timeout in milliseconds, including discovery and retries. Null uses the client's request timeout.</summary>
-    public int? TimeoutMs { get; init; }
+    public int? TimeoutMs
+    {
+        get; init;
+    }
 }
 
 /// <summary>Node-specific feature discovery for admin clients.</summary>

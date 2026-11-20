@@ -26,7 +26,9 @@ public sealed class SchemaRegistryOAuthConcurrencyIntegrationTests(KafkaWithSche
         }, handler);
         var requests = new Task[16];
         for (var index = 0; index < requests.Length; index++)
+        {
             requests[index] = client.GetAllSubjectsAsync(cancellationToken);
+        }
         var callsBeforeCompletion = Volatile.Read(ref providerCalls);
         var sentBeforeCompletion = handler.Tokens.Count;
         response.SetResult(new OAuthBearerToken
@@ -42,12 +44,17 @@ public sealed class SchemaRegistryOAuthConcurrencyIntegrationTests(KafkaWithSche
         await Assert.That(sentBeforeCompletion).IsEqualTo(0);
         await Assert.That(handler.Tokens.Count).IsEqualTo(requests.Length);
         foreach (var token in handler.Tokens)
+        {
             await Assert.That(token).IsEqualTo("Bearer shared-custom-token");
+        }
     }
 
     private sealed class AuthorizationCaptureHandler(HttpMessageHandler innerHandler) : DelegatingHandler(innerHandler)
     {
-        internal ConcurrentBag<string?> Tokens { get; } = [];
+        internal ConcurrentBag<string?> Tokens
+        {
+            get;
+        } = [];
 
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {

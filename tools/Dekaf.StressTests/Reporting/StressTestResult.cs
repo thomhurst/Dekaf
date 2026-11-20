@@ -12,33 +12,99 @@ internal sealed class StressTestResult
     internal const double SlopePercentPerMinuteThreshold = -1.0;
     private const double IntraRunTrendWindowSeconds = 60.0;
 
-    public required string Scenario { get; init; }
-    public required string Client { get; set; }
-    public required int DurationMinutes { get; init; }
-    public required int MessageSizeBytes { get; init; }
-    public int? DeliveryLatencyTargetMs { get; init; }
-    public int? ConsumerSeedBatchSizeBytes { get; init; }
+    public required string Scenario
+    {
+        get; init;
+    }
+    public required string Client
+    {
+        get; set;
+    }
+    public required int DurationMinutes
+    {
+        get; init;
+    }
+    public required int MessageSizeBytes
+    {
+        get; init;
+    }
+    public int? DeliveryLatencyTargetMs
+    {
+        get; init;
+    }
+    public int? ConsumerSeedBatchSizeBytes
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Consumer connections per broker used by this performance profile. Null for
     /// non-consumer scenarios.
     /// </summary>
-    public int? ConsumerConnectionsPerBroker { get; init; }
-    public required DateTime StartedAtUtc { get; init; }
-    public required DateTime CompletedAtUtc { get; init; }
-    public required ThroughputSnapshot Throughput { get; init; }
-    public LatencySnapshot? Latency { get; init; }
-    public required GcSnapshot GcStats { get; init; }
-    public int BrokerCount { get; init; } = 1;
-    public ProducerDeliveryDiagnosticsSnapshot? ProducerDeliveryDiagnostics { get; init; }
-    public ConsumerFetchDiagnosticsSnapshot? ConsumerFetchDiagnostics { get; init; }
-    public FollowerRecoverySnapshot? FollowerRecovery { get; set; }
-    public RoundTripValidationSnapshot? RoundTripValidation { get; init; }
-    public RoundTripPhaseSnapshot? RoundTripPhases { get; init; }
-    public int? RoundTripSteadySeconds { get; init; }
-    public OutboxWorkloadSnapshot? Outbox { get; init; }
-    public KeyedConsumerSnapshot? KeyedConsumer { get; set; }
-    public ShareTelemetrySnapshot? ShareTelemetry { get; set; }
+    public int? ConsumerConnectionsPerBroker
+    {
+        get; init;
+    }
+    public required DateTime StartedAtUtc
+    {
+        get; init;
+    }
+    public required DateTime CompletedAtUtc
+    {
+        get; init;
+    }
+    public required ThroughputSnapshot Throughput
+    {
+        get; init;
+    }
+    public LatencySnapshot? Latency
+    {
+        get; init;
+    }
+    public required GcSnapshot GcStats
+    {
+        get; init;
+    }
+    public int BrokerCount
+    {
+        get; init;
+    } = 1;
+    public ProducerDeliveryDiagnosticsSnapshot? ProducerDeliveryDiagnostics
+    {
+        get; init;
+    }
+    public ConsumerFetchDiagnosticsSnapshot? ConsumerFetchDiagnostics
+    {
+        get; init;
+    }
+    public FollowerRecoverySnapshot? FollowerRecovery
+    {
+        get; set;
+    }
+    public RoundTripValidationSnapshot? RoundTripValidation
+    {
+        get; init;
+    }
+    public RoundTripPhaseSnapshot? RoundTripPhases
+    {
+        get; init;
+    }
+    public int? RoundTripSteadySeconds
+    {
+        get; init;
+    }
+    public OutboxWorkloadSnapshot? Outbox
+    {
+        get; init;
+    }
+    public KeyedConsumerSnapshot? KeyedConsumer
+    {
+        get; set;
+    }
+    public ShareTelemetrySnapshot? ShareTelemetry
+    {
+        get; set;
+    }
 
     /// <summary>
     /// Whether the scenario's producer ran with idempotence enabled. Must mirror the
@@ -47,11 +113,23 @@ internal sealed class StressTestResult
     /// this fact: idempotent runs fail when delivered exceeds accepted (broker-side
     /// retry deduplication broken); non-idempotent runs tolerate retry duplicates.
     /// </summary>
-    public bool Idempotent { get; init; }
-    public ResourceTrendSnapshot? ResourceTrend { get; init; }
-    public long? ConsumedMessages { get; init; }
+    public bool Idempotent
+    {
+        get; init;
+    }
+    public ResourceTrendSnapshot? ResourceTrend
+    {
+        get; init;
+    }
+    public long? ConsumedMessages
+    {
+        get; init;
+    }
 
-    public TransactionVerificationSnapshot? TransactionVerification { get; init; }
+    public TransactionVerificationSnapshot? TransactionVerification
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Broker-confirmed message count, measured as the end-offset (high watermark)
@@ -64,7 +142,10 @@ internal sealed class StressTestResult
     /// with committed records because aborted records are intentionally invisible.
     /// Null when the scenario doesn't measure it (consumers).
     /// </summary>
-    public long? DeliveredMessages { get; init; }
+    public long? DeliveredMessages
+    {
+        get; init;
+    }
 
     public double? DeliveredMessagesPerSecond =>
         DeliveredMessages is { } delivered && Throughput.ElapsedSeconds > 0
@@ -137,7 +218,10 @@ internal sealed class StressTestResult
     /// The derived values below are serialized so downstream reports (including the
     /// Python CI summary) format them without re-deriving the math.
     /// </summary>
-    public double? CpuTimeSeconds { get; init; }
+    public double? CpuTimeSeconds
+    {
+        get; init;
+    }
 
     public double? CpuMicrosPerMessage =>
         CpuTimeSeconds is { } cpu && Throughput.TotalMessages > 0
@@ -189,13 +273,17 @@ internal sealed class StressTestResult
     {
         metrics = default;
         if (Throughput.ElapsedSeconds <= 0)
+        {
             return false;
+        }
 
         var rawSamples = Throughput.MessagesPerSecondSamples
             .Where(sample => double.IsFinite(sample) && sample >= 0)
             .ToArray();
         if (rawSamples.Length < 3)
+        {
             return false;
+        }
 
         var sampledElapsedSeconds = Throughput.SampledElapsedSeconds > 0
             ? Throughput.SampledElapsedSeconds
@@ -214,9 +302,13 @@ internal sealed class StressTestResult
         var lastThirdAverage = lastThirdTotal / thirdCount;
         var peak = GetPercentile(samples, 0.95);
         if (peak <= 0)
+        {
             peak = samples.Max();
+        }
         if (firstThirdAverage <= 0 || peak <= 0)
+        {
             return false;
+        }
 
         var mean = samples.Average();
         var midpoint = (samples.Length - 1) / 2.0;
@@ -242,7 +334,9 @@ internal sealed class StressTestResult
     {
         var windowCount = (int)Math.Floor(sampledElapsedSeconds / IntraRunTrendWindowSeconds);
         if (windowCount < 3 || samples.Length < windowCount)
+        {
             return samples;
+        }
 
         var windows = new double[windowCount];
         for (var window = 0; window < windowCount; window++)
@@ -251,7 +345,9 @@ internal sealed class StressTestResult
             var end = (window + 1) * samples.Length / windowCount;
             var total = 0.0;
             for (var sample = start; sample < end; sample++)
+            {
                 total += samples[sample];
+            }
 
             windows[window] = total / (end - start);
         }
@@ -288,10 +384,22 @@ internal sealed class StressTestResult
 
 internal sealed class RoundTripPhaseSnapshot
 {
-    public required long ProducedMessages { get; init; }
-    public required double ProduceElapsedSeconds { get; init; }
-    public required long ConsumedMessages { get; init; }
-    public required double ConsumeElapsedSeconds { get; init; }
+    public required long ProducedMessages
+    {
+        get; init;
+    }
+    public required double ProduceElapsedSeconds
+    {
+        get; init;
+    }
+    public required long ConsumedMessages
+    {
+        get; init;
+    }
+    public required double ConsumeElapsedSeconds
+    {
+        get; init;
+    }
 
     public double ProduceMessagesPerSecond =>
         ProduceElapsedSeconds > 0 ? ProducedMessages / ProduceElapsedSeconds : 0;
@@ -302,17 +410,50 @@ internal sealed class RoundTripPhaseSnapshot
 
 internal sealed class TransactionVerificationSnapshot
 {
-    public required long AcceptedMessages { get; init; }
-    public required long CommittedMessages { get; init; }
-    public required long AbortedMessages { get; init; }
-    public required long DeliveredMessages { get; init; }
-    public required long DuplicateMessages { get; init; }
-    public required long ShortfallMessages { get; init; }
-    public required long LeakedAbortedMessages { get; init; }
-    public required long UnexpectedMessages { get; init; }
-    public required int MissingSentinelPartitions { get; init; }
-    public bool SentinelCommitFailed { get; init; }
-    public required List<string> FailureSamples { get; init; }
+    public required long AcceptedMessages
+    {
+        get; init;
+    }
+    public required long CommittedMessages
+    {
+        get; init;
+    }
+    public required long AbortedMessages
+    {
+        get; init;
+    }
+    public required long DeliveredMessages
+    {
+        get; init;
+    }
+    public required long DuplicateMessages
+    {
+        get; init;
+    }
+    public required long ShortfallMessages
+    {
+        get; init;
+    }
+    public required long LeakedAbortedMessages
+    {
+        get; init;
+    }
+    public required long UnexpectedMessages
+    {
+        get; init;
+    }
+    public required int MissingSentinelPartitions
+    {
+        get; init;
+    }
+    public bool SentinelCommitFailed
+    {
+        get; init;
+    }
+    public required List<string> FailureSamples
+    {
+        get; init;
+    }
 
     public bool IsSuccessful =>
         DuplicateMessages == 0 &&
@@ -325,14 +466,38 @@ internal sealed class TransactionVerificationSnapshot
 
 internal sealed class StressTestResults
 {
-    public required DateTime RunStartedAtUtc { get; init; }
-    public required DateTime RunCompletedAtUtc { get; init; }
-    public required string MachineName { get; init; }
-    public required int ProcessorCount { get; init; }
-    public string? PairedClientOrder { get; init; }
-    public int? PairedSampleIndex { get; init; }
-    public int? PairedSampleCount { get; init; }
-    public required List<StressTestResult> Results { get; init; }
+    public required DateTime RunStartedAtUtc
+    {
+        get; init;
+    }
+    public required DateTime RunCompletedAtUtc
+    {
+        get; init;
+    }
+    public required string MachineName
+    {
+        get; init;
+    }
+    public required int ProcessorCount
+    {
+        get; init;
+    }
+    public string? PairedClientOrder
+    {
+        get; init;
+    }
+    public int? PairedSampleIndex
+    {
+        get; init;
+    }
+    public int? PairedSampleCount
+    {
+        get; init;
+    }
+    public required List<StressTestResult> Results
+    {
+        get; init;
+    }
 
     private static readonly JsonSerializerOptions JsonOptions = new()
     {

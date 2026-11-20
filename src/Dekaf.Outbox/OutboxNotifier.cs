@@ -34,7 +34,9 @@ internal sealed class OutboxNotifier : IOutboxBucketNotifier, IDisposable
         // Publish after all hint writes, unconditionally. A conditional read before
         // this write could reorder with an unknown-hint store and lose a notification.
         if (_trackPendingHints)
+        {
             Volatile.Write(ref _pendingHints, 1);
+        }
         Signal();
     }
 
@@ -75,7 +77,9 @@ internal sealed class OutboxNotifier : IOutboxBucketNotifier, IDisposable
         if (owned is null)
         {
             if (buckets.Count > 0)
+            {
                 NotifyUnknownReceived();
+            }
             return;
         }
 
@@ -91,7 +95,9 @@ internal sealed class OutboxNotifier : IOutboxBucketNotifier, IDisposable
             }
         }
         if (relevant)
+        {
             SignalHints();
+        }
     }
 
     public void NotifyCommitted(int bucket)
@@ -128,12 +134,16 @@ internal sealed class OutboxNotifier : IOutboxBucketNotifier, IDisposable
         {
             snapshot[index] = buckets[index];
             if (index > 0 && snapshot[index - 1] > snapshot[index])
+            {
                 sorted = false;
+            }
         }
         // Stores return ascending leases, but the public notifier contract also
         // accepts unsorted custom snapshots. Never reorder the caller's collection.
         if (!sorted && snapshot.Length > 32)
+        {
             Array.Sort(snapshot);
+        }
         Volatile.Write(ref _ownedBuckets, snapshot);
     }
 
@@ -141,7 +151,9 @@ internal sealed class OutboxNotifier : IOutboxBucketNotifier, IDisposable
     {
         cancellationToken.ThrowIfCancellationRequested();
         if (_notifications.Reader.TryRead(out _))
+        {
             return ValueTask.CompletedTask;
+        }
         return WaitForNotificationAsync(timeout, cancellationToken);
     }
 

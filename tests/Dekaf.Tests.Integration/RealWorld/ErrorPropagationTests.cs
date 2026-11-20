@@ -236,7 +236,10 @@ public sealed class ErrorPropagationTests(KafkaTestContainer kafka) : KafkaInteg
             await foreach (var msg in consumer.ConsumeAsync(cts.Token))
             {
                 consumed.Add(msg);
-                if (consumed.Count >= 10) break;
+                if (consumed.Count >= 10)
+                {
+                    break;
+                }
             }
         }
         catch (OperationCanceledException)
@@ -284,7 +287,9 @@ public sealed class ErrorPropagationTests(KafkaTestContainer kafka) : KafkaInteg
                         Value = $"value-{i}"
                     }, CancellationToken.None);
                     if (i == 0)
+                    {
                         firstProduceStarted.TrySetResult();
+                    }
                     await produce.ConfigureAwait(false);
                 }
                 catch (ObjectDisposedException)

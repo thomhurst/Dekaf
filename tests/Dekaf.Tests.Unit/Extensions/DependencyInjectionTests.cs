@@ -40,7 +40,9 @@ public class DependencyInjectionTests
     {
         var services = new ServiceCollection();
 
-        var result = services.AddDekaf(_ => { });
+        var result = services.AddDekaf(_ =>
+        {
+        });
 
         await Assert.That(result).IsSameReferenceAs(services);
     }
@@ -423,12 +425,24 @@ public class DependencyInjectionTests
             builder.AddProducer<string, string>("configured", configuration, null);
             builder.AddProducerFromConfluentConfig<string, string>(confluentProducerConfiguration, null);
             builder.AddProducerFromConfluentConfig<string, string>("confluent", confluentProducerConfiguration, null);
-            builder.AddConsumer<string, string>(consumerOptions, null, _ => { });
-            builder.AddConsumer<string, string>("typed", consumerOptions, null, _ => { });
-            builder.AddConsumer<string, string>(configuration, null, _ => { });
-            builder.AddConsumer<string, string>("configured", configuration, null, _ => { });
-            builder.AddConsumerFromConfluentConfig<string, string>(configuration, null, _ => { });
-            builder.AddConsumerFromConfluentConfig<string, string>("confluent", configuration, null, _ => { });
+            builder.AddConsumer<string, string>(consumerOptions, null, _ =>
+            {
+            });
+            builder.AddConsumer<string, string>("typed", consumerOptions, null, _ =>
+            {
+            });
+            builder.AddConsumer<string, string>(configuration, null, _ =>
+            {
+            });
+            builder.AddConsumer<string, string>("configured", configuration, null, _ =>
+            {
+            });
+            builder.AddConsumerFromConfluentConfig<string, string>(configuration, null, _ =>
+            {
+            });
+            builder.AddConsumerFromConfluentConfig<string, string>("confluent", configuration, null, _ =>
+            {
+            });
             builder.AddAdminClient(adminOptions, null);
             builder.AddAdminClient(configuration, null);
         });
@@ -677,13 +691,25 @@ public class DependencyInjectionTests
         services.AddDekaf(builder =>
         {
             if (keyed && providerAware)
-                builder.AddProducerFromConfluentConfig<string, string>("orders", section, (_, _) => { });
+            {
+                builder.AddProducerFromConfluentConfig<string, string>("orders", section, (_, _) =>
+                {
+                });
+            }
             else if (keyed)
+            {
                 builder.AddProducerFromConfluentConfig<string, string>("orders", section);
+            }
             else if (providerAware)
-                builder.AddProducerFromConfluentConfig<string, string>(section, (_, _) => { });
+            {
+                builder.AddProducerFromConfluentConfig<string, string>(section, (_, _) =>
+                {
+                });
+            }
             else
+            {
                 builder.AddProducerFromConfluentConfig<string, string>(section);
+            }
         });
 
         await using var provider = services.BuildServiceProvider();
@@ -2614,7 +2640,9 @@ public class DependencyInjectionTests
     {
         var services = new ServiceCollection();
 
-        services.AddDekaf(_ => { });
+        services.AddDekaf(_ =>
+        {
+        });
 
         var descriptors = services.Where(d => d.ServiceType == typeof(IHostedService)).ToList();
         await Assert.That(descriptors.Count).IsEqualTo(1);
@@ -2625,8 +2653,12 @@ public class DependencyInjectionTests
     {
         var services = new ServiceCollection();
 
-        services.AddDekaf(_ => { });
-        services.AddDekaf(_ => { });
+        services.AddDekaf(_ =>
+        {
+        });
+        services.AddDekaf(_ =>
+        {
+        });
 
         var descriptors = services.Where(d => d.ServiceType == typeof(IHostedService)).ToList();
         await Assert.That(descriptors.Count).IsEqualTo(1);
@@ -2828,13 +2860,17 @@ public class DependencyInjectionTests
     private sealed class TestProducerInterceptor : IProducerInterceptor<string, string>
     {
         public ProducerMessage<string, string> OnSend(ProducerMessage<string, string> message) => message;
-        public void OnAcknowledgement(RecordMetadata metadata, Exception? exception) { }
+        public void OnAcknowledgement(RecordMetadata metadata, Exception? exception)
+        {
+        }
     }
 
     private sealed class TestConsumerInterceptor : IConsumerInterceptor<string, string>
     {
         public ConsumeResult<string, string> OnConsume(ConsumeResult<string, string> result) => result;
-        public void OnCommit(IReadOnlyList<TopicPartitionOffset> offsets) { }
+        public void OnCommit(IReadOnlyList<TopicPartitionOffset> offsets)
+        {
+        }
     }
 
     #endregion

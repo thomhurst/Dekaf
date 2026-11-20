@@ -59,7 +59,9 @@ public static class ServiceCollectionExtensions
         {
             if (!descriptor.IsKeyedService && descriptor.ServiceType.IsGenericType &&
                 descriptor.ServiceType.GetGenericTypeDefinition() == serviceType)
+            {
                 return;
+            }
         }
 
         services.AddSingleton(serviceType, implementationType);
@@ -79,11 +81,15 @@ public static class ServiceCollectionExtensions
 
             // Hosted aliases must keep forwarding to the replaced private keyed client.
             if (descriptor is IKafkaClientAliasRegistration)
+            {
                 continue;
+            }
 
             var implementationType = GetInMemoryImplementationType(descriptor.ServiceType);
             if (implementationType is null)
+            {
                 continue;
+            }
 
             if (descriptor is IShareConsumerConfigurationRegistration shareRegistration)
             {
@@ -124,27 +130,43 @@ public static class ServiceCollectionExtensions
     private static Type? GetInMemoryImplementationType(Type serviceType)
     {
         if (serviceType == typeof(IAdminClient))
+        {
             return typeof(InMemoryAdminClient);
+        }
 
         if (!serviceType.IsGenericType)
+        {
             return null;
+        }
 
         var definition = serviceType.GetGenericTypeDefinition();
         Type implementationType;
         if (definition == typeof(IKafkaProducer<,>))
+        {
             implementationType = typeof(InMemoryProducer<,>);
+        }
         else if (definition == typeof(IKafkaConsumer<,>))
+        {
             implementationType = typeof(InMemoryConsumer<,>);
+        }
         else if (definition == typeof(IKafkaShareConsumer<,>))
+        {
             implementationType = typeof(InMemoryShareConsumer<,>);
+        }
         else
+        {
             return null;
+        }
 
         if (serviceType.IsGenericTypeDefinition)
+        {
             return implementationType;
+        }
 
         if (RuntimeFeature.IsDynamicCodeSupported)
+        {
             return implementationType.MakeGenericType(serviceType.GetGenericArguments());
+        }
 
         throw new PlatformNotSupportedException(
             "Replacing closed generic Dekaf client registrations requires dynamic code. " +

@@ -13,7 +13,10 @@ public readonly record struct ResolvedSchemaContext(
     int SchemaId,
     Schema Schema)
 {
-    internal byte[]? SchemaGuidFrame { get; init; }
+    internal byte[]? SchemaGuidFrame
+    {
+        get; init;
+    }
 
     /// <inheritdoc />
     // Preserve the CompilerGenerated attribute emitted by the previously synthesized record member.

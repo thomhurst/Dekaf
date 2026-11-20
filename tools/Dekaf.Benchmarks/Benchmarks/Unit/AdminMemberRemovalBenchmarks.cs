@@ -11,9 +11,16 @@ namespace Dekaf.Benchmarks.Benchmarks.Unit;
 [MemoryDiagnoser]
 public class AdminMemberRemovalBenchmarks
 {
-    [Params(1, 32)] public int Members { get; set; }
+    [Params(1, 32)]
+    public int Members
+    {
+        get; set;
+    }
     [Params("LegacyStatic", "SelectedStatic", "SelectedDynamic", "RemoveAllMixed")]
-    public string Mode { get; set; } = "LegacyStatic";
+    public string Mode
+    {
+        get; set;
+    } = "LegacyStatic";
     private IAdminClient _admin = null!;
     private MetadataManager _metadata = null!;
     private ConsumerGroupMemberToRemove[] _legacy = null!;
@@ -25,7 +32,9 @@ public class AdminMemberRemovalBenchmarks
         var metadataResponse = new MetadataResponse
         {
             Brokers = [new BrokerMetadata { NodeId = 1, Host = "localhost", Port = 9092 }],
-            ControllerId = 1, ClusterId = "fixture", Topics = []
+            ControllerId = 1,
+            ClusterId = "fixture",
+            Topics = []
         };
         _legacy = new ConsumerGroupMemberToRemove[Members];
         var identities = new ConsumerGroupMemberIdentity[Members];
@@ -42,20 +51,36 @@ public class AdminMemberRemovalBenchmarks
             described[index] = new DescribeGroupsResponseMember { MemberId = memberId, GroupInstanceId = dynamic ? null : instanceId };
             outcomes[index] = new LeaveGroupResponseMember
             {
-                MemberId = dynamic ? memberId : string.Empty, GroupInstanceId = dynamic ? null : instanceId, ErrorCode = ErrorCode.None
+                MemberId = dynamic ? memberId : string.Empty,
+                GroupInstanceId = dynamic ? null : instanceId,
+                ErrorCode = ErrorCode.None
             };
         }
         _options = new ConsumerGroupMemberRemovalOptions { RemoveAll = Mode == "RemoveAllMixed", Members = Mode == "RemoveAllMixed" ? [] : identities };
         var connection = new Connection(metadataResponse,
-            new DescribeGroupsResponse { Groups = [new DescribeGroupsResponseGroup
+            new DescribeGroupsResponse
             {
-                GroupId = "group", ErrorCode = ErrorCode.None, GroupState = "Stable", ProtocolType = "consumer", Members = described
-            }] },
+                Groups = [new DescribeGroupsResponseGroup
+            {
+                GroupId = "group",
+                ErrorCode = ErrorCode.None,
+                GroupState = "Stable",
+                ProtocolType = "consumer",
+                Members = described
+            }]
+            },
             new LeaveGroupResponse { ErrorCode = ErrorCode.None, Members = outcomes },
-            new FindCoordinatorResponse { Coordinators = [new Coordinator
+            new FindCoordinatorResponse
             {
-                Key = "group", NodeId = 1, Host = "localhost", Port = 9092, ErrorCode = ErrorCode.None
-            }] });
+                Coordinators = [new Coordinator
+            {
+                Key = "group",
+                NodeId = 1,
+                Host = "localhost",
+                Port = 9092,
+                ErrorCode = ErrorCode.None
+            }]
+            });
         var pool = new Pool(connection);
         var metadata = _metadata = new MetadataManager(pool, ["localhost:9092"]);
         metadata.Metadata.Update(metadataResponse);
@@ -66,12 +91,16 @@ public class AdminMemberRemovalBenchmarks
         _admin = new AdminClient(new AdminClientOptions { BootstrapServers = ["localhost:9092"] }, pool, metadata);
         var result = await Remove();
         if (!result.Succeeded || result.Members.Count != Members)
+        {
             throw new InvalidOperationException("Fixture must remove every requested identity.");
+        }
         for (var index = 0; index < Members; index++)
         {
             if (result.Members[index].GroupInstanceId != (identities[index].GroupInstanceId ?? string.Empty)
                 || result.Members[index].MemberId != (identities[index].MemberId ?? string.Empty))
+            {
                 throw new InvalidOperationException("Fixture member identity mismatch.");
+            }
         }
     }
 
@@ -118,12 +147,15 @@ public class AdminMemberRemovalBenchmarks
         public Task<TResponse> SendPipelinedWithCallerTimeoutAsync<TRequest, TResponse>(TRequest request, short version, CancellationToken token = default)
             where TRequest : IKafkaRequest<TResponse> where TResponse : IKafkaResponse => throw new NotSupportedException();
     }
+
     private sealed class Pool(IKafkaConnection connection) : IConnectionPool
     {
         public ValueTask<IKafkaConnection> GetConnectionAsync(int brokerId, CancellationToken token = default) => ValueTask.FromResult(connection);
         public ValueTask<IKafkaConnection> GetConnectionAsync(string host, int port, CancellationToken token = default) => ValueTask.FromResult(connection);
         public ValueTask<IKafkaConnection> GetConnectionByIndexAsync(int brokerId, int index, CancellationToken token = default) => ValueTask.FromResult(connection);
-        public void RegisterBroker(int id, string host, int port) { }
+        public void RegisterBroker(int id, string host, int port)
+        {
+        }
         public ValueTask<int> ScaleConnectionGroupAsync(int id, int count, CancellationToken token = default) => ValueTask.FromResult(1);
         public ValueTask<IKafkaConnection?> ShrinkConnectionGroupAsync(int id, int count, CancellationToken token = default) => ValueTask.FromResult<IKafkaConnection?>(null);
         public ValueTask RemoveConnectionAsync(int id) => ValueTask.CompletedTask;

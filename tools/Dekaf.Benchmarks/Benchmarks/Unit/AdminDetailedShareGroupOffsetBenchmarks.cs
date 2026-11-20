@@ -12,10 +12,16 @@ namespace Dekaf.Benchmarks.Benchmarks.Unit;
 public class AdminDetailedShareGroupOffsetBenchmarks
 {
     [Params(1, 16)]
-    public int Count { get; set; }
+    public int Count
+    {
+        get; set;
+    }
 
     [Params(false, true)]
-    public bool Delete { get; set; }
+    public bool Delete
+    {
+        get; set;
+    }
 
     private AdminClient _admin = null!;
     private MetadataManager _metadata = null!;
@@ -43,7 +49,9 @@ public class AdminDetailedShareGroupOffsetBenchmarks
         var deleted = await _admin.DeleteShareGroupOffsetsDetailedAsync("group", _topics);
         if (altered.Count != Count || deleted.Count != Count ||
             altered.Values.Any(static result => !result.IsSuccess) || deleted.Values.Any(static result => !result.IsSuccess))
+        {
             throw new InvalidOperationException("The fixture did not return every confirmed result.");
+        }
     }
 
     // Costs are per administrative operation, with Count entity results; no message-path work.
@@ -97,7 +105,9 @@ public class AdminDetailedShareGroupOffsetBenchmarks
         public ValueTask<IKafkaConnection> GetConnectionAsync(int brokerId, CancellationToken token = default) => ValueTask.FromResult<IKafkaConnection>(connection);
         public ValueTask<IKafkaConnection> GetConnectionAsync(string host, int port, CancellationToken token = default) => ValueTask.FromResult<IKafkaConnection>(connection);
         public ValueTask<IKafkaConnection> GetConnectionByIndexAsync(int brokerId, int index, CancellationToken token = default) => ValueTask.FromResult<IKafkaConnection>(connection);
-        public void RegisterBroker(int id, string host, int port) { }
+        public void RegisterBroker(int id, string host, int port)
+        {
+        }
         public ValueTask<int> ScaleConnectionGroupAsync(int id, int count, CancellationToken token = default) => ValueTask.FromResult(1);
         public ValueTask<IKafkaConnection?> ShrinkConnectionGroupAsync(int id, int count, CancellationToken token = default) => ValueTask.FromResult<IKafkaConnection?>(null);
         public ValueTask RemoveConnectionAsync(int id) => ValueTask.CompletedTask;

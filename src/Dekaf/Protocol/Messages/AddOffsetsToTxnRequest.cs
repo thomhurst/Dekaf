@@ -13,22 +13,34 @@ public sealed class AddOffsetsToTxnRequest : IKafkaRequest<AddOffsetsToTxnRespon
     /// <summary>
     /// The transactional ID.
     /// </summary>
-    public required string TransactionalId { get; init; }
+    public required string TransactionalId
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The producer ID.
     /// </summary>
-    public long ProducerId { get; init; }
+    public long ProducerId
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The producer epoch.
     /// </summary>
-    public short ProducerEpoch { get; init; }
+    public short ProducerEpoch
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The consumer group ID whose offsets should be included in the transaction.
     /// </summary>
-    public required string GroupId { get; init; }
+    public required string GroupId
+    {
+        get; init;
+    }
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {

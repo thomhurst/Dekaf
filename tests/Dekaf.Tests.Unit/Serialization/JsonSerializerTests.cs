@@ -251,7 +251,9 @@ public class JsonSerializerTests
         }
 
         for (var i = 0; i < actual.Length; i++)
+        {
             await Assert.That(actual[i]).IsEqualTo(expected[i % expected.Length]);
+        }
     }
 
     [Test]
@@ -536,13 +538,22 @@ public class JsonSerializerTests
 
     private sealed class TestPerson
     {
-        public string? Name { get; set; }
-        public int Age { get; set; }
+        public string? Name
+        {
+            get; set;
+        }
+        public int Age
+        {
+            get; set;
+        }
     }
 
     private sealed class OversizedThrowingPayload
     {
-        public string Data { get; init; } = string.Empty;
+        public string Data
+        {
+            get; init;
+        } = string.Empty;
 
         // Serialized after Data, so the scratch buffer has already grown when this throws.
         public string Boom => throw new InvalidOperationException($"boom after {Data.Length} chars");
@@ -550,8 +561,14 @@ public class JsonSerializerTests
 
     private sealed class TestOrder
     {
-        public string? OrderId { get; set; }
-        public List<string> Items { get; set; } = [];
+        public string? OrderId
+        {
+            get; set;
+        }
+        public List<string> Items
+        {
+            get; set;
+        } = [];
     }
 
     private sealed record ThrowingPayload(string Value);
@@ -565,7 +582,9 @@ public class JsonSerializerTests
         public Memory<byte> GetMemory(int sizeHint = 0)
         {
             if (!throwOnAdvance)
+            {
                 throw new InvalidOperationException("destination failed");
+            }
 
             return _buffer;
         }
@@ -594,13 +613,22 @@ public class JsonSerializerTests
 
 internal sealed class SourceGeneratedPerson
 {
-    public string? Name { get; set; }
-    public int Age { get; set; }
+    public string? Name
+    {
+        get; set;
+    }
+    public int Age
+    {
+        get; set;
+    }
 }
 
 internal sealed class SourceGeneratedOrderKey
 {
-    public string? Id { get; set; }
+    public string? Id
+    {
+        get; set;
+    }
 }
 
 [JsonSourceGenerationOptions(PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase)]

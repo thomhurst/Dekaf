@@ -45,9 +45,13 @@ public sealed partial class ConsumerDirtyCommitTests
         RevokeLikeAssignmentSync(consumer, RevokedP1);
 
         if (store == "Seek")
+        {
             consumer.Seek(new TopicPartitionOffset("topic-a", 1, 3));
+        }
         else
+        {
             consumer.StoreOffset(new TopicPartitionOffset("topic-a", 1, 3));
+        }
         consumer.StoreOffset(new TopicPartitionOffset("topic-a", 0, 10));
 
         await CommitByAsync(consumer, commit);
@@ -105,7 +109,9 @@ public sealed partial class ConsumerDirtyCommitTests
         Action<object> initializeP1 = instance =>
         {
             if (ReferenceEquals(instance, consumer))
+            {
                 setFetchPosition.Invoke(consumer, [RevokedP1, 0L]);
+            }
         };
 
         KafkaConsumer<string, string>.AfterStoredOffsetOwnershipEvaluatedForTest += initializeP1;
@@ -352,8 +358,7 @@ public sealed partial class ConsumerDirtyCommitTests
         await using var consumer = CreateConsumer(requests, ErrorCode.None, OffsetCommitMode.Auto);
         consumer.Subscribe("topic-a");
         PublishInitializedAssignment(consumer, OwnedP0);
-        var ownershipStart = ((System.Collections.Concurrent.ConcurrentDictionary<TopicPartition, long>)
-            typeof(KafkaConsumer<string, string>)
+        var ownershipStart = ((System.Collections.Concurrent.ConcurrentDictionary<TopicPartition, long>)typeof(KafkaConsumer<string, string>)
                 .GetField("_ownershipStartGenerations", BindingFlags.NonPublic | BindingFlags.Instance)!
                 .GetValue(consumer)!)[OwnedP0];
         var fetch = PendingFetchData.Create("topic-a", 0, Array.Empty<RecordBatch>(), ownershipStart: ownershipStart);
@@ -365,13 +370,17 @@ public sealed partial class ConsumerDirtyCommitTests
         // then recycle whichever concurrent test had rented it in the meantime (#3661).
         using var testOwnedFetch = fetchStillQueued ? null : fetch;
         if (fetchStillQueued)
+        {
             EnqueuePendingFetch(consumer, fetch);
+        }
 
         var reassigned = 0;
         Action<object> revokeAndReassign = instance =>
         {
             if (!ReferenceEquals(instance, consumer) || Interlocked.Exchange(ref reassigned, 1) != 0)
+            {
                 return;
+            }
 
             RevokeLikeAssignmentSync(consumer, OwnedP0);
             PublishInitializedAssignment(consumer, OwnedP0);
@@ -440,7 +449,9 @@ public sealed partial class ConsumerDirtyCommitTests
         Action<object> reassignP1 = instance =>
         {
             if (!ReferenceEquals(instance, consumer) || Interlocked.Exchange(ref reassigned, 1) != 0)
+            {
                 return;
+            }
 
             RevokeLikeAssignmentSync(consumer, RevokedP1);
             SetCoordinatorAssignment(consumer, OwnedP0, RevokedP1);
@@ -484,7 +495,9 @@ public sealed partial class ConsumerDirtyCommitTests
             respond: request =>
             {
                 if (request.GenerationIdOrMemberEpoch != GetCoordinator(consumer!).GenerationId)
+                {
                     return ErrorCode.StaleMemberEpoch;
+                }
 
                 accepted.AddRange(GetCommittedOffsets(request));
                 return ErrorCode.None;
@@ -498,7 +511,9 @@ public sealed partial class ConsumerDirtyCommitTests
         Action<object> revokeP1 = instance =>
         {
             if (!ReferenceEquals(instance, consumer) || Interlocked.Exchange(ref revoked, 1) != 0)
+            {
                 return;
+            }
 
             RevokeLikeAssignmentSync(consumer, RevokedP1);
             SetMemberEpoch(consumer, 6);
@@ -534,7 +549,9 @@ public sealed partial class ConsumerDirtyCommitTests
             respond: request =>
             {
                 if (request.GenerationIdOrMemberEpoch != GetCoordinator(consumer!).GenerationId)
+                {
                     return ErrorCode.StaleMemberEpoch;
+                }
 
                 accepted.AddRange(GetCommittedOffsets(request));
                 return ErrorCode.None;
@@ -548,7 +565,9 @@ public sealed partial class ConsumerDirtyCommitTests
         Action<object> bumpEpoch = instance =>
         {
             if (ReferenceEquals(instance, consumer) && Interlocked.Exchange(ref bumped, 1) == 0)
+            {
                 SetMemberEpoch(consumer, 6);
+            }
         };
 
         KafkaConsumer<string, string>.AfterStoredOffsetOwnershipEvaluatedForTest += bumpEpoch;
@@ -686,7 +705,9 @@ public sealed partial class ConsumerDirtyCommitTests
         Action<object> observe = instance =>
         {
             if (ReferenceEquals(instance, consumer))
+            {
                 beforePublication = [ownership.GetRecordOwnership(record0), ownership.GetRecordOwnership(record1)];
+            }
         };
 
         KafkaConsumer<string, string>.BeforePendingRevocationsPublishedForTest += observe;
@@ -852,7 +873,9 @@ public sealed partial class ConsumerDirtyCommitTests
             {
                 var request = callInfo.Arg<OffsetCommitRequest>()!;
                 lock (committed)
+                {
                     committed.AddRange(GetCommittedOffsets(request));
+                }
                 return ValueTask.FromResult(CreateResponse(request, ErrorCode.None));
             });
 
@@ -922,7 +945,9 @@ public sealed partial class ConsumerDirtyCommitTests
         Action<object> commitDuringCleanup = instance =>
         {
             if (!ReferenceEquals(instance, consumer) || concurrentCommit is not null)
+            {
                 return;
+            }
 
             concurrentCommit = Task.Run(async () => await consumer.CommitAsync(CancellationToken.None));
             // Bounded: a commit that does not wait for the sync completes here.
@@ -1061,7 +1086,9 @@ public sealed partial class ConsumerDirtyCommitTests
         Action<object> observe = instance =>
         {
             if (ReferenceEquals(instance, consumer))
+            {
                 epochWhenRevocationRecorded = coordinator.GenerationId;
+            }
         };
 
         KafkaConsumer<string, string>.BeforePendingRevocationsPublishedForTest += observe;
@@ -1104,7 +1131,9 @@ public sealed partial class ConsumerDirtyCommitTests
         Action<object> reassignBeforeWrite = instance =>
         {
             if (!ReferenceEquals(instance, consumer) || Interlocked.Exchange(ref reassigned, 1) != 0)
+            {
                 return;
+            }
 
             RevokeLikeAssignmentSync(consumer, OwnedP0);
             PublishInitializedAssignment(consumer, OwnedP0);
@@ -1143,7 +1172,9 @@ public sealed partial class ConsumerDirtyCommitTests
         Action<object> revokeBeforeWrite = instance =>
         {
             if (!ReferenceEquals(instance, consumer) || Interlocked.Exchange(ref revoked, 1) != 0)
+            {
                 return;
+            }
 
             RevokeLikeAssignmentSync(consumer, OwnedP0);
         };
@@ -1183,7 +1214,9 @@ public sealed partial class ConsumerDirtyCommitTests
             PublishInitializedAssignment(consumer, OwnedP0);
             consumer.StoreOffset(new TopicPartitionOffset("topic-a", 0, cycle + 1, leaderEpoch: 1));
             if (cycle % 1_000 == 0)
+            {
                 await consumer.CommitAsync([new TopicPartitionOffset("topic-a", 0, cycle)], CancellationToken.None);
+            }
             RevokeLikeAssignmentSync(consumer, OwnedP0);
         }
 
@@ -1482,7 +1515,9 @@ public sealed partial class ConsumerDirtyCommitTests
             .GetField("_assignment", BindingFlags.NonPublic | BindingFlags.Instance)!
             .GetValue(consumer)!;
         foreach (var partition in partitions)
+        {
             assignment.Add(partition);
+        }
         PublishAssignment(consumer);
     }
 
@@ -1548,7 +1583,9 @@ public sealed partial class ConsumerDirtyCommitTests
             .Where(partition => !partitions.Contains(partition))
             .ToList();
         if (revoked.Count != 0)
+        {
             RevokeInCoordinator(coordinator, revoked);
+        }
 
         assigned.SetValue(coordinator, new HashSet<TopicPartition>(partitions));
         var version = typeof(ConsumerCoordinator)

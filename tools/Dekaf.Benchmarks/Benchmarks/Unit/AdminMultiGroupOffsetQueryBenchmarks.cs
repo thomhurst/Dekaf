@@ -12,10 +12,16 @@ namespace Dekaf.Benchmarks.Benchmarks.Unit;
 public class AdminMultiGroupOffsetQueryBenchmarks
 {
     [Params(1, 16)]
-    public int Groups { get; set; }
+    public int Groups
+    {
+        get; set;
+    }
 
     [Params(false, true)]
-    public bool UnstableFirstResponse { get; set; }
+    public bool UnstableFirstResponse
+    {
+        get; set;
+    }
 
     private AdminClient _admin = null!;
     private MetadataManager _metadata = null!;
@@ -29,7 +35,9 @@ public class AdminMultiGroupOffsetQueryBenchmarks
         var metadata = new MetadataResponse
         {
             Brokers = [new BrokerMetadata { NodeId = 1, Host = "localhost", Port = 9092 }],
-            ControllerId = 1, ClusterId = "fixture", Topics = []
+            ControllerId = 1,
+            ClusterId = "fixture",
+            Topics = []
         };
         var stableGroups = new OffsetFetchResponseGroup[Groups];
         var unstableGroups = new OffsetFetchResponseGroup[Groups];
@@ -42,14 +50,18 @@ public class AdminMultiGroupOffsetQueryBenchmarks
             coordinators[i] = new() { Key = groupId, NodeId = 1, Host = "localhost", Port = 9092, ErrorCode = ErrorCode.None };
             stableGroups[i] = new()
             {
-                GroupId = groupId, ErrorCode = ErrorCode.None,
+                GroupId = groupId,
+                ErrorCode = ErrorCode.None,
                 Topics = [new OffsetFetchResponseTopic
                 {
                     Name = "orders",
                     Partitions = [new OffsetFetchResponsePartition
                     {
-                        PartitionIndex = 0, CommittedOffset = 42, CommittedLeaderEpoch = 7,
-                        Metadata = "checkpoint", ErrorCode = ErrorCode.None
+                        PartitionIndex = 0,
+                        CommittedOffset = 42,
+                        CommittedLeaderEpoch = 7,
+                        Metadata = "checkpoint",
+                        ErrorCode = ErrorCode.None
                     }]
                 }]
             };
@@ -65,17 +77,22 @@ public class AdminMultiGroupOffsetQueryBenchmarks
         _metadata.SetApiVersion(ApiKey.OffsetFetch, 6, 9);
         _admin = new AdminClient(new AdminClientOptions
         {
-            BootstrapServers = ["localhost:9092"], RetryBackoffMs = 1
+            BootstrapServers = ["localhost:9092"],
+            RetryBackoffMs = 1
         }, pool, _metadata);
         // Populate coordinator caches before measurement, then verify the chosen response shape.
         _admin.ListConsumerGroupOffsetsAsync(_specs, _stable).GetAwaiter().GetResult();
         var results = Query().GetAwaiter().GetResult();
         if (results.Count != Groups || (UnstableFirstResponse && _connection.Fetches != 2))
+        {
             throw new InvalidOperationException("Expected all groups and exactly one unstable retry.");
+        }
         foreach (var result in results.Values)
         {
             if (result.ErrorCode != ErrorCode.None || result.Offsets[new("orders", 0)].Offset?.Offset != 42)
+            {
                 throw new InvalidOperationException("Expected committed checkpoint after stability polling.");
+            }
         }
     }
 
@@ -97,9 +114,18 @@ public class AdminMultiGroupOffsetQueryBenchmarks
 
     private sealed class Connection(MetadataResponse metadata, OffsetFetchResponse stable, OffsetFetchResponse unstable, FindCoordinatorResponse coordinator) : IKafkaConnection
     {
-        public bool ReturnUnstable { get; set; }
-        public int Fetches { get; set; }
-        public int MetadataRefreshes { get; set; }
+        public bool ReturnUnstable
+        {
+            get; set;
+        }
+        public int Fetches
+        {
+            get; set;
+        }
+        public int MetadataRefreshes
+        {
+            get; set;
+        }
 
         private OffsetFetchResponse NextOffsets()
         {
@@ -138,12 +164,15 @@ public class AdminMultiGroupOffsetQueryBenchmarks
         public Task<TResponse> SendPipelinedWithCallerTimeoutAsync<TRequest, TResponse>(TRequest request, short version, CancellationToken token = default)
             where TRequest : IKafkaRequest<TResponse> where TResponse : IKafkaResponse => throw new NotSupportedException();
     }
+
     private sealed class Pool(IKafkaConnection connection) : IConnectionPool
     {
         public ValueTask<IKafkaConnection> GetConnectionAsync(int brokerId, CancellationToken token = default) => ValueTask.FromResult(connection);
         public ValueTask<IKafkaConnection> GetConnectionAsync(string host, int port, CancellationToken token = default) => ValueTask.FromResult(connection);
         public ValueTask<IKafkaConnection> GetConnectionByIndexAsync(int brokerId, int index, CancellationToken token = default) => ValueTask.FromResult(connection);
-        public void RegisterBroker(int id, string host, int port) { }
+        public void RegisterBroker(int id, string host, int port)
+        {
+        }
         public ValueTask<int> ScaleConnectionGroupAsync(int id, int count, CancellationToken token = default) => ValueTask.FromResult(1);
         public ValueTask<IKafkaConnection?> ShrinkConnectionGroupAsync(int id, int count, CancellationToken token = default) => ValueTask.FromResult<IKafkaConnection?>(null);
         public ValueTask RemoveConnectionAsync(int id) => ValueTask.CompletedTask;

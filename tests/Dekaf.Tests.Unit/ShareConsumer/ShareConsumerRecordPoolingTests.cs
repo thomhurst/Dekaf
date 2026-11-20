@@ -41,7 +41,9 @@ public sealed class ShareConsumerRecordPoolingTests
         raw.EnableRawRecordTracking();
         var partition = new ShareFetchResponsePartition
         {
-            PartitionIndex = 0, CurrentLeader = new ShareFetchLeaderIdAndEpoch(), RecordBytes = buffer.WrittenMemory,
+            PartitionIndex = 0,
+            CurrentLeader = new ShareFetchLeaderIdAndEpoch(),
+            RecordBytes = buffer.WrittenMemory,
             AcquiredRecords = [new ShareFetchAcquiredRecords { FirstOffset = 17, LastOffset = 19, DeliveryCount = 1 }]
         };
         var topic = new TopicInfo { Name = "topic", Partitions = [] };
@@ -84,7 +86,9 @@ public sealed class ShareConsumerRecordPoolingTests
         await using var consumerScope = consumer;
         ShareConsumeResult<string, ReadOnlyMemory<byte>> original;
         using (consumer.BeginRecordBatchScope())
+        {
             original = ParseBorrowedRecords(consumer, "first")[0];
+        }
         var owner = original.BatchOwner;
         using (consumer.BeginRecordBatchScope())
         {
@@ -227,14 +231,20 @@ public sealed class ShareConsumerRecordPoolingTests
         await using var metadataScope = metadata;
         await using var consumerScope = consumer;
         using (consumer.BeginRecordBatchScope())
+        {
             _ = ParseBorrowedRecords(consumer, "first");
-        using (consumer.BeginRecordBatchScope()) { }
+        }
+        using (consumer.BeginRecordBatchScope())
+        {
+        }
         var pool = (ShareRecordBufferPool)consumer.GetType()
             .GetField("_recordBuffers", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(consumer)!;
         await Assert.That(pool.RetainedBytes).IsGreaterThan(0);
         consumer.Subscribe("topic");
         using (consumer.BeginRecordBatchScope())
+        {
             _ = ParseBorrowedRecords(consumer, "other");
+        }
         await consumer.DisposeAsync();
         await Assert.That(pool.RetainedBytes).IsEqualTo(0);
     }
@@ -323,7 +333,9 @@ public sealed class ShareConsumerRecordPoolingTests
         await using var consumerScope = consumer;
         ShareConsumeResult<string, ReadOnlyMemory<byte>> record;
         using (consumer.BeginRecordBatchScope())
+        {
             record = ParseBorrowedRecords(consumer, "first")[0];
+        }
         using var nextPoll = consumer.BeginRecordBatchScope();
 
         await Assert.That(() => consumer.Acknowledge(record, AcknowledgeType.Renew))
@@ -350,7 +362,8 @@ public sealed class ShareConsumerRecordPoolingTests
     {
         var options = new ShareConsumerOptions
         {
-            BootstrapServers = ["localhost:9092"], GroupId = "share-borrowed-records",
+            BootstrapServers = ["localhost:9092"],
+            GroupId = "share-borrowed-records",
             AcknowledgementMode = ShareAcknowledgementMode.Explicit
         };
         var pool = Substitute.For<IConnectionPool>();
@@ -391,7 +404,9 @@ public sealed class ShareConsumerRecordPoolingTests
             RecordBytes = buffer.WrittenMemory,
             AcquiredRecords = [new ShareFetchAcquiredRecords
             {
-                FirstOffset = 0, LastOffset = values.Length - 1, DeliveryCount = 1
+                FirstOffset = 0,
+                LastOffset = values.Length - 1,
+                DeliveryCount = 1
             }]
         };
         return ParsePartition(consumer, partition, prepared, values.Length);
@@ -410,7 +425,9 @@ public sealed class ShareConsumerRecordPoolingTests
             {
                 if (consumer.ParsePartitionRecordsWithPreparation(topic, partition, maxRecords,
                     records, ref state, false, null) is not null)
+                {
                     throw new InvalidOperationException("The raw deserializer must not require preparation.");
+                }
                 return records;
             }
             finally
@@ -543,7 +560,9 @@ public sealed class ShareConsumerRecordPoolingTests
         var buffers = (ShareRecordBufferPool)consumer.GetType()
             .GetField("_recordBuffers", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(consumer)!;
         var cachedBeforeNextPoll = buffers.RetainedBytes;
-        using (consumer.BeginRecordBatchScope()) { }
+        using (consumer.BeginRecordBatchScope())
+        {
+        }
         await Assert.That(buffers.RetainedBytes).IsGreaterThan(cachedBeforeNextPoll);
     }
 
@@ -698,7 +717,9 @@ public sealed class ShareConsumerRecordPoolingTests
             try
             {
                 if (consumer.ParsePartitionRecordsWithPreparation(topic, partition, 1, [], ref state, false, null) is not null)
+                {
                     throw new InvalidOperationException("The test deserializers must complete synchronously.");
+                }
             }
             finally
             {
@@ -783,8 +804,7 @@ public sealed class ShareConsumerRecordPoolingTests
         };
         var results = new List<ShareConsumeResult<string, string>>();
         var topicInfo = new TopicInfo { Name = "topic", Partitions = [] };
-        var parserState = new KafkaShareConsumer<string, string>
-            .DeserializerPreparationParserState();
+        var parserState = new KafkaShareConsumer<string, string>.DeserializerPreparationParserState();
 
         var recordScope = consumer.BeginRecordBatchScope();
         RecordBatch.BeginTrackingPoolReturnsForCurrentThread();
@@ -861,8 +881,14 @@ public sealed class ShareConsumerRecordPoolingTests
         private bool _firstPrepared;
         private bool _secondPrepared;
 
-        internal int PrepareCalls { get; private set; }
-        internal int WarmDeserializeCalls { get; private set; }
+        internal int PrepareCalls
+        {
+            get; private set;
+        }
+        internal int WarmDeserializeCalls
+        {
+            get; private set;
+        }
 
         public string Deserialize(ReadOnlyMemory<byte> data, SerializationContext context) =>
             throw new InvalidOperationException("The header-aware path must be used.");
@@ -917,11 +943,17 @@ public sealed class ShareConsumerRecordPoolingTests
             }
 
             if (header.Value.Span.SequenceEqual("identity-a"u8))
+            {
                 _firstPrepared = true;
+            }
             else if (header.Value.Span.SequenceEqual("identity-b"u8))
+            {
                 _secondPrepared = true;
+            }
             else
+            {
                 throw new InvalidOperationException("Unexpected identity header.");
+            }
 
             PrepareCalls++;
             return ValueTask.CompletedTask;
@@ -937,13 +969,18 @@ public sealed class ShareConsumerRecordPoolingTests
     {
         public bool ConsumesRecordHeaders => true;
 
-        internal int HeaderCount { get; private set; }
+        internal int HeaderCount
+        {
+            get; private set;
+        }
 
         public string Deserialize(ReadOnlyMemory<byte> data, SerializationContext context)
         {
             HeaderCount = context.Headers?.Count ?? 0;
             if (addMarker)
+            {
                 context.Headers!.Add("key-visited", Array.Empty<byte>());
+            }
             return System.Text.Encoding.UTF8.GetString(data.Span);
         }
     }
@@ -971,8 +1008,14 @@ public sealed class ShareConsumerRecordPoolingTests
     {
         public bool ConsumesRecordHeaders => true;
 
-        internal string? HeaderValue { get; private set; }
-        internal string? Topic { get; private set; }
+        internal string? HeaderValue
+        {
+            get; private set;
+        }
+        internal string? Topic
+        {
+            get; private set;
+        }
 
         public string Deserialize(ReadOnlyMemory<byte> data, SerializationContext context)
         {

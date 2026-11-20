@@ -10,7 +10,10 @@ public sealed class UnregisterBrokerRequest : IKafkaRequest<UnregisterBrokerResp
     public static short LowestSupportedVersion => 0;
     public static short HighestSupportedVersion => 0;
 
-    public int BrokerId { get; init; }
+    public int BrokerId
+    {
+        get; init;
+    }
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {
@@ -28,9 +31,18 @@ public sealed class UnregisterBrokerResponse : IKafkaResponse
     public static short LowestSupportedVersion => 0;
     public static short HighestSupportedVersion => 0;
 
-    public int ThrottleTimeMs { get; init; }
-    public ErrorCode ErrorCode { get; init; }
-    public string? ErrorMessage { get; init; }
+    public int ThrottleTimeMs
+    {
+        get; init;
+    }
+    public ErrorCode ErrorCode
+    {
+        get; init;
+    }
+    public string? ErrorMessage
+    {
+        get; init;
+    }
 
     public static IKafkaResponse Read(ref KafkaProtocolReader reader, short version)
     {

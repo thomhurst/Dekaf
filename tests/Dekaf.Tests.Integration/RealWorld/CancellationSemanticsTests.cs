@@ -118,7 +118,10 @@ public sealed class CancellationSemanticsTests(KafkaTestContainer kafka) : Kafka
         await foreach (var msg in consumer.ConsumeAsync(verifyCts.Token))
         {
             messages.Add(msg);
-            if (messages.Count >= 2) break; // warmup + actual message
+            if (messages.Count >= 2)
+            {
+                break; // warmup + actual message
+            }
         }
 
         // The cancelled message should still be in the topic
@@ -167,7 +170,10 @@ public sealed class CancellationSemanticsTests(KafkaTestContainer kafka) : Kafka
         await Task.Delay(50).ConfigureAwait(false);
         foreach (var (index, cts, _) in tasks)
         {
-            if (index % 2 == 1) cts.Cancel();
+            if (index % 2 == 1)
+            {
+                cts.Cancel();
+            }
         }
 
         // Collect results
@@ -208,7 +214,10 @@ public sealed class CancellationSemanticsTests(KafkaTestContainer kafka) : Kafka
         {
             consumed.Add(msg);
             // warmup + 10 messages
-            if (consumed.Count >= 11) break;
+            if (consumed.Count >= 11)
+            {
+                break;
+            }
         }
 
         // All 10 messages should be in the topic (plus warmup), because cancellation
@@ -276,7 +285,10 @@ public sealed class CancellationSemanticsTests(KafkaTestContainer kafka) : Kafka
         await foreach (var msg in consumer.ConsumeAsync(verifyCts.Token))
         {
             consumed.Add(msg);
-            if (consumed.Count >= 20) break;
+            if (consumed.Count >= 20)
+            {
+                break;
+            }
         }
 
         await Assert.That(consumed.Count).IsEqualTo(20);
@@ -400,7 +412,10 @@ public sealed class CancellationSemanticsTests(KafkaTestContainer kafka) : Kafka
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))
         {
             consumed.Add(msg);
-            if (consumed.Count >= messageCount) break;
+            if (consumed.Count >= messageCount)
+            {
+                break;
+            }
         }
 
         await Assert.That(consumed.Count).IsEqualTo(messageCount);

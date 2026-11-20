@@ -13,17 +13,26 @@ public sealed class DescribeTopicPartitionsRequest : IKafkaRequest<DescribeTopic
     /// <summary>
     /// The topics to fetch details for.
     /// </summary>
-    public required IReadOnlyList<DescribeTopicPartitionsRequestTopic> Topics { get; init; }
+    public required IReadOnlyList<DescribeTopicPartitionsRequestTopic> Topics
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The maximum number of partitions included in the response.
     /// </summary>
-    public int ResponsePartitionLimit { get; init; } = 2000;
+    public int ResponsePartitionLimit
+    {
+        get; init;
+    } = 2000;
 
     /// <summary>
     /// The first topic and partition index to fetch details for, or null for the first page.
     /// </summary>
-    public DescribeTopicPartitionsRequestCursor? Cursor { get; init; }
+    public DescribeTopicPartitionsRequestCursor? Cursor
+    {
+        get; init;
+    }
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {
@@ -44,7 +53,10 @@ public sealed class DescribeTopicPartitionsRequest : IKafkaRequest<DescribeTopic
 /// </summary>
 public sealed class DescribeTopicPartitionsRequestTopic
 {
-    public required string Name { get; init; }
+    public required string Name
+    {
+        get; init;
+    }
 
     public void Write(ref KafkaProtocolWriter writer)
     {
@@ -58,8 +70,14 @@ public sealed class DescribeTopicPartitionsRequestTopic
 /// </summary>
 public sealed class DescribeTopicPartitionsRequestCursor
 {
-    public required string TopicName { get; init; }
-    public int PartitionIndex { get; init; }
+    public required string TopicName
+    {
+        get; init;
+    }
+    public int PartitionIndex
+    {
+        get; init;
+    }
 
     public static void WriteNullable(ref KafkaProtocolWriter writer, DescribeTopicPartitionsRequestCursor? cursor)
     {

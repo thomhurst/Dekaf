@@ -79,7 +79,9 @@ public sealed class KafkaClient : IAsyncDisposable
     public async ValueTask DisposeAsync()
     {
         if (Interlocked.Exchange(ref _disposed, 1) != 0)
+        {
             return;
+        }
 
         await _infrastructure.DisposeAsync().ConfigureAwait(false);
     }
@@ -87,9 +89,12 @@ public sealed class KafkaClient : IAsyncDisposable
     private void ThrowIfDisposed()
     {
         if (Volatile.Read(ref _disposed) != 0)
+        {
             throw new ObjectDisposedException(nameof(KafkaClient));
+        }
     }
 }
+
 /// <summary>
 /// Builder for <see cref="KafkaClient"/>.
 /// </summary>
@@ -162,7 +167,9 @@ public sealed class KafkaClientBuilder
     public KafkaClientBuilder WithRequestTimeout(TimeSpan timeout)
     {
         if (timeout <= TimeSpan.Zero)
+        {
             throw new ArgumentOutOfRangeException(nameof(timeout), "Request timeout must be positive");
+        }
         ArgumentOutOfRangeException.ThrowIfGreaterThan(timeout.TotalMilliseconds, int.MaxValue, nameof(timeout));
 
         _requestTimeoutMs = (int)timeout.TotalMilliseconds;
@@ -176,7 +183,9 @@ public sealed class KafkaClientBuilder
     public KafkaClientBuilder WithRetryBackoff(TimeSpan backoff)
     {
         if (backoff < TimeSpan.Zero)
+        {
             throw new ArgumentOutOfRangeException(nameof(backoff), "Retry backoff cannot be negative");
+        }
         ArgumentOutOfRangeException.ThrowIfGreaterThan(backoff.TotalMilliseconds, int.MaxValue, nameof(backoff));
         _retryBackoffMs = (int)backoff.TotalMilliseconds;
         return this;
@@ -189,7 +198,9 @@ public sealed class KafkaClientBuilder
     public KafkaClientBuilder WithRetryBackoffMax(TimeSpan backoff)
     {
         if (backoff < TimeSpan.Zero)
+        {
             throw new ArgumentOutOfRangeException(nameof(backoff), "Maximum retry backoff cannot be negative");
+        }
         ArgumentOutOfRangeException.ThrowIfGreaterThan(backoff.TotalMilliseconds, int.MaxValue, nameof(backoff));
         _retryBackoffMaxMs = (int)backoff.TotalMilliseconds;
         return this;
@@ -558,7 +569,9 @@ public sealed class KafkaClientBuilder
     public KafkaClientBuilder WithMetadataMaxAge(TimeSpan interval)
     {
         if (interval <= TimeSpan.Zero)
+        {
             throw new ArgumentOutOfRangeException(nameof(interval), "Metadata max age must be positive");
+        }
 
         _metadataMaxAge = interval;
         return this;
@@ -634,10 +647,14 @@ public sealed class KafkaClientBuilder
     public KafkaClient Build()
     {
         if (_bootstrapServers.Count == 0)
+        {
             throw new InvalidOperationException("Bootstrap servers must be specified. Call WithBootstrapServers() before Build().");
+        }
         if (_maxConnectionsPerBroker < _connectionsPerBroker)
+        {
             throw new InvalidOperationException(
                 $"MaxConnectionsPerBroker ({_maxConnectionsPerBroker}) must be >= ConnectionsPerBroker ({_connectionsPerBroker}).");
+        }
         var reconnectBackoffMaxMs = ReconnectBackoffValidation.ResolveMaximumMilliseconds(
             _reconnectBackoffMs,
             _reconnectBackoffMaxMs,
@@ -696,35 +713,96 @@ public sealed class KafkaClientBuilder
         return new KafkaClient(KafkaClientInfrastructure.Create(options));
     }
 }
+
 internal sealed class KafkaClientOptions
 {
     private TimeSpan? _connectionTimeoutMax;
-    public required IReadOnlyList<string> BootstrapServers { get; init; }
-    public string? ClientId { get; init; }
-    public int RequestTimeoutMs { get; init; }
-    public int RetryBackoffMs { get; init; }
-    public int RetryBackoffMaxMs { get; init; }
-    public int ReconnectBackoffMs { get; init; }
-    public int ReconnectBackoffMaxMs { get; init; }
-    public bool UseTls { get; init; }
-    public TlsConfig? TlsConfig { get; init; }
-    public RemoteCertificateValidationCallback? RemoteCertificateValidationCallback { get; init; }
-    public TimeSpan ConnectionTimeout { get; init; } = ConnectionOptions.DefaultConnectionTimeout;
+    public required IReadOnlyList<string> BootstrapServers
+    {
+        get; init;
+    }
+    public string? ClientId
+    {
+        get; init;
+    }
+    public int RequestTimeoutMs
+    {
+        get; init;
+    }
+    public int RetryBackoffMs
+    {
+        get; init;
+    }
+    public int RetryBackoffMaxMs
+    {
+        get; init;
+    }
+    public int ReconnectBackoffMs
+    {
+        get; init;
+    }
+    public int ReconnectBackoffMaxMs
+    {
+        get; init;
+    }
+    public bool UseTls
+    {
+        get; init;
+    }
+    public TlsConfig? TlsConfig
+    {
+        get; init;
+    }
+    public RemoteCertificateValidationCallback? RemoteCertificateValidationCallback
+    {
+        get; init;
+    }
+    public TimeSpan ConnectionTimeout
+    {
+        get; init;
+    } = ConnectionOptions.DefaultConnectionTimeout;
     public TimeSpan ConnectionTimeoutMax
     {
         get => _connectionTimeoutMax ?? ConnectionTimeout;
         init => _connectionTimeoutMax = value;
     }
 
-    public bool EnableTcpKeepAlive { get; init; } = ConnectionOptions.DefaultEnableTcpKeepAlive;
-    public TimeSpan TcpKeepAliveTime { get; init; } = ConnectionOptions.DefaultTcpKeepAliveTime;
-    public TimeSpan TcpKeepAliveInterval { get; init; } = ConnectionOptions.DefaultTcpKeepAliveInterval;
-    public int TcpKeepAliveRetryCount { get; init; } = ConnectionOptions.DefaultTcpKeepAliveRetryCount;
-    public SaslMechanism SaslMechanism { get; init; }
-    public string? SaslUsername { get; init; }
-    public string? SaslPassword { get; init; }
-    public Func<CancellationToken, ValueTask<SaslCredentials>>? SaslCredentialProvider { get; init; }
-    public bool SaslScramTokenAuth { get; init; }
+    public bool EnableTcpKeepAlive
+    {
+        get; init;
+    } = ConnectionOptions.DefaultEnableTcpKeepAlive;
+    public TimeSpan TcpKeepAliveTime
+    {
+        get; init;
+    } = ConnectionOptions.DefaultTcpKeepAliveTime;
+    public TimeSpan TcpKeepAliveInterval
+    {
+        get; init;
+    } = ConnectionOptions.DefaultTcpKeepAliveInterval;
+    public int TcpKeepAliveRetryCount
+    {
+        get; init;
+    } = ConnectionOptions.DefaultTcpKeepAliveRetryCount;
+    public SaslMechanism SaslMechanism
+    {
+        get; init;
+    }
+    public string? SaslUsername
+    {
+        get; init;
+    }
+    public string? SaslPassword
+    {
+        get; init;
+    }
+    public Func<CancellationToken, ValueTask<SaslCredentials>>? SaslCredentialProvider
+    {
+        get; init;
+    }
+    public bool SaslScramTokenAuth
+    {
+        get; init;
+    }
 
     private int _saslScramMaxIterations = ScramAuthenticator.DefaultMaxIterations;
 
@@ -742,26 +820,86 @@ internal sealed class KafkaClientOptions
             _saslScramMaxIterations = value;
         }
     }
-    public GssapiConfig? GssapiConfig { get; init; }
-    public OAuthBearerConfig? OAuthBearerConfig { get; init; }
-    public Func<CancellationToken, ValueTask<OAuthBearerToken>>? OAuthBearerTokenProvider { get; init; }
-    public AwsMskIamConfig? AwsMskIamConfig { get; init; }
-    public int SocketSendBufferBytes { get; init; }
-    public int SocketReceiveBufferBytes { get; init; }
-    public int ConnectionsPerBroker { get; init; }
-    public int? MaxInFlightRequestsPerConnection { get; init; }
-    public int MaxConnectionsPerBroker { get; init; }
-    public int ProducerMaxConnectionsPerBroker { get; init; }
-    public int ConnectionsMaxIdleMs { get; init; }
-    public TimeSpan? MetadataMaxAge { get; init; }
-    public MetadataRecoveryStrategy MetadataRecoveryStrategy { get; init; }
-    public bool MetadataClusterCheckEnabled { get; init; } = true;
-    public bool AllowAutoCreateTopics { get; init; } = true;
-    public int MetadataRecoveryRebootstrapTriggerMs { get; init; }
-    public ClientDnsLookup ClientDnsLookup { get; init; }
-    public int BootstrapResolveTimeoutMs { get; init; } = 120000;
-    public ulong? MemoryBudgetBytes { get; init; }
-    public ILoggerFactory? LoggerFactory { get; init; }
+    public GssapiConfig? GssapiConfig
+    {
+        get; init;
+    }
+    public OAuthBearerConfig? OAuthBearerConfig
+    {
+        get; init;
+    }
+    public Func<CancellationToken, ValueTask<OAuthBearerToken>>? OAuthBearerTokenProvider
+    {
+        get; init;
+    }
+    public AwsMskIamConfig? AwsMskIamConfig
+    {
+        get; init;
+    }
+    public int SocketSendBufferBytes
+    {
+        get; init;
+    }
+    public int SocketReceiveBufferBytes
+    {
+        get; init;
+    }
+    public int ConnectionsPerBroker
+    {
+        get; init;
+    }
+    public int? MaxInFlightRequestsPerConnection
+    {
+        get; init;
+    }
+    public int MaxConnectionsPerBroker
+    {
+        get; init;
+    }
+    public int ProducerMaxConnectionsPerBroker
+    {
+        get; init;
+    }
+    public int ConnectionsMaxIdleMs
+    {
+        get; init;
+    }
+    public TimeSpan? MetadataMaxAge
+    {
+        get; init;
+    }
+    public MetadataRecoveryStrategy MetadataRecoveryStrategy
+    {
+        get; init;
+    }
+    public bool MetadataClusterCheckEnabled
+    {
+        get; init;
+    } = true;
+    public bool AllowAutoCreateTopics
+    {
+        get; init;
+    } = true;
+    public int MetadataRecoveryRebootstrapTriggerMs
+    {
+        get; init;
+    }
+    public ClientDnsLookup ClientDnsLookup
+    {
+        get; init;
+    }
+    public int BootstrapResolveTimeoutMs
+    {
+        get; init;
+    } = 120000;
+    public ulong? MemoryBudgetBytes
+    {
+        get; init;
+    }
+    public ILoggerFactory? LoggerFactory
+    {
+        get; init;
+    }
 }
 
 internal sealed class KafkaClientInfrastructure : IAsyncDisposable
@@ -806,22 +944,70 @@ internal sealed class KafkaClientInfrastructure : IAsyncDisposable
         UsesDynamicSaslCredentials = usesDynamicSaslCredentials;
     }
 
-    public IReadOnlyList<string> BootstrapServers { get; }
-    public ConnectionPool ConnectionPool { get; }
-    public ConnectionPool ConsumerConnectionPool { get; }
-    public MetadataManager MetadataManager { get; }
-    public IDekafMemoryBudget MemoryBudget { get; }
-    public ILoggerFactory? LoggerFactory { get; }
-    public int ConnectionsPerBroker { get; }
-    public int? MaxInFlightRequestsPerConnection { get; }
-    public int MaxConnectionsPerBroker { get; }
-    public int ProducerMaxConnectionsPerBroker { get; }
-    public int RequestTimeoutMs { get; }
-    public int RetryBackoffMs { get; }
-    public int RetryBackoffMaxMs { get; }
-    public int BootstrapResolveTimeoutMs { get; }
-    public SaslMechanism SaslMechanism { get; }
-    public bool UsesDynamicSaslCredentials { get; }
+    public IReadOnlyList<string> BootstrapServers
+    {
+        get;
+    }
+    public ConnectionPool ConnectionPool
+    {
+        get;
+    }
+    public ConnectionPool ConsumerConnectionPool
+    {
+        get;
+    }
+    public MetadataManager MetadataManager
+    {
+        get;
+    }
+    public IDekafMemoryBudget MemoryBudget
+    {
+        get;
+    }
+    public ILoggerFactory? LoggerFactory
+    {
+        get;
+    }
+    public int ConnectionsPerBroker
+    {
+        get;
+    }
+    public int? MaxInFlightRequestsPerConnection
+    {
+        get;
+    }
+    public int MaxConnectionsPerBroker
+    {
+        get;
+    }
+    public int ProducerMaxConnectionsPerBroker
+    {
+        get;
+    }
+    public int RequestTimeoutMs
+    {
+        get;
+    }
+    public int RetryBackoffMs
+    {
+        get;
+    }
+    public int RetryBackoffMaxMs
+    {
+        get;
+    }
+    public int BootstrapResolveTimeoutMs
+    {
+        get;
+    }
+    public SaslMechanism SaslMechanism
+    {
+        get;
+    }
+    public bool UsesDynamicSaslCredentials
+    {
+        get;
+    }
 
     public static KafkaClientInfrastructure Create(KafkaClientOptions options)
     {
@@ -922,7 +1108,9 @@ internal sealed class KafkaClientInfrastructure : IAsyncDisposable
     public async ValueTask DisposeAsync()
     {
         if (Interlocked.Exchange(ref _disposed, 1) != 0)
+        {
             return;
+        }
 
         await MetadataManager.DisposeAsync().ConfigureAwait(false);
         await ConsumerConnectionPool.DisposeAsync().ConfigureAwait(false);

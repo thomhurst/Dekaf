@@ -61,7 +61,10 @@ public sealed class TransactionEdgeCaseTests(KafkaTestContainer kafka) : Transac
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))
         {
             messages.Add(msg);
-            if (messages.Count >= 3) break;
+            if (messages.Count >= 3)
+            {
+                break;
+            }
         }
 
         await Assert.That(messages.Count).IsEqualTo(3);
@@ -190,7 +193,10 @@ public sealed class TransactionEdgeCaseTests(KafkaTestContainer kafka) : Transac
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))
         {
             messages.Add(msg);
-            if (messages.Count >= 2) break;
+            if (messages.Count >= 2)
+            {
+                break;
+            }
         }
 
         // Assert - ReadUncommitted sees both aborted and committed messages
@@ -250,7 +256,10 @@ public sealed class TransactionEdgeCaseTests(KafkaTestContainer kafka) : Transac
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))
         {
             messages.Add(msg);
-            if (messages.Count >= 5) break;
+            if (messages.Count >= 5)
+            {
+                break;
+            }
         }
 
         await Assert.That(messages.Count).IsEqualTo(5);
@@ -324,7 +333,10 @@ public sealed class TransactionEdgeCaseTests(KafkaTestContainer kafka) : Transac
             await txn.AbortAsync();
 
             processedCount++;
-            if (processedCount >= 3) break;
+            if (processedCount >= 3)
+            {
+                break;
+            }
         }
 
         // Assert - output topic should have no committed messages
@@ -410,7 +422,10 @@ public sealed class TransactionEdgeCaseTests(KafkaTestContainer kafka) : Transac
                 await txn.CommitAsync();
 
                 processedCount++;
-                if (processedCount >= 5) break;
+                if (processedCount >= 5)
+                {
+                    break;
+                }
             }
         }
 
@@ -430,7 +445,10 @@ public sealed class TransactionEdgeCaseTests(KafkaTestContainer kafka) : Transac
         await foreach (var msg in outputConsumer.ConsumeAsync(verifyCts.Token))
         {
             outputMessages.Add(msg);
-            if (outputMessages.Count >= 5) break;
+            if (outputMessages.Count >= 5)
+            {
+                break;
+            }
         }
 
         await Assert.That(outputMessages.Count).IsEqualTo(5);

@@ -24,48 +24,75 @@ public interface IKafkaConsumer<TKey, TValue> : IInitializableKafkaClient, IAsyn
     /// <summary>
     /// Gets the current subscription.
     /// </summary>
-    StringSet Subscription { get; }
+    StringSet Subscription
+    {
+        get;
+    }
 
     /// <summary>
     /// Gets the current server-side topic regex subscription, if any.
     /// </summary>
-    string? SubscriptionPattern { get; }
+    string? SubscriptionPattern
+    {
+        get;
+    }
 
     /// <summary>
     /// Gets the current assignment.
     /// </summary>
-    TopicPartitionSet Assignment { get; }
+    TopicPartitionSet Assignment
+    {
+        get;
+    }
 
     /// <summary>
     /// Gets the paused partitions.
     /// </summary>
-    TopicPartitionSet Paused { get; }
+    TopicPartitionSet Paused
+    {
+        get;
+    }
 
     /// <summary>
     /// Gets the member ID if part of a consumer group.
     /// </summary>
-    string? MemberId { get; }
+    string? MemberId
+    {
+        get;
+    }
 
     /// <summary>
     /// Gets the consumer group metadata for use with transactional producers.
     /// Returns null if not part of a consumer group or if the group has not yet been joined.
     /// </summary>
-    ConsumerGroupMetadata? ConsumerGroupMetadata { get; }
+    ConsumerGroupMetadata? ConsumerGroupMetadata
+    {
+        get;
+    }
 
     /// <summary>
     /// Gets position and seek operations.
     /// </summary>
-    IConsumerPositions Positions { get; }
+    IConsumerPositions Positions
+    {
+        get;
+    }
 
     /// <summary>
     /// Gets assignment and pause/resume operations.
     /// </summary>
-    IConsumerPartitions Partitions { get; }
+    IConsumerPartitions Partitions
+    {
+        get;
+    }
 
     /// <summary>
     /// Gets offset lookup operations.
     /// </summary>
-    IConsumerOffsets Offsets { get; }
+    IConsumerOffsets Offsets
+    {
+        get;
+    }
 
     /// <summary>
     /// Subscribes to topics.
@@ -672,10 +699,14 @@ public readonly struct ConsumeResult<TKey, TValue>
         ownershipStart = 0;
         var headerGeneration = _fetchGeneration;
         if (headerGeneration == 0)
+        {
             return 0;
+        }
 
         if (_headerOwner is { } owner && owner.TryGetFetchGeneration(headerGeneration, out var fetchGeneration, out ownershipStart))
+        {
             return fetchGeneration;
+        }
 
         ownershipStart = 0;
         return PendingFetchData.ExpandFetchGeneration(headerGeneration);
@@ -685,7 +716,9 @@ public readonly struct ConsumeResult<TKey, TValue>
     {
         var headerGeneration = _fetchGeneration;
         if (headerGeneration == 0)
+        {
             return 0;
+        }
 
         return _headerOwner is { } owner && owner.TryGetFetchGeneration(headerGeneration, out var fetchGeneration)
             ? fetchGeneration
@@ -699,7 +732,10 @@ public readonly struct ConsumeResult<TKey, TValue>
         get => _leaderEpoch.Index;
         init => _leaderEpoch = _leaderEpoch.WithIndex(value);
     }
-    internal OffsetCompletionBatch? ProcessingBatch { get; init; }
+    internal OffsetCompletionBatch? ProcessingBatch
+    {
+        get; init;
+    }
 
     // The fetch owns both the raw deserializer input and lazy headers. Reuse its existing
     // reference instead of enlarging every result or allocating a per-record lease.
@@ -737,7 +773,9 @@ public readonly struct ConsumeResult<TKey, TValue>
         ref ConsumeResult<TKey, TValue> replacement, in ConsumeResult<TKey, TValue> original)
     {
         if (replacement._headerOwner is null && original._headerOwner is { } owner)
+        {
             replacement = new(replacement, owner, original._headerGeneration, original._fetchGeneration);
+        }
     }
 
     private ConsumeResult(
@@ -749,7 +787,9 @@ public readonly struct ConsumeResult<TKey, TValue>
         _headerGeneration = headerGeneration;
         _fetchGeneration = fetchGeneration;
         if (_pooledHeaderCount != DeferredHeaderSnapshot)
+        {
             _pooledHeaderCount = CallerOwnedHeaders;
+        }
     }
 
     /// <summary>
@@ -1015,7 +1055,9 @@ public readonly struct ConsumeResult<TKey, TValue>
     {
         ref var serializationContext = ref t_serializationContext;
         if (headerWorkspace is not null)
+        {
             headerRouting.CopyTo(headerWorkspace);
+        }
         var materializedHeaders = headerWorkspace;
         TKey? key = default;
         if (!isKeyNull && keyDeserializer is not null)
@@ -1113,7 +1155,9 @@ public readonly struct ConsumeResult<TKey, TValue>
         var serializationHeaders = t_callerOwnedSerializationHeaders ??= new Headers(headers.Count);
         serializationHeaders.Clear();
         for (var index = 0; index < headers.Count; index++)
+        {
             serializationHeaders.Add(headers[index]);
+        }
         return serializationHeaders;
     }
 
@@ -1196,27 +1240,42 @@ public readonly struct ConsumeResult<TKey, TValue>
     /// <summary>
     /// The topic.
     /// </summary>
-    public string Topic { get; }
+    public string Topic
+    {
+        get;
+    }
 
     /// <summary>
     /// The partition.
     /// </summary>
-    public int Partition { get; }
+    public int Partition
+    {
+        get;
+    }
 
     /// <summary>
     /// The offset.
     /// </summary>
-    public long Offset { get; }
+    public long Offset
+    {
+        get;
+    }
 
     /// <summary>
     /// The deserialized key.
     /// </summary>
-    public TKey? Key { get; }
+    public TKey? Key
+    {
+        get;
+    }
 
     /// <summary>
     /// The deserialized value.
     /// </summary>
-    public TValue Value { get; }
+    public TValue Value
+    {
+        get;
+    }
 
     /// <summary>
     /// The message headers. Empty if the record has no headers; never null.
@@ -1232,7 +1291,9 @@ public readonly struct ConsumeResult<TKey, TValue>
             if (_headerOwner is null || _pooledHeaderCount < 0)
             {
                 if (_headerSource is not { } headers)
+                {
                     return Array.Empty<Header>();
+                }
                 return _pooledHeaderCount == DeferredHeaderSnapshot
                     ? LazyConsumeHeaders.CreateSnapshot(headers)
                     : headers;
@@ -1282,7 +1343,9 @@ public readonly struct ConsumeResult<TKey, TValue>
 
         header = default;
         if (_headerSource is not Header[] pooledHeaders || _pooledHeaderCount == 0)
+        {
             return false;
+        }
 
         LazyConsumeHeaders.ThrowIfStale(_headerOwner, _headerGeneration);
         var found = false;

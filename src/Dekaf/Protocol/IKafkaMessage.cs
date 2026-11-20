@@ -60,7 +60,10 @@ public interface IKafkaRequest<TResponse> : IKafkaMessage
 /// </summary>
 internal interface IKafkaRequestBodySizeHint
 {
-    int RequestBodySizeHint { get; }
+    int RequestBodySizeHint
+    {
+        get;
+    }
 }
 
 /// <summary>

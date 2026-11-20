@@ -36,7 +36,12 @@ public sealed class BrokerPrefetchSchedulerTests
         await Assert.That(scheduler.TryStart((BrokerId: 2, ConnectionIndex: 0), static () => Task.CompletedTask)).IsTrue();
         await Assert.That(scheduler.TryStart((BrokerId: 1, ConnectionIndex: 0), static () => Task.CompletedTask)).IsFalse();
 
-        await scheduler.DrainAllSafelyAsync(static _ => { }, static _ => false).ConfigureAwait(false);
+        await scheduler.DrainAllSafelyAsync(
+            static _ =>
+            {
+            },
+            static _ => false
+        ).ConfigureAwait(false);
     }
 
     [Test]
@@ -68,7 +73,12 @@ public sealed class BrokerPrefetchSchedulerTests
             .Throws<OperationCanceledException>();
 
         completion.SetResult();
-        await scheduler.DrainAllSafelyAsync(static _ => { }, static _ => false).ConfigureAwait(false);
+        await scheduler.DrainAllSafelyAsync(
+            static _ =>
+            {
+            },
+            static _ => false
+        ).ConfigureAwait(false);
     }
 
     [Test]

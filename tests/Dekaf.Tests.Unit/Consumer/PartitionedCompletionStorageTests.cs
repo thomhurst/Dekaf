@@ -19,7 +19,9 @@ public class PartitionedCompletionStorageTests
             GC.WaitForPendingFinalizers();
             GC.Collect();
             for (var index = 0; index < references.Length - 2; index++)
+            {
                 await Assert.That(IsAlive(references[index])).IsFalse();
+            }
             await Assert.That(IsAlive(references[^2])).IsTrue();
             await Assert.That(IsAlive(references[^1])).IsTrue();
             var identity = GetCompletionIdentity(lane);
@@ -27,7 +29,9 @@ public class PartitionedCompletionStorageTests
                 .GetField("_weakReservations", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(identity);
             await Assert.That(handles).IsNotNull();
             foreach (var handle in handles!)
+            {
                 await Assert.That(handle.IsAllocated).IsFalse();
+            }
             await Assert.That(lane.GetCommitOffset()).IsNull();
             GC.KeepAlive(lane);
         }
@@ -61,7 +65,9 @@ public class PartitionedCompletionStorageTests
         GC.WaitForPendingFinalizers();
         GC.Collect();
         foreach (var reference in references)
+        {
             await Assert.That(IsAlive(reference)).IsFalse();
+        }
         await Assert.That(identity.IsRetired).IsTrue();
         await Assert.That(typeof(CompletedOffsetRanges)
             .GetField("_weakReservations", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(identity)).IsNull();
@@ -79,7 +85,9 @@ public class PartitionedCompletionStorageTests
         GC.WaitForPendingFinalizers();
         GC.Collect();
         foreach (var reference in references)
+        {
             await Assert.That(IsAlive(reference)).IsFalse();
+        }
     }
 
     [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
@@ -161,7 +169,9 @@ public class PartitionedCompletionStorageTests
         for (var index = 0; index < batches.Length; index++)
         {
             if (index == 2)
+            {
                 lane.MarkProcessed(records[0]);
+            }
             var batch = batches[index] = lane.CreateCompletionBatch(1)!;
             records[index] = Deliver(lane, batch, 10 + index * 2L);
             lane.EndBatch(batch, 1);
@@ -172,7 +182,9 @@ public class PartitionedCompletionStorageTests
         lane.MarkProcessed(records[1]);
         await Assert.That(lane.GetCommitOffset()?.Offset).IsEqualTo(17);
         foreach (var batch in batches)
+        {
             await Assert.That(batch.Nodes).IsNull();
+        }
         lane.EnableAutomaticCompletion();
     }
 
@@ -285,11 +297,17 @@ public class PartitionedCompletionStorageTests
         // Completion removes entries from the beginning, middle, and end of the
         // retained set as it collapses fragmented ranges across many reservations.
         for (var index = 1; index < records.Length; index += 2)
+        {
             lane.MarkProcessed(records[index]);
+        }
         for (var index = 0; index < records.Length; index += 2)
+        {
             lane.MarkProcessed(records[index]);
+        }
         foreach (var batch in batches)
+        {
             await Assert.That(batch.Nodes).IsNull();
+        }
         var expectedOffset = records[^1].Offset + 1;
         await Assert.That(lane.GetCommitOffset()?.Offset).IsEqualTo(expectedOffset);
         lane.Start(static (_, _) => default);
@@ -318,7 +336,10 @@ public class PartitionedCompletionStorageTests
         var laterBatch = lane.CreateCompletionBatch(2)!;
         lane.MarkProcessed(Deliver(lane, laterBatch, 14));
         var laterAbandoned = Deliver(lane, laterBatch, 16);
-        if (!publishing) lane.EndBatch(laterBatch, 2);
+        if (!publishing)
+        {
+            lane.EndBatch(laterBatch, 2);
+        }
 
         var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -327,15 +348,27 @@ public class PartitionedCompletionStorageTests
         {
             started.TrySetResult();
             await release.Task.WaitAsync(token);
-            if (exit == "fail") throw failure;
+            if (exit == "fail")
+            {
+                throw failure;
+            }
         });
         await started.Task.WaitAsync(TimeSpan.FromSeconds(10));
-        if (exit != "cancel") release.TrySetResult();
+        if (exit != "cancel")
+        {
+            release.TrySetResult();
+        }
         var stopped = await lane.StopAsync(
             exit == "cancel" ? PartitionStopPolicy.Cancel : PartitionStopPolicy.Drain,
             TimeSpan.FromSeconds(10));
-        if (exit == "fail") await Assert.That(stopped).IsSameReferenceAs(failure);
-        else await Assert.That(stopped).IsNull();
+        if (exit == "fail")
+        {
+            await Assert.That(stopped).IsSameReferenceAs(failure);
+        }
+        else
+        {
+            await Assert.That(stopped).IsNull();
+        }
 
         await Assert.That(firstBatch.Nodes).IsNull();
         if (publishing)
@@ -370,7 +403,10 @@ public class PartitionedCompletionStorageTests
             await Assert.That(lane.TryEnqueue(message, batch)).IsTrue();
         }
         await Assert.That(lane.TryEnqueue(ConsumeResult<string, string>.CreatePartitionEof("completion", 0, 73), batch)).IsTrue();
-        if (!publishing) lane.EndBatch(batch, 32);
+        if (!publishing)
+        {
+            lane.EndBatch(batch, 32);
+        }
         var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var failure = new InvalidOperationException("Expected processor failure");
@@ -378,15 +414,27 @@ public class PartitionedCompletionStorageTests
         {
             started.TrySetResult();
             await release.Task.WaitAsync(token);
-            if (exit == "fail") throw failure;
+            if (exit == "fail")
+            {
+                throw failure;
+            }
         });
         await started.Task.WaitAsync(TimeSpan.FromSeconds(10));
-        if (exit != "cancel") release.TrySetResult();
+        if (exit != "cancel")
+        {
+            release.TrySetResult();
+        }
         var stopped = await lane.StopAsync(
             exit == "cancel" ? PartitionStopPolicy.Cancel : PartitionStopPolicy.Drain,
             TimeSpan.FromSeconds(10));
-        if (exit == "fail") await Assert.That(stopped).IsSameReferenceAs(failure);
-        else await Assert.That(stopped).IsNull();
+        if (exit == "fail")
+        {
+            await Assert.That(stopped).IsSameReferenceAs(failure);
+        }
+        else
+        {
+            await Assert.That(stopped).IsNull();
+        }
         await Assert.That(lane.TryReadMessage(out _)).IsFalse();
         await Assert.That(lane.GetCommitOffset()?.Offset).IsEqualTo(11);
         if (publishing)
@@ -453,22 +501,30 @@ public class PartitionedCompletionStorageTests
         var initializedBeforePublication = CountInitializedNodes(slab);
         var records = new ConsumeResult<string, string>[published];
         for (var index = 0; index < published; index++)
+        {
             records[index] = Deliver(lane, batch, 10 + index * 2L);
+        }
         var initializedAfterPublication = CountInitializedNodes(slab);
         lane.EndBatch(batch, published);
 
         var before = GC.GetAllocatedBytesForCurrentThread();
         for (var index = 1; index < published; index += 2)
+        {
             lane.MarkProcessed(records[index]);
+        }
         var lastEvenIndex = (published - 1) & ~1;
         for (var index = 0; index < lastEvenIndex; index += 2)
+        {
             lane.MarkProcessed(records[index]);
+        }
         var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
         // Final completion returns the slab to ArrayPool, whose per-core cold
         // bookkeeping may allocate after thread migration. Measure the reserved
         // completion path separately, then still verify final return and reuse.
         if (published > 0)
+        {
             lane.MarkProcessed(records[lastEvenIndex]);
+        }
 
         // A partially initialized slab must preserve its existing nodes and grow
         // its initialized prefix when the next fetch publishes another chunk.
@@ -477,7 +533,9 @@ public class PartitionedCompletionStorageTests
         var reusedPartialSlab = ReferenceEquals(slab, next.Nodes);
         var nextPublished = published == 0 ? 0 : published + 1024;
         for (var index = 0; index < nextPublished; index++)
+        {
             lane.MarkProcessed(Deliver(lane, next, 10 + (published + index) * 2L));
+        }
         lane.EndBatch(next, nextPublished);
         var preservedNode = ReferenceEquals(firstNode, slab[0]);
         var initializedAfterReuse = CountInitializedNodes(slab);
@@ -491,7 +549,9 @@ public class PartitionedCompletionStorageTests
         await Assert.That(batch.Nodes).IsNull();
         await Assert.That(next.Nodes).IsNull();
         if (published != 0)
+        {
             await Assert.That(lane.GetCommitOffset()?.Offset).IsEqualTo(10 + (published + nextPublished - 1) * 2L + 1);
+        }
     }
 
     [Test]
@@ -515,7 +575,9 @@ public class PartitionedCompletionStorageTests
                     var message = new ConsumeResult<string, string>("completion", 0, 10 + published * 2L,
                         "key", "value", null, 0, TimestampType.CreateTime, 1);
                     while (!lane.TryEnqueue(message, batch))
+                    {
                         await lane.WaitToWriteAsync(timeout.Token);
+                    }
                 }
             }
             finally
@@ -528,10 +590,14 @@ public class PartitionedCompletionStorageTests
         {
             ConsumeResult<string, string> first;
             while (!lane.TryReadMessage(out first))
+            {
                 await lane.WaitToReadMessageAsync(timeout.Token);
+            }
             ConsumeResult<string, string> second;
             while (!lane.TryReadMessage(out second))
+            {
                 await lane.WaitToReadMessageAsync(timeout.Token);
+            }
             lane.MarkProcessed(second);
             lane.MarkProcessed(first);
         }
@@ -546,7 +612,9 @@ public class PartitionedCompletionStorageTests
         foreach (var node in nodes)
         {
             if (node is not null)
+            {
                 count++;
+            }
         }
         return count;
     }
@@ -563,20 +631,26 @@ public class PartitionedCompletionStorageTests
         var batch = lane.CreateCompletionBatch(count)!;
         var records = new ConsumeResult<string, string>[count];
         for (var index = 0; index < count; index++)
+        {
             records[index] = Deliver(lane, batch, 10 + index * offsetStep);
+        }
         lane.EndBatch(batch, count);
 
         // Background GC can charge unused allocation-context space to this thread's
         // counter. Exclude collections from the synchronous measurement, while still
         // counting every allocation made by the first fragmented completion.
         if (!GC.TryStartNoGCRegion(16 * 1024 * 1024))
+        {
             throw new InvalidOperationException("Unable to isolate the allocation measurement from GC.");
+        }
         long allocated;
         try
         {
             var before = GC.GetAllocatedBytesForCurrentThread();
             for (var index = 1; index < count; index += 2)
+            {
                 lane.MarkProcessed(records[index]);
+            }
             allocated = GC.GetAllocatedBytesForCurrentThread() - before;
         }
         finally
@@ -587,7 +661,9 @@ public class PartitionedCompletionStorageTests
         await Assert.That(allocated).IsEqualTo(0);
         await Assert.That(lane.GetCommitOffset()).IsNull();
         for (var index = 0; index < count; index += 2)
+        {
             lane.MarkProcessed(records[index]);
+        }
         await Assert.That(lane.GetCommitOffset()?.Offset).IsEqualTo(records[^1].Offset + 1);
         await Assert.That(batch.Nodes).IsNull();
     }
@@ -611,7 +687,9 @@ public class PartitionedCompletionStorageTests
         var lane = CreateLane();
         var batch = lane.CreateCompletionBatch(completedPrefix + 33)!;
         for (var index = 0; index < completedPrefix; index++)
+        {
             lane.MarkProcessed(Deliver(lane, batch, (index + 1) * 4_294_967_296L));
+        }
         for (var index = 0; index < 32; index++)
         {
             var message = new ConsumeResult<string, string>("completion", 0,
@@ -621,12 +699,16 @@ public class PartitionedCompletionStorageTests
         var last = new ConsumeResult<string, string>("completion", 0,
             (completedPrefix + 33) * 4_294_967_296L, "key", "value", null, 0, TimestampType.CreateTime, 1);
         for (var attempt = 0; attempt < 100; attempt++)
+        {
             await Assert.That(lane.TryEnqueue(last, batch)).IsFalse();
+        }
         await Assert.That(lane.TryReadMessage(out var first)).IsTrue();
         await Assert.That(lane.TryEnqueue(last, batch)).IsTrue();
         lane.EndBatch(batch, completedPrefix + 33);
         while (lane.TryReadMessage(out var record))
+        {
             lane.MarkProcessed(record);
+        }
         await Assert.That(lane.GetCommitOffset()?.Offset)
             .IsEqualTo(completedPrefix == 0 ? (long?)null : completedPrefix * 4_294_967_296L + 1);
         lane.MarkProcessed(first);
@@ -666,9 +748,13 @@ public class PartitionedCompletionStorageTests
             }
             lane.EndBatch(batch, 16);
             if (index == 0)
+            {
                 retainedRange = batch;
+            }
             else
+            {
                 await Assert.That(batch.Nodes).IsNull();
+            }
         }
         await Assert.That(lane.GetCommitOffset()).IsNull();
         lane.MarkProcessed(first);
@@ -734,7 +820,11 @@ public class PartitionedCompletionStorageTests
 
     private static PartitionLane<string, string> CreateLane() =>
         new(new TopicPartition("completion", 0), 32,
-            static (_, _) => default, static _ => { }, static (_, _) => { });
+            static (_, _) => default, static _ =>
+            {
+            }, static (_, _) =>
+            {
+            });
 
     private static ConsumeResult<string, string> Deliver(
         PartitionLane<string, string> lane, OffsetCompletionBatch batch, long offset)
@@ -742,7 +832,9 @@ public class PartitionedCompletionStorageTests
         var message = new ConsumeResult<string, string>("completion", 0, offset,
             "key", "value", null, 0, TimestampType.CreateTime, 1);
         if (!lane.TryEnqueue(message, batch) || !lane.TryReadMessage(out var delivered))
+        {
             throw new InvalidOperationException("Unable to publish the test record.");
+        }
         return delivered;
     }
 }

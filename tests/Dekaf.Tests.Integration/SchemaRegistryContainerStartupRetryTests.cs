@@ -43,10 +43,22 @@ public sealed class SchemaRegistryContainerStartupRetryTests
     private sealed class FailingStartupContainer(bool failSchemaRegistry) : KafkaWithSchemaRegistryContainer
     {
         private int _registryAttempts;
-        public int KafkaAttempts { get; private set; }
-        public string? FailedContainerId { get; private set; }
-        public string? FailedNetworkName { get; private set; }
-        public IDockerEndpointAuthenticationConfiguration DockerEndpoint { get; } =
+        public int KafkaAttempts
+        {
+            get; private set;
+        }
+        public string? FailedContainerId
+        {
+            get; private set;
+        }
+        public string? FailedNetworkName
+        {
+            get; private set;
+        }
+        public IDockerEndpointAuthenticationConfiguration DockerEndpoint
+        {
+            get;
+        } =
             TestcontainersSettings.OS.DockerEndpointAuthConfig;
 
         protected override KafkaBuilder ConfigureKafkaBuilder(KafkaBuilder builder) =>
@@ -57,7 +69,9 @@ public sealed class SchemaRegistryContainerStartupRetryTests
             KafkaAttempts++;
             await base.StartKafkaContainerAsync(container, cancellationToken);
             if (!failSchemaRegistry && KafkaAttempts == 1)
+            {
                 await FailStartupAsync(container, cancellationToken);
+            }
         }
 
         protected override async Task StartSchemaRegistryContainerAsync(IContainer container, CancellationToken cancellationToken)
@@ -65,7 +79,9 @@ public sealed class SchemaRegistryContainerStartupRetryTests
             _registryAttempts++;
             await base.StartSchemaRegistryContainerAsync(container, cancellationToken);
             if (failSchemaRegistry && _registryAttempts == 1)
+            {
                 await FailStartupAsync(container, cancellationToken);
+            }
         }
 
         private async Task FailStartupAsync(IContainer container, CancellationToken cancellationToken)

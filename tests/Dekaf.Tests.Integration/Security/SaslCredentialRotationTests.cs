@@ -188,7 +188,10 @@ public sealed class SaslCredentialRotationTests(SaslKafkaContainer kafka)
     {
         private int _invocationCount;
 
-        public SaslCredentials Value { get; set; } = value;
+        public SaslCredentials Value
+        {
+            get; set;
+        } = value;
         public int InvocationCount => Volatile.Read(ref _invocationCount);
 
         public ValueTask<SaslCredentials> GetAsync(CancellationToken cancellationToken)

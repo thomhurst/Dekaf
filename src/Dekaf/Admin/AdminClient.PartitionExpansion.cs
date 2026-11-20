@@ -25,7 +25,9 @@ public sealed partial class AdminClient
     {
         var topics = new Dictionary<string, NewPartitions>(newPartitionCounts.Count, StringComparer.Ordinal);
         foreach (var pair in newPartitionCounts)
+        {
             topics.Add(pair.Key, new() { TotalCount = pair.Value });
+        }
         return topics;
     }
 
@@ -52,10 +54,14 @@ public sealed partial class AdminClient
     {
         var assignments = partitions.ReplicaAssignments;
         if (assignments is null)
+        {
             return null;
+        }
 
         if (assignments.Count == 0 || assignments.Count >= partitions.TotalCount)
+        {
             throw new ArgumentException("Assignments must describe only the additional partitions of an existing topic.", parameterName);
+        }
 
         var result = new CreatePartitionsAssignment[assignments.Count];
         var replicationFactor = 0;
@@ -63,7 +69,9 @@ public sealed partial class AdminClient
         {
             var replicas = assignments[index];
             if (replicas is null || replicas.Count == 0 || (index > 0 && replicas.Count != replicationFactor))
+            {
                 throw new ArgumentException("Each assignment must contain the same nonzero number of replicas.", parameterName);
+            }
 
             replicationFactor = replicas.Count;
             var brokerIds = new int[replicas.Count];
@@ -72,7 +80,9 @@ public sealed partial class AdminClient
             {
                 var brokerId = replicas[replica];
                 if (brokerId < 0 || !seen.Add(brokerId))
+                {
                     throw new ArgumentException("Replica broker IDs must be nonnegative and unique within a partition.", parameterName);
+                }
                 brokerIds[replica] = brokerId;
             }
             result[index] = new CreatePartitionsAssignment { BrokerIds = brokerIds };
@@ -86,7 +96,9 @@ public sealed partial class AdminClient
         for (var index = 0; index < topics.Count; index++)
         {
             if (topics[index].Name == name)
+            {
                 return topics[index];
+            }
         }
         throw new InvalidOperationException($"Unexpected CreatePartitions response topic '{name}'.");
     }

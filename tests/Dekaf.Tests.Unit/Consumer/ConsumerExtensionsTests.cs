@@ -43,7 +43,9 @@ public sealed class ConsumerExtensionsTests
 
         await Assert.ThrowsAsync<ArgumentNullException>(async () =>
         {
-            await foreach (var _ in source!.Where(_ => true)) { }
+            await foreach (var _ in source!.Where(_ => true))
+            {
+            }
         });
     }
 
@@ -55,7 +57,9 @@ public sealed class ConsumerExtensionsTests
 
         await Assert.ThrowsAsync<ArgumentNullException>(async () =>
         {
-            await foreach (var _ in source.Where(predicate)) { }
+            await foreach (var _ in source.Where(predicate))
+            {
+            }
         });
     }
 
@@ -140,7 +144,9 @@ public sealed class ConsumerExtensionsTests
 
         await Assert.ThrowsAsync<ArgumentNullException>(async () =>
         {
-            await foreach (var _ in source.Where(_ => true, onFiltered)) { }
+            await foreach (var _ in source.Where(_ => true, onFiltered))
+            {
+            }
         });
     }
 
@@ -171,7 +177,9 @@ public sealed class ConsumerExtensionsTests
 
         await Assert.ThrowsAsync<ArgumentNullException>(async () =>
         {
-            await foreach (var _ in source!.Select(r => r.Offset)) { }
+            await foreach (var _ in source!.Select(r => r.Offset))
+            {
+            }
         });
     }
 
@@ -182,7 +190,9 @@ public sealed class ConsumerExtensionsTests
 
         await Assert.ThrowsAsync<ArgumentNullException>(async () =>
         {
-            await foreach (var _ in source.Select<string, string, long>(null!)) { }
+            await foreach (var _ in source.Select<string, string, long>(null!))
+            {
+            }
         });
     }
 
@@ -241,7 +251,9 @@ public sealed class ConsumerExtensionsTests
 
         await Assert.ThrowsAsync<ArgumentOutOfRangeException>(async () =>
         {
-            await foreach (var _ in ConsumerExtensions.Take<string, string>(source, -1)) { }
+            await foreach (var _ in ConsumerExtensions.Take<string, string>(source, -1))
+            {
+            }
         });
     }
 
@@ -291,7 +303,9 @@ public sealed class ConsumerExtensionsTests
 
         await Assert.ThrowsAsync<ArgumentOutOfRangeException>(async () =>
         {
-            await foreach (var _ in source.Batch(0)) { }
+            await foreach (var _ in source.Batch(0))
+            {
+            }
         });
     }
 
@@ -399,7 +413,9 @@ public sealed class ConsumerExtensionsTests
         params (string Topic, int Partition, long Offset)[] items)
     {
         foreach (var (topic, partition, offset) in items)
+        {
             yield return CreateResult(topic, partition, offset);
+        }
 
         await Task.CompletedTask; // Ensure truly async
     }

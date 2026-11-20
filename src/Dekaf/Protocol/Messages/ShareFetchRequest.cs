@@ -14,62 +14,98 @@ public sealed class ShareFetchRequest : IKafkaRequest<ShareFetchResponse>
     /// <summary>
     /// The group ID.
     /// </summary>
-    public required string GroupId { get; init; }
+    public required string GroupId
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The member ID.
     /// </summary>
-    public required string MemberId { get; init; }
+    public required string MemberId
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The share session epoch. 0 for a new session, -1 to close the session.
     /// </summary>
-    public int ShareSessionEpoch { get; init; }
+    public int ShareSessionEpoch
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Maximum wait time in milliseconds for the fetch to block on the server.
     /// </summary>
-    public int MaxWaitMs { get; init; }
+    public int MaxWaitMs
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Minimum bytes to accumulate before returning.
     /// </summary>
-    public int MinBytes { get; init; }
+    public int MinBytes
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Maximum bytes to return.
     /// </summary>
-    public int MaxBytes { get; init; }
+    public int MaxBytes
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Maximum number of records to return (v1+).
     /// </summary>
-    public int MaxRecords { get; init; }
+    public int MaxRecords
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Batch size hint for the server (v1+).
     /// </summary>
-    public int BatchSize { get; init; }
+    public int BatchSize
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The share acquire mode (v2+). 0 = batch_optimized, 1 = record_limit.
     /// </summary>
-    public sbyte ShareAcquireMode { get; init; }
+    public sbyte ShareAcquireMode
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Whether this is a renew acknowledgement request (v2+).
     /// </summary>
-    public bool IsRenewAck { get; init; }
+    public bool IsRenewAck
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Topics to fetch.
     /// </summary>
-    public required IReadOnlyList<ShareFetchRequestTopic> Topics { get; init; }
+    public required IReadOnlyList<ShareFetchRequestTopic> Topics
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Topics to forget from the share session.
     /// </summary>
-    public IReadOnlyList<ShareFetchForgottenTopic>? ForgottenTopicsData { get; init; }
+    public IReadOnlyList<ShareFetchForgottenTopic>? ForgottenTopicsData
+    {
+        get; init;
+    }
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {
@@ -113,12 +149,18 @@ public sealed class ShareFetchRequestTopic
     /// <summary>
     /// The topic ID (UUID).
     /// </summary>
-    public required Guid TopicId { get; init; }
+    public required Guid TopicId
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Partitions to fetch.
     /// </summary>
-    public required IReadOnlyList<ShareFetchRequestPartition> Partitions { get; init; }
+    public required IReadOnlyList<ShareFetchRequestPartition> Partitions
+    {
+        get; init;
+    }
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {
@@ -161,7 +203,9 @@ public sealed class ShareFetchRequestPartition
         init
         {
             if (value is null)
+            {
                 return;
+            }
             if (value.Count == 1)
             {
                 _acknowledgementBatches = CreateAcknowledgementBatch(value[0]);
@@ -169,7 +213,9 @@ public sealed class ShareFetchRequestPartition
             }
             var batches = new ShareFetchAcknowledgementBatch[value.Count];
             for (var index = 0; index < batches.Length; index++)
+            {
                 batches[index] = CreateAcknowledgementBatch(value[index]);
+            }
             _acknowledgementBatches = batches;
         }
     }
@@ -188,12 +234,18 @@ public sealed class ShareFetchRequestPartition
     /// <summary>
     /// Partition index.
     /// </summary>
-    public int PartitionIndex { get; init; }
+    public int PartitionIndex
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Maximum bytes to fetch for this partition (v0 only).
     /// </summary>
-    public int PartitionMaxBytes { get; init; }
+    public int PartitionMaxBytes
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Acknowledgement batches to include with this fetch.
@@ -203,7 +255,9 @@ public sealed class ShareFetchRequestPartition
         get
         {
             if (_acknowledgementBatches is ShareFetchAcknowledgementBatch batch)
+            {
                 _acknowledgementBatches = new[] { batch };
+            }
             return (IReadOnlyList<ShareFetchAcknowledgementBatch>?)_acknowledgementBatches;
         }
         init => _acknowledgementBatches = value;
@@ -266,17 +320,26 @@ public sealed class ShareFetchAcknowledgementBatch
     /// <summary>
     /// The first offset of the batch.
     /// </summary>
-    public long FirstOffset { get; init; }
+    public long FirstOffset
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The last offset of the batch.
     /// </summary>
-    public long LastOffset { get; init; }
+    public long LastOffset
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The acknowledgement types for each record in the batch.
     /// </summary>
-    public required IReadOnlyList<byte> AcknowledgeTypes { get; init; }
+    public required IReadOnlyList<byte> AcknowledgeTypes
+    {
+        get; init;
+    }
 
     public void Write(ref KafkaProtocolWriter writer)
     {
@@ -315,12 +378,18 @@ public sealed class ShareFetchForgottenTopic
     /// <summary>
     /// The topic ID (UUID).
     /// </summary>
-    public required Guid TopicId { get; init; }
+    public required Guid TopicId
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The partition indexes to forget.
     /// </summary>
-    public required IReadOnlyList<int> Partitions { get; init; }
+    public required IReadOnlyList<int> Partitions
+    {
+        get; init;
+    }
 
     public void Write(ref KafkaProtocolWriter writer)
     {

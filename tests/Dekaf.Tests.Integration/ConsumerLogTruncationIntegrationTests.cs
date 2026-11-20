@@ -237,15 +237,19 @@ public sealed class ConsumerLogTruncationIntegrationTests(RackAwareKafkaContaine
             previousLeaderId: 1,
             cancellationToken).ConfigureAwait(false);
         if (newLeader != 2)
+        {
             throw new InvalidOperationException($"Expected stale broker 2 to become leader, actual broker {newLeader}.");
+        }
     }
 
     private async Task RestoreClusterAsync(string? topic)
     {
         await kafka.StartBrokersAsync([1, 2], CancellationToken.None).ConfigureAwait(false);
         if (topic is not null)
+        {
             await kafka.WaitForInSyncReplicasAsync(topic, expectedCount: 2, CancellationToken.None)
                 .ConfigureAwait(false);
+        }
     }
 
     private async Task RestoreFormerLeaderAsync(string topic, CancellationToken cancellationToken)
@@ -308,7 +312,9 @@ public sealed class ConsumerLogTruncationIntegrationTests(RackAwareKafkaContaine
             last = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(60), cancellationToken)
                 .ConfigureAwait(false);
             if (last is null)
+            {
                 throw new InvalidOperationException($"Expected record {index} before truncation.");
+            }
         }
 
         return last ?? throw new InvalidOperationException("No records were consumed before truncation.");

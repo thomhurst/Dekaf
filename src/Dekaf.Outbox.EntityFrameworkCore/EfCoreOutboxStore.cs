@@ -55,12 +55,21 @@ public sealed class EfCoreOutboxStore<TContext> : IOutboxStore, IOutboxLeaseRene
     /// <param name="since">When the round ran.</param>
     private sealed class DistantStandby(string relayId, DateTimeOffset since)
     {
-        public string RelayId { get; } = relayId;
+        public string RelayId
+        {
+            get;
+        } = relayId;
 
-        public DateTimeOffset Since { get; } = since;
+        public DateTimeOffset Since
+        {
+            get;
+        } = since;
 
         /// <summary>The latest acquisition, answered or not.</summary>
-        public DateTimeOffset LastCall { get; set; } = since;
+        public DateTimeOffset LastCall
+        {
+            get; set;
+        } = since;
     }
 
     public EfCoreOutboxStore(IDbContextFactory<TContext> contextFactory, TimeProvider? timeProvider = null)
@@ -81,7 +90,9 @@ public sealed class EfCoreOutboxStore<TContext> : IOutboxStore, IOutboxLeaseRene
         await using var contextDisposal = context.ConfigureAwait(false);
         var messages = context.Set<OutboxMessage>().AsNoTracking();
         if (context.Database.ProviderName == "Microsoft.EntityFrameworkCore.Sqlite")
+        {
             return new OutboxPendingMetrics(await messages.LongCountAsync(cancellationToken).ConfigureAwait(false), null);
+        }
 
         // Compute both aggregates in one command/pass without adding an index to every
         // enqueue/delete. A constant group produces no row for an empty table.
@@ -102,7 +113,9 @@ public sealed class EfCoreOutboxStore<TContext> : IOutboxStore, IOutboxLeaseRene
 
         var now = _timeProvider.GetUtcNow();
         if (IsRestingStandby(request, now))
+        {
             return [];
+        }
 
         // A round that fails proves nothing about the queue, so the next one runs in full.
         _distantStandby = null;
@@ -141,11 +154,17 @@ public sealed class EfCoreOutboxStore<TContext> : IOutboxStore, IOutboxLeaseRene
         foreach (var lease in snapshot)
         {
             if (lease.Owner == request.RelayId)
+            {
                 mine.Add(lease.Bucket);
+            }
             else if (lease.Owner is null || lease.ExpiresAtUtc <= now)
+            {
                 free.Add(lease.Bucket);
+            }
             else
+            {
                 held[lease.Owner] = held.GetValueOrDefault(lease.Owner) + 1;
+            }
         }
 
         held[request.RelayId] = mine.Count;
@@ -249,7 +268,9 @@ public sealed class EfCoreOutboxStore<TContext> : IOutboxStore, IOutboxLeaseRene
     private bool IsRestingStandby(OutboxLeaseRequest request, DateTimeOffset now)
     {
         if (_distantStandby is not { } standby || standby.RelayId != request.RelayId)
+        {
             return false;
+        }
 
         var rested = now - standby.Since;
         var sinceLastCall = now - standby.LastCall;
@@ -271,7 +292,9 @@ public sealed class EfCoreOutboxStore<TContext> : IOutboxStore, IOutboxLeaseRene
     {
         ArgumentNullException.ThrowIfNull(buckets);
         if (buckets.Count == 0)
+        {
             return [];
+        }
 
         var context = await _contextFactory.CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
         await using var contextDisposal = context.ConfigureAwait(false);
@@ -289,7 +312,9 @@ public sealed class EfCoreOutboxStore<TContext> : IOutboxStore, IOutboxLeaseRene
                     .OrderBy(bucket => bucket)));
             var pending = new List<int>();
             await foreach (var bucket in query(context, bucketArray).WithCancellation(cancellationToken).ConfigureAwait(false))
+            {
                 pending.Add(bucket);
+            }
             return pending;
         }
 
@@ -310,7 +335,9 @@ public sealed class EfCoreOutboxStore<TContext> : IOutboxStore, IOutboxLeaseRene
         ArgumentNullException.ThrowIfNull(request);
         ArgumentNullException.ThrowIfNull(buckets);
         if (buckets.Count == 0)
+        {
             return true;
+        }
 
         var context = await _contextFactory.CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
         await using var contextDisposal = context.ConfigureAwait(false);
@@ -330,7 +357,9 @@ public sealed class EfCoreOutboxStore<TContext> : IOutboxStore, IOutboxLeaseRene
         // drops its local ownership and reacquires valid buckets on the next cycle,
         // rather than continuing publication on a partially renewed set.
         if (renewed != buckets.Count)
+        {
             return false;
+        }
 
         await RecordHeartbeatAsync(context, request, now, cancellationToken).ConfigureAwait(false);
         return true;
@@ -384,7 +413,9 @@ public sealed class EfCoreOutboxStore<TContext> : IOutboxStore, IOutboxLeaseRene
                     .SetProperty(l => l.Owner, (string?)null)
                     .SetProperty(l => l.ExpiresAtUtc, now), cancellationToken).ConfigureAwait(false);
             if (released == 0)
+            {
                 return;
+            }
         }
     }
 
@@ -413,7 +444,9 @@ public sealed class EfCoreOutboxStore<TContext> : IOutboxStore, IOutboxLeaseRene
                     .SetProperty(r => r.LastSeenUtc, stoppedAt)
                     .SetProperty(r => r.StoppedAtUtc, stoppedAt), cancellationToken).ConfigureAwait(false);
             if (stamped > 0)
+            {
                 return;
+            }
 
             context.Set<OutboxRelayInstance>().Add(new OutboxRelayInstance
             {
@@ -458,13 +491,17 @@ public sealed class EfCoreOutboxStore<TContext> : IOutboxStore, IOutboxLeaseRene
     {
         ArgumentNullException.ThrowIfNull(publishedMessages);
         if (publishedMessages.Count == 0)
+        {
             return;
+        }
 
         var context = await _contextFactory.CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
         await using var contextDisposal = context.ConfigureAwait(false);
         var ids = new long[publishedMessages.Count];
         for (var i = 0; i < publishedMessages.Count; i++)
+        {
             ids[i] = publishedMessages[i].Id;
+        }
         await context.Set<OutboxMessage>()
             .Where(m => m.Bucket == bucket && ids.Contains(m.Id))
             .ExecuteDeleteAsync(cancellationToken).ConfigureAwait(false);
@@ -511,7 +548,9 @@ public sealed class EfCoreOutboxStore<TContext> : IOutboxStore, IOutboxLeaseRene
                 var exists = await context.Set<OutboxRelayInstance>()
                     .AnyAsync(r => r.RelayId == request.RelayId, cancellationToken).ConfigureAwait(false);
                 if (!exists)
+                {
                     throw;
+                }
             }
         }
 
@@ -538,7 +577,9 @@ public sealed class EfCoreOutboxStore<TContext> : IOutboxStore, IOutboxLeaseRene
         {
             var current = Interlocked.CompareExchange(ref _lastHeartbeatSent, now, seen);
             if (current == seen)
+            {
                 return;
+            }
             seen = current;
         }
     }
@@ -549,7 +590,9 @@ public sealed class EfCoreOutboxStore<TContext> : IOutboxStore, IOutboxLeaseRene
         // Seeding is a once-per-table event and lease rows are never deleted, so the
         // confirmed state is cached and this becomes a no-op after the first renewal.
         if (_leasesSeeded)
+        {
             return;
+        }
 
         // Verify bucket identity, never row counts: a table can hold rows outside
         // [0, bucketCount) (e.g. seeded by a larger-count relay), and Bucket is the
@@ -588,7 +631,9 @@ public sealed class EfCoreOutboxStore<TContext> : IOutboxStore, IOutboxLeaseRene
                     .Where(l => l.Bucket >= 0 && l.Bucket < bucketCount)
                     .CountAsync(cancellationToken).ConfigureAwait(false);
                 if (seededCount < bucketCount)
+                {
                     throw;
+                }
             }
         }
 

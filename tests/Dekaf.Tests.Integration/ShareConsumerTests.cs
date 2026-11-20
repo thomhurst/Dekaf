@@ -43,7 +43,10 @@ public class ShareConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest
             // Await delivery so each record is a separate broker batch.
             await producer.ProduceAsync(new ProducerMessage<string, string>
             {
-                Topic = topic, Partition = 0, Key = index.ToString(), Value = values[index],
+                Topic = topic,
+                Partition = 0,
+                Key = index.ToString(),
+                Value = values[index],
                 Headers = Headers.Create("test", values[index])
             });
         }
@@ -61,7 +64,9 @@ public class ShareConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest
             await consumer.CommitAsync(timeout.Token);
             await Assert.That(System.Text.Encoding.UTF8.GetString(record.Value.Span)).IsEqualTo(values[index]);
             if (received.Count == values.Length)
+            {
                 break;
+            }
         }
         await Assert.That(received.Count).IsEqualTo(values.Length);
     }
@@ -89,7 +94,10 @@ public class ShareConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest
             values[index] = new string((char)('a' + index), 128 * 1024);
             await producer.ProduceAsync(new ProducerMessage<string, string>
             {
-                Topic = topic, Partition = 0, Key = index.ToString(), Value = values[index]
+                Topic = topic,
+                Partition = 0,
+                Key = index.ToString(),
+                Value = values[index]
             });
         }
         await producer.FlushAsync();
@@ -103,7 +111,10 @@ public class ShareConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest
             await Assert.That(record.Value).IsEqualTo(values[index]);
             consumer.Acknowledge(record);
             await consumer.CommitAsync(timeout.Token);
-            if (received.Count == messageCount) break;
+            if (received.Count == messageCount)
+            {
+                break;
+            }
         }
         await Assert.That(received.Count).IsEqualTo(messageCount);
         await consumer.CloseAsync(timeout.Token);
@@ -131,7 +142,9 @@ public class ShareConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest
             var poll = Task.Run(async () =>
             {
                 await foreach (var _ in consumer.PollAsync(cancellation.Token))
+                {
                     throw new InvalidOperationException("The topic is empty.");
+                }
             });
             // Let the ShareFetch reach the broker and park for FetchMaxWaitMs.
             await Task.Delay(TimeSpan.FromMilliseconds(500));
@@ -141,7 +154,10 @@ public class ShareConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest
 
         await producer.ProduceAsync(new ProducerMessage<string, string>
         {
-            Topic = topic, Partition = 0, Key = "key", Value = "value"
+            Topic = topic,
+            Partition = 0,
+            Key = "key",
+            Value = "value"
         });
         var produced = Stopwatch.GetTimestamp();
 
@@ -192,7 +208,10 @@ public class ShareConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest
             await foreach (var msg in consumer.PollAsync(cts.Token))
             {
                 messages.Add(msg);
-                if (messages.Count >= 5) break;
+                if (messages.Count >= 5)
+                {
+                    break;
+                }
             }
         }
         catch (OperationCanceledException) { }
@@ -359,15 +378,21 @@ public class ShareConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest
             {
                 outcomes = results.ToArray();
                 if (results.Length != 1)
+                {
                     return;
+                }
                 var offsets = results[0].Offsets;
                 callbackIndexed = new long[offsets.Length];
                 callbackEnumerated = new long[offsets.Length];
                 for (var index = 0; index < offsets.Length; index++)
+                {
                     callbackIndexed[index] = offsets[index];
+                }
                 var enumeratedCount = 0;
                 foreach (var offset in offsets)
+                {
                     callbackEnumerated[enumeratedCount++] = offset;
+                }
             })
             .BuildAsync();
         consumer.Subscribe(topic);
@@ -380,14 +405,18 @@ public class ShareConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest
         {
             received.Add(record);
             if (received.Count == messageCount)
+            {
                 break;
+            }
         }
         await Assert.That(received.Count).IsEqualTo(messageCount);
         received.Sort(static (left, right) => left.Offset.CompareTo(right.Offset));
 
         // Alternating dispositions create real gaps inside the broker acknowledgement vector.
         for (var index = 0; index < messageCount; index += 2)
+        {
             consumer.Acknowledge(received[index], AcknowledgeType.Accept);
+        }
         await consumer.CommitAsync(timeout.Token);
         await Assert.That(outcomes).HasSingleItem();
         var firstOutcome = outcomes![0];
@@ -399,7 +428,9 @@ public class ShareConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest
 
         outcomes = null;
         for (var index = 1; index < messageCount; index += 2)
+        {
             consumer.Acknowledge(received[index], AcknowledgeType.Accept);
+        }
         await consumer.CommitAsync(timeout.Token);
         await Assert.That(outcomes).HasSingleItem();
         var secondOutcome = outcomes![0];
@@ -883,7 +914,9 @@ internal static class ShareConsumerTestHelper
         while (Stopwatch.GetElapsedTime(startedAt) < timeout)
         {
             if (consumer.MemberId is not null && consumer.Assignment.Count > 0)
+            {
                 return;
+            }
 
             await Task.Delay(100);
         }

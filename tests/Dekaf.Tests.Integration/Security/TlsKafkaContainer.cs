@@ -29,7 +29,10 @@ public class TlsKafkaContainer : IAsyncInitializer, IAsyncDisposable
     /// <summary>
     /// The SSL bootstrap servers connection string.
     /// </summary>
-    public string BootstrapServers { get; private set; } = string.Empty;
+    public string BootstrapServers
+    {
+        get; private set;
+    } = string.Empty;
 
     /// <summary>
     /// The test certificate generator providing CA, server, and client certificates.

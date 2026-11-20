@@ -37,7 +37,10 @@ internal sealed record ClientTelemetryMetric(
 {
     // A byte fits beside Kind without adding a reference field to every metric,
     // including existing metrics that do not emit an explicit unit.
-    public ClientTelemetryMetricUnit UnitCode { get; init; }
+    public ClientTelemetryMetricUnit UnitCode
+    {
+        get; init;
+    }
     public string? Unit => UnitCode switch
     {
         ClientTelemetryMetricUnit.Milliseconds => "ms",
@@ -58,7 +61,10 @@ internal sealed record ClientTelemetryMetricSnapshot(
     bool DeltaTemporality,
     IReadOnlyList<ClientTelemetryMetric> Metrics)
 {
-    public ClientTelemetryResourceAttributes ResourceAttributes { get; init; }
+    public ClientTelemetryResourceAttributes ResourceAttributes
+    {
+        get; init;
+    }
 
     private static readonly IReadOnlyList<ClientTelemetryMetric> EmptyMetrics = [];
 
@@ -102,16 +108,28 @@ internal sealed class ClientTelemetryMetricCollector
     private long _sharedConnectionCreationPrevious;
 
     // Shared clients observe their physical pool; each collector owns its delta cursor.
-    internal Func<long>? ConnectionCreationTotalProvider { get; set; }
+    internal Func<long>? ConnectionCreationTotalProvider
+    {
+        get; set;
+    }
 
     private long GetConnectionCreationTotal()
         => ConnectionCreationTotalProvider?.Invoke() ?? Volatile.Read(ref _connectionCreationTotal);
 
     // Assigned during construction; evaluated only for a nonempty telemetry push.
-    internal Func<ClientTelemetryResourceAttributes>? ResourceAttributesProvider { get; set; }
+    internal Func<ClientTelemetryResourceAttributes>? ResourceAttributesProvider
+    {
+        get; set;
+    }
 
-    internal ShareConsumerTelemetryMetrics? ShareConsumerMetrics { get; }
-    internal StandardClientTelemetryMetrics? StandardMetrics { get; }
+    internal ShareConsumerTelemetryMetrics? ShareConsumerMetrics
+    {
+        get;
+    }
+    internal StandardClientTelemetryMetrics? StandardMetrics
+    {
+        get;
+    }
 
     internal void Subscribe(IReadOnlyList<string> prefixes)
     {
@@ -136,22 +154,22 @@ internal sealed class ClientTelemetryMetricCollector
             _nodeRequestLatencyMaxName,
             _brokerThrottleTimeAvgName,
             _brokerThrottleTimeMaxName) = role switch
-        {
-            ClientTelemetryClientRole.Producer => (
-                ClientTelemetryMetricNames.ProducerConnectionCreationTotal,
-                ClientTelemetryMetricNames.ProducerNodeRequestLatencyAvg,
-                ClientTelemetryMetricNames.ProducerNodeRequestLatencyMax,
-                ClientTelemetryMetricNames.ProducerProduceThrottleTimeAvg,
-                ClientTelemetryMetricNames.ProducerProduceThrottleTimeMax),
-            ClientTelemetryClientRole.Consumer => (
-                ClientTelemetryMetricNames.ConsumerConnectionCreationTotal,
-                ClientTelemetryMetricNames.ConsumerNodeRequestLatencyAvg,
-                ClientTelemetryMetricNames.ConsumerNodeRequestLatencyMax,
-                ClientTelemetryMetricNames.ConsumerFetchThrottleTimeAvg,
-                ClientTelemetryMetricNames.ConsumerFetchThrottleTimeMax),
-            ClientTelemetryClientRole.Admin or ClientTelemetryClientRole.ShareConsumer => (null, null, null, null, null),
-            _ => throw new ArgumentOutOfRangeException(nameof(role), role, "Unsupported telemetry client role")
-        };
+            {
+                ClientTelemetryClientRole.Producer => (
+                    ClientTelemetryMetricNames.ProducerConnectionCreationTotal,
+                    ClientTelemetryMetricNames.ProducerNodeRequestLatencyAvg,
+                    ClientTelemetryMetricNames.ProducerNodeRequestLatencyMax,
+                    ClientTelemetryMetricNames.ProducerProduceThrottleTimeAvg,
+                    ClientTelemetryMetricNames.ProducerProduceThrottleTimeMax),
+                ClientTelemetryClientRole.Consumer => (
+                    ClientTelemetryMetricNames.ConsumerConnectionCreationTotal,
+                    ClientTelemetryMetricNames.ConsumerNodeRequestLatencyAvg,
+                    ClientTelemetryMetricNames.ConsumerNodeRequestLatencyMax,
+                    ClientTelemetryMetricNames.ConsumerFetchThrottleTimeAvg,
+                    ClientTelemetryMetricNames.ConsumerFetchThrottleTimeMax),
+                ClientTelemetryClientRole.Admin or ClientTelemetryClientRole.ShareConsumer => (null, null, null, null, null),
+                _ => throw new ArgumentOutOfRangeException(nameof(role), role, "Unsupported telemetry client role")
+            };
     }
 
     public void RegisterMetricForSubscription(ApplicationTelemetryMetric metric)
@@ -189,20 +207,26 @@ internal sealed class ClientTelemetryMetricCollector
         if (brokerId < 0)
         {
             if (apiKey is { } requestApiKey)
+            {
                 StandardMetrics?.RecordRequest(requestApiKey, startTimestamp);
+            }
             return;
         }
 
         var elapsedTimestampTicks = Math.Max(0, Stopwatch.GetTimestamp() - startTimestamp);
         RecordRequestLatencyTicks(brokerId, elapsedTimestampTicks);
         if (apiKey is { } key)
+        {
             StandardMetrics?.RecordRequest(key, startTimestamp, elapsedTimestampTicks);
+        }
     }
 
     public void RecordBrokerThrottle(int throttleTimeMs)
     {
         if (throttleTimeMs < 0)
+        {
             return;
+        }
 
         _brokerThrottleMeasurements.Record(throttleTimeMs);
     }
@@ -265,7 +289,8 @@ internal sealed class ClientTelemetryMetricCollector
                     _connectionCreationTotalName!,
                     ClientTelemetryMetricKind.Counter,
                     value,
-                    EmptyAttributes) { UnitCode = ClientTelemetryMetricUnit.Dimensionless });
+                    EmptyAttributes)
+                { UnitCode = ClientTelemetryMetricUnit.Dimensionless });
             }
         }
 
@@ -293,7 +318,8 @@ internal sealed class ClientTelemetryMetricCollector
                         _nodeRequestLatencyAvgName!,
                         ClientTelemetryMetricKind.Gauge,
                         StopwatchTicksToMilliseconds(snapshot.TotalTimestampTicks) / snapshot.Count,
-                        attributes) { UnitCode = ClientTelemetryMetricUnit.Milliseconds });
+                        attributes)
+                    { UnitCode = ClientTelemetryMetricUnit.Milliseconds });
                 }
 
                 if (includeRequestLatencyMax)
@@ -302,7 +328,8 @@ internal sealed class ClientTelemetryMetricCollector
                         _nodeRequestLatencyMaxName!,
                         ClientTelemetryMetricKind.Gauge,
                         StopwatchTicksToMilliseconds(snapshot.MaxTimestampTicks),
-                        attributes) { UnitCode = ClientTelemetryMetricUnit.Milliseconds });
+                        attributes)
+                    { UnitCode = ClientTelemetryMetricUnit.Milliseconds });
                 }
             }
         }
@@ -321,7 +348,8 @@ internal sealed class ClientTelemetryMetricCollector
                         _brokerThrottleTimeAvgName!,
                         ClientTelemetryMetricKind.Gauge,
                         snapshot.Total / (double)snapshot.Count,
-                        EmptyAttributes) { UnitCode = ClientTelemetryMetricUnit.Milliseconds });
+                        EmptyAttributes)
+                    { UnitCode = ClientTelemetryMetricUnit.Milliseconds });
                 }
 
                 if (includeBrokerThrottleTimeMax)
@@ -330,7 +358,8 @@ internal sealed class ClientTelemetryMetricCollector
                         _brokerThrottleTimeMaxName!,
                         ClientTelemetryMetricKind.Gauge,
                         snapshot.Max,
-                        EmptyAttributes) { UnitCode = ClientTelemetryMetricUnit.Milliseconds });
+                        EmptyAttributes)
+                    { UnitCode = ClientTelemetryMetricUnit.Milliseconds });
                 }
             }
         }
@@ -512,7 +541,9 @@ internal sealed class ClientTelemetryMetricCollector
             {
                 var original = Interlocked.CompareExchange(ref target, value, current);
                 if (original == current)
+                {
                     return;
+                }
 
                 current = original;
             }

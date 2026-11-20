@@ -96,7 +96,9 @@ internal static class DekafAspireRegistration
     {
         var propertyKey = $"Dekaf.Aspire.HealthChecks.{name}";
         if (builder.Properties.ContainsKey(propertyKey))
+        {
             return false;
+        }
 
         builder.Properties[propertyKey] = true;
         builder.Services.AddHealthChecks().Add(new HealthCheckRegistration(name, factory, failureStatus: null, tags: null, timeout));
@@ -111,10 +113,14 @@ internal static class DekafAspireRegistration
     internal static void AddTelemetry(IHostApplicationBuilder builder, IDekafAspireSettings settings)
     {
         if (!settings.DisableMetrics)
+        {
             builder.Services.AddOpenTelemetry().WithMetrics(static metrics => metrics.AddDekafInstrumentation());
+        }
 
         if (!settings.DisableTracing)
+        {
             builder.Services.AddOpenTelemetry().WithTracing(static tracing => tracing.AddDekafInstrumentation());
+        }
     }
 
     internal static T Resolve<T>(IServiceProvider services, object? serviceKey) where T : notnull =>

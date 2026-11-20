@@ -262,7 +262,10 @@ public sealed class SchemaRegistryCompatibilityConfigurationTests
     {
         private readonly Queue<(HttpStatusCode StatusCode, string Content)> _responses = new();
 
-        internal List<CapturedRequest> Requests { get; } = [];
+        internal List<CapturedRequest> Requests
+        {
+            get;
+        } = [];
 
         internal CapturingHandler Enqueue(HttpStatusCode statusCode, string content)
         {

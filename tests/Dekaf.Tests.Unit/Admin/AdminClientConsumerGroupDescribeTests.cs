@@ -203,8 +203,14 @@ public sealed class AdminClientConsumerGroupDescribeTests
         var (admin, connection) = CreateAdminWithMockConnection();
         await using var disposal = admin;
         var assignment = AdminClientClassicGroupDescriptionTests.AssignmentBytes(version);
-        if (topicLength < 0) assignment = AdminClientClassicGroupDescriptionTests.NegativeTopicNameAssignmentBytes(topicLength);
-        if (!complete) assignment = assignment[..^4];
+        if (topicLength < 0)
+        {
+            assignment = AdminClientClassicGroupDescriptionTests.NegativeTopicNameAssignmentBytes(topicLength);
+        }
+        if (!complete)
+        {
+            assignment = assignment[..^4];
+        }
         connection.SendAsync<FindCoordinatorRequest, FindCoordinatorResponse>(
                 Arg.Any<FindCoordinatorRequest>(), Arg.Any<short>(), Arg.Any<CancellationToken>())
             .Returns(ValueTask.FromResult(new FindCoordinatorResponse
@@ -217,8 +223,13 @@ public sealed class AdminClientConsumerGroupDescribeTests
             {
                 Groups = [new ConsumerGroupDescribeGroup
                 {
-                    GroupId = "classic-group", ErrorCode = ErrorCode.GroupIdNotFound,
-                    GroupState = "", GroupEpoch = -1, AssignmentEpoch = -1, AssignorName = "", Members = []
+                    GroupId = "classic-group",
+                    ErrorCode = ErrorCode.GroupIdNotFound,
+                    GroupState = "",
+                    GroupEpoch = -1,
+                    AssignmentEpoch = -1,
+                    AssignorName = "",
+                    Members = []
                 }]
             }));
         connection.SendAsync<DescribeGroupsRequest, DescribeGroupsResponse>(
@@ -227,7 +238,9 @@ public sealed class AdminClientConsumerGroupDescribeTests
             {
                 Groups = [new DescribeGroupsResponseGroup
                 {
-                    GroupId = "classic-group", GroupState = "Stable", ProtocolType = "consumer",
+                    GroupId = "classic-group",
+                    GroupState = "Stable",
+                    ProtocolType = "consumer",
                     Members = [new DescribeGroupsResponseMember { MemberId = "member", MemberAssignment = assignment }]
                 }]
             }));
@@ -235,9 +248,13 @@ public sealed class AdminClientConsumerGroupDescribeTests
         var description = (await admin.DescribeConsumerGroupsAsync(["classic-group"]))["classic-group"];
         var member = description.Members.Single();
         if (complete && topicLength >= 0 && version >= 0)
+        {
             await Assert.That(member.Assignment!).IsEquivalentTo([new TopicPartition("topic", 2)]);
+        }
         else
+        {
             await Assert.That(member.Assignment).IsNull();
+        }
         await connection.Received(1).SendAsync<ConsumerGroupDescribeRequest, ConsumerGroupDescribeResponse>(
             Arg.Any<ConsumerGroupDescribeRequest>(), Arg.Any<short>(), Arg.Any<CancellationToken>());
         await connection.Received(1).SendAsync<DescribeGroupsRequest, DescribeGroupsResponse>(

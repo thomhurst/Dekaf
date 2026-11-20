@@ -17,12 +17,18 @@ public sealed class CreateTopicsResponse : IKafkaResponse
     /// The duration in milliseconds for which the request was throttled due to quota violation
     /// (v2+, zero if not throttled).
     /// </summary>
-    public int ThrottleTimeMs { get; init; }
+    public int ThrottleTimeMs
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Results for each topic.
     /// </summary>
-    public required IReadOnlyList<CreateTopicsResponseTopic> Topics { get; init; }
+    public required IReadOnlyList<CreateTopicsResponseTopic> Topics
+    {
+        get; init;
+    }
 
     public static IKafkaResponse Read(ref KafkaProtocolReader reader, short version)
     {
@@ -53,37 +59,58 @@ public sealed class CreateTopicsResponseTopic
     /// <summary>
     /// The topic name.
     /// </summary>
-    public required string Name { get; init; }
+    public required string Name
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The topic ID (v7+).
     /// </summary>
-    public Guid TopicId { get; init; }
+    public Guid TopicId
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The error code, or 0 if there was no error.
     /// </summary>
-    public ErrorCode ErrorCode { get; init; }
+    public ErrorCode ErrorCode
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The error message, or null if there was no error (v1+).
     /// </summary>
-    public string? ErrorMessage { get; init; }
+    public string? ErrorMessage
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Number of partitions of the topic (v5+).
     /// </summary>
-    public int NumPartitions { get; init; } = -1;
+    public int NumPartitions
+    {
+        get; init;
+    } = -1;
 
     /// <summary>
     /// Replication factor of the topic (v5+).
     /// </summary>
-    public short ReplicationFactor { get; init; } = -1;
+    public short ReplicationFactor
+    {
+        get; init;
+    } = -1;
 
     /// <summary>
     /// Configuration entries (v5+).
     /// </summary>
-    public IReadOnlyList<CreateTopicsResponseConfig>? Configs { get; init; }
+    public IReadOnlyList<CreateTopicsResponseConfig>? Configs
+    {
+        get; init;
+    }
 
     public static CreateTopicsResponseTopic Read(ref KafkaProtocolReader reader, short version)
     {
@@ -129,27 +156,42 @@ public sealed class CreateTopicsResponseConfig
     /// <summary>
     /// The configuration name.
     /// </summary>
-    public required string Name { get; init; }
+    public required string Name
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The configuration value.
     /// </summary>
-    public string? Value { get; init; }
+    public string? Value
+    {
+        get; init;
+    }
 
     /// <summary>
     /// True if the configuration is read-only.
     /// </summary>
-    public bool ReadOnly { get; init; }
+    public bool ReadOnly
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The configuration source (v5+).
     /// </summary>
-    public sbyte ConfigSource { get; init; } = -1;
+    public sbyte ConfigSource
+    {
+        get; init;
+    } = -1;
 
     /// <summary>
     /// True if the config is sensitive.
     /// </summary>
-    public bool IsSensitive { get; init; }
+    public bool IsSensitive
+    {
+        get; init;
+    }
 
     public static CreateTopicsResponseConfig Read(ref KafkaProtocolReader reader, short version)
     {

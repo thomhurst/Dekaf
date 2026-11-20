@@ -25,18 +25,26 @@ public sealed class KafkaProducerMetricsTests
             onLong: (instrument, measurement, tags, _) =>
             {
                 if (GetTag(tags, DekafDiagnostics.MessagingDestinationName) != topic)
+                {
                     return;
+                }
 
                 if (instrument.Name == "messaging.client.sent.messages")
+                {
                     messagesSent += measurement;
+                }
                 else if (instrument.Name == "dekaf.producer.sent.bytes")
+                {
                     bytesSent += measurement;
+                }
             },
             onDouble: (instrument, measurement, tags, _) =>
             {
                 var metricTopic = GetTag(tags, DekafDiagnostics.MessagingDestinationName);
                 if (metricTopic != topic)
+                {
                     return;
+                }
 
                 if (instrument.Name == "messaging.client.operation.duration")
                 {
@@ -89,7 +97,9 @@ public sealed class KafkaProducerMetricsTests
             onLong: (instrument, measurement, tags, _) =>
             {
                 if (GetTag(tags, DekafDiagnostics.MessagingDestinationName) != topic)
+                {
                     return;
+                }
 
                 if (instrument.Name == "dekaf.producer.send.errors")
                 {
@@ -100,7 +110,9 @@ public sealed class KafkaProducerMetricsTests
             onDouble: (instrument, measurement, tags, _) =>
             {
                 if (GetTag(tags, DekafDiagnostics.MessagingDestinationName) != topic)
+                {
                     return;
+                }
 
                 if (instrument.Name == "messaging.client.operation.duration")
                 {

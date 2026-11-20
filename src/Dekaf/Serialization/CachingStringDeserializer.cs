@@ -89,7 +89,9 @@ internal sealed class CachingStringDeserializer : ISerde<string>
         var desiredSlots = Math.Clamp(maxCachedEntries, 2, ObserveTableMaxSlots);
         var slots = (int)BitOperations.RoundUpToPowerOf2((uint)desiredSlots);
         if (slots > desiredSlots)
+        {
             slots >>= 1;
+        }
         _observeTable = new uint[slots];
         // Start in observe mode: -1 routes every lookup through the observe serde.
         _inner = _observeSerde;
@@ -112,7 +114,9 @@ internal sealed class CachingStringDeserializer : ISerde<string>
     public string Deserialize(ReadOnlyMemory<byte> data, SerializationContext context)
     {
         if (!IsCacheEligible(data.Length, _maxCachedBytes))
+        {
             return _inner.Deserialize(data, context);
+        }
 
         return DeserializeWithCache(data, context);
     }
@@ -136,7 +140,9 @@ internal sealed class CachingStringDeserializer : ISerde<string>
         var cache = Volatile.Read(ref _cache);
 
         if (cache.Entries.TryGetValue(hash, out var cachedValue))
+        {
             return cachedValue;
+        }
 
         _cachedMisses++;
         var result = _configuredInner.Deserialize(data, context);
@@ -167,7 +173,9 @@ internal sealed class CachingStringDeserializer : ISerde<string>
         _cachedFills = 0;
 
         if (productive >= DemoteMinProductive)
+        {
             return false;
+        }
 
         // Retire the generation in O(1); clearing every entry here would stall Deserialize.
         // Racing callers still holding the old generation keep working against it.

@@ -130,7 +130,9 @@ public sealed class JsonSchemaRegistrySerializer<T> :
             config.AutoRegisterSchemas);
         _schemaIdStrategy = config.SchemaIdStrategy;
         if (_schemaIdStrategy is not (SchemaIdSerializerStrategy.Prefix or SchemaIdSerializerStrategy.Header))
+        {
             throw new ArgumentOutOfRangeException(nameof(config), _schemaIdStrategy, "Unknown schema identity strategy.");
+        }
         _schema = new Schema
         {
             SchemaType = SchemaType.Json,
@@ -296,7 +298,9 @@ public sealed class JsonSchemaRegistrySerializer<T> :
             config.AutoRegisterSchemas);
         _schemaIdStrategy = config.SchemaIdStrategy;
         if (_schemaIdStrategy is not (SchemaIdSerializerStrategy.Prefix or SchemaIdSerializerStrategy.Header))
+        {
             throw new ArgumentOutOfRangeException(nameof(config), _schemaIdStrategy, "Unknown schema identity strategy.");
+        }
         _schema = new Schema
         {
             SchemaType = SchemaType.Json,
@@ -693,7 +697,9 @@ public sealed class JsonSchemaRegistrySerializer<T> :
         CancellationToken cancellationToken = default)
     {
         if (_subjectSchemaIdCache.TryGet(topic, isKey, out var cached))
+        {
             return new ValueTask<ResolvedSchemaContext>(ToResolvedContext(cached));
+        }
 
         return PrepareCoreAsync(topic, isKey, cancellationToken);
     }
@@ -783,10 +789,14 @@ public sealed class JsonSchemaRegistrySerializer<T> :
                 else
                 {
                     if (_validationRulesExecution == ValidationRulesExecution.BeforeDomainRules)
+                    {
                         validationRules.ValidateRules(payload, schemaId, _validationRulesFailFast);
+                    }
                     validator?.Validate(payload.Span, schemaId);
                     if (_validationRulesExecution == ValidationRulesExecution.AfterDomainRules)
+                    {
                         validationRules.ValidateRules(payload, schemaId, _validationRulesFailFast);
+                    }
                 }
             }
             else
@@ -816,12 +826,16 @@ public sealed class JsonSchemaRegistrySerializer<T> :
                     {
                         if (validationRules is not null &&
                             _validationRulesExecution == ValidationRulesExecution.BeforeDomainRules)
+                        {
                             validationRules.ValidateRules(payload, schemaId, _validationRulesFailFast);
+                        }
                         validator?.Validate(payload.Span, schemaId);
                         payload = _ruleExecutor.TransformSerializedPayload(payload, ruleContext);
                         if (validationRules is not null &&
                             _validationRulesExecution == ValidationRulesExecution.AfterDomainRules)
+                        {
                             validationRules.ValidateRules(payload, schemaId, _validationRulesFailFast);
+                        }
                     }
                 }
                 finally
@@ -855,7 +869,9 @@ public sealed class JsonSchemaRegistrySerializer<T> :
         finally
         {
             if (payloadBuffer.Capacity > 1024 * 1024)
+            {
                 writerCache.DiscardCurrent();
+            }
             t_writerCache = writerCache;
         }
     }
@@ -917,10 +933,14 @@ public sealed class JsonSchemaRegistrySerializer<T> :
                 else
                 {
                     if (_validationRulesExecution == ValidationRulesExecution.BeforeDomainRules)
+                    {
                         validationRules.ValidateRules(payload, schemaId, _validationRulesFailFast);
+                    }
                     validator?.Validate(payload.Span, schemaId);
                     if (_validationRulesExecution == ValidationRulesExecution.AfterDomainRules)
+                    {
                         validationRules.ValidateRules(payload, schemaId, _validationRulesFailFast);
+                    }
                 }
             }
             else
@@ -950,12 +970,16 @@ public sealed class JsonSchemaRegistrySerializer<T> :
                     {
                         if (validationRules is not null &&
                             _validationRulesExecution == ValidationRulesExecution.BeforeDomainRules)
+                        {
                             validationRules.ValidateRules(payload, schemaId, _validationRulesFailFast);
+                        }
                         validator?.Validate(payload.Span, schemaId);
                         payload = _ruleExecutor.TransformSerializedPayload(payload, ruleContext);
                         if (validationRules is not null &&
                             _validationRulesExecution == ValidationRulesExecution.AfterDomainRules)
+                        {
                             validationRules.ValidateRules(payload, schemaId, _validationRulesFailFast);
+                        }
                     }
                 }
                 finally
@@ -990,7 +1014,9 @@ public sealed class JsonSchemaRegistrySerializer<T> :
         finally
         {
             if (payloadBuffer.Capacity > 1024 * 1024)
+            {
                 writerCache.DiscardCurrent();
+            }
             t_writerCache = writerCache;
         }
     }
@@ -1006,7 +1032,9 @@ public sealed class JsonSchemaRegistrySerializer<T> :
     private SubjectSchemaIdCache.SubjectSchemaIdCacheEntry GetSchemaForContext(string topic, bool isKey)
     {
         if (_subjectSchemaIdCache.TryGet(topic, isKey, out var cached))
+        {
             return cached;
+        }
 
         return GetSchemaForContextSlow(topic, isKey);
     }
@@ -1019,7 +1047,9 @@ public sealed class JsonSchemaRegistrySerializer<T> :
             ? Volatile.Read(ref state.Cache)
             : _subjectSchemaIdCache;
         if (cache.TryGet(topic, isKey, out var cached))
+        {
             return cached;
+        }
 
         if (state is not null)
         {
@@ -1054,7 +1084,9 @@ public sealed class JsonSchemaRegistrySerializer<T> :
             var state = (SerializerSubjectNameStrategyState)_asyncSubjectNameStrategy;
             var cache = Volatile.Read(ref state.Cache);
             if (cache.TryGet(topic, isKey, out var cached))
+            {
                 return new ValueTask<ResolvedSchemaContext>(ToResolvedContext(cached));
+            }
 
             return PrepareAssociatedCoreAsync(
                 topic,
@@ -1130,12 +1162,16 @@ public sealed class JsonSchemaRegistrySerializer<T> :
                     subject,
                     in value);
                 if (ReferenceEquals(cache, Volatile.Read(ref state.Cache)))
+                {
                     return ToResolvedContext(cached);
+                }
             }
 
             cache = Volatile.Read(ref state.Cache);
             if (cache.TryGet(topic, isKey, out var current))
+            {
                 return ToResolvedContext(current);
+            }
         }
 
         throw new InvalidOperationException(
@@ -1357,7 +1393,10 @@ public sealed class JsonSchemaRegistrySerializer<T> :
         IAsyncSubjectNameStrategy,
         IAssociatedNameCacheInvalidationTarget
     {
-        internal IAsyncSubjectNameStrategy Strategy { get; } = strategy;
+        internal IAsyncSubjectNameStrategy Strategy
+        {
+            get;
+        } = strategy;
         internal SubjectSchemaIdCache Cache = new();
 
         public ValueTask<string> GetSubjectNameAsync(
@@ -1376,7 +1415,9 @@ public sealed class JsonSchemaRegistrySerializer<T> :
     public ValueTask DisposeAsync()
     {
         if (_ownsClient)
+        {
             _schemaRegistry.Dispose();
+        }
         return ValueTask.CompletedTask;
     }
 
@@ -1654,7 +1695,9 @@ public sealed class JsonSchemaRegistryDeserializer<T> :
         CancellationToken cancellationToken)
     {
         if (context is { IsNull: true, Component: SerializationComponent.Value })
+        {
             return default;
+        }
 
         if (_schemaIdStrategy == SchemaIdDeserializerStrategy.Prefix)
         {
@@ -1799,7 +1842,9 @@ public sealed class JsonSchemaRegistryDeserializer<T> :
     void IRecordHeaderRoutingProvider.CollectHeaderNames(List<string> names)
     {
         if (_schemaIdStrategy == SchemaIdDeserializerStrategy.Prefix)
+        {
             return;
+        }
 
         AddHeaderName(names, SchemaIdentityHeaderNames.Key);
         AddHeaderName(names, SchemaIdentityHeaderNames.Value);
@@ -1812,7 +1857,9 @@ public sealed class JsonSchemaRegistryDeserializer<T> :
         string? preparedSubject)
     {
         if (context is { IsNull: true, Component: SerializationComponent.Value })
+        {
             return default!;
+        }
 
         var identity = ReadIdentity(data, identityHeader, out var payloadOffset);
         return DeserializeCore(data, context, identity, payloadOffset, preparedSubject);
@@ -1885,10 +1932,14 @@ public sealed class JsonSchemaRegistryDeserializer<T> :
                     else
                     {
                         if (_validationRulesExecution == ValidationRulesExecution.BeforeDomainRules)
+                        {
                             validationRules!.ValidateRules(payload, schemaId, _validationRulesFailFast);
+                        }
                         payload = _ruleExecutor!.TransformDeserializedPayload(payload, ruleContext);
                         if (_validationRulesExecution == ValidationRulesExecution.AfterDomainRules)
+                        {
                             validationRules!.ValidateRules(payload, schemaId, _validationRulesFailFast);
+                        }
                     }
                 }
                 finally
@@ -1931,18 +1982,20 @@ public sealed class JsonSchemaRegistryDeserializer<T> :
             // Verify the schema exists. Cache hits avoid Task allocation and sync-over-async.
             schema = guidSchema?.Schema ?? _schemaRegistry.GetSchemaSync(schemaId, SchemaRegistryTimeout);
             if (guidSchema is not null)
+            {
                 schemaId = guidSchema.SchemaId;
+            }
         }
 
         if (_validatorFactory is not null)
+        {
             _validatorFactory.GetOrCreate(schema).Validate(payload, schemaId);
+        }
 
         return _deserializePayload(payload.Span);
     }
 
-    private static (
-        IJsonSchemaValidatorFactory? ValidatorFactory,
-        IJsonSchemaValidatorFactory? ValidationRulesFactory)
+    private static (IJsonSchemaValidatorFactory? ValidatorFactory, IJsonSchemaValidatorFactory? ValidationRulesFactory)
         GetDeserializerValidationFactories(
             JsonSchemaValidationOptions validationOptions,
             ISchemaRegistryRuleExecutor? ruleExecutor)
@@ -1950,7 +2003,9 @@ public sealed class JsonSchemaRegistryDeserializer<T> :
         var validatorFactory = validationOptions.GetDeserializerFactory();
         var validationRulesFactory = validationOptions.GetValidationRulesFactory(ruleExecutor);
         if (ruleExecutor is not null || validationRulesFactory is null)
+        {
             return (validatorFactory, validationRulesFactory);
+        }
 
         return (
             new JsonSchemaValidationPipelineFactory(
@@ -2039,7 +2094,9 @@ public sealed class JsonSchemaRegistryDeserializer<T> :
                 $"Schema with GUID {key.SchemaGuid:D} is not a JSON schema. Type: {unscopedSchema.SchemaType}");
         }
         if (_ruleExecutor is null && _migrationRunner is null)
+        {
             return new GuidResolvedSchema(-1, null, unscopedSchema);
+        }
 
         var subject = _subjectNames is null
             ? SubjectNameResolver.GetTopicSubjectName(key.Topic, key.IsKey)
@@ -2080,7 +2137,9 @@ public sealed class JsonSchemaRegistryDeserializer<T> :
     private static void AddHeaderName(List<string> names, string name)
     {
         if (!names.Contains(name))
+        {
             names.Add(name);
+        }
     }
 
     private static string GetIdentityHeaderName(SerializationComponent component) => component switch
@@ -2102,7 +2161,9 @@ public sealed class JsonSchemaRegistryDeserializer<T> :
             out payloadOffset,
             out var trailingHeaderData);
         if (!trailingHeaderData.IsEmpty)
+        {
             throw new InvalidDataException("JSON schema identity headers cannot contain trailing data.");
+        }
         return identity;
     }
 
@@ -2152,7 +2213,9 @@ public sealed class JsonSchemaRegistryDeserializer<T> :
     public ValueTask DisposeAsync()
     {
         if (_ownsClient)
+        {
             _schemaRegistry.Dispose();
+        }
         return ValueTask.CompletedTask;
     }
 

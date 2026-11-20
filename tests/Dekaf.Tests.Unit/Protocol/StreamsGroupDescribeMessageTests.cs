@@ -337,15 +337,15 @@ public sealed class StreamsGroupDescribeMessageTests
         sbyte status,
         StreamsTopologyDescriptionData? description,
         string? assignorName) => new()
-    {
-        GroupId = groupId,
-        GroupState = "Stable",
-        Members = [],
-        AuthorizedOperations = 8,
-        TopologyDescription = description,
-        TopologyDescriptionStatus = status,
-        AssignorName = assignorName
-    };
+        {
+            GroupId = groupId,
+            GroupState = "Stable",
+            Members = [],
+            AuthorizedOperations = 8,
+            TopologyDescription = description,
+            TopologyDescriptionStatus = status,
+            AssignorName = assignorName
+        };
 
     private static StreamsTopologyDescriptionData CreateDescription() => new()
     {
@@ -379,14 +379,14 @@ public sealed class StreamsGroupDescribeMessageTests
         string? sinkTopic = null,
         IReadOnlyList<string>? stores = null,
         IReadOnlyList<string>? successors = null) => new()
-    {
-        Name = name,
-        NodeType = nodeType,
-        SourceTopics = sourceTopics ?? [],
-        SinkTopic = sinkTopic,
-        Stores = stores ?? [],
-        Successors = successors ?? []
-    };
+        {
+            Name = name,
+            NodeType = nodeType,
+            SourceTopics = sourceTopics ?? [],
+            SinkTopic = sinkTopic,
+            Stores = stores ?? [],
+            Successors = successors ?? []
+        };
 
     private static StreamsGroupDescribeTopicInfo TopicInfo(string name) => new()
     {

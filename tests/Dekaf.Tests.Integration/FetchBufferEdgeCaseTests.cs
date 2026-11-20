@@ -73,7 +73,9 @@ public sealed class FetchBufferEdgeCaseTests(KafkaTestContainer kafka) : KafkaIn
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         deadline.CancelAfter(TimeSpan.FromSeconds(20));
         while (memoryPool.DepletedDurationSeconds == 0)
+        {
             await Task.Delay(10, deadline.Token);
+        }
         var queuedFetch = connection.SendPipelinedAsync<FetchRequest, FetchResponse>(
             new FetchRequest { ResponseMemoryPool = memoryPool }, 16, cancellationToken);
         var metadata = connection.SendAsync<MetadataRequest, MetadataResponse>(
@@ -285,7 +287,9 @@ public sealed class FetchBufferEdgeCaseTests(KafkaTestContainer kafka) : KafkaIn
         {
             observedPartitions.Add(message.Partition);
             if (observedPartitions.Count == partitionCount || --remainingMessages == 0)
+            {
                 break;
+            }
         }
 
         await Assert.That(observedPartitions).Count().IsEqualTo(partitionCount);
@@ -342,10 +346,14 @@ public sealed class FetchBufferEdgeCaseTests(KafkaTestContainer kafka) : KafkaIn
 
         var depletionDeadline = Stopwatch.GetTimestamp() + (5 * Stopwatch.Frequency);
         while (pool.DepletedDurationSeconds == 0 && Stopwatch.GetTimestamp() < depletionDeadline)
+        {
             await Task.Delay(10, consumeTimeout.Token);
+        }
 
         using (var coordinatorTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(5)))
+        {
             await consumer.CommitAsync(coordinatorTimeout.Token);
+        }
 
         var messages = await ConsumeMessagesAsync(consumer, messageCount - 1);
 
@@ -414,7 +422,9 @@ public sealed class FetchBufferEdgeCaseTests(KafkaTestContainer kafka) : KafkaIn
 
         var depletionDeadline = Stopwatch.GetTimestamp() + (5 * Stopwatch.Frequency);
         while (pool.DepletedDurationSeconds == 0 && Stopwatch.GetTimestamp() < depletionDeadline)
+        {
             await Task.Delay(10, consumeTimeout.Token);
+        }
         await Assert.That(pool.DepletedDurationSeconds).IsGreaterThan(0);
 
         // The application stalls well past RequestTimeout with the fetch buffer full.
@@ -471,7 +481,10 @@ public sealed class FetchBufferEdgeCaseTests(KafkaTestContainer kafka) : KafkaIn
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))
         {
             messages.Add(msg);
-            if (messages.Count >= sizes.Length) break;
+            if (messages.Count >= sizes.Length)
+            {
+                break;
+            }
         }
 
         // Assert - all messages consumed with correct sizes, in order
@@ -527,7 +540,10 @@ public sealed class FetchBufferEdgeCaseTests(KafkaTestContainer kafka) : KafkaIn
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))
         {
             messages.Add(msg);
-            if (messages.Count >= messageCount) break;
+            if (messages.Count >= messageCount)
+            {
+                break;
+            }
         }
 
         // Assert - all messages should be consumed despite the small per-partition limit

@@ -382,7 +382,9 @@ public sealed partial class KafkaConsumerServiceTests
         {
             await listener.OnPartitionsRevokedAsync([OwnedPartition], CancellationToken.None);
             if (synchronized)
+            {
                 assignment.Remove(OwnedPartition);
+            }
         };
 
         await ProcessOwnedRecordAsync(service);
@@ -428,7 +430,9 @@ public sealed partial class KafkaConsumerServiceTests
         {
             await listener!.OnPartitionsRevokedAsync([OwnedPartition], CancellationToken.None);
             if (synchronized)
+            {
                 assignment.Remove(OwnedPartition);
+            }
             return default;
         }
     }
@@ -501,7 +505,9 @@ public sealed partial class KafkaConsumerServiceTests
                 _ => null
             });
         if (failureHandling is "deadLetter" or "retryTopic")
+        {
             SetDlqProducer(service, producer);
+        }
         var listener = CreatePostponementListener(service);
         await listener.OnPartitionsRevokedAsync([OwnedPartition], CancellationToken.None);
 
@@ -552,12 +558,17 @@ public sealed partial class KafkaConsumerServiceTests
     /// <summary>Retries after the given delay on the first failure only.</summary>
     private sealed class BackoffPolicy(TimeSpan delay) : IRetryPolicy
     {
-        public TaskCompletionSource DelayRequested { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource DelayRequested
+        {
+            get;
+        } = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         public TimeSpan? GetNextDelay(int attemptNumber, Exception exception)
         {
             if (attemptNumber > 1)
+            {
                 return null;
+            }
 
             DelayRequested.TrySetResult();
             return delay;
@@ -632,7 +643,9 @@ public sealed partial class KafkaConsumerServiceTests
             foreach (var partition in partitions)
             {
                 if (consumer.PendingRevocations.Remove(partition))
+                {
                     consumer.ReassignedSinceFetch.Add(partition);
+                }
             }
 
             return inner.OnPartitionsAssignedAsync(partitions, cancellationToken);
@@ -678,10 +691,16 @@ public sealed partial class KafkaConsumerServiceTests
         private int _attempts;
 
         /// <summary>Runs inside the first ProcessAsync, before the record fails: a rebalance mid-processing.</summary>
-        public Func<ValueTask>? DuringProcessing { get; set; }
+        public Func<ValueTask>? DuringProcessing
+        {
+            get; set;
+        }
 
         /// <summary>The attempt from which processing succeeds; 0 means it always fails.</summary>
-        public int SucceedFromAttempt { get; set; }
+        public int SucceedFromAttempt
+        {
+            get; set;
+        }
 
         public int Attempts => Volatile.Read(ref _attempts);
 
@@ -689,10 +708,14 @@ public sealed partial class KafkaConsumerServiceTests
         {
             var attempt = Interlocked.Increment(ref _attempts);
             if (attempt == 1 && DuringProcessing is { } duringProcessing)
+            {
                 await duringProcessing();
+            }
 
             if (SucceedFromAttempt > 0 && attempt >= SucceedFromAttempt)
+            {
                 return;
+            }
 
             throw new InvalidOperationException("Processing failed");
         }

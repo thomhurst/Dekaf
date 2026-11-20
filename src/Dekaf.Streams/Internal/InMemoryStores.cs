@@ -4,7 +4,10 @@ namespace Dekaf.Streams.Internal;
 
 internal sealed class InMemoryStateStoreEngine : IStateStoreEngine
 {
-    public static InMemoryStateStoreEngine Instance { get; } = new();
+    public static InMemoryStateStoreEngine Instance
+    {
+        get;
+    } = new();
 
     public IKeyValueBytesStore CreateKeyValueStore(StateStoreContext context) => new InMemoryKeyValueBytesStore();
 
@@ -14,7 +17,10 @@ internal sealed class InMemoryStateStoreEngine : IStateStoreEngine
 /// <summary>Byte-array keys that can be looked up by span without allocating.</summary>
 internal sealed class BytesComparer : IEqualityComparer<byte[]>, IAlternateEqualityComparer<ReadOnlySpan<byte>, byte[]>
 {
-    public static BytesComparer Instance { get; } = new();
+    public static BytesComparer Instance
+    {
+        get;
+    } = new();
 
     public bool Equals(byte[]? x, byte[]? y) => x.AsSpan().SequenceEqual(y);
 

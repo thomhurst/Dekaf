@@ -13,12 +13,18 @@ public sealed class DescribeClientQuotasRequest : IKafkaRequest<DescribeClientQu
     /// <summary>
     /// Entity filter components.
     /// </summary>
-    public required IReadOnlyList<DescribeClientQuotasRequestComponent> Components { get; init; }
+    public required IReadOnlyList<DescribeClientQuotasRequestComponent> Components
+    {
+        get; init;
+    }
 
     /// <summary>
     /// True if only entities with exactly these components should match.
     /// </summary>
-    public bool Strict { get; init; }
+    public bool Strict
+    {
+        get; init;
+    }
 
     public static bool IsFlexibleVersion(short version) => version >= 1;
     public static short GetRequestHeaderVersion(short version) => version >= 1 ? (short)2 : (short)1;
@@ -58,17 +64,26 @@ public sealed class DescribeClientQuotasRequestComponent
     /// <summary>
     /// Entity type name: user, client-id, or ip.
     /// </summary>
-    public required string EntityType { get; init; }
+    public required string EntityType
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Match type: 0 exact, 1 default, 2 any specified.
     /// </summary>
-    public required sbyte MatchType { get; init; }
+    public required sbyte MatchType
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Entity name for exact matches, otherwise null.
     /// </summary>
-    public string? Match { get; init; }
+    public string? Match
+    {
+        get; init;
+    }
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {

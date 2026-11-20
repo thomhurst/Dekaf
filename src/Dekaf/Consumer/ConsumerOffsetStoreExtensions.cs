@@ -41,7 +41,9 @@ public static class ConsumerOffsetStoreExtensions
 
         Validate(offsets);
         for (var index = 0; index < offsets.Length; index++)
+        {
             consumer.StoreOffset(offsets[index]);
+        }
     }
 
     /// <summary>Stores next offsets from an indexed collection without boxing value-type collections.</summary>
@@ -55,7 +57,9 @@ public static class ConsumerOffsetStoreExtensions
     {
         ArgumentNullException.ThrowIfNull(consumer);
         if (offsets is null)
+        {
             throw new ArgumentNullException(nameof(offsets));
+        }
 
         if (consumer is KafkaConsumer<TKey, TValue> kafkaConsumer)
         {
@@ -72,13 +76,17 @@ public static class ConsumerOffsetStoreExtensions
         Validate(offsets);
         var count = offsets.Count;
         for (var index = 0; index < count; index++)
+        {
             consumer.StoreOffset(offsets[index]);
+        }
     }
 
     private static void Validate(ReadOnlySpan<TopicPartitionOffset> offsets)
     {
         for (var index = 0; index < offsets.Length; index++)
+        {
             TopicPartitionOffsetValidator.Validate(offsets[index], nameof(offsets));
+        }
     }
 
     private static void Validate<TOffsets>(TOffsets offsets)
@@ -86,6 +94,8 @@ public static class ConsumerOffsetStoreExtensions
     {
         var count = offsets.Count;
         for (var index = 0; index < count; index++)
+        {
             TopicPartitionOffsetValidator.Validate(offsets[index], nameof(offsets));
+        }
     }
 }

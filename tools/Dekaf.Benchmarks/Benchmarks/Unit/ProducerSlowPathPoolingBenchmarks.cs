@@ -18,13 +18,16 @@ public class ProducerSlowPathPoolingBenchmarks
 {
     private const string Topic = "producer-slow-path-pooling";
 
-    private static readonly Action<RecordMetadata, Exception?> DeliveryHandler = static (_, _) => { };
+    private static readonly Action<RecordMetadata, Exception?> DeliveryHandler = static (_, _) =>
+    {
+    };
 
     private readonly DeferredBoolSource _source = new();
     private FinishDelegate _finish = null!;
     private FinishWithCallbackDelegate _finishWithCallback = null!;
 
     private delegate ValueTask FinishDelegate(ValueTask<bool> appendResult, Activity? activity, string topic);
+
     private delegate ValueTask FinishWithCallbackDelegate(
         ValueTask<bool> appendResult,
         Action<RecordMetadata, Exception?> deliveryHandler);

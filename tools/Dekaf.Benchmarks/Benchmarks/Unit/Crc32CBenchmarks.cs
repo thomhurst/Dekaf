@@ -14,7 +14,10 @@ public class Crc32CBenchmarks
     private byte[] _data = null!;
 
     [Params(128, 512, 1024, 1536, 4096, 16384, 65536, 262_144, 524_288, 1_048_576)]
-    public int Size { get; set; }
+    public int Size
+    {
+        get; set;
+    }
 
     [GlobalSetup]
     public void Setup()
@@ -52,7 +55,10 @@ public class Crc32CBenchmarks
 public class Crc32CCombineBenchmarks
 {
     [Params(40, 512, 4_096, 65_536, 850_000, 1_048_576)]
-    public int SuffixSize { get; set; }
+    public int SuffixSize
+    {
+        get; set;
+    }
 
     [Benchmark]
     public uint Combine()

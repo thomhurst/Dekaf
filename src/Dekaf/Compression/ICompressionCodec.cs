@@ -12,7 +12,10 @@ public interface ICompressionCodec
     /// <summary>
     /// The compression type.
     /// </summary>
-    CompressionType Type { get; }
+    CompressionType Type
+    {
+        get;
+    }
 
     /// <summary>
     /// Compresses data.
@@ -62,7 +65,10 @@ public sealed class CompressionCodecRegistry
     /// changes affect all clients in the same process. If multiple clients need different codec
     /// configurations, create separate <see cref="CompressionCodecRegistry"/> instances instead.
     /// </summary>
-    public static CompressionCodecRegistry Default { get; } = new();
+    public static CompressionCodecRegistry Default
+    {
+        get;
+    } = new();
 
     /// <summary>
     /// Default compression level hint for codec registration.
@@ -100,7 +106,9 @@ public sealed class CompressionCodecRegistry
     internal CompressionCodecRegistry WithCompressionLevel(CompressionType type, int compressionLevel)
     {
         if (GetCodec(type) is not ICompressionCodecWithLevel configurableCodec)
+        {
             return this; // Codecs such as Snappy have no configurable level.
+        }
 
         // Validate and create the codec before taking a snapshot. All of this work
         // happens once per producer, never while compressing a batch.

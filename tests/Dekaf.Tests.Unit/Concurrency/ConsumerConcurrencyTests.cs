@@ -71,7 +71,9 @@ public class ConsumerConcurrencyTests
                 lock (lockObj)
                 {
                     foreach (var tp in partitions)
+                    {
                         assignment.Add(tp);
+                    }
                 }
             });
 
@@ -81,7 +83,9 @@ public class ConsumerConcurrencyTests
                 lock (lockObj)
                 {
                     foreach (var tp in partitions)
+                    {
                         assignment.Remove(tp);
+                    }
                 }
             });
 

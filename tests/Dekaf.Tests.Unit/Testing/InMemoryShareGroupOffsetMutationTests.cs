@@ -30,9 +30,13 @@ public class InMemoryShareGroupOffsetMutationTests
         await MutateAsync();
         var stored = cluster.GetShareGroupOffsets("group");
         if (delete)
+        {
             await Assert.That(stored).IsEmpty();
+        }
         else
+        {
             await Assert.That(stored[partition]).IsEqualTo(42);
+        }
 
         Task MutateAsync() => delete
             ? admin.DeleteShareGroupOffsetsAsync("group", ["orders"]).AsTask()
@@ -132,7 +136,9 @@ public class InMemoryShareGroupOffsetMutationTests
         var stored = cluster.GetShareGroupOffsets("group");
         await Assert.That(stored[new("retained", 0)]).IsEqualTo(9);
         if (delete)
+        {
             await Assert.That(stored.Count).IsEqualTo(1);
+        }
         else
         {
             await Assert.That(stored[new("orders", 0)]).IsEqualTo(42);

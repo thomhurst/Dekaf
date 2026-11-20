@@ -126,14 +126,14 @@ public class IncrementalBatchBufferTests
         BufferMemoryAllocationStrategy strategy,
         int batchSize = 1024 * 1024,
         int maxRequestSize = 1024 * 1024) => new()
-    {
-        BootstrapServers = ["localhost:9092"],
-        BufferMemory = 64 * 1024 * 1024,
-        BatchSize = batchSize,
-        MaxRequestSize = maxRequestSize,
-        LingerMs = 10_000,
-        BufferMemoryAllocationStrategy = strategy
-    };
+        {
+            BootstrapServers = ["localhost:9092"],
+            BufferMemory = 64 * 1024 * 1024,
+            BatchSize = batchSize,
+            MaxRequestSize = maxRequestSize,
+            LingerMs = 10_000,
+            BufferMemoryAllocationStrategy = strategy
+        };
 
     private static ReadyBatch CreateCompletedBatch(BufferMemoryAllocationStrategy strategy)
     {
@@ -144,7 +144,9 @@ public class IncrementalBatchBufferTests
             value.AsSpan().Fill((byte)i);
             var result = Append(batch, 1_700_000_000_000 + i, value);
             if (!result.Success)
+            {
                 throw new InvalidOperationException($"Record {i} did not fit.");
+            }
         }
 
         return batch.Complete()!;

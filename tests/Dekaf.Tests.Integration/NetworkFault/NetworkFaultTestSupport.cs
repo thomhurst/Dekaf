@@ -48,7 +48,9 @@ internal sealed class ConnectionHandshakeObserver : IDisposable
         lock (_sync)
         {
             if (_handshakes > baseline)
+            {
                 return Task.CompletedTask;
+            }
 
             waiter = new Waiter(baseline);
             _waiters.Add(waiter);
@@ -84,17 +86,27 @@ internal sealed class ConnectionHandshakeObserver : IDisposable
         }
 
         if (ready is null)
+        {
             return;
+        }
 
         foreach (var waiter in ready)
+        {
             waiter.Completion.TrySetResult();
+        }
     }
 
     private sealed class Waiter(int baseline)
     {
-        public int Baseline { get; } = baseline;
+        public int Baseline
+        {
+            get;
+        } = baseline;
 
-        public TaskCompletionSource Completion { get; } =
+        public TaskCompletionSource Completion
+        {
+            get;
+        } =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
     }
 }

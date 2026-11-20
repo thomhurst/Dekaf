@@ -15,11 +15,20 @@ public sealed class TimeWindows
         IsEmitOnClose = emitOnClose;
     }
 
-    internal long SizeMs { get; }
+    internal long SizeMs
+    {
+        get;
+    }
 
-    internal long AdvanceMs { get; }
+    internal long AdvanceMs
+    {
+        get;
+    }
 
-    internal long GraceMs { get; }
+    internal long GraceMs
+    {
+        get;
+    }
 
     /// <summary>Gets the window size.</summary>
     public TimeSpan Size => TimeSpan.FromMilliseconds(SizeMs);
@@ -31,7 +40,10 @@ public sealed class TimeWindows
     public TimeSpan Grace => TimeSpan.FromMilliseconds(GraceMs);
 
     /// <summary>Gets whether a window's result is forwarded once, when the window closes.</summary>
-    public bool IsEmitOnClose { get; }
+    public bool IsEmitOnClose
+    {
+        get;
+    }
 
     /// <summary>Creates non-overlapping windows of <paramref name="size"/>.</summary>
     public static TimeWindows Tumbling(TimeSpan size) => Hopping(size, size);

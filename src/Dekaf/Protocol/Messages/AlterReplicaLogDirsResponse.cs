@@ -15,12 +15,18 @@ public sealed class AlterReplicaLogDirsResponse : IKafkaResponse
     /// <summary>
     /// The duration in milliseconds for which the request was throttled due to quota violation.
     /// </summary>
-    public int ThrottleTimeMs { get; init; }
+    public int ThrottleTimeMs
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Results for each topic.
     /// </summary>
-    public required IReadOnlyList<AlterReplicaLogDirsResponseTopic> Results { get; init; }
+    public required IReadOnlyList<AlterReplicaLogDirsResponseTopic> Results
+    {
+        get; init;
+    }
 
     public static IKafkaResponse Read(ref KafkaProtocolReader reader, short version)
     {
@@ -55,8 +61,14 @@ public sealed class AlterReplicaLogDirsResponse : IKafkaResponse
 /// </summary>
 public sealed class AlterReplicaLogDirsResponseTopic
 {
-    public required string TopicName { get; init; }
-    public required IReadOnlyList<AlterReplicaLogDirsResponsePartition> Partitions { get; init; }
+    public required string TopicName
+    {
+        get; init;
+    }
+    public required IReadOnlyList<AlterReplicaLogDirsResponsePartition> Partitions
+    {
+        get; init;
+    }
 
     public static AlterReplicaLogDirsResponseTopic Read(ref KafkaProtocolReader reader, short version)
     {
@@ -94,8 +106,14 @@ public sealed class AlterReplicaLogDirsResponseTopic
 /// </summary>
 public sealed class AlterReplicaLogDirsResponsePartition
 {
-    public required int PartitionIndex { get; init; }
-    public required ErrorCode ErrorCode { get; init; }
+    public required int PartitionIndex
+    {
+        get; init;
+    }
+    public required ErrorCode ErrorCode
+    {
+        get; init;
+    }
 
     public static AlterReplicaLogDirsResponsePartition Read(ref KafkaProtocolReader reader, short version)
     {

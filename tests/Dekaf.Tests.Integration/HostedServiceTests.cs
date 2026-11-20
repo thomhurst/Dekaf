@@ -56,9 +56,13 @@ public sealed class HostedServiceTests(KafkaTestContainer kafka) : KafkaIntegrat
 
             // Leave commit mode, interval and offset storage at their defaults.
             if (keyed)
+            {
                 dekaf.AddConsumerService<TestConsumerService, string, string>("consumer", ConfigureConsumer);
+            }
             else
+            {
                 dekaf.AddConsumerService<TestConsumerService, string, string>(ConfigureConsumer);
+            }
         });
 
         using var host = builder.Build();
@@ -70,7 +74,9 @@ public sealed class HostedServiceTests(KafkaTestContainer kafka) : KafkaIntegrat
             {
                 const int messagesPerWave = 5;
                 for (var i = 0; i < messagesPerWave; i++)
+                {
                     await producer.ProduceAsync(topic, $"key-{wave}-{i}", $"value-{wave}-{i}", CancellationToken.None);
+                }
 
                 var expectedOffset = 1 + (wave + 1) * messagesPerWave;
                 await WaitForConditionAsync(
@@ -456,7 +462,9 @@ public sealed class HostedServiceTests(KafkaTestContainer kafka) : KafkaIntegrat
                 c => c.WithBootstrapServers(KafkaContainer.BootstrapServers)
                     .WithGroupId(groupId)
                     .WithAutoOffsetReset(AutoOffsetReset.Earliest),
-                dlq => { });
+                dlq =>
+                {
+                });
         });
 
         var host = builder.Build();
@@ -1045,7 +1053,10 @@ public sealed class HostedServiceTests(KafkaTestContainer kafka) : KafkaIntegrat
 
     private sealed class TestTopicHolder(string topic)
     {
-        public string Topic { get; } = topic;
+        public string Topic
+        {
+            get;
+        } = topic;
     }
 
     private sealed record HostedConsumerSettings(string BootstrapServers, string GroupId);
@@ -1091,7 +1102,10 @@ public sealed class HostedServiceTests(KafkaTestContainer kafka) : KafkaIntegrat
     {
         private int _nextServiceId;
 
-        public ConcurrentBag<ScaleOutProcessedMessage> Processed { get; } = [];
+        public ConcurrentBag<ScaleOutProcessedMessage> Processed
+        {
+            get;
+        } = [];
 
         public int RegisterService() => Interlocked.Increment(ref _nextServiceId);
     }
@@ -1131,7 +1145,10 @@ public sealed class HostedServiceTests(KafkaTestContainer kafka) : KafkaIntegrat
     {
         private int _claimed;
 
-        public TaskCompletionSource HangStarted { get; } =
+        public TaskCompletionSource HangStarted
+        {
+            get;
+        } =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         public bool TryClaim() => Interlocked.Exchange(ref _claimed, 1) == 0;
@@ -1143,15 +1160,26 @@ public sealed class HostedServiceTests(KafkaTestContainer kafka) : KafkaIntegrat
     {
         private int _failureClaimed;
 
-        public MessageFailureDisposition? Disposition { get; } = disposition;
-        public MessageFailureContext<string, string>? Context { get; private set; }
-        public TaskCompletionSource FailureObserved { get; } =
+        public MessageFailureDisposition? Disposition
+        {
+            get;
+        } = disposition;
+        public MessageFailureContext<string, string>? Context
+        {
+            get; private set;
+        }
+        public TaskCompletionSource FailureObserved
+        {
+            get;
+        } =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         public bool ShouldFail(string? value)
         {
             if (value?.StartsWith("fail-", StringComparison.Ordinal) != true)
+            {
                 return false;
+            }
 
             return !failOnce || Interlocked.Exchange(ref _failureClaimed, 1) == 0;
         }
@@ -1189,7 +1217,9 @@ public sealed class HostedServiceTests(KafkaTestContainer kafka) : KafkaIntegrat
             CancellationToken cancellationToken)
         {
             if (_failure.ShouldFail(result.Value))
+            {
                 throw new InvalidOperationException($"Intentional failure for {result.Value}");
+            }
 
             _processed.Add(result.Value!);
             return ValueTask.CompletedTask;
@@ -1253,10 +1283,16 @@ public sealed class HostedServiceTests(KafkaTestContainer kafka) : KafkaIntegrat
         TestTopicHolder topicHolder)
         : KafkaConsumerService<string, string>(consumer, logger)
     {
-        public TaskCompletionSource HangStarted { get; } =
+        public TaskCompletionSource HangStarted
+        {
+            get;
+        } =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
 
-        public TaskCompletionSource ReleaseHang { get; } =
+        public TaskCompletionSource ReleaseHang
+        {
+            get;
+        } =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         protected override IEnumerable<string> Topics => [topicHolder.Topic];
@@ -1315,7 +1351,9 @@ public sealed class HostedServiceTests(KafkaTestContainer kafka) : KafkaIntegrat
         protected override ValueTask ProcessAsync(ConsumeResult<string, string> result, CancellationToken cancellationToken)
         {
             if (result.Value?.StartsWith("fail-", StringComparison.Ordinal) == true)
+            {
                 throw new InvalidOperationException($"Intentional failure for {result.Value}");
+            }
 
             _receivedMessages.Add(result.Value!);
             return ValueTask.CompletedTask;
@@ -1378,7 +1416,9 @@ public sealed class HostedServiceTests(KafkaTestContainer kafka) : KafkaIntegrat
         protected override ValueTask ProcessAsync(ConsumeResult<string, string> result, CancellationToken cancellationToken)
         {
             if (!RetryTopicHeaders.TryGetDueAt(result.Headers, out var dueAt))
+            {
                 throw new InvalidOperationException("Retry due-at header missing.");
+            }
 
             _receivedMessages.Add(new RetryTopicProcessedMessage(
                 result.Value,

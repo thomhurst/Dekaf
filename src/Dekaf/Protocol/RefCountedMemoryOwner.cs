@@ -20,7 +20,9 @@ internal sealed class RefCountedMemoryOwner : IPooledMemory
     private int _refCount;
     private int _pooled;
 
-    private RefCountedMemoryOwner() { }
+    private RefCountedMemoryOwner()
+    {
+    }
 
     public RefCountedMemoryOwner(IPooledMemory inner, int initialRefCount)
     {
@@ -53,7 +55,9 @@ internal sealed class RefCountedMemoryOwner : IPooledMemory
         {
             _inner?.Dispose();
             if (Volatile.Read(ref _pooled) != 0)
+            {
                 s_pool.Return(this);
+            }
         }
         else if (newCount < 0)
         {

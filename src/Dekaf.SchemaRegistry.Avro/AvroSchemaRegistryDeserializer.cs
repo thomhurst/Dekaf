@@ -99,7 +99,9 @@ public sealed class AvroSchemaRegistryDeserializer<
         _taggedFieldTransformers = new AvroTaggedFieldTransformerProvider();
         _config = config ?? new AvroDeserializerConfig();
         if (_config.SchemaIdStrategy is not (SchemaIdDeserializerStrategy.Dual or SchemaIdDeserializerStrategy.Prefix or SchemaIdDeserializerStrategy.Header))
+        {
             throw new ArgumentOutOfRangeException(nameof(config), _config.SchemaIdStrategy, "Unknown schema identity strategy.");
+        }
         _ruleExecutor = _config.RuleExecutor;
         _inlineRuleValidators = AvroValidationConfiguration.Create(
             schemaRegistry,
@@ -159,14 +161,20 @@ public sealed class AvroSchemaRegistryDeserializer<
         CancellationToken cancellationToken)
     {
         if (context is { IsNull: true, Component: SerializationComponent.Value })
+        {
             return default;
+        }
 
         if (_config.SchemaIdStrategy == SchemaIdDeserializerStrategy.Prefix)
         {
             if (!DeserializerSubjectNameCache.TryReadSchemaId(data, out var prefixSchemaId))
+            {
                 return default;
+            }
             if (_migrationRunner is not null)
+            {
                 return PrepareMigrationAsync(prefixSchemaId, context, cancellationToken);
+            }
             return _ruleExecutor is not null
                 && _subjectNames is { RequiresPreparation: true } prefixSubjectNames
                 ? prefixSubjectNames.PrepareAsync(
@@ -195,7 +203,9 @@ public sealed class AvroSchemaRegistryDeserializer<
         }
 
         if (_migrationRunner is not null)
+        {
             return PrepareMigrationAsync(identity.SchemaId!.Value, context, cancellationToken);
+        }
 
         return _ruleExecutor is not null
             && _subjectNames is { RequiresPreparation: true } subjectNames
@@ -425,7 +435,9 @@ public sealed class AvroSchemaRegistryDeserializer<
     void IRecordHeaderRoutingProvider.CollectHeaderNames(List<string> names)
     {
         if (_config.SchemaIdStrategy == SchemaIdDeserializerStrategy.Prefix)
+        {
             return;
+        }
 
         AddHeaderName(names, SchemaIdentityHeaderNames.Key);
         AddHeaderName(names, SchemaIdentityHeaderNames.Value);
@@ -438,7 +450,9 @@ public sealed class AvroSchemaRegistryDeserializer<
         string? preparedSubject)
     {
         if (context is { IsNull: true, Component: SerializationComponent.Value })
+        {
             return default!;
+        }
 
         var identity = ReadIdentity(data, identityHeader, out var payloadOffset);
         return DeserializeCore(data, context, identity, payloadOffset, preparedSubject);
@@ -736,7 +750,9 @@ public sealed class AvroSchemaRegistryDeserializer<
     private static void AddHeaderName(List<string> names, string name)
     {
         if (!names.Contains(name))
+        {
             names.Add(name);
+        }
     }
 
     private static string GetIdentityHeaderName(SerializationComponent component) => component switch
@@ -779,7 +795,9 @@ public sealed class AvroSchemaRegistryDeserializer<
             out payloadOffset,
             out var trailingHeaderData);
         if (!trailingHeaderData.IsEmpty)
+        {
             throw new InvalidDataException("Avro schema identity headers cannot contain trailing data.");
+        }
         return identity;
     }
 
@@ -799,11 +817,15 @@ public sealed class AvroSchemaRegistryDeserializer<
     internal AvroInlineRuleValidator? GetInlineValidator(int schemaId, AvroSchema writerSchema)
     {
         if (_inlineRuleValidators is null)
+        {
             return null;
+        }
 
         var cached = Volatile.Read(ref _lastInlineValidationDecision);
         if (cached >= 0 && (int)(uint)(cached >> 1) == schemaId && (cached & 1) == 0)
+        {
             return null;
+        }
 
         var validator = _inlineRuleValidators.Get(writerSchema);
         var hasRules = validator.HasAnyRules;
@@ -926,13 +948,17 @@ public sealed class AvroSchemaRegistryDeserializer<
         where TReader : class
     {
         if (readers.TryGetValue(key, out var cached))
+        {
             return cached;
+        }
 
         var reader = factory(key);
         while (!readers.TryAdd(key, reader))
         {
             if (readers.TryGetValue(key, out cached))
+            {
                 return cached;
+            }
         }
 
         // Only the winning insertion records eviction work. Keep the exact reader instance
@@ -943,7 +969,9 @@ public sealed class AvroSchemaRegistryDeserializer<
                && evictionQueue.TryDequeue(out var oldest))
         {
             if (((ICollection<KeyValuePair<AvroSchemaPair, TReader>>)readers).Remove(oldest))
+            {
                 Interlocked.Decrement(ref cachedCount);
+            }
         }
 
         return reader;
@@ -982,7 +1010,9 @@ public sealed class AvroSchemaRegistryDeserializer<
     private Lazy<Task<AvroSchema>> GetOrAddWriterSchemaLazy(int schemaId)
     {
         if (_schemaCache.TryGetValue(schemaId, out var cached))
+        {
             return cached;
+        }
 
         return _schemaCache.GetOrAdd(
             schemaId,
@@ -1001,8 +1031,10 @@ public sealed class AvroSchemaRegistryDeserializer<
                 .ConfigureAwait(false);
 
             if (registrySchema.SchemaType != SchemaType.Avro)
+            {
                 throw new InvalidOperationException(
                     $"Schema with ID {schemaId} is not an Avro schema. Type: {registrySchema.SchemaType}");
+            }
 
             return await Poco.AvroSchemaReferenceResolver.ParseAsync(
                     _schemaRegistry,
@@ -1021,17 +1053,23 @@ public sealed class AvroSchemaRegistryDeserializer<
     {
         // If custom reader schema is provided, parse and use it
         if (!string.IsNullOrEmpty(_config.ReaderSchema))
+        {
             return AvroSchema.Parse(_config.ReaderSchema);
+        }
 
         // For specific records, try to get schema from type
         if (!typeof(ISpecificRecord).IsAssignableFrom(typeof(T)))
+        {
             return null;
+        }
 
         // Avro generated classes have a static _SCHEMA field (cached lookup)
         var schemaField = AvroSchemaFieldCache.GetSchemaField(typeof(T));
 
         if (schemaField?.GetValue(null) is AvroSchema schema)
+        {
             return schema;
+        }
 
         return null;
     }
@@ -1042,7 +1080,9 @@ public sealed class AvroSchemaRegistryDeserializer<
     public ValueTask DisposeAsync()
     {
         if (_ownsClient)
+        {
             _schemaRegistry.Dispose();
+        }
         return ValueTask.CompletedTask;
     }
 }

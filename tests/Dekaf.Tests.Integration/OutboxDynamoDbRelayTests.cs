@@ -21,7 +21,10 @@ public sealed class OutboxDynamoDbRelayTests(KafkaTestContainer kafka) : KafkaIn
     private const int BucketCount = 4;
 
     [ClassDataSource<DynamoDbLocalContainer>(Shared = SharedType.PerTestSession)]
-    public required DynamoDbLocalContainer DynamoDb { get; init; }
+    public required DynamoDbLocalContainer DynamoDb
+    {
+        get; init;
+    }
 
     [Test]
     public async Task Relay_PublishesCommittedMessagesInKeyOrder_AndDrainsTheTable()
@@ -35,7 +38,9 @@ public sealed class OutboxDynamoDbRelayTests(KafkaTestContainer kafka) : KafkaIn
         var store = pod.GetRequiredService<IOutboxStore>();
         var services = pod.GetServices<IHostedService>().ToArray();
         foreach (var service in services)
+        {
             await service.StartAsync(CancellationToken.None);
+        }
         try
         {
             string[] keys = ["order-1", "order-2", "order-3", "order-4", "order-5"];
@@ -97,7 +102,9 @@ public sealed class OutboxDynamoDbRelayTests(KafkaTestContainer kafka) : KafkaIn
         var stoppingServices = stopping.GetServices<IHostedService>().ToArray();
         var survivingServices = surviving.GetServices<IHostedService>().ToArray();
         foreach (var service in stoppingServices.Concat(survivingServices))
+        {
             await service.StartAsync(CancellationToken.None);
+        }
         try
         {
             await WaitForOwnersAsync(client, options, owners =>
@@ -165,7 +172,9 @@ public sealed class OutboxDynamoDbRelayTests(KafkaTestContainer kafka) : KafkaIn
     private static async Task StopAsync(IHostedService[] services)
     {
         for (var index = services.Length - 1; index >= 0; index--)
+        {
             await services[index].StopAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(30));
+        }
     }
 
     private static async Task WaitForDrainedAsync(IOutboxStore store)
@@ -173,7 +182,9 @@ public sealed class OutboxDynamoDbRelayTests(KafkaTestContainer kafka) : KafkaIn
         using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(30));
         var buckets = Enumerable.Range(0, BucketCount).ToArray();
         while ((await store.GetBucketsWithPendingAsync(buckets, deadline.Token)).Count > 0)
+        {
             await Task.Delay(100, deadline.Token);
+        }
     }
 
     /// <summary>Polls the owner of every leased bucket until <paramref name="condition"/> holds.</summary>
@@ -199,7 +210,9 @@ public sealed class OutboxDynamoDbRelayTests(KafkaTestContainer kafka) : KafkaIn
                 .Select(item => item["Owner"].S)
                 .ToList();
             if (condition(owners))
+            {
                 return;
+            }
             await Task.Delay(100, deadline.Token);
         }
     }

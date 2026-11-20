@@ -195,7 +195,10 @@ public sealed class TlsCertificateRotationTests(TlsCertificateRotationKafkaConta
 
     private sealed class ReloadableCertificateTrust(X509Certificate2 trustedRoot)
     {
-        public X509Certificate2 TrustedRoot { get; set; } = trustedRoot;
+        public X509Certificate2 TrustedRoot
+        {
+            get; set;
+        } = trustedRoot;
 
         public bool Validate(
             object sender,

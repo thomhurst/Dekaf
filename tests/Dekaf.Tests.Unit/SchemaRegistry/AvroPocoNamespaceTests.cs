@@ -72,24 +72,45 @@ namespace Dekaf.Tests.Unit.SchemaRegistry
     [AvroRecord(Namespace = "")]
     internal sealed partial class PocoEmptyNamespaceRoot
     {
-        public PocoGlobalNamespaceItem Item { get; set; } = new();
-        public PocoNamespacedItem Namespaced { get; set; } = new();
-        public PocoGlobalNamespaceItem[] Items { get; set; } = [];
-        public PocoGlobalNamespaceStatus State { get; set; }
-        public PocoGlobalNamespaceStatus OtherState { get; set; }
+        public PocoGlobalNamespaceItem Item
+        {
+            get; set;
+        } = new();
+        public PocoNamespacedItem Namespaced
+        {
+            get; set;
+        } = new();
+        public PocoGlobalNamespaceItem[] Items
+        {
+            get; set;
+        } = [];
+        public PocoGlobalNamespaceStatus State
+        {
+            get; set;
+        }
+        public PocoGlobalNamespaceStatus OtherState
+        {
+            get; set;
+        }
     }
 
     [AvroRecord(Namespace = "com.acme")]
     internal sealed partial class PocoNamespacedItem
     {
-        public int Id { get; set; }
+        public int Id
+        {
+            get; set;
+        }
     }
 }
 
 [AvroRecord]
 internal sealed partial class PocoGlobalNamespaceItem
 {
-    public int Id { get; set; }
+    public int Id
+    {
+        get; set;
+    }
 }
 
 internal enum PocoGlobalNamespaceStatus

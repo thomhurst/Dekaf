@@ -23,11 +23,13 @@ public class AdminDetailedConfigTests(KafkaTestContainer kafka) : KafkaIntegrati
             [good] = [ConfigAlter.Set("retention.ms", value)],
             [bad] = [ConfigAlter.Set("not_a_real_topic_config", "1")]
         };
+
         async ValueTask<IReadOnlyDictionary<ConfigResource, AdminMutationResult>> Apply(bool validateOnly) => incremental
             ? await admin.IncrementalAlterConfigsDetailedAsync(changes, new() { ValidateOnly = validateOnly })
             : await admin.AlterConfigsDetailedAsync(changes.ToDictionary(static pair => pair.Key,
                 static pair => (IReadOnlyList<ConfigEntry>)pair.Value.Select(static entry => new ConfigEntry { Name = entry.Name, Value = entry.Value }).ToArray()),
                 new() { ValidateOnly = validateOnly });
+
         var validated = await Apply(true);
         await Assert.That(validated[good].IsSuccess).IsTrue();
         await Assert.That(validated[bad].ErrorCode).IsEqualTo(ErrorCode.InvalidConfig);

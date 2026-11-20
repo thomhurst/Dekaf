@@ -50,7 +50,10 @@ public sealed partial class KafkaProducer<TKey, TValue> :
     /// InitProducerId instead of arming its timer, so a test expires the budget at a point it
     /// observed rather than racing a wall-clock timer against scheduling stalls.
     /// </summary>
-    internal Action<CancellationTokenSource>? ArmIdempotentInitializationBudgetForTesting { get; set; }
+    internal Action<CancellationTokenSource>? ArmIdempotentInitializationBudgetForTesting
+    {
+        get; set;
+    }
 
     private readonly ProducerOptions _options;
     private readonly ISerializer<TKey> _keySerializer;
@@ -151,7 +154,9 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         ArgumentException.ThrowIfNullOrWhiteSpace(topic);
 
         if (Volatile.Read(ref _disposed) != 0)
+        {
             throw new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>));
+        }
 
         ThrowIfNotInitialized();
         cancellationToken.ThrowIfCancellationRequested();
@@ -225,11 +230,15 @@ public sealed partial class KafkaProducer<TKey, TValue> :
     private static IReadOnlyList<int> CopyNodeIds(IReadOnlyList<int>? source)
     {
         if (source is not { Count: > 0 })
+        {
             return Array.Empty<int>();
+        }
 
         var result = new int[source.Count];
         for (var i = 0; i < source.Count; i++)
+        {
             result[i] = source[i];
+        }
 
         return new ReadOnlyCollection<int>(result);
     }
@@ -386,7 +395,9 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         if (_producesRecordHeaders)
         {
             if (rentedWorkspace)
+            {
                 _asyncSerializationHeadersPool!.Return(headers!);
+            }
             else
             {
                 headers!.ResetSerializationWorkspace();
@@ -472,8 +483,14 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         SerializerPreparationAdmission key,
         SerializerPreparationAdmission value)
     {
-        internal SerializerPreparationAdmission Key { get; } = key;
-        internal SerializerPreparationAdmission Value { get; } = value;
+        internal SerializerPreparationAdmission Key
+        {
+            get;
+        } = key;
+        internal SerializerPreparationAdmission Value
+        {
+            get;
+        } = value;
     }
 
     private const string TransactionVersionFeature = "transaction.version";
@@ -543,7 +560,9 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         ProducerOptions.ValidateRetries(options.EnableIdempotence, options.Retries);
 
         if (options.TransactionalId is not null)
+        {
             ArgumentException.ThrowIfNullOrWhiteSpace(options.TransactionalId);
+        }
 
         var reconnectBackoffMaxMs = ReconnectBackoffValidation.ResolveMaximumMilliseconds(
             options.ReconnectBackoffMs,
@@ -738,7 +757,9 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         _metadataManager = infrastructure.Metadata;
         _telemetryMetricCollector = infrastructure.TelemetryMetricCollector;
         if (!ownsInfrastructure)
+        {
             _telemetryMetricCollector.ConnectionCreationTotalProvider = _connectionPool.GetConnectionCreationTotal;
+        }
         _telemetryMetricCollector.RegisterMetricsForSubscription(options.ApplicationMetrics);
         _telemetryMetricCollector.ResourceAttributesProvider = CaptureTelemetryResourceAttributes;
 
@@ -783,7 +804,9 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         try
         {
             if (options.TransactionalId is not null)
+            {
                 _accumulator.OnTransactionalBatchFailed = OnTransactionalBatchFailed;
+            }
             _uniformStickyPartitioner?.SetPartitionQueueByteProvider(_accumulator.GetPartitionQueueBytes);
             _uniformStickyPartitioner?.SetRackLocalPartitionsProvider(
                 _metadataManager.Metadata.GetPartitionsForRack);
@@ -800,7 +823,9 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                 ? producerPoolSizes.InflightEntries
                 : 1); // Minimum valid size; entries never rented for non-idempotent
             if (options.EnableIdempotence)
+            {
                 inflightPool.PreWarm(Math.Min(options.MaxInFlightRequestsPerConnection * PoolSizing.InflightEntriesPerBatch, inflightPool.MaxPoolSize));
+            }
             _inflightTracker = new PartitionInflightTracker(inflightPool);
 
             _senderCts = new CancellationTokenSource();
@@ -950,7 +975,9 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         if (_retryPolicy is not null)
         {
             if (continuationMode == ProduceContinuationMode.InlineWhenDirect)
+            {
                 continuationMode = ProduceContinuationMode.Async;
+            }
             return ProduceAsyncWithRetry(message, continuationMode, transactionalGeneration, cancellationToken);
         }
 
@@ -1073,7 +1100,9 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         // listener starts mid-call.
         var metricsEnabled = OperationScopedMetricsEnabled();
         if (continuationMode == ProduceContinuationMode.InlineWhenDirect && (activity is not null || metricsEnabled))
+        {
             continuationMode = ProduceContinuationMode.Async;
+        }
         var runContinuationsAsynchronously = continuationMode == ProduceContinuationMode.Async;
 
         // Fast path: Try synchronous produce if metadata is initialized and cached.
@@ -1376,7 +1405,9 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         // run inline on the broker ack thread, and the hoisted check keeps mode and wrapper in sync.
         var metricsEnabled = OperationScopedMetricsEnabled();
         if (continuationMode == ProduceContinuationMode.InlineWhenDirect && metricsEnabled)
+        {
             continuationMode = ProduceContinuationMode.Async;
+        }
         var runContinuationsAsynchronously = continuationMode == ProduceContinuationMode.Async;
 
         if (TryProduceSyncForAsync(
@@ -1489,7 +1520,9 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                 attempt++;
                 var delay = _retryPolicy!.GetNextDelay(attempt, ex);
                 if (delay is null)
+                {
                     throw;
+                }
 
                 await Task.Delay(delay.Value, cancellationToken).ConfigureAwait(false);
             }
@@ -1742,7 +1775,9 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         // re-checks because a metrics listener can start between their check and this one.
         var metricsEnabled = OperationScopedMetricsEnabled();
         if (continuationMode == ProduceContinuationMode.InlineWhenDirect && (activity is not null || metricsEnabled))
+        {
             continuationMode = ProduceContinuationMode.Async;
+        }
         var runContinuationsAsynchronously = continuationMode == ProduceContinuationMode.Async;
 
         // Retry fast path - metadata should already be initialized via InitializeAsync()
@@ -1791,7 +1826,9 @@ public sealed partial class KafkaProducer<TKey, TValue> :
     {
         var completion = _valueTaskSourcePool.Rent();
         if (!runContinuationsAsynchronously)
+        {
             completion.SetRunContinuationsAsynchronously(false);
+        }
         return completion;
     }
 
@@ -1799,7 +1836,9 @@ public sealed partial class KafkaProducer<TKey, TValue> :
     public ValueTask FireAsync(ProducerMessage<TKey, TValue> message)
     {
         if (Volatile.Read(ref _disposed) != 0)
+        {
             throw new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>));
+        }
 
         ThrowIfNotInitialized();
         // Read before the state check and serialization: the append commit point rejects the
@@ -1849,6 +1888,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             }
 
             if (_hasAsyncSerializers || !preparation.IsCompletedSuccessfully)
+            {
                 return FireWithAsyncSerializationAsync(
                     message,
                     headers,
@@ -1856,6 +1896,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                     deliveryHandler: null,
                     preparation,
                     transactionalGeneration);
+            }
 
             preparationLease = preparation.Result;
         }
@@ -1876,7 +1917,9 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             (_metadataManager.TryGetCachedTopicMetadata(message.Topic, out topicInfo) && topicInfo is not null && topicInfo.PartitionCount > 0))
         {
             if (!inThreadLocalCache)
+            {
                 UpdateCachedTopicInfo(message.Topic, topicInfo!);
+            }
 
             try
             {
@@ -1907,7 +1950,9 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                 {
                     // Hot path complete — fully synchronous, zero allocation
                     if (!appendResult.Result)
+                    {
                         throw new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>));
+                    }
                     activity?.Dispose();
                     return default;
                 }
@@ -1918,7 +1963,10 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             catch (KafkaTimeoutException ex)
             {
                 // BufferMemory backpressure timeout must propagate
-                if (activity is not null) Diagnostics.DekafDiagnostics.RecordException(activity, ex);
+                if (activity is not null)
+                {
+                    Diagnostics.DekafDiagnostics.RecordException(activity, ex);
+                }
                 headers?.RemoveDeferredTraceContext(activity);
                 activity?.Dispose();
                 throw;
@@ -1967,7 +2015,9 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         DateTimeOffset? timestamp)
     {
         if (Volatile.Read(ref _disposed) != 0)
+        {
             throw new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>));
+        }
 
         ThrowIfNotInitialized();
         // Read before the state check and serialization: the append commit point rejects the
@@ -1979,9 +2029,11 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         // When interceptors are configured, fall back to ProducerMessage overload
         // so interceptors can inspect/modify the message before serialization.
         if (_interceptors is not null)
+        {
             return FireMessageAsync(
                 new ProducerMessage<TKey, TValue> { Topic = topic, Key = key, Value = value, Headers = headers, Partition = partition, Timestamp = timestamp },
                 transactionalGeneration);
+        }
 
         var preparationLease = default(SerializerPreparationLease);
         if (_keyPreparer is not null || _valuePreparer is not null)
@@ -2007,6 +2059,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             }
 
             if (_hasAsyncSerializers || !preparation.IsCompletedSuccessfully)
+            {
                 return FireWithAsyncSerializationAsync(
                     new ProducerMessage<TKey, TValue> { Topic = topic, Key = key, Value = value, Headers = headers, Partition = partition, Timestamp = timestamp },
                     headers,
@@ -2014,6 +2067,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                     deliveryHandler: null,
                     preparation,
                     transactionalGeneration);
+            }
 
             preparationLease = preparation.Result;
         }
@@ -2034,7 +2088,9 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             (_metadataManager.TryGetCachedTopicMetadata(topic, out topicInfo) && topicInfo is not null && topicInfo.PartitionCount > 0))
         {
             if (!inThreadLocalCache)
+            {
                 UpdateCachedTopicInfo(topic, topicInfo!);
+            }
 
             try
             {
@@ -2064,7 +2120,9 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                 if (appendResult.IsCompleted)
                 {
                     if (!appendResult.Result)
+                    {
                         throw new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>));
+                    }
                     return default;
                 }
 
@@ -2105,7 +2163,9 @@ public sealed partial class KafkaProducer<TKey, TValue> :
 
         // Early exit if disposed - prevents using stale cache from disposed producer
         if (Volatile.Read(ref _disposed) != 0)
+        {
             return false;
+        }
 
         // Check if cache is for this metadata manager, topic, and still valid
         // Use signed comparison to handle TickCount64 wraparound (every ~292 million years)
@@ -2179,11 +2239,15 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         int partitionCount)
     {
         if (explicitPartition is not null)
+        {
             return 0;
+        }
 
         var uniformStickyPartitioner = _uniformStickyPartitioner;
         if (uniformStickyPartitioner is not null)
+        {
             return uniformStickyPartitioner.UsesStickyPartition(key, keyIsNull) ? partitionCount : 0;
+        }
 
         return keyIsNull && _partitioner is IBatchCompletionAwarePartitioner ? partitionCount : 0;
     }
@@ -2356,7 +2420,9 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             RecordAccumulator.ReturnPooledHeaders(pooledHeaderArray, headerCount);
             RestoreCustomPartitionerKeyBuffer(cache, ref customPartitionerKeyBuffer);
             if (ex is not ObjectDisposedException)
+            {
                 completion.TrySetException(ex);
+            }
             throw;
         }
     }
@@ -2369,7 +2435,9 @@ public sealed partial class KafkaProducer<TKey, TValue> :
     private ProducerMessage<TKey, TValue> ApplyOnSendInterceptors(ProducerMessage<TKey, TValue> message)
     {
         if (_interceptors is null)
+        {
             return message;
+        }
 
         return ApplyOnSendInterceptorsSlow(message);
     }
@@ -2398,7 +2466,9 @@ public sealed partial class KafkaProducer<TKey, TValue> :
     internal void InvokeOnAcknowledgement(RecordMetadata metadata, Exception? exception)
     {
         if (_interceptors is null)
+        {
             return;
+        }
 
         foreach (var interceptor in _interceptors)
         {
@@ -2425,7 +2495,9 @@ public sealed partial class KafkaProducer<TKey, TValue> :
     {
         headers = message.Headers;
         if (!Diagnostics.DekafDiagnostics.Source.HasListeners())
+        {
             return null;
+        }
 
         // StartActivity makes the send span Activity.Current. The produce entry points are
         // synchronous methods, so that change flows back into the caller's ExecutionContext,
@@ -2450,15 +2522,25 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             activity.SetTag(Diagnostics.DekafDiagnostics.MessagingOperationType, Diagnostics.DekafDiagnostics.OperationTypeSend);
             var clusterId = _metadataManager.ClusterId;
             if (clusterId is not null)
+            {
                 activity.SetTag(Diagnostics.DekafDiagnostics.MessagingKafkaClusterId, clusterId);
+            }
             if (_options.ClientId is not null)
+            {
                 activity.SetTag(Diagnostics.DekafDiagnostics.MessagingClientId, _options.ClientId);
+            }
             if (message.Key is string stringKey)
+            {
                 activity.SetTag(Diagnostics.DekafDiagnostics.MessagingMessageKey, stringKey);
+            }
             else if (message.Key is not null and not byte[])
+            {
                 activity.SetTag(Diagnostics.DekafDiagnostics.MessagingMessageKey, message.Key.ToString());
+            }
             if (message.Value is null)
+            {
                 activity.SetTag(Diagnostics.DekafDiagnostics.MessagingKafkaTombstone, Diagnostics.DekafDiagnostics.BoxedTrue);
+            }
             // The outbox keeps its stored headers as a fallback when sampling declines
             // this send, or its listener disappears. Only remove them once a replacement
             // activity exists. Ordinary caller headers retain their existing append behavior.
@@ -2487,7 +2569,9 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         Exception? exception)
     {
         if (_interceptors is null)
+        {
             return;
+        }
 
         for (var i = 0; i < messageCount; i++)
         {
@@ -2506,7 +2590,9 @@ public sealed partial class KafkaProducer<TKey, TValue> :
     public ValueTask FireAsync(ProducerMessage<TKey, TValue> message, Action<RecordMetadata, Exception?> deliveryHandler)
     {
         if (!TryAdmitCallbackFire(deliveryHandler, out var transactionalGeneration))
+        {
             return default;
+        }
 
         // Apply OnSend interceptors before serialization
         message = ApplyOnSendInterceptors(message);
@@ -2532,13 +2618,20 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         Action<RecordMetadata, Exception?> deliveryHandler)
     {
         if (!TryAdmitCallbackFire(deliveryHandler, out var transactionalGeneration))
+        {
             return default;
+        }
 
         if (_interceptors is not null)
         {
             var message = ApplyOnSendInterceptors(new ProducerMessage<TKey, TValue>
             {
-                Topic = topic, Key = key, Value = value, Headers = headers, Partition = partition, Timestamp = timestamp
+                Topic = topic,
+                Key = key,
+                Value = value,
+                Headers = headers,
+                Partition = partition,
+                Timestamp = timestamp
             });
             return FireWithCallbackAsync(
                 message.Topic,
@@ -2563,7 +2656,9 @@ public sealed partial class KafkaProducer<TKey, TValue> :
     private bool TryAdmitCallbackFire(Action<RecordMetadata, Exception?> deliveryHandler, out int transactionalGeneration)
     {
         if (Volatile.Read(ref _disposed) != 0)
+        {
             throw new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>));
+        }
 
         ThrowIfNotInitialized();
         // Read before the state check and serialization: the append commit point rejects the
@@ -2580,7 +2675,11 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             if (txnState != TransactionState.InTransaction)
             {
                 var refused = CreateTransactionCannotProduceException(txnState);
-                try { deliveryHandler(default, refused); } catch (Exception cbEx) { LogBatchCleanupStepFailed(cbEx); }
+                try
+                {
+                    deliveryHandler(default, refused);
+                }
+                catch (Exception cbEx) { LogBatchCleanupStepFailed(cbEx); }
                 return false;
             }
         }
@@ -2619,11 +2718,16 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             }
             catch (Exception ex)
             {
-                try { deliveryHandler(default, ex); } catch (Exception cbEx) { LogBatchCleanupStepFailed(cbEx); }
+                try
+                {
+                    deliveryHandler(default, ex);
+                }
+                catch (Exception cbEx) { LogBatchCleanupStepFailed(cbEx); }
                 return default;
             }
 
             if (_hasAsyncSerializers || !preparation.IsCompletedSuccessfully)
+            {
                 return FireWithAsyncSerializationAsync(
                     message ?? new ProducerMessage<TKey, TValue> { Topic = topic, Key = key, Value = value, Headers = headers, Partition = partition, Timestamp = timestamp },
                     headers,
@@ -2631,6 +2735,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                     deliveryHandler,
                     preparation,
                     transactionalGeneration);
+            }
 
             preparationLease = preparation.Result;
         }
@@ -2651,7 +2756,9 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             (_metadataManager.TryGetCachedTopicMetadata(topic, out topicInfo) && topicInfo is not null && topicInfo.PartitionCount > 0))
         {
             if (!inThreadLocalCache)
+            {
                 UpdateCachedTopicInfo(topic, topicInfo!);
+            }
 
             try
             {
@@ -2682,7 +2789,9 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                 {
                     // Hot path complete — fully synchronous, zero allocation
                     if (!appendResult.Result)
+                    {
                         throw new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>));
+                    }
                     return default;
                 }
 
@@ -2693,7 +2802,11 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             catch (Exception ex)
             {
                 // Deliver exception to callback - don't throw for fire-and-forget style
-                try { deliveryHandler(default, ex); } catch (Exception cbEx) { LogBatchCleanupStepFailed(cbEx); }
+                try
+                {
+                    deliveryHandler(default, ex);
+                }
+                catch (Exception cbEx) { LogBatchCleanupStepFailed(cbEx); }
                 return default;
             }
         }
@@ -2968,7 +3081,9 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         {
             var messageCount = messageList.Count;
             if (messageCount == 0)
+            {
                 return [];
+            }
 
             var listCompletion = ProduceAllCompletion.Rent(messageCount);
             using var listBulkScope = _accumulator.EnterBulkProduceScope();
@@ -3081,12 +3196,16 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         cancellationToken.ThrowIfCancellationRequested();
 
         if (Volatile.Read(ref _disposed) != 0)
+        {
             throw new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>));
+        }
 
         ThrowIfNotInitialized();
 
         if ((options & PurgeOptions.All) == PurgeOptions.None)
+        {
             return default;
+        }
 
         ThrowIfPurgeCannotRun();
 
@@ -3101,7 +3220,9 @@ public sealed partial class KafkaProducer<TKey, TValue> :
     private void ThrowIfPurgeCannotRun()
     {
         if (_options.TransactionalId is null)
+        {
             return;
+        }
 
         var transactionState = _transactionState;
         if (transactionState is TransactionState.InTransaction
@@ -3119,7 +3240,9 @@ public sealed partial class KafkaProducer<TKey, TValue> :
     public void RegisterMetricForSubscription(ApplicationTelemetryMetric metric)
     {
         if (Volatile.Read(ref _disposed) != 0)
+        {
             throw new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>));
+        }
 
         _telemetryMetricCollector.RegisterMetricForSubscription(metric);
     }
@@ -3128,7 +3251,9 @@ public sealed partial class KafkaProducer<TKey, TValue> :
     public void UnregisterMetricFromSubscription(string name)
     {
         if (Volatile.Read(ref _disposed) != 0)
+        {
             throw new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>));
+        }
 
         _telemetryMetricCollector.UnregisterMetricFromSubscription(name);
     }
@@ -3222,8 +3347,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                         timeoutCts.Token)
                     .ConfigureAwait(false);
             }
-            catch (OperationCanceledException) when (
-                timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+            catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
             {
                 throw CreateTransactionTimeoutException(
                     "InitTransactions lock acquisition",
@@ -3270,7 +3394,9 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         }
 
         if (!preparedState.HasTransaction)
+        {
             throw new ArgumentException("Prepared transaction state must identify a transaction.", nameof(preparedState));
+        }
 
         ThrowIfNotInitialized();
         ThrowIfFatalTransactionError("Cannot complete prepared transaction");
@@ -3337,7 +3463,9 @@ public sealed partial class KafkaProducer<TKey, TValue> :
     private void ThrowIfTwoPhaseCommitUnsupported(bool keepPreparedTransaction)
     {
         if (!_options.EnableTwoPhaseCommit && !keepPreparedTransaction)
+        {
             return;
+        }
 
         if (_currentTransactionFeatureVersion < 3)
         {
@@ -3555,10 +3683,14 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         }
 
         if (classification == TransactionErrorClassification.Fatal)
+        {
             MarkTransactionFatal(errorCode);
+        }
         else if (!MarkTransactionAbortable(errorCode))
+        {
             // A send loop fenced the producer concurrently: fatal wins and keeps its error code.
             ThrowFatalTransactionError(operation);
+        }
 
         throw NewTransactionException(errorCode, classification, message);
     }
@@ -3620,7 +3752,9 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         CancellationToken retryCancellationToken)
     {
         if (!TryGetTransactionRetryDelay(attempt, retryBudget, out var retryDelayMs))
+        {
             return false;
+        }
 
         // The failure may have arrived after the budget token or the caller already cancelled;
         // there is no retry to announce then, and the caller's handlers map the cancellation.
@@ -3661,9 +3795,13 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             cancellationToken).ConfigureAwait(false);
         var connection = connectionLease.Connection;
         if (captureTransactionFeatures)
+        {
             CaptureTransactionFeatures(keepPreparedTransaction);
+        }
         else if (requireTransactionFeatureMatch)
+        {
             EnsureTransactionFeatureMatch();
+        }
 
         var apiVersion = _metadataManager.GetNegotiatedApiVersion(
             connection,
@@ -3705,7 +3843,9 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             TransactionVersionFeature,
             out var featureVersion);
         if (status != FinalizedFeatureStatus.Present)
+        {
             featureVersion = 0;
+        }
 
         _currentTransactionFeatureVersion = featureVersion;
         _currentTransactionUsesTV2 = featureVersion >= 2;
@@ -3718,10 +3858,14 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             TransactionVersionFeature,
             out var featureVersion);
         if (status == FinalizedFeatureStatus.Unavailable)
+        {
             return;
+        }
 
         if (status == FinalizedFeatureStatus.Absent)
+        {
             featureVersion = 0;
+        }
 
         _currentTransactionFeatureVersion = featureVersion;
         _currentTransactionUsesTV2 = featureVersion >= 2;
@@ -3734,10 +3878,14 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             TransactionVersionFeature,
             out var featureVersion);
         if (status == FinalizedFeatureStatus.Unavailable)
+        {
             return;
+        }
 
         if (status == FinalizedFeatureStatus.Absent)
+        {
             featureVersion = 0;
+        }
 
         if (featureVersion != _currentTransactionFeatureVersion)
         {
@@ -3828,7 +3976,9 @@ public sealed partial class KafkaProducer<TKey, TValue> :
     {
         // The retry token also fires on disposal, which is not a max.block.ms expiry.
         if (Volatile.Read(ref _disposed) != 0 && TryGetTransactionRemainingMilliseconds(retryBudget, out _))
+        {
             return new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>));
+        }
 
         var elapsedMs = Math.Max(0, GetTransactionTimestampMilliseconds() - retryBudget.StartedAtMs);
         var configured = TimeSpan.FromMilliseconds(_options.MaxBlockMs);
@@ -3870,7 +4020,9 @@ public sealed partial class KafkaProducer<TKey, TValue> :
     {
         var attempt = 0;
         if (!TryGetTransactionRemainingMilliseconds(retryBudget, out _))
+        {
             throw CreateTransactionTimeoutException("InitProducerId", retryBudget, attempt);
+        }
 
         using var timeoutCts = CreateTransactionRetryCancellationSource(retryBudget, cancellationToken);
         var retryCancellationToken = timeoutCts.Token;
@@ -3884,7 +4036,9 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             while (true)
             {
                 if (!TryGetTransactionRemainingMilliseconds(retryBudget, out _))
+                {
                     break;
+                }
 
                 var request = new InitProducerIdRequest
                 {
@@ -3943,7 +4097,9 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                     if (classification == TransactionErrorClassification.Retriable)
                     {
                         if (!TryGetTransactionRetryDelay(attempt, retryBudget, out var retryDelayMs))
+                        {
                             break;
+                        }
 
                         if (response.ErrorCode == ErrorCode.NotCoordinator)
                         {
@@ -3995,7 +4151,9 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         catch (OperationCanceledException)
         {
             if (cancellationToken.IsCancellationRequested || !timeoutCts.IsCancellationRequested)
+            {
                 throw;
+            }
 
             throw CreateTransactionTimeoutException(
                 "InitProducerId", retryBudget, attempt + 1, lastTransportException);
@@ -4048,13 +4206,17 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             while (true)
             {
                 if (!TryGetTransactionRemainingMilliseconds(retryBudget, out _))
+                {
                     break;
+                }
 
                 var brokers = _metadataManager.Metadata.GetBrokers();
                 if (brokers.Count == 0)
                 {
                     if (!TryGetTransactionRetryDelay(attempt, retryBudget, out var retryDelayMs))
+                    {
                         break;
+                    }
 
                     await RetryHelper.RefreshMetadataForRetryAsync(_metadataManager, retryCancellationToken)
                         .ConfigureAwait(false);
@@ -4102,7 +4264,9 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                 if (response.Coordinators.Count == 0)
                 {
                     if (!TryGetTransactionRetryDelay(attempt, retryBudget, out var retryDelayMs))
+                    {
                         break;
+                    }
 
                     AdvanceCoordinatorLookupCursor();
                     await Task.Delay(retryDelayMs, retryCancellationToken).ConfigureAwait(false);
@@ -4116,7 +4280,9 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                 if (errorCode is ErrorCode.CoordinatorNotAvailable or ErrorCode.NotCoordinator)
                 {
                     if (!TryGetTransactionRetryDelay(attempt, retryBudget, out var retryDelayMs))
+                    {
                         break;
+                    }
 
                     AdvanceCoordinatorLookupCursor();
                     LogTransactionCoordinatorNotAvailable(errorCode, attempt + 1, retryDelayMs);
@@ -4142,8 +4308,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                 return;
             }
         }
-        catch (OperationCanceledException) when (
-            timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+        catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
         {
             throw CreateTransactionTimeoutException(
                 "FindCoordinator for transaction",
@@ -4204,7 +4369,9 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             while (true)
             {
                 if (!TryGetTransactionRemainingMilliseconds(retryBudget, out _))
+                {
                     break;
+                }
 
                 AddPartitionsToTxnResponse response;
                 try
@@ -4251,7 +4418,9 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                     {
                         var errorCode = partitionResult.ErrorCode;
                         if (errorCode == ErrorCode.None)
+                        {
                             continue;
+                        }
 
                         needsCoordinatorRediscovery |= errorCode == ErrorCode.NotCoordinator;
                         var classification = TransactionErrorClassifier.Classify(errorCode, tv2);
@@ -4301,7 +4470,9 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                 }
 
                 if (!TryGetTransactionRetryDelay(attempt, retryBudget, out var retryDelayMs))
+                {
                     break;
+                }
 
                 LogAddPartitionsToTxnRetriableError(attempt + 1, retryDelayMs);
 
@@ -4309,8 +4480,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                 attempt++;
             }
         }
-        catch (OperationCanceledException) when (
-            timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+        catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
         {
             throw CreateTransactionTimeoutException(
                 "AddPartitionsToTxn", retryBudget, attempt + 1, lastTransportException);
@@ -4355,7 +4525,9 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                 MarkTransactionAbortable(ErrorCode.RequestTimedOut);
 
                 if (cancellationToken.IsCancellationRequested || !timeoutCts.IsCancellationRequested)
+                {
                     throw;
+                }
 
                 throw CreateTransactionTimeoutException(
                     "Flush before EndTxn (commit)",
@@ -4479,7 +4651,9 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             // closed. Wake them so a sender waiting out a retry backoff does so now. The wait
             // below then covers only requests genuinely in flight.
             foreach (var (_, sender) in _brokerSenders)
+            {
                 sender.WakeForTransactionAbort();
+            }
 
             using var timeoutCts = CreateTransactionRetryCancellationSource(retryBudget, cancellationToken);
             try
@@ -4493,7 +4667,9 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                 ThrowIfFatalTransactionError("Cannot abort transaction");
 
                 if (cancellationToken.IsCancellationRequested || !timeoutCts.IsCancellationRequested)
+                {
                     throw;
+                }
 
                 throw CreateTransactionTimeoutException(
                     "Wait for in-flight batches before EndTxn (abort)",
@@ -4570,7 +4746,9 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             while (true)
             {
                 if (!TryGetTransactionRemainingMilliseconds(retryBudget, out _))
+                {
                     break;
+                }
 
                 var request = new EndTxnRequest
                 {
@@ -4643,7 +4821,9 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                         finally
                         {
                             if (!responseConsumptionStarted)
+                            {
                                 responseTask.Abandon();
+                            }
                         }
                     }
                 }
@@ -4705,7 +4885,9 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                     $"EndTxn ({(committed ? "commit" : "abort")})", _currentTransactionUsesTV2);
 
                 if (!TryGetTransactionRetryDelay(attempt, retryBudget, out var retryDelayMs))
+                {
                     break;
+                }
 
                 if (response.ErrorCode == ErrorCode.NotCoordinator)
                 {
@@ -4728,7 +4910,9 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             PreserveEndTransactionTimeoutState(endTxnRequestInFlight || endTxnOutcomeUnknown);
 
             if (cancellationToken.IsCancellationRequested || !timeoutCts.IsCancellationRequested)
+            {
                 throw;
+            }
 
             throw CreateTransactionTimeoutException(
                 $"EndTxn ({(committed ? "commit" : "abort")})",
@@ -4843,7 +5027,9 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             while (true)
             {
                 if (!TryGetTransactionRemainingMilliseconds(retryBudget, out _))
+                {
                     break;
+                }
 
                 var lookupInProgress = false;
                 try
@@ -4880,7 +5066,9 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                     if (brokers.Count == 0)
                     {
                         if (!TryGetTransactionRetryDelay(attempt, retryBudget, out var retryDelayMs))
+                        {
                             break;
+                        }
 
                         await RetryHelper.RefreshMetadataForRetryAsync(_metadataManager, retryCancellationToken)
                             .ConfigureAwait(false);
@@ -4910,7 +5098,9 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                     {
                         // Treat an empty coordinator set as transiently unavailable and retry.
                         if (!TryGetTransactionRetryDelay(attempt, retryBudget, out var retryDelayMs))
+                        {
                             break;
+                        }
                         AdvanceCoordinatorLookupCursor();
                         await Task.Delay(retryDelayMs, retryCancellationToken).ConfigureAwait(false);
                         attempt++;
@@ -4923,7 +5113,9 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                         ThrowIfNonRetriableTransactionError(coord.ErrorCode,
                             $"FindCoordinator for consumer group '{consumerGroupId}'", tv2);
                         if (!TryGetTransactionRetryDelay(attempt, retryBudget, out var retryDelayMs))
+                        {
                             break;
+                        }
                         AdvanceCoordinatorLookupCursor();
                         await Task.Delay(retryDelayMs, retryCancellationToken).ConfigureAwait(false);
                         attempt++;
@@ -4981,7 +5173,9 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                                 retryCancellationToken)
                             .ConfigureAwait(false);
                         if (topicIdMap is null)
+                        {
                             txnOffsetCommitVersion = TxnOffsetCommitRequest.TopicIdVersion - 1;
+                        }
                     }
                     else
                     {
@@ -5036,8 +5230,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                                     "TxnOffsetCommit",
                                     responseMismatchIsRetriable: true);
                             }
-                            catch (Exception ex) when (
-                                !retryCancellationToken.IsCancellationRequested
+                            catch (Exception ex) when (!retryCancellationToken.IsCancellationRequested
                                 && RetryHelper.IsRetriableRequestFailure(ex))
                             {
                                 topicMismatch ??= ex;
@@ -5049,12 +5242,16 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                         {
                             var partitionError = partitionResult.ErrorCode;
                             if (partitionError == ErrorCode.None)
+                            {
                                 continue;
+                            }
 
                             commitRequiresMetadataRefresh |= partitionError.RequiresMetadataRefresh();
                             var classification = TransactionErrorClassifier.ClassifyTxnOffsetCommit(partitionError, tv2);
                             if (commitError.HasValue && classification <= commitClassification)
+                            {
                                 continue;
+                            }
 
                             commitError = partitionError;
                             commitClassification = classification;
@@ -5067,7 +5264,9 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                     {
                         lastTransportException = topicMismatch;
                         if (!TryGetTransactionRetryDelay(attempt, retryBudget, out var retryDelayMs))
+                        {
                             break;
+                        }
                         await RefreshTopicMetadataForRetryAsync(topicOffsets.Keys, retryCancellationToken)
                             .ConfigureAwait(false);
                         await Task.Delay(retryDelayMs, retryCancellationToken).ConfigureAwait(false);
@@ -5088,7 +5287,9 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                                   "transaction and continue with the consumer's current group metadata."
                                 : $"{commitContext} failed: {errorCode}");
                         if (!TryGetTransactionRetryDelay(attempt, retryBudget, out var retryDelayMs))
+                        {
                             break;
+                        }
                         if (commitRequiresMetadataRefresh)
                         {
                             await RefreshTopicMetadataForRetryAsync(topicOffsets.Keys, retryCancellationToken)
@@ -5108,7 +5309,9 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                     // a failed AddOffsetsToTxn already re-discovered the transaction coordinator.
                     lastTransportException = ex;
                     if (lookupInProgress)
+                    {
                         AdvanceCoordinatorLookupCursor();
+                    }
                     if (!await TryPrepareTransportRetryAsync(
                             ex,
                             $"SendOffsetsToTransaction for group '{consumerGroupId}'",
@@ -5124,8 +5327,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                 }
             }
         }
-        catch (OperationCanceledException) when (
-            timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+        catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
         {
             throw CreateTransactionTimeoutException(
                 "SendOffsetsToTransaction",
@@ -5162,8 +5364,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             cancellationToken.ThrowIfCancellationRequested();
             LogTransactionMetadataRefreshFailed(ex, _options.TransactionalId);
         }
-        catch (Exception ex) when (
-            !cancellationToken.IsCancellationRequested
+        catch (Exception ex) when (!cancellationToken.IsCancellationRequested
             && RetryHelper.IsRetriableRequestFailure(ex))
         {
             LogTransactionMetadataRefreshFailed(ex, _options.TransactionalId);
@@ -5197,8 +5398,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             {
                 return (BuildTxnOffsetCommitTopics(topicOffsets, topicIdMap: null), null);
             }
-            catch (Exception ex) when (
-                !cancellationToken.IsCancellationRequested
+            catch (Exception ex) when (!cancellationToken.IsCancellationRequested
                 && RetryHelper.IsRetriableRequestFailure(ex))
             {
                 return (BuildTxnOffsetCommitTopics(topicOffsets, topicIdMap: null), null);
@@ -5265,7 +5465,9 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             // reaches the caller's loop, which reports the timeout (or the cancellation) with it.
             LogAddOffsetsToTxnCoordinatorUnreachable(ex, _transactionCoordinatorId, _options.TransactionalId);
             if (!cancellationToken.IsCancellationRequested)
+            {
                 await FindTransactionCoordinatorAsync(retryBudget, cancellationToken).ConfigureAwait(false);
+            }
             throw;
         }
     }
@@ -5279,10 +5481,14 @@ public sealed partial class KafkaProducer<TKey, TValue> :
     {
         ThrowIfNonRetriableTransactionError(errorCode, "AddOffsetsToTxn", tv2);
         if (!TryGetTransactionRetryDelay(attempt, retryBudget, out var retryDelayMs))
+        {
             return false;
+        }
 
         if (errorCode == ErrorCode.NotCoordinator)
+        {
             await FindTransactionCoordinatorAsync(retryBudget, cancellationToken).ConfigureAwait(false);
+        }
 
         await Task.Delay(retryDelayMs, cancellationToken).ConfigureAwait(false);
         return true;
@@ -5295,7 +5501,9 @@ public sealed partial class KafkaProducer<TKey, TValue> :
     {
         ArgumentNullException.ThrowIfNull(topic);
         if (Volatile.Read(ref _disposed) != 0)
+        {
             throw new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>));
+        }
 
         return new TopicProducer<TKey, TValue>(this, topic, ownsProducer: false);
     }
@@ -5304,8 +5512,10 @@ public sealed partial class KafkaProducer<TKey, TValue> :
     {
         var snapshot = _accumulator.GetDeliveryDiagnosticsSnapshot();
         if (snapshot.DiagnosticsEnabled)
+        {
             snapshot.ConnectionReapEvents.AddRange(
                 ((IConnectionPoolDiagnostics)_connectionPool).GetConnectionReapDiagnosticsSnapshot());
+        }
 
         return snapshot;
     }
@@ -5348,7 +5558,9 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                 {
                     Volatile.Write(ref _hasRerouteBarriers, 0);
                     while (_rerouteBarriers.TryDequeue(out var sender))
+                    {
                         sender.PublishRerouteBarrier();
+                    }
                 }
 
                 // 1. Check which brokers have sendable data
@@ -5376,14 +5588,18 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                         foreach (var (brokerId, batchList) in drainResult)
                         {
                             if (batchList.Count == 0)
+                            {
                                 continue;
+                            }
 
                             // Complete delivery task for each batch
                             for (var i = 0; i < batchList.Count; i++)
                             {
                                 batchList[i].CompleteDelivery();
                                 if (_options.EnableDeliveryDiagnostics)
+                                {
                                     batchList[i].AppendDiag('Q');
+                                }
                             }
 
                             try
@@ -5398,7 +5614,9 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                                 // remaining batches via FailEnqueuedBatch — but batch.Fail() is
                                 // idempotent (guarded by Interlocked.Exchange), so double-fail is safe.
                                 for (var i = 0; i < batchList.Count; i++)
+                                {
                                     FailAndCleanupBatch(batchList[i], ex);
+                                }
                             }
                         }
                     }
@@ -5436,7 +5654,9 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                 // CloseAsync) waits for its in-flight batches to leave the pipeline. We must
                 // keep the sender alive until FlushAsync completes by checking in-flight batches too.
                 if (_accumulator.Closed && readyNodes.Count == 0 && !_accumulator.HasPendingWork())
+                {
                     break;
+                }
 
                 // 6. Wait for wakeup signal (new batch sealed, response complete, or timeout)
                 try
@@ -5485,14 +5705,19 @@ public sealed partial class KafkaProducer<TKey, TValue> :
     private void FailAndCleanupBatch(ReadyBatch batch, Exception ex)
     {
         FailBatch(batch, ex, sendCompletionClaimed: false);
-        try { _accumulator.ReturnReadyBatch(batch); }
+        try
+        {
+            _accumulator.ReturnReadyBatch(batch);
+        }
         catch (Exception returnEx) { LogBatchCleanupStepFailed(returnEx); }
     }
 
     private void FailAndCleanupBatch(ReadyBatch batch, int expectedGeneration, Exception ex)
     {
         if (!batch.TryAcquireResourcePin(expectedGeneration))
+        {
             return;
+        }
 
         var sendCompletionClaimed = false;
         try
@@ -5505,7 +5730,9 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         }
 
         if (!sendCompletionClaimed)
+        {
             return;
+        }
 
         try
         {
@@ -5513,21 +5740,31 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         }
         finally
         {
-            try { _accumulator.CompleteTerminalBookkeepingAndReturnReadyBatch(batch); }
+            try
+            {
+                _accumulator.CompleteTerminalBookkeepingAndReturnReadyBatch(batch);
+            }
             catch (Exception returnEx) { LogBatchCleanupStepFailed(returnEx); }
         }
     }
 
     private void FailBatch(ReadyBatch batch, Exception ex, bool sendCompletionClaimed)
     {
-        try { CompleteInflightEntry(batch); }
+        try
+        {
+            CompleteInflightEntry(batch);
+        }
         catch (Exception cleanupEx) { LogBatchCleanupStepFailed(cleanupEx); }
         try
         {
             if (sendCompletionClaimed)
+            {
                 batch.FailAfterSendCompletionClaimed(ex);
+            }
             else
+            {
                 batch.Fail(ex);
+            }
         }
         catch (Exception failEx) { LogBatchCleanupStepFailed(failEx); }
         try
@@ -5537,7 +5774,10 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         catch (Exception memEx) { LogBatchCleanupStepFailed(memEx); }
         // Remove from tracking BEFORE returning to pool. ReturnReadyBatch is idempotent
         // (atomic _returnedToPool flag), so this is safe even if another path races.
-        try { _accumulator.OnBatchExitsPipeline(batch); }
+        try
+        {
+            _accumulator.OnBatchExitsPipeline(batch);
+        }
         catch (Exception exitEx) { LogBatchCleanupStepFailed(exitEx); }
     }
 
@@ -5551,7 +5791,9 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         var sender = GetExistingOrCreateBrokerSender(brokerId);
 
         if (sender.IsAlive)
+        {
             return sender;
+        }
 
         // Send loop exited — replace with a fresh BrokerSender.
         // This handles transient connection errors that killed the send loop.
@@ -5664,13 +5906,17 @@ public sealed partial class KafkaProducer<TKey, TValue> :
     private void RerouteBatchToCurrentLeader(ReadyBatch batch, int expectedGeneration)
     {
         if (!batch.TryAcquireResourcePin(expectedGeneration))
+        {
             return;
+        }
 
         TopicPartition topicPartition;
         try
         {
             if (!batch.IsCurrentIncarnation(expectedGeneration))
+            {
                 return;
+            }
             topicPartition = batch.TopicPartition;
         }
         finally
@@ -5681,7 +5927,9 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         try
         {
             if (!batch.IsCurrentIncarnation(expectedGeneration))
+            {
                 return;
+            }
 
             // During disposal, don't create new BrokerSenders — fail the batch instead.
             // Without this guard, retries that discover leader changes create new senders
@@ -5736,7 +5984,9 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             if (usesImplicitEnrollment)
             {
                 for (var i = 0; i < count; i++)
+                {
                     _partitionsInTransaction.Add(batches[i].TopicPartition);
+                }
                 return TransactionPartitionEnrollmentResult.Enrolled;
             }
 
@@ -5745,30 +5995,40 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             {
                 var topicPartition = batches[i].TopicPartition;
                 if (!_partitionEnrollmentErrors.TryGetValue(topicPartition, out var partitionError))
+                {
                     continue;
+                }
 
                 enrollmentFailedPartitions.Add(topicPartition);
                 enrollmentError ??= partitionError;
             }
 
             if (enrollmentError is not null)
+            {
                 return TransactionPartitionEnrollmentResult.Failed(enrollmentError);
+            }
 
             var allEnrolled = true;
             for (var i = 0; i < count; i++)
             {
                 var topicPartition = batches[i].TopicPartition;
                 if (_partitionsInTransaction.Contains(topicPartition))
+                {
                     continue;
+                }
 
                 allEnrolled = false;
                 enrollmentPendingPartitions.Add(topicPartition);
                 if (!_transactionPartitionsBeingEnrolled.Contains(topicPartition))
+                {
                     _pendingTransactionPartitions.Add(topicPartition);
+                }
             }
 
             if (allEnrolled)
+            {
                 return TransactionPartitionEnrollmentResult.Enrolled;
+            }
 
             _partitionEnrollmentWaiters.Add(enrollmentCompleted);
             if (!_partitionEnrollmentActive)
@@ -5780,7 +6040,9 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         }
 
         if (startEnrollment)
+        {
             TrackPartitionEnrollmentTask(EnrollPendingTransactionPartitionsAsync(enrollmentGeneration));
+        }
 
         return TransactionPartitionEnrollmentResult.Pending;
     }
@@ -5793,7 +6055,9 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             lock (_partitionsInTransactionLock)
             {
                 if (enrollmentGeneration != _partitionEnrollmentGeneration)
+                {
                     return;
+                }
 
                 if (_pendingTransactionPartitions.Count == 0)
                 {
@@ -5804,7 +6068,9 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                 partitions = [.. _pendingTransactionPartitions];
                 _pendingTransactionPartitions.Clear();
                 foreach (var partition in partitions)
+                {
                     _transactionPartitionsBeingEnrolled.Add(partition);
+                }
             }
 
             try
@@ -5819,7 +6085,9 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                 lock (_partitionsInTransactionLock)
                 {
                     if (enrollmentGeneration != _partitionEnrollmentGeneration)
+                    {
                         return;
+                    }
 
                     transactionAbandoned = MarkTransactionAbortableAfterEnrollmentFailure(exception);
                     foreach (var partition in partitions)
@@ -5832,7 +6100,9 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                 }
 
                 if (transactionAbandoned)
+                {
                     LogTransactionPartitionEnrollmentAbandoned(exception, _options.TransactionalId);
+                }
                 NotifyPartitionEnrollmentWaiters(waiters, null);
                 continue;
             }
@@ -5841,7 +6111,9 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             lock (_partitionsInTransactionLock)
             {
                 if (enrollmentGeneration != _partitionEnrollmentGeneration)
+                {
                     return;
+                }
 
                 foreach (var partition in partitions)
                 {
@@ -5862,13 +6134,17 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         Exception? error)
     {
         foreach (var waiter in waiters)
+        {
             waiter(error);
+        }
     }
 
     private static void NotifyPartitionEnrollmentResetWaiters(Action<Exception?>[] waiters)
     {
         if (waiters.Length == 0)
+        {
             return;
+        }
 
         NotifyPartitionEnrollmentWaiters(
             waiters,
@@ -5942,7 +6218,9 @@ public sealed partial class KafkaProducer<TKey, TValue> :
     private bool MarkTransactionAbortableAfterEnrollmentFailure(Exception exception)
     {
         if (exception is OperationCanceledException || _transactionState != TransactionState.InTransaction)
+        {
             return false;
+        }
 
         MarkTransactionAbortable(GetEnrollmentFailureErrorCode(exception));
         return true;
@@ -5983,7 +6261,9 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         }
 
         if (_transactionState != TransactionState.AbortableError)
+        {
             MarkTransactionAbortable(GetEnrollmentFailureErrorCode(enrollmentError));
+        }
 
         // A send loop may have fenced the producer since the first check; fatal wins.
         ThrowIfFatalTransactionError(operation);
@@ -6045,7 +6325,9 @@ public sealed partial class KafkaProducer<TKey, TValue> :
 
             var state = _transactionState;
             if (state == TransactionState.FatalError)
+            {
                 return true;
+            }
 
             if (fatal)
             {
@@ -6060,7 +6342,9 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             if (state is not (TransactionState.InTransaction
                 or TransactionState.CommittingTransaction
                 or TransactionState.PreparedTransaction))
+            {
                 return true;
+            }
 
             _transactionBatchFailure ??= failure;
             MarkTransactionAbortable(errorCode);
@@ -6101,7 +6385,9 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         lock (_partitionsInTransactionLock)
         {
             if (_transactionState == TransactionState.FatalError)
+            {
                 return false;
+            }
 
             _lastTransactionError = errorCode;
             _transactionState = TransactionState.AbortableError;
@@ -6122,7 +6408,9 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         lock (_partitionsInTransactionLock)
         {
             if (_transactionState == TransactionState.FatalError)
+            {
                 return;
+            }
 
             _lastTransactionError = errorCode;
             _transactionState = TransactionState.FatalError;
@@ -6149,19 +6437,27 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         lock (_partitionsInTransactionLock)
         {
             if (ownerToken is { } token)
+            {
                 ThrowIfNotTransactionOwner(token);
+            }
 
             var state = _transactionState;
             if (state == TransactionState.FatalError)
+            {
                 ThrowFatalTransactionError(operation);
+            }
 
             if (refuseAbortable && state == TransactionState.AbortableError)
+            {
                 throw CreateAbortableTransactionError(operation);
+            }
 
             _transactionState = next;
             var ownerTokenBefore = _transactionOwnerToken;
             if (retireOwner)
+            {
                 _transactionOwnerToken = unchecked(ownerTokenBefore + 1);
+            }
 
             return ownerTokenBefore;
         }
@@ -6178,7 +6474,9 @@ public sealed partial class KafkaProducer<TKey, TValue> :
     {
         LogTransactionDisposeAbortFailed(exception, _options.TransactionalId);
         if (_transactionState is TransactionState.InTransaction or TransactionState.Ready)
+        {
             MarkTransactionAbortable(ErrorCode.UnknownServerError);
+        }
     }
 
     private Action<Exception?>[] ResetPartitionEnrollmentState()
@@ -6279,18 +6577,24 @@ public sealed partial class KafkaProducer<TKey, TValue> :
     public async ValueTask InitializeAsync(CancellationToken cancellationToken = default)
     {
         if (Volatile.Read(ref _disposed) != 0)
+        {
             throw new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>));
+        }
 
         // Fast path: already initialized (volatile read provides acquire semantics)
         if (_initialized)
+        {
             return;
+        }
 
         await SemaphoreHelper.AcquireOrThrowDisposedAsync(_initLock, nameof(KafkaProducer<TKey, TValue>), cancellationToken).ConfigureAwait(false);
         try
         {
             // Double-check after acquiring lock
             if (_initialized)
+            {
                 return;
+            }
 
             // The metadata manager time-bounds initialization itself (InitTimeoutMs, mapped
             // from MaxBlockMs by the builder) and throws KafkaTimeoutException on expiry.
@@ -6318,14 +6622,18 @@ public sealed partial class KafkaProducer<TKey, TValue> :
     private void ThrowIfNotInitialized()
     {
         if (!_initialized)
+        {
             ThrowNotInitialized();
+        }
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private void ThrowIfProduceCannotStart()
     {
         if (Volatile.Read(ref _disposed) != 0)
+        {
             throw new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>));
+        }
 
         ThrowIfNotInitialized();
 
@@ -6345,11 +6653,15 @@ public sealed partial class KafkaProducer<TKey, TValue> :
     private void ThrowIfTransactionCannotProduce()
     {
         if (_options.TransactionalId is null)
+        {
             return;
+        }
 
         var txnState = _transactionState;
         if (txnState != TransactionState.InTransaction)
+        {
             ThrowTransactionCannotProduce(txnState);
+        }
     }
 
     /// <summary>
@@ -6370,7 +6682,9 @@ public sealed partial class KafkaProducer<TKey, TValue> :
     private int CaptureTransactionalAppendGeneration()
     {
         if (_options.TransactionalId is null)
+        {
             return RecordAccumulator.NoTransactionalGeneration;
+        }
 
         var generation = _accumulator.TransactionalAppendGeneration;
         return _transactionState == TransactionState.AbortingTransaction ? generation - 1 : generation;
@@ -6409,10 +6723,14 @@ public sealed partial class KafkaProducer<TKey, TValue> :
     private Exception CreateTransactionCannotProduceException(TransactionState txnState)
     {
         if (txnState == TransactionState.AbortableError)
+        {
             return CreateAbortableTransactionError("Cannot produce");
+        }
 
         if (txnState == TransactionState.FatalError)
+        {
             return CreateFatalTransactionError("Cannot produce");
+        }
 
         var message = txnState switch
         {
@@ -6445,7 +6763,9 @@ public sealed partial class KafkaProducer<TKey, TValue> :
     internal void ThrowIfFatalTransactionError(string operation)
     {
         if (_transactionState == TransactionState.FatalError)
+        {
             ThrowFatalTransactionError(operation);
+        }
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
@@ -6465,7 +6785,9 @@ public sealed partial class KafkaProducer<TKey, TValue> :
     internal void ThrowIfAbortableTransactionError(string operation)
     {
         if (_transactionState != TransactionState.AbortableError)
+        {
             return;
+        }
 
         throw CreateAbortableTransactionError(operation);
     }
@@ -6562,11 +6884,16 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                     in preparationLease)).ConfigureAwait(false);
 
             if (!appendResult)
+            {
                 throw new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>));
+            }
         }
         catch (KafkaTimeoutException ex)
         {
-            if (activity is not null) Diagnostics.DekafDiagnostics.RecordException(activity, ex);
+            if (activity is not null)
+            {
+                Diagnostics.DekafDiagnostics.RecordException(activity, ex);
+            }
             throw;
         }
         catch (Exception ex)
@@ -6657,12 +6984,18 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                     in preparationLease)).ConfigureAwait(false);
 
             if (!appendResult)
+            {
                 throw new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>));
+            }
         }
         catch (Exception ex)
         {
             // Deliver exception to callback
-            try { deliveryHandler(default, ex); } catch (Exception cbEx) { LogBatchCleanupStepFailed(cbEx); }
+            try
+            {
+                deliveryHandler(default, ex);
+            }
+            catch (Exception cbEx) { LogBatchCleanupStepFailed(cbEx); }
         }
     }
 
@@ -7052,11 +7385,16 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         {
             var result = await appendResult.ConfigureAwait(false);
             if (!result)
+            {
                 throw new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>));
+            }
         }
         catch (KafkaTimeoutException ex)
         {
-            if (activity is not null) Diagnostics.DekafDiagnostics.RecordException(activity, ex);
+            if (activity is not null)
+            {
+                Diagnostics.DekafDiagnostics.RecordException(activity, ex);
+            }
             throw;
         }
         catch (Exception ex) when (ex is not ObjectDisposedException)
@@ -7085,11 +7423,16 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         {
             var result = await appendResult.ConfigureAwait(false);
             if (!result)
+            {
                 throw new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>));
+            }
         }
         catch (Exception ex)
         {
-            try { deliveryHandler(default, ex); }
+            try
+            {
+                deliveryHandler(default, ex);
+            }
             catch (Exception cbEx) { LogBatchCleanupStepFailed(cbEx); }
         }
     }
@@ -7131,9 +7474,13 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         var startedAt = Stopwatch.GetTimestamp();
         using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         if (ArmIdempotentInitializationBudgetForTesting is { } armBudget)
+        {
             armBudget(timeoutCts);
+        }
         else
+        {
             timeoutCts.CancelAfter(_options.MaxBlockMs);
+        }
         var initializationToken = timeoutCts.Token;
         Exception? lastFailure = null;
         KafkaException? noBrokers = null;
@@ -7172,7 +7519,9 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                 // found them: withdraw the no-brokers cause, so a later stall against those
                 // brokers does not blame brokers that existed. A real failure is kept.
                 if (brokers.Count > 0 && ReferenceEquals(lastFailure, noBrokers))
+                {
                     lastFailure = null;
+                }
 
                 var refreshMetadata = false;
                 for (var brokerIndex = 0; brokerIndex < brokers.Count; brokerIndex++)
@@ -7270,9 +7619,13 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         {
             var state = new ProducerIdAndEpoch(producerId, producerEpoch);
             if (producerId != _producerId)
+            {
                 _accumulator.ResetSequenceNumbers(state);
+            }
             else
+            {
                 _accumulator.PublishProducerState(state);
+            }
 
             _producerId = producerId;
             _producerEpoch = producerEpoch;
@@ -7473,7 +7826,9 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         // run inline on the broker ack thread.
         var metricsEnabled = OperationScopedMetricsEnabled();
         if (continuationMode == ProduceContinuationMode.InlineWhenDirect && (activity is not null || metricsEnabled))
+        {
             continuationMode = ProduceContinuationMode.Async;
+        }
         var runContinuationsAsynchronously = continuationMode == ProduceContinuationMode.Async;
 
         var completion = RentCompletion(runContinuationsAsynchronously);
@@ -7672,7 +8027,9 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                     topicInfo, deliveryHandler, transactionalGeneration, cache).ConfigureAwait(false);
 
                 if (!appendResult)
+                {
                     throw new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>));
+                }
             }
             finally
             {
@@ -7685,16 +8042,26 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         catch (KafkaTimeoutException ex) when (deliveryHandler is null)
         {
             // Metadata/BufferMemory backpressure timeout must propagate (parity with FireAsync).
-            if (activity is not null) Diagnostics.DekafDiagnostics.RecordException(activity, ex);
+            if (activity is not null)
+            {
+                Diagnostics.DekafDiagnostics.RecordException(activity, ex);
+            }
             throw;
         }
         catch (Exception ex)
         {
-            if (activity is not null) Diagnostics.DekafDiagnostics.RecordException(activity, ex);
+            if (activity is not null)
+            {
+                Diagnostics.DekafDiagnostics.RecordException(activity, ex);
+            }
             if (deliveryHandler is not null)
             {
                 // Pre-append failure: deliver to the callback (parity with ProduceAsyncWithCallbackSlow).
-                try { deliveryHandler(default, ex); } catch (Exception cbEx) { LogBatchCleanupStepFailed(cbEx); }
+                try
+                {
+                    deliveryHandler(default, ex);
+                }
+                catch (Exception cbEx) { LogBatchCleanupStepFailed(cbEx); }
             }
             else
             {
@@ -7808,10 +8175,14 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         ref byte[]? retainedBuffer)
     {
         if (retainedBuffer is null)
+        {
             return;
+        }
 
         if (cache.KeySerializationBuffer is { } reentrantBuffer)
+        {
             (cache.SpareKeySerializationBuffers ??= new Stack<byte[]>()).Push(reentrantBuffer);
+        }
 
         cache.KeySerializationBuffer = retainedBuffer;
         retainedBuffer = null;
@@ -7870,14 +8241,20 @@ public sealed partial class KafkaProducer<TKey, TValue> :
     public async ValueTask DisposeAsync()
     {
         if (Interlocked.Exchange(ref _disposed, 1) != 0)
+        {
             return;
+        }
 
         DekafMetrics.UnregisterProducerState(_stateSource);
 
         if (_options.IsAutoTuned)
+        {
             _memoryBudget.UnregisterProducer(this);
+        }
         else
+        {
             _memoryBudget.ReleaseExplicit(_options.BufferMemory);
+        }
 
         var disposeStart = Stopwatch.GetTimestamp();
         LogProducerDisposing();
@@ -7902,6 +8279,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         int RemainingMs() => hasTimeout
             ? (int)Math.Clamp((totalDeadline - DateTimeOffset.UtcNow).TotalMilliseconds, 0, int.MaxValue)
             : 0;
+
         using var shutdownCts = hasTimeout
             ? new CancellationTokenSource(TimeSpan.FromMilliseconds(gracefulMs))
             : new CancellationTokenSource();
@@ -7916,9 +8294,13 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             // CRITICAL: Don't cancel _senderCts yet - sender needs to process flushed batches
             // The sender exits naturally when Closed is set and all deques are drained
             if (hasTimeout)
+            {
                 await _senderTask.WaitAsync(shutdownCts.Token).ConfigureAwait(false);
+            }
             else
+            {
                 await _senderTask.ConfigureAwait(false);
+            }
 
             // 3. Now safe to cancel linger loop (it's already exited or will exit soon)
             _senderCts.Cancel();
@@ -7950,7 +8332,9 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             // below will also discover senders added during earlier iterations,
             // since it re-checks _brokerSenders.Count after each round.
             foreach (var (_, sender) in _brokerSenders)
+            {
                 sender.RequestCancellation();
+            }
 
             _senderCts.Cancel();
 
@@ -7976,9 +8360,13 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             try
             {
                 if (hasTimeout)
+                {
                     await _senderTask.WaitAsync(TimeSpan.FromMilliseconds(senderWaitMs)).ConfigureAwait(false);
+                }
                 else
+                {
                     await _senderTask.ConfigureAwait(false);
+                }
             }
             catch
             {
@@ -7993,9 +8381,13 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             try
             {
                 if (hasTimeout)
+                {
                     await _lingerTask.WaitAsync(TimeSpan.FromMilliseconds(lingerWaitMs)).ConfigureAwait(false);
+                }
                 else
+                {
                     await _lingerTask.ConfigureAwait(false);
+                }
             }
             catch
             {
@@ -8035,11 +8427,15 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                 // timeout hangs (e.g., CancelAsync blocking on a slow callback).
                 var disposeSendersTask = Task.WhenAll(disposeTasks);
                 if (_ownsInfrastructure || !hasTimeout)
+                {
                     await disposeSendersTask.ConfigureAwait(false);
+                }
                 else
+                {
                     await disposeSendersTask
                         .WaitAsync(TimeSpan.FromMilliseconds(brokerDisposeMs))
                         .ConfigureAwait(false);
+                }
             }
             catch (TimeoutException)
             {
@@ -8172,7 +8568,6 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             LogDisposalStepFailed(ex, step);
         }
     }
-
 
     #region Logging
 
@@ -8353,7 +8748,9 @@ internal sealed class Transaction<TKey, TValue> : ITransaction<TKey, TValue>
     private void ThrowIfProducerDisposed()
     {
         if (_producer.IsDisposed)
+        {
             throw new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>));
+        }
     }
 
     public ValueTask<RecordMetadata> ProduceAsync(
@@ -8420,7 +8817,9 @@ internal sealed class Transaction<TKey, TValue> : ITransaction<TKey, TValue>
         _producer.ThrowIfFatalTransactionError(operation);
 
         if (_committed || _aborted)
+        {
             throw new InvalidOperationException("Transaction is already completed");
+        }
 
         _producer.ThrowIfInPreparedTransaction();
     }
@@ -8463,7 +8862,9 @@ internal sealed class Transaction<TKey, TValue> : ITransaction<TKey, TValue>
         _producer.ThrowIfFatalTransactionError("Cannot commit transaction");
 
         if (_committed || _aborted)
+        {
             throw new InvalidOperationException("Transaction is already completed");
+        }
 
         // Refuses an abortable transaction in the same step as the write: CommittingTransaction
         // would erase the error, including one a send loop reports while the commit starts.
@@ -8493,7 +8894,9 @@ internal sealed class Transaction<TKey, TValue> : ITransaction<TKey, TValue>
         _producer.ThrowIfFatalTransactionError("Cannot prepare transaction");
 
         if (_committed || _aborted)
+        {
             throw new InvalidOperationException("Transaction is already completed");
+        }
 
         _producer.ThrowIfNotTransactionOwner(_ownerToken);
         _producer.ThrowIfAbortableTransactionError("Cannot prepare transaction");
@@ -8522,7 +8925,9 @@ internal sealed class Transaction<TKey, TValue> : ITransaction<TKey, TValue>
         _producer.ThrowIfFatalTransactionError("Cannot abort transaction");
 
         if (_committed || _aborted)
+        {
             throw new InvalidOperationException("Transaction is already completed");
+        }
 
         _producer.EnterTransactionState(
             TransactionState.AbortingTransaction,
@@ -8661,7 +9066,9 @@ internal ref struct ReusableBufferWriter : IBufferWriter<byte>
     public PooledMemory ToPooledMemory()
     {
         if (_written == 0)
+        {
             return new PooledMemory(null, 0, isNull: false);
+        }
 
         // Rent exact-size buffer from ProducerDataPool to prevent cross-thread
         // TLS accumulation in ArrayPool<byte>.Shared (see ProducerDataPool docs).
@@ -8674,7 +9081,9 @@ internal ref struct ReusableBufferWriter : IBufferWriter<byte>
     private void EnsureCapacity(int sizeHint)
     {
         if (sizeHint < 1)
+        {
             sizeHint = 1;
+        }
 
         var remaining = _buffer.Length - _written;
         if (remaining < sizeHint)
@@ -8768,10 +9177,14 @@ internal ref struct PooledBufferWriter : IBufferWriter<byte>
         ArgumentOutOfRangeException.ThrowIfNegative(count);
 
         if (_buffer is null)
+        {
             throw new ObjectDisposedException(nameof(PooledBufferWriter));
+        }
 
         if (_written + count > _buffer.Length)
+        {
             throw new InvalidOperationException("Cannot advance past the end of the buffer");
+        }
 
         _written += count;
     }
@@ -8781,7 +9194,9 @@ internal ref struct PooledBufferWriter : IBufferWriter<byte>
     public Memory<byte> GetMemory(int sizeHint = 0)
     {
         if (_buffer is null)
+        {
             throw new ObjectDisposedException(nameof(PooledBufferWriter));
+        }
 
         EnsureCapacity(sizeHint);
         return _buffer.AsMemory(_written);
@@ -8792,7 +9207,9 @@ internal ref struct PooledBufferWriter : IBufferWriter<byte>
     public Span<byte> GetSpan(int sizeHint = 0)
     {
         if (_buffer is null)
+        {
             throw new ObjectDisposedException(nameof(PooledBufferWriter));
+        }
 
         EnsureCapacity(sizeHint);
         return _buffer.AsSpan(_written);
@@ -8808,7 +9225,9 @@ internal ref struct PooledBufferWriter : IBufferWriter<byte>
     public PooledMemory ToPooledMemory()
     {
         if (_buffer is null)
+        {
             throw new ObjectDisposedException(nameof(PooledBufferWriter));
+        }
 
         var result = new PooledMemory(_buffer, _written);
         // Clear reference - ownership transferred to caller
@@ -8838,7 +9257,9 @@ internal ref struct PooledBufferWriter : IBufferWriter<byte>
     private void EnsureCapacity(int sizeHint)
     {
         if (sizeHint < 1)
+        {
             sizeHint = 1;
+        }
 
         var remaining = _buffer!.Length - _written;
         if (remaining < sizeHint)
@@ -8868,11 +9289,15 @@ internal ref struct PooledBufferWriter : IBufferWriter<byte>
 
         // Ensure we don't exceed the maximum array size
         if (newSize > Array.MaxLength)
+        {
             newSize = Array.MaxLength;
+        }
 
         // If we can't grow anymore and current capacity isn't enough, throw
         if (newSize <= currentLength)
+        {
             throw new InvalidOperationException("Cannot grow buffer: maximum size reached.");
+        }
 
         var newBuffer = ProducerDataPool.BytePool.Rent(newSize);
 
@@ -8886,4 +9311,3 @@ internal ref struct PooledBufferWriter : IBufferWriter<byte>
         ProducerDataPool.BytePool.Return(oldBuffer, clearArray: false);
     }
 }
-

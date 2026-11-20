@@ -5,14 +5,20 @@ namespace Dekaf.Protocol;
 /// </summary>
 public sealed class ResponseHeader
 {
-    public required int CorrelationId { get; init; }
+    public required int CorrelationId
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Header version:
     /// v0: correlation ID only
     /// v1: + tagged fields (flexible versions)
     /// </summary>
-    public short HeaderVersion { get; init; }
+    public short HeaderVersion
+    {
+        get; init;
+    }
 
     public void Write(ref KafkaProtocolWriter writer)
     {

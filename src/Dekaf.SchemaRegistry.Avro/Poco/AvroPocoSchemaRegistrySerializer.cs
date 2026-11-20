@@ -77,7 +77,9 @@ public sealed class AvroPocoSchemaRegistrySerializer<T, TCodec>
             _config.UseLatestVersion,
             _config.AutoRegisterSchemas);
         if (_schemaIdStrategy is not (SchemaIdSerializerStrategy.Prefix or SchemaIdSerializerStrategy.Header))
+        {
             throw new ArgumentOutOfRangeException(nameof(config), _schemaIdStrategy, "Unknown schema identity strategy.");
+        }
         if (AvroPocoRuleSupport.IsSupported)
         {
             _taggedFieldTransformers = new AvroTaggedFieldTransformerProvider();
@@ -108,7 +110,9 @@ public sealed class AvroPocoSchemaRegistrySerializer<T, TCodec>
             SchemaString = TCodec.SchemaJson
         };
         if (_asyncSubjectNameStrategy is not null)
+        {
             _associatedSubjectCache = new SubjectSchemaIdCache();
+        }
 
         if (_asyncSubjectNameStrategy is AssociatedNameStrategy associatedNameStrategy)
         {
@@ -185,13 +189,17 @@ public sealed class AvroPocoSchemaRegistrySerializer<T, TCodec>
     {
         // Trimmed and NativeAOT publishes compile the feature check as false, removing the Apache.Avro validation path.
         if (!AvroPocoRuleSupport.IsSupported || _inlineRuleValidators is null)
+        {
             return preparation;
+        }
         if (preparation.IsCompletedSuccessfully)
         {
             var resolved = preparation.Result;
             var cached = Volatile.Read(ref _lastInlineValidationDecision);
             if (cached >= 0 && (int)(cached >> 1) == resolved.SchemaId)
+            {
                 return new ValueTask<ResolvedSchemaContext>(resolved);
+            }
             var validationPreparation = _inlineRuleValidators.PrepareSerializerSchemaAsync(
                 resolved.Schema,
                 GeneratedSchema.Value,
@@ -224,7 +232,9 @@ public sealed class AvroPocoSchemaRegistrySerializer<T, TCodec>
             var resolved = await pending.ConfigureAwait(false);
             var cached = Volatile.Read(ref serializer._lastInlineValidationDecision);
             if (cached >= 0 && (int)(cached >> 1) == resolved.SchemaId)
+            {
                 return resolved;
+            }
             var validator = await serializer._inlineRuleValidators!.PrepareSerializerSchemaAsync(
                     resolved.Schema,
                     GeneratedSchema.Value,
@@ -258,12 +268,16 @@ public sealed class AvroPocoSchemaRegistrySerializer<T, TCodec>
                     subject,
                     in value);
                 if (ReferenceEquals(cache, Volatile.Read(ref _associatedSubjectCache)))
+                {
                     return ToResolvedContext(cached);
+                }
             }
 
             cache = Volatile.Read(ref _associatedSubjectCache)!;
             if (cache.TryGet(topic, isKey, out var current))
+            {
                 return ToResolvedContext(current);
+            }
         }
 
         throw new InvalidOperationException(
@@ -316,7 +330,9 @@ public sealed class AvroPocoSchemaRegistrySerializer<T, TCodec>
         , allows ref struct
     {
         if (default(T) is null && value is null)
+        {
             throw new ArgumentNullException(nameof(value));
+        }
 
         var entry = GetSchemaForContext(
             context.Topic,
@@ -329,9 +345,13 @@ public sealed class AvroPocoSchemaRegistrySerializer<T, TCodec>
               (inlineValidator = GetInlineValidator(entry.SchemaId, entry.Schema!)) is null)))
         {
             if (_schemaIdStrategy == SchemaIdSerializerStrategy.Prefix)
+            {
                 SerializeDirect(value, ref destination, entry.SchemaId);
+            }
             else
+            {
                 SerializeDirectWithHeader(value, ref destination, context, entry);
+            }
             return;
         }
 
@@ -357,7 +377,9 @@ public sealed class AvroPocoSchemaRegistrySerializer<T, TCodec>
         in SerializerPreparationAdmission admission)
     {
         if (default(T) is null && value is null)
+        {
             throw new ArgumentNullException(nameof(value));
+        }
 
         var entry = SubjectSchemaIdCache.FromAdmission(
             context.Topic,
@@ -384,9 +406,13 @@ public sealed class AvroPocoSchemaRegistrySerializer<T, TCodec>
               (inlineValidator = GetInlineValidator(entry.SchemaId, entry.Schema!)) is null)))
         {
             if (_schemaIdStrategy == SchemaIdSerializerStrategy.Prefix)
+            {
                 SerializeDirect(value, ref destination, entry.SchemaId);
+            }
             else
+            {
                 SerializeDirectWithHeader(value, ref destination, context, entry);
+            }
             return;
         }
 
@@ -561,9 +587,13 @@ public sealed class AvroPocoSchemaRegistrySerializer<T, TCodec>
                     ? ArrayPool<byte>.Shared.Rent(nextLength)
                     : GC.AllocateUninitializedArray<byte>(nextLength);
                 if (bufferIsPooled)
+                {
                     ArrayPool<byte>.Shared.Return(buffer);
+                }
                 else if (!nextBufferIsPooled)
+                {
                     RetainRuleBuffer(bufferState, nextBuffer);
+                }
                 buffer = nextBuffer;
                 bufferIsPooled = nextBufferIsPooled;
             }
@@ -608,9 +638,13 @@ public sealed class AvroPocoSchemaRegistrySerializer<T, TCodec>
         finally
         {
             if (ownsBufferLease)
+            {
                 bufferState.RuleBufferInUse = false;
+            }
             if (bufferIsPooled)
+            {
                 ArrayPool<byte>.Shared.Return(buffer);
+            }
         }
     }
 
@@ -619,7 +653,9 @@ public sealed class AvroPocoSchemaRegistrySerializer<T, TCodec>
     {
         var cached = Volatile.Read(ref _lastInlineValidationDecision);
         if (cached >= 0 && (int)(cached >> 1) == schemaId && (cached & 1) == 0)
+        {
             return null;
+        }
 
         var validator = _inlineRuleValidators!.RegisterSerializerSchema(registrySchema, GeneratedSchema.Value);
         var hasRules = validator.HasAnyRules;
@@ -667,9 +703,13 @@ public sealed class AvroPocoSchemaRegistrySerializer<T, TCodec>
                     ? ArrayPool<byte>.Shared.Rent(nextLength)
                     : GC.AllocateUninitializedArray<byte>(nextLength);
                 if (bufferIsPooled)
+                {
                     ArrayPool<byte>.Shared.Return(buffer);
+                }
                 else if (!nextBufferIsPooled)
+                {
                     RetainRuleBuffer(bufferState, nextBuffer);
+                }
                 buffer = nextBuffer;
                 bufferIsPooled = nextBufferIsPooled;
             }
@@ -695,9 +735,13 @@ public sealed class AvroPocoSchemaRegistrySerializer<T, TCodec>
         finally
         {
             if (ownsBufferLease)
+            {
                 bufferState.RuleBufferInUse = false;
+            }
             if (bufferIsPooled)
+            {
                 ArrayPool<byte>.Shared.Return(buffer);
+            }
         }
     }
 
@@ -748,18 +792,24 @@ public sealed class AvroPocoSchemaRegistrySerializer<T, TCodec>
         var validator = GetInlineValidator(entry.SchemaId, entry.Schema!);
         if (validator is not null &&
             _config.ValidationRulesExecution == ValidationRulesExecution.BeforeDomainRules)
+        {
             validator.Validate(payload, entry.SchemaId, _config.ValidationRulesFailFast);
+        }
         payload = ruleExecutor.TransformSerializedDomainPayload(payload, context);
         if (validator is not null &&
             _config.ValidationRulesExecution == ValidationRulesExecution.AfterDomainRules)
+        {
             validator.Validate(payload, entry.SchemaId, _config.ValidationRulesFailFast);
+        }
         return ruleExecutor.TransformSerializedEncodingPayload(payload, context);
     }
 
     private SubjectSchemaIdCache.SubjectSchemaIdCacheEntry GetSchemaForContext(string topic, bool isKey)
     {
         if (_subjectCache.TryGet(topic, isKey, out var cached))
+        {
             return cached;
+        }
 
         return GetSchemaForContextSlow(topic, isKey);
     }
@@ -771,7 +821,9 @@ public sealed class AvroPocoSchemaRegistrySerializer<T, TCodec>
             ? _subjectCache
             : Volatile.Read(ref _associatedSubjectCache)!;
         if (cache.TryGet(topic, isKey, out var cached))
+        {
             return cached;
+        }
 
         if (_asyncSubjectNameStrategy is not null)
         {
@@ -983,7 +1035,9 @@ public sealed class AvroPocoSchemaRegistrySerializer<T, TCodec>
     {
         var maximum = Array.MaxLength - WireHeaderSize;
         if (current >= maximum)
+        {
             throw new NotSupportedException($"Avro payloads larger than {maximum} bytes are not supported.");
+        }
         return (int)Math.Min((long)current * 2, maximum);
     }
 
@@ -992,7 +1046,9 @@ public sealed class AvroPocoSchemaRegistrySerializer<T, TCodec>
         var threadId = Environment.CurrentManagedThreadId;
         var primary = Volatile.Read(ref _primaryRuleBuffer);
         if (primary is not null && primary.ThreadId == threadId)
+        {
             return primary;
+        }
 
         return GetRuleBufferStateSlow(threadId, primary);
     }
@@ -1006,9 +1062,13 @@ public sealed class AvroPocoSchemaRegistrySerializer<T, TCodec>
             var created = new AvroPocoSerializerBufferState(threadId);
             primary = Interlocked.CompareExchange(ref _primaryRuleBuffer, created, null);
             if (primary is null)
+            {
                 return created;
+            }
             if (primary.ThreadId == threadId)
+            {
                 return primary;
+            }
         }
 
         var additional = Volatile.Read(ref _additionalRuleBuffers);
@@ -1095,7 +1155,9 @@ public sealed class AvroPocoSchemaRegistrySerializer<T, TCodec>
     public ValueTask DisposeAsync()
     {
         if (_ownsClient)
+        {
             _schemaRegistry.Dispose();
+        }
         return ValueTask.CompletedTask;
     }
 
@@ -1111,7 +1173,10 @@ internal sealed class AvroPocoSerializerBufferState
 {
     internal AvroPocoSerializerBufferState(int threadId) => ThreadId = threadId;
 
-    internal int ThreadId { get; }
+    internal int ThreadId
+    {
+        get;
+    }
 
     internal byte[]? RuleBuffer;
 

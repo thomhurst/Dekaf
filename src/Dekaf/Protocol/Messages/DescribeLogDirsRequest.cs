@@ -13,7 +13,10 @@ public sealed class DescribeLogDirsRequest : IKafkaRequest<DescribeLogDirsRespon
     /// <summary>
     /// Topics to describe, or null for all topics.
     /// </summary>
-    public IReadOnlyList<DescribeLogDirsRequestTopic>? Topics { get; init; }
+    public IReadOnlyList<DescribeLogDirsRequestTopic>? Topics
+    {
+        get; init;
+    }
 
     public static bool IsFlexibleVersion(short version) => version >= 2;
 
@@ -45,8 +48,14 @@ public sealed class DescribeLogDirsRequest : IKafkaRequest<DescribeLogDirsRespon
 /// </summary>
 public sealed class DescribeLogDirsRequestTopic
 {
-    public required string Topic { get; init; }
-    public required IReadOnlyList<int> Partitions { get; init; }
+    public required string Topic
+    {
+        get; init;
+    }
+    public required IReadOnlyList<int> Partitions
+    {
+        get; init;
+    }
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {

@@ -19,19 +19,26 @@ public sealed partial class ShareConsumerRenewalTests
         {
             var bytes = new ArrayBufferWriter<byte>();
             foreach (var offset in new[] { 42L, 43L })
+            {
                 bytes.Write(CreateFetchResponse(0, offset, 1).Responses[0].Partitions[0].RecordBytes.Span);
+            }
             response = new ShareFetchResponse
             {
-                ErrorCode = ErrorCode.None, NodeEndpoints = [],
+                ErrorCode = ErrorCode.None,
+                NodeEndpoints = [],
                 Responses = [new ShareFetchResponseTopic
                 {
                     TopicId = TopicId,
                     Partitions = [new ShareFetchResponsePartition
                     {
-                        PartitionIndex = 0, CurrentLeader = new(), RecordBytes = bytes.WrittenMemory,
+                        PartitionIndex = 0,
+                        CurrentLeader = new(),
+                        RecordBytes = bytes.WrittenMemory,
                         AcquiredRecords = [new ShareFetchAcquiredRecords
                         {
-                            FirstOffset = 42, LastOffset = 43, DeliveryCount = 1
+                            FirstOffset = 42,
+                            LastOffset = 43,
+                            DeliveryCount = 1
                         }]
                     }]
                 }]
@@ -84,7 +91,9 @@ public sealed partial class ShareConsumerRenewalTests
             }
         }
         foreach (var record in records)
+        {
             fixture.Consumer.Acknowledge(record, AcknowledgeType.Renew);
+        }
         ApplySuccessfulAcknowledgements(fixture.Consumer, FlushPendingAcknowledgements(fixture.Consumer));
         var owners = (List<ShareRecordBatchOwner>)fixture.Consumer.GetType()
             .GetField("_polledBatchOwners", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(fixture.Consumer)!;
@@ -99,11 +108,15 @@ public sealed partial class ShareConsumerRenewalTests
             await Assert.That(owners.Count).IsEqualTo(1);
         }
         foreach (var record in records)
+        {
             fixture.Consumer.Acknowledge(record, AcknowledgeType.Accept);
+        }
         await fixture.Consumer.CommitAsync(stop.Token);
         await Assert.That(records[0].BatchOwner).IsNotNull();
         using (fixture.Consumer.BeginRecordBatchScope())
+        {
             await Assert.That(owners.Count).IsEqualTo(0);
+        }
     }
 
     private static PoisonedFrame OwnResponse(ShareFetchResponse response)
@@ -116,12 +129,21 @@ public sealed partial class ShareConsumerRenewalTests
     private sealed class PoisonedFrame(ReadOnlyMemory<byte> bytes) : IPooledMemory
     {
         public ReadOnlyMemory<byte> Memory => bytes;
-        internal bool Disposed { get; private set; }
+        internal bool Disposed
+        {
+            get; private set;
+        }
         public void Dispose()
         {
-            if (Disposed) throw new InvalidOperationException("Response frame returned twice.");
+            if (Disposed)
+            {
+                throw new InvalidOperationException("Response frame returned twice.");
+            }
             Disposed = true;
-            if (MemoryMarshal.TryGetArray(bytes, out var array)) array.AsSpan().Fill(0xcc);
+            if (MemoryMarshal.TryGetArray(bytes, out var array))
+            {
+                array.AsSpan().Fill(0xcc);
+            }
         }
     }
 }

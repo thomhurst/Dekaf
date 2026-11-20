@@ -119,11 +119,15 @@ internal sealed class AsyncAutoResetSignal : IValueTaskSource<bool>,
     public void RegisterShutdownToken(CancellationToken cancellationToken)
     {
         if (!cancellationToken.CanBeCanceled)
+        {
             return;
+        }
 
         // Atomic guard: only the first caller registers.
         if (Interlocked.CompareExchange(ref _shutdownRegistered, 1, 0) != 0)
+        {
             return;
+        }
 
         _shutdownToken = cancellationToken;
         if (cancellationToken.IsCancellationRequested)
@@ -166,7 +170,9 @@ internal sealed class AsyncAutoResetSignal : IValueTaskSource<bool>,
                 case Idle:
                     // Store the signal for the next WaitAsync.
                     if (Interlocked.CompareExchange(ref _state, observed | Signaled, observed) == observed)
+                    {
                         return;
+                    }
                     break;
                 default:
                     _afterSignalObservedWaiterForTesting?.Invoke();
@@ -215,7 +221,9 @@ internal sealed class AsyncAutoResetSignal : IValueTaskSource<bool>,
 
         // Zero-timeout = immediate check only (already handled above)
         if (timeoutMs == 0)
+        {
             return new ValueTask<bool>(false);
+        }
 
         // Reset the core for a new wait cycle.
         _core.Reset();
@@ -279,14 +287,20 @@ internal sealed class AsyncAutoResetSignal : IValueTaskSource<bool>,
         {
             var waiting = Volatile.Read(ref _state);
             if ((waiting & KindMask) != Waiting)
+            {
                 break;
+            }
 
             var deadline = Volatile.Read(ref _timeoutDeadline);
             if (Volatile.Read(ref _state) != waiting)
+            {
                 continue; // The deadline can belong to a newer wait; read both again.
+            }
 
             if (deadline == NoDeadline)
+            {
                 break;
+            }
 
             var remaining = deadline - Stopwatch.GetTimestamp();
             if (remaining <= 0)
@@ -313,7 +327,9 @@ internal sealed class AsyncAutoResetSignal : IValueTaskSource<bool>,
             // This Change can overwrite the arming of a wait that started after the
             // state read; loop to re-arm the timer for that wait.
             if (Volatile.Read(ref _state) == waiting)
+            {
                 break;
+            }
         }
 
         _afterTimeoutCallbackForTesting?.Invoke();
@@ -328,7 +344,9 @@ internal sealed class AsyncAutoResetSignal : IValueTaskSource<bool>,
     private void ThrowIfShutdownRequested()
     {
         if (Volatile.Read(ref _shutdownRequested) != 0)
+        {
             throw new OperationCanceledException(_shutdownToken);
+        }
     }
 
     private void DisarmTimer()
@@ -382,9 +400,13 @@ internal sealed class AsyncAutoResetSignal : IValueTaskSource<bool>,
     {
         var completion = Volatile.Read(ref _queuedCompletion);
         if (completion == QueuedSignal)
+        {
             _core.SetResult(true);
+        }
         else
+        {
             _core.SetException(new OperationCanceledException(_shutdownToken));
+        }
     }
 
     private void QueueCompletion()

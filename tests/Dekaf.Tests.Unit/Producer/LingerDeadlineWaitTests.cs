@@ -41,7 +41,9 @@ public class LingerDeadlineWaitTests
     private static void ExpireCurrentBatch(RecordAccumulator accumulator, int partition)
     {
         if (!accumulator.TryGetBatch("test-topic", partition, out var batch))
+        {
             throw new InvalidOperationException("Expected an open batch.");
+        }
 
         var expiredTicks = Stopwatch.GetTimestamp() - Stopwatch.Frequency * 120;
         AccumulatorTestHelpers.SetPrivateField(batch!, "_createdStopwatchTimestamp", expiredTicks);
@@ -76,9 +78,13 @@ public class LingerDeadlineWaitTests
         await Assert.That(await accumulator.WaitForLingerWakeupAsync(5_000)).IsTrue();
 
         if (unmute)
+        {
             accumulator.UnmutePartition(topicPartition);
+        }
         else
+        {
             LeakGateHarness.RetireBatch(accumulator, predecessor!, offset: 0);
+        }
 
         await Assert.That(await accumulator.WaitForLingerWakeupAsync(5_000)).IsTrue();
         await accumulator.ExpireLingerAsync(CancellationToken.None);
@@ -121,7 +127,9 @@ public class LingerDeadlineWaitTests
         await Assert.That(accumulator.TryGetBatch("test-topic", 0, out _)).IsFalse();
         await Assert.That(accumulator.TryGetBatch("test-topic", 1, out _)).IsTrue();
         while (accumulator.TryDrainBatch(out var batch))
+        {
             LeakGateHarness.RetireBatch(accumulator, batch!, offset: 0);
+        }
     }
 
     [Test]
@@ -344,7 +352,9 @@ public class LingerDeadlineWaitTests
             accumulator.AfterFlushPartitionVisitedForTest = topicPartition =>
             {
                 if (topicPartition.Partition != 0)
+                {
                     return;
+                }
 
                 partitionVisited.Set();
                 continueFlush.Wait(cancellationToken);

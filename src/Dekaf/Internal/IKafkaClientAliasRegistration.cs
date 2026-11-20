@@ -6,5 +6,8 @@ namespace Dekaf.Internal;
 /// </summary>
 internal interface IKafkaClientAliasRegistration
 {
-    object TargetServiceKey { get; }
+    object TargetServiceKey
+    {
+        get;
+    }
 }

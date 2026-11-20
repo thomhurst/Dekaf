@@ -332,7 +332,9 @@ public class ResponseBufferPoolTests
             await Assert.That(reservation.Disposals).IsEqualTo(1);
             await Assert.That(() => owner.Memory).Throws<ObjectDisposedException>();
             if (nativeStorage)
+            {
                 await Assert.That(pool.RetainedNativeBufferCount).IsEqualTo(1);
+            }
         }
         finally
         {
@@ -346,7 +348,10 @@ public class ResponseBufferPoolTests
     {
         private int _disposals;
         public int Disposals => Volatile.Read(ref _disposals);
-        public TaskCompletionSource Entered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource Entered
+        {
+            get;
+        } = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         public void Dispose()
         {

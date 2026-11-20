@@ -12,7 +12,9 @@ internal sealed class AvroSchemaReferenceComparer : IEqualityComparer<AvroSchema
 {
     internal static readonly AvroSchemaReferenceComparer Instance = new();
 
-    private AvroSchemaReferenceComparer() { }
+    private AvroSchemaReferenceComparer()
+    {
+    }
 
     public bool Equals(AvroSchema? x, AvroSchema? y) => ReferenceEquals(x, y);
 
@@ -28,14 +30,20 @@ internal sealed class AvroSchemaLogicalComparer : IEqualityComparer<AvroSchema>
     [ThreadStatic]
     private static AvroSchemaComparisonState? _state;
 
-    private AvroSchemaLogicalComparer() { }
+    private AvroSchemaLogicalComparer()
+    {
+    }
 
     public bool Equals(AvroSchema? x, AvroSchema? y)
     {
         if (ReferenceEquals(x, y))
+        {
             return true;
+        }
         if (x is null || y is null || x.Tag != y.Tag)
+        {
             return false;
+        }
 
         var state = _state ??= new AvroSchemaComparisonState();
         state.EqualityPairs.Clear();
@@ -69,20 +77,28 @@ internal sealed class AvroSchemaLogicalComparer : IEqualityComparer<AvroSchema>
         AvroSchemaComparisonState state)
     {
         if (ReferenceEquals(x, y))
+        {
             return true;
+        }
         if (x.Tag != y.Tag)
+        {
             return false;
+        }
 
         var pair = default(AvroSchemaPair);
         var pairAdded = false;
         if (x is NamedSchema xNamed)
         {
             if (y is not NamedSchema yNamed || !NamedSchemaEquals(xNamed, yNamed))
+            {
                 return false;
+            }
 
             pair = new AvroSchemaPair(x, y);
             if (!state.EqualityPairs.Add(pair))
+            {
                 return true;
+            }
             pairAdded = true;
         }
 
@@ -117,7 +133,9 @@ internal sealed class AvroSchemaLogicalComparer : IEqualityComparer<AvroSchema>
         finally
         {
             if (pairAdded)
+            {
                 state.EqualityPairs.Remove(pair);
+            }
         }
     }
 
@@ -143,7 +161,9 @@ internal sealed class AvroSchemaLogicalComparer : IEqualityComparer<AvroSchema>
         for (var i = 0; i < x.Fields.Count; i++)
         {
             if (!FieldEquals(x.Fields[i], y.Fields[i], state))
+            {
                 return false;
+            }
         }
 
         return true;
@@ -170,12 +190,16 @@ internal sealed class AvroSchemaLogicalComparer : IEqualityComparer<AvroSchema>
         AvroSchemaComparisonState state)
     {
         if (x.Schemas.Count != y.Schemas.Count)
+        {
             return false;
+        }
 
         for (var i = 0; i < x.Schemas.Count; i++)
         {
             if (!EqualsCore(x.Schemas[i], y.Schemas[i], state))
+            {
                 return false;
+            }
         }
 
         return true;
@@ -191,11 +215,17 @@ internal sealed class AvroSchemaLogicalComparer : IEqualityComparer<AvroSchema>
     private static bool PropertiesEqual(PropertyMap? x, PropertyMap? y)
     {
         if (ReferenceEquals(x, y))
+        {
             return true;
+        }
         if (x is null || x.Count == 0)
+        {
             return y is null || y.Count == 0;
+        }
         if (y is null || y.Count == 0 || x.Count != y.Count)
+        {
             return false;
+        }
 
         foreach (var property in x)
         {
@@ -212,14 +242,20 @@ internal sealed class AvroSchemaLogicalComparer : IEqualityComparer<AvroSchema>
     private static bool SchemaNameListEquals(IList<SchemaName>? x, IList<SchemaName>? y)
     {
         if (ReferenceEquals(x, y))
+        {
             return true;
+        }
         if (x is null || y is null || x.Count != y.Count)
+        {
             return false;
+        }
 
         for (var i = 0; i < x.Count; i++)
         {
             if (!string.Equals(x[i].Fullname, y[i].Fullname, StringComparison.Ordinal))
+            {
                 return false;
+            }
         }
 
         return true;
@@ -228,14 +264,20 @@ internal sealed class AvroSchemaLogicalComparer : IEqualityComparer<AvroSchema>
     private static bool StringListEquals(IList<string>? x, IList<string>? y)
     {
         if (ReferenceEquals(x, y))
+        {
             return true;
+        }
         if (x is null || y is null || x.Count != y.Count)
+        {
             return false;
+        }
 
         for (var i = 0; i < x.Count; i++)
         {
             if (!string.Equals(x[i], y[i], StringComparison.Ordinal))
+            {
                 return false;
+            }
         }
 
         return true;
@@ -245,7 +287,9 @@ internal sealed class AvroSchemaLogicalComparer : IEqualityComparer<AvroSchema>
     {
         var tracksPath = schema is NamedSchema;
         if (tracksPath && !state.HashedSchemas.Add(schema))
+        {
             return Combine((int)schema.Tag, GetStringHashCode(((NamedSchema)schema).Fullname));
+        }
 
         try
         {
@@ -282,7 +326,9 @@ internal sealed class AvroSchemaLogicalComparer : IEqualityComparer<AvroSchema>
         finally
         {
             if (tracksPath)
+            {
                 state.HashedSchemas.Remove(schema);
+            }
         }
     }
 
@@ -294,7 +340,9 @@ internal sealed class AvroSchemaLogicalComparer : IEqualityComparer<AvroSchema>
         hash = Combine(hash, AvroSchemaLogicalAccessors.GetIsRequest(schema) ? 1 : 0);
         hash = Combine(hash, schema.Fields.Count);
         for (var i = 0; i < schema.Fields.Count; i++)
+        {
             hash = Combine(hash, GetFieldHashCode(schema.Fields[i], state));
+        }
         return hash;
     }
 
@@ -325,7 +373,9 @@ internal sealed class AvroSchemaLogicalComparer : IEqualityComparer<AvroSchema>
     {
         hash = Combine(hash, schema.Schemas.Count);
         for (var i = 0; i < schema.Schemas.Count; i++)
+        {
             hash = Combine(hash, GetHashCodeCore(schema.Schemas[i], state));
+        }
         return hash;
     }
 
@@ -341,7 +391,9 @@ internal sealed class AvroSchemaLogicalComparer : IEqualityComparer<AvroSchema>
     private static int GetPropertiesHashCode(PropertyMap? properties)
     {
         if (properties is null)
+        {
             return 0;
+        }
 
         var sum = 0;
         var xor = 0;
@@ -360,22 +412,30 @@ internal sealed class AvroSchemaLogicalComparer : IEqualityComparer<AvroSchema>
     private static int GetSchemaNameListHashCode(IList<SchemaName>? names)
     {
         if (names is null)
+        {
             return 0;
+        }
 
         var hash = names.Count;
         for (var i = 0; i < names.Count; i++)
+        {
             hash = Combine(hash, GetStringHashCode(names[i].Fullname));
+        }
         return hash;
     }
 
     private static int GetStringListHashCode(IList<string>? values)
     {
         if (values is null)
+        {
             return 0;
+        }
 
         var hash = values.Count;
         for (var i = 0; i < values.Count; i++)
+        {
             hash = Combine(hash, GetStringHashCode(values[i]));
+        }
         return hash;
     }
 
@@ -395,10 +455,16 @@ internal sealed class AvroSchemaLogicalComparer : IEqualityComparer<AvroSchema>
 
     private sealed class AvroSchemaComparisonState
     {
-        internal HashSet<AvroSchema> HashedSchemas { get; } =
+        internal HashSet<AvroSchema> HashedSchemas
+        {
+            get;
+        } =
             new(AvroSchemaReferenceComparer.Instance);
 
-        internal HashSet<AvroSchemaPair> EqualityPairs { get; } =
+        internal HashSet<AvroSchemaPair> EqualityPairs
+        {
+            get;
+        } =
             new(AvroSchemaPairReferenceComparer.Instance);
     }
 }
@@ -422,7 +488,9 @@ internal sealed class AvroSchemaPairReferenceComparer : IEqualityComparer<AvroSc
 {
     internal static readonly AvroSchemaPairReferenceComparer Instance = new();
 
-    private AvroSchemaPairReferenceComparer() { }
+    private AvroSchemaPairReferenceComparer()
+    {
+    }
 
     public bool Equals(AvroSchemaPair x, AvroSchemaPair y) =>
         ReferenceEquals(x.WriterSchema, y.WriterSchema) &&
@@ -444,11 +512,26 @@ internal sealed class AvroSerializationThreadState
         DirectEncoder = new AllocationFreeBinaryEncoder(DirectStream);
     }
 
-    internal PooledMemoryStream BufferedStream { get; }
-    internal AllocationFreeBinaryEncoder BufferedEncoder { get; }
-    internal FixedMemoryStream DirectStream { get; }
-    internal AllocationFreeBinaryEncoder DirectEncoder { get; }
-    internal int PayloadSizeHint { get; set; } = 1024;
+    internal PooledMemoryStream BufferedStream
+    {
+        get;
+    }
+    internal AllocationFreeBinaryEncoder BufferedEncoder
+    {
+        get;
+    }
+    internal FixedMemoryStream DirectStream
+    {
+        get;
+    }
+    internal AllocationFreeBinaryEncoder DirectEncoder
+    {
+        get;
+    }
+    internal int PayloadSizeHint
+    {
+        get; set;
+    } = 1024;
 }
 
 internal sealed class AvroDeserializationThreadState
@@ -459,8 +542,14 @@ internal sealed class AvroDeserializationThreadState
         Decoder = new BinaryDecoder(Stream);
     }
 
-    internal PooledMemoryStream Stream { get; }
-    internal BinaryDecoder Decoder { get; }
+    internal PooledMemoryStream Stream
+    {
+        get;
+    }
+    internal BinaryDecoder Decoder
+    {
+        get;
+    }
 }
 
 internal static class AvroCodecThreadStateCache

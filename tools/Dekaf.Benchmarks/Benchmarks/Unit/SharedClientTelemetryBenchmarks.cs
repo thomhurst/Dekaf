@@ -18,7 +18,10 @@ public class SharedClientTelemetryBenchmarks
     private readonly OffsetCommitRequest _commit = new() { GroupId = "benchmark", Topics = [] };
 
     [Params(false, true)]
-    public bool Shared { get; set; }
+    public bool Shared
+    {
+        get; set;
+    }
 
     [GlobalSetup]
     public void Setup()
@@ -47,8 +50,13 @@ public class SharedClientTelemetryBenchmarks
     public object? ObservedControlContext()
     {
         // Both paths attribute the request; only shared connections rent callback state.
-        if (!Shared) return _connection.GetTelemetryMetricCollector(_commit);
-        var state = TelemetryWriteObservationState.Rent(_collector, static () => { });
+        if (!Shared)
+        {
+            return _connection.GetTelemetryMetricCollector(_commit);
+        }
+        var state = TelemetryWriteObservationState.Rent(_collector, static () =>
+        {
+        });
         var collector = _connection.GetTelemetryMetricCollector(_commit, state.Collector);
         state.Return();
         return collector;

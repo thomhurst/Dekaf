@@ -32,9 +32,13 @@ public sealed class ConsumerBackgroundLoopStartTests
                 await ((Task)startAutoCommit.Invoke(consumer, [CancellationToken.None])!).ConfigureAwait(false);
 
                 if (taskField.GetValue(consumer) is Task task)
+                {
                     seenTasks.TryAdd(task, 0);
+                }
                 if (ctsField.GetValue(consumer) is CancellationTokenSource cts)
+                {
                     seenCts.TryAdd(cts, 0);
+                }
             }))
             .ToArray();
 
@@ -70,9 +74,13 @@ public sealed class ConsumerBackgroundLoopStartTests
                 startPrefetch.Invoke(consumer, []);
 
                 if (taskField.GetValue(consumer) is Task task)
+                {
                     seenTasks.TryAdd(task, 0);
+                }
                 if (ctsField.GetValue(consumer) is CancellationTokenSource cts)
+                {
                     seenCts.TryAdd(cts, 0);
+                }
             }))
             .ToArray();
 
@@ -172,9 +180,15 @@ public sealed class ConsumerBackgroundLoopStartTests
             Task = RunUntilCancelledAsync(CancellationObserved, _cts.Token);
         }
 
-        internal Task Task { get; }
+        internal Task Task
+        {
+            get;
+        }
 
-        internal TaskCompletionSource CancellationObserved { get; } =
+        internal TaskCompletionSource CancellationObserved
+        {
+            get;
+        } =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         internal void Install(KafkaConsumer<string, string> consumer)

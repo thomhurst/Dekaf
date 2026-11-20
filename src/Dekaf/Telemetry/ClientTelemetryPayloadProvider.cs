@@ -87,7 +87,9 @@ internal sealed class ClientTelemetryPayloadProvider : IClientTelemetryPayloadPr
             ResourceAttributeSize("group_member_id", attributes.GroupMemberId) +
             ResourceAttributeSize("transactional_id", attributes.TransactionalId);
         if (size == 0)
+        {
             return;
+        }
 
         // ResourceMetrics.resource = 1. Precompute lengths to write directly into the
         // existing buffer without a temporary buffer or closure for each attribute.
@@ -103,7 +105,9 @@ internal sealed class ClientTelemetryPayloadProvider : IClientTelemetryPayloadPr
     private static int ResourceAttributeSize(string name, string? value)
     {
         if (value is null || value.Length == 0)
+        {
             return 0;
+        }
 
         var anyValueSize = LengthDelimitedSize(Encoding.UTF8.GetByteCount(value));
         var keyValueSize = LengthDelimitedSize(Encoding.UTF8.GetByteCount(name)) + LengthDelimitedSize(anyValueSize);
@@ -114,14 +118,18 @@ internal sealed class ClientTelemetryPayloadProvider : IClientTelemetryPayloadPr
     {
         var lengthSize = 1;
         for (var remaining = (uint)payloadSize; remaining >= 128; remaining >>= 7)
+        {
             lengthSize++;
+        }
         return 1 + lengthSize + payloadSize;
     }
 
     private static void WriteResourceAttribute(IBufferWriter<byte> writer, string name, string? value)
     {
         if (value is null || value.Length == 0)
+        {
             return;
+        }
 
         var anyValueSize = LengthDelimitedSize(Encoding.UTF8.GetByteCount(value));
         var keyValueSize = LengthDelimitedSize(Encoding.UTF8.GetByteCount(name)) + LengthDelimitedSize(anyValueSize);
@@ -144,7 +152,9 @@ internal sealed class ClientTelemetryPayloadProvider : IClientTelemetryPayloadPr
         {
             WriteString(metricWriter, 1, metric.Name);
             if (metric.Unit is { } unit)
+            {
                 WriteString(metricWriter, 3, unit);
+            }
 
             if (metric.Kind == ClientTelemetryMetricKind.Counter)
             {

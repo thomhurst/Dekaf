@@ -43,7 +43,10 @@ public sealed class ShareConsumerIdleTests(KafkaTestContainer kafka) : KafkaInte
         finally
         {
             await cancellation.CancelAsync();
-            try { await pending; }
+            try
+            {
+                await pending;
+            }
             catch (OperationCanceledException) { }
         }
     }

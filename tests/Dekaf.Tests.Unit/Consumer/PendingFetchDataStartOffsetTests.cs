@@ -42,7 +42,9 @@ public class PendingFetchDataStartOffsetTests
             skipRecordsBelowOffset: floor, stopAtOffsetExclusive: stop);
         var actual = new List<long>();
         while (pending.MoveNext())
+        {
             actual.Add(pending.CurrentBaseOffset + pending.CurrentRecord.OffsetDelta);
+        }
 
         var expected = deltas.Select(delta => 100L + delta)
             .Where(offset => offset >= floor && (stop < 0 || offset < stop)).ToArray();

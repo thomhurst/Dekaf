@@ -59,7 +59,9 @@ public sealed class OutboxDynamoDbClusterTests(DynamoDbLocalContainer dynamoDb)
             dynamoDb, bucketCount: 16, leaseDuration, TimeSpan.FromMilliseconds(300));
         var running = new List<OutboxDynamoDbCluster.Pod>();
         foreach (var name in new[] { "v1-a", "v1-b", "v1-c", "v1-d" })
+        {
             running.Add(await cluster.StartPodAsync(name));
+        }
         await cluster.WaitForFairSplitAsync(Patience);
 
         using var stopWriters = new CancellationTokenSource();
@@ -101,7 +103,9 @@ public sealed class OutboxDynamoDbClusterTests(DynamoDbLocalContainer dynamoDb)
         // The autoscaler adds seven pods at once.
         var added = new List<OutboxDynamoDbCluster.Pod>();
         foreach (var name in Enumerable.Range(1, 7).Select(index => $"pod-{index:D2}"))
+        {
             added.Add(await cluster.StartPodAsync(name));
+        }
         await cluster.WaitForFairSplitAsync(Patience);
         await Assert.That((await cluster.ReadOwnersAsync()).Values.Distinct().Count()).IsEqualTo(8);
 
@@ -125,7 +129,9 @@ public sealed class OutboxDynamoDbClusterTests(DynamoDbLocalContainer dynamoDb)
             dynamoDb, bucketCount: 20, leaseDuration, TimeSpan.FromMilliseconds(300));
         var pods = new Dictionary<string, OutboxDynamoDbCluster.Pod>();
         foreach (var name in new[] { "pod-a", "pod-b", "pod-c", "pod-d", "pod-e" })
+        {
             pods[name] = await cluster.StartPodAsync(name);
+        }
         await cluster.WaitForFairSplitAsync(Patience);
 
         using var stopWriters = new CancellationTokenSource();
@@ -165,7 +171,9 @@ public sealed class OutboxDynamoDbClusterTests(DynamoDbLocalContainer dynamoDb)
             dynamoDb, bucketCount: 4, TimeSpan.FromSeconds(3), TimeSpan.FromMilliseconds(300));
         var pods = new Dictionary<string, OutboxDynamoDbCluster.Pod>();
         foreach (var name in Enumerable.Range(0, 6).Select(index => $"pod-{index}"))
+        {
             pods[name] = await cluster.StartPodAsync(name);
+        }
         await cluster.WaitForFairSplitAsync(Patience);
         var owners = (await cluster.ReadOwnersAsync()).Values.Distinct().ToArray();
         await Assert.That(owners.Length).IsEqualTo(4);
@@ -225,7 +233,9 @@ public sealed class OutboxDynamoDbClusterTests(DynamoDbLocalContainer dynamoDb)
             dynamoDb, bucketCount: 12, TimeSpan.FromSeconds(20), TimeSpan.FromMilliseconds(300), storeFaults: faults);
         var running = new List<OutboxDynamoDbCluster.Pod>();
         foreach (var name in new[] { "v1-a", "v1-b", "v1-c" })
+        {
             running.Add(await cluster.StartPodAsync(name));
+        }
 
         using var stopWriters = new CancellationTokenSource();
         var writers = cluster.RunWritersAsync(writers: 3, keysPerWriter: 6, stopWriters.Token);
@@ -269,7 +279,9 @@ public sealed class OutboxDynamoDbClusterTests(DynamoDbLocalContainer dynamoDb)
         while (!await condition())
         {
             if (TimeProvider.System.GetElapsedTime(started) > Patience)
+            {
                 Assert.Fail("The condition was not met in time.");
+            }
             await Task.Delay(50);
         }
     }

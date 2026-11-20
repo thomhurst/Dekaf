@@ -32,7 +32,10 @@ public abstract class KafkaIntegrationTest(KafkaTestContainer kafkaTestContainer
         KafkaFixtureConcurrencyGate.Get(kafkaTestContainer);
     private bool _fixtureGateEntered;
 
-    public KafkaTestContainer KafkaContainer { get; } = kafkaTestContainer;
+    public KafkaTestContainer KafkaContainer
+    {
+        get;
+    } = kafkaTestContainer;
 
     [Before(Test)]
     public async Task EnterKafkaFixtureConcurrencyGate(CancellationToken cancellationToken)
@@ -45,7 +48,9 @@ public abstract class KafkaIntegrationTest(KafkaTestContainer kafkaTestContainer
     public void ExitKafkaFixtureConcurrencyGate()
     {
         if (!_fixtureGateEntered)
+        {
             return;
+        }
 
         _fixtureGateEntered = false;
         _fixtureConcurrencyGate.Release();
@@ -64,7 +69,10 @@ public abstract class KafkaIntegrationTest(KafkaTestContainer kafkaTestContainer
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))
         {
             messages.Add(msg);
-            if (messages.Count >= count) break;
+            if (messages.Count >= count)
+            {
+                break;
+            }
         }
 
         return messages;

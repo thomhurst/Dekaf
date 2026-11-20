@@ -1,5 +1,5 @@
-using System.Diagnostics;
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using Dekaf.Networking;
 
 namespace Dekaf.Telemetry;
@@ -27,6 +27,7 @@ internal sealed class ShareConsumerTelemetryMetrics
         FetchPrefix + "fetch.rate", FetchPrefix + "fetch.total",
         FetchPrefix + "fetch.throttle.time.avg", FetchPrefix + "fetch.throttle.time.max"
     ];
+
     // Declaration order matches Names and the per-metric collection cursors.
     private enum Metric
     {
@@ -83,7 +84,16 @@ internal sealed class ShareConsumerTelemetryMetrics
     private int _acknowledgementEpoch;
 
     [Flags]
-    internal enum Groups { None = 0, Poll = 1, Heartbeat = 2, Rebalance = 4, Fetch = 8, Records = 16, Acknowledgements = 32 }
+    internal enum Groups
+    {
+        None = 0,
+        Poll = 1,
+        Heartbeat = 2,
+        Rebalance = 4,
+        Fetch = 8,
+        Records = 16,
+        Acknowledgements = 32
+    }
 
     internal ShareConsumerTelemetryMetrics(Func<long>? timestampClock = null, long timestampFrequency = 0)
     {
@@ -91,7 +101,9 @@ internal sealed class ShareConsumerTelemetryMetrics
         _frequency = timestampFrequency > 0 ? timestampFrequency : Stopwatch.Frequency;
         var created = _clock();
         for (var index = 0; index < _previousTimes.Length; index++)
+        {
             _previousTimes[index] = created;
+        }
     }
 
     internal bool Enabled(Groups group) => ((Groups)Volatile.Read(ref _enabled) & group) != 0;
@@ -114,7 +126,10 @@ internal sealed class ShareConsumerTelemetryMetrics
                 }
                 _requestedRates[index] = requested;
             }
-            if (!requested) continue;
+            if (!requested)
+            {
+                continue;
+            }
             groups |= index switch
             {
                 < 4 => Groups.Poll,
@@ -126,11 +141,17 @@ internal sealed class ShareConsumerTelemetryMetrics
             };
         }
         if (Enabled(Groups.Fetch) != ((groups & Groups.Fetch) != 0))
+        {
             Interlocked.Increment(ref _fetchEpoch);
+        }
         if (Enabled(Groups.Acknowledgements) != ((groups & Groups.Acknowledgements) != 0))
+        {
             Interlocked.Increment(ref _acknowledgementEpoch);
+        }
         if (Enabled(Groups.Records) != ((groups & Groups.Records) != 0))
+        {
             Interlocked.Increment(ref _recordEpoch);
+        }
         if (Enabled(Groups.Poll) != ((groups & Groups.Poll) != 0))
         {
             Volatile.Write(ref _lastPoll, -1);
@@ -143,21 +164,31 @@ internal sealed class ShareConsumerTelemetryMetrics
 
     internal void PollStarted()
     {
-        if (!Enabled(Groups.Poll)) return;
+        if (!Enabled(Groups.Poll))
+        {
+            return;
+        }
         var now = _clock();
         var previous = Interlocked.Exchange(ref _lastPoll, now);
         var idle = Interlocked.Exchange(ref _pollIdleTicks, 0);
-        if (previous < 0) return;
+        if (previous < 0)
+        {
+            return;
+        }
         var elapsed = Math.Max(0, now - previous);
         _pollInterval.Record(elapsed);
         if (elapsed > 0)
+        {
             _pollIdleRatio.Record((long)(Math.Min(1d, idle / (double)elapsed) * 1_000_000));
+        }
     }
 
     internal void PollWaitCompleted(long started)
     {
         if (started >= 0 && Enabled(Groups.Poll))
+        {
             Interlocked.Add(ref _pollIdleTicks, Math.Max(0, _clock() - started));
+        }
     }
 
     // A share consumer serializes polls and parsing. Keep this wait on the recorder
@@ -173,7 +204,10 @@ internal sealed class ShareConsumerTelemetryMetrics
 
     internal long HeartbeatStarted()
     {
-        if (!Enabled(Groups.Heartbeat)) return -1;
+        if (!Enabled(Groups.Heartbeat))
+        {
+            return -1;
+        }
         var now = _clock();
         Volatile.Write(ref _lastHeartbeat, now);
         Interlocked.Increment(ref _heartbeats);
@@ -183,12 +217,17 @@ internal sealed class ShareConsumerTelemetryMetrics
     internal void HeartbeatCompleted(long started)
     {
         if (started >= 0 && Enabled(Groups.Heartbeat))
+        {
             _heartbeatLatency.Record(Math.Max(0, _clock() - started));
+        }
     }
 
     internal void Rebalanced()
     {
-        if (Enabled(Groups.Rebalance)) Interlocked.Increment(ref _rebalances);
+        if (Enabled(Groups.Rebalance))
+        {
+            Interlocked.Increment(ref _rebalances);
+        }
     }
 
     internal void FetchStarted(int brokerId) => StartFetch(brokerId, 0);
@@ -206,7 +245,10 @@ internal sealed class ShareConsumerTelemetryMetrics
 
     internal void StartFetch(int brokerId, long acknowledgements, bool resetRecords = true)
     {
-        if (!Enabled(Groups.Fetch | Groups.Acknowledgements)) return;
+        if (!Enabled(Groups.Fetch | Groups.Acknowledgements))
+        {
+            return;
+        }
         var sample = _fetchSamples.GetOrAdd(brokerId, static _ => new FetchSample());
         if (resetRecords)
         {
@@ -221,10 +263,18 @@ internal sealed class ShareConsumerTelemetryMetrics
 
     internal void FetchFailed(int brokerId)
     {
-        if (!Enabled(Groups.Fetch | Groups.Acknowledgements)) return;
-        if (!_fetchSamples.TryGetValue(brokerId, out var sample)) return;
+        if (!Enabled(Groups.Fetch | Groups.Acknowledgements))
+        {
+            return;
+        }
+        if (!_fetchSamples.TryGetValue(brokerId, out var sample))
+        {
+            return;
+        }
         if (sample.Started >= 0 && Enabled(Groups.Fetch) && sample.FetchEpoch == Volatile.Read(ref _fetchEpoch))
+        {
             RecordFetch(sample);
+        }
         if (sample.FetchAcknowledgementEpoch == Volatile.Read(ref _acknowledgementEpoch))
         {
             AcknowledgementsSent(sample.FetchAcknowledgements);
@@ -234,18 +284,30 @@ internal sealed class ShareConsumerTelemetryMetrics
 
     internal void FetchCompleted(int brokerId, int throttleMs, bool acknowledgementsFailed = false)
     {
-        if (!Enabled(Groups.Fetch | Groups.Acknowledgements)) return;
-        if (!_fetchSamples.TryGetValue(brokerId, out var sample)) return;
+        if (!Enabled(Groups.Fetch | Groups.Acknowledgements))
+        {
+            return;
+        }
+        if (!_fetchSamples.TryGetValue(brokerId, out var sample))
+        {
+            return;
+        }
         if (sample.Started >= 0 && Enabled(Groups.Fetch) && sample.FetchEpoch == Volatile.Read(ref _fetchEpoch))
         {
             RecordFetch(sample);
             _fetchLatency.Record(Math.Max(0, _clock() - sample.Started));
-            if (throttleMs >= 0) _fetchThrottle.Record(throttleMs);
+            if (throttleMs >= 0)
+            {
+                _fetchThrottle.Record(throttleMs);
+            }
         }
         if (sample.FetchAcknowledgementEpoch == Volatile.Read(ref _acknowledgementEpoch))
         {
             AcknowledgementsSent(sample.FetchAcknowledgements);
-            if (acknowledgementsFailed) AcknowledgementsFailed(sample.FetchAcknowledgements);
+            if (acknowledgementsFailed)
+            {
+                AcknowledgementsFailed(sample.FetchAcknowledgements);
+            }
         }
     }
 
@@ -255,12 +317,17 @@ internal sealed class ShareConsumerTelemetryMetrics
         // Record totals only include requests observed under the record subscription.
         // Fetch-only intervals must not dilute their lifetime per-request averages.
         if (Enabled(Groups.Records) && sample.RecordEpoch == Volatile.Read(ref _recordEpoch))
+        {
             Interlocked.Increment(ref _recordFetches);
+        }
     }
 
     internal void AcknowledgementRequestStarted(int brokerId, long count)
     {
-        if (!Enabled(Groups.Acknowledgements)) return;
+        if (!Enabled(Groups.Acknowledgements))
+        {
+            return;
+        }
         var sample = _fetchSamples.GetOrAdd(brokerId, static _ => new FetchSample());
         sample.StandaloneAcknowledgementEpoch = Volatile.Read(ref _acknowledgementEpoch);
         sample.StandaloneAcknowledgements = count;
@@ -269,9 +336,15 @@ internal sealed class ShareConsumerTelemetryMetrics
     internal void AcknowledgementRequestCompleted(int brokerId, bool failed)
     {
         if (!Enabled(Groups.Acknowledgements) || !_fetchSamples.TryGetValue(brokerId, out var sample)
-            || sample.StandaloneAcknowledgementEpoch != Volatile.Read(ref _acknowledgementEpoch)) return;
+            || sample.StandaloneAcknowledgementEpoch != Volatile.Read(ref _acknowledgementEpoch))
+        {
+            return;
+        }
         AcknowledgementsSent(sample.StandaloneAcknowledgements);
-        if (failed) AcknowledgementsFailed(sample.StandaloneAcknowledgements);
+        if (failed)
+        {
+            AcknowledgementsFailed(sample.StandaloneAcknowledgements);
+        }
     }
 
     internal FetchSample? GetFetchSample(int brokerId) =>
@@ -280,7 +353,10 @@ internal sealed class ShareConsumerTelemetryMetrics
 
     internal void Parsed(FetchSample sample, long bytes, int records)
     {
-        if (!Enabled(Groups.Records) || sample.RecordEpoch != Volatile.Read(ref _recordEpoch)) return;
+        if (!Enabled(Groups.Records) || sample.RecordEpoch != Volatile.Read(ref _recordEpoch))
+        {
+            return;
+        }
         sample.Bytes += bytes;
         sample.Records += records;
         Interlocked.Add(ref _bytes, bytes);
@@ -291,12 +367,18 @@ internal sealed class ShareConsumerTelemetryMetrics
 
     internal void AcknowledgementsSent(long count)
     {
-        if (Enabled(Groups.Acknowledgements)) Interlocked.Add(ref _sentAcks, count);
+        if (Enabled(Groups.Acknowledgements))
+        {
+            Interlocked.Add(ref _sentAcks, count);
+        }
     }
 
     internal void AcknowledgementsFailed(long count)
     {
-        if (Enabled(Groups.Acknowledgements)) Interlocked.Add(ref _failedAcks, count);
+        if (Enabled(Groups.Acknowledgements))
+        {
+            Interlocked.Add(ref _failedAcks, count);
+        }
     }
 
     internal void Collect(ClientTelemetrySubscription subscription, List<ClientTelemetryMetric> metrics)
@@ -310,7 +392,10 @@ internal sealed class ShareConsumerTelemetryMetrics
         var recordFetches = Volatile.Read(ref _recordFetches);
         for (var index = 0; index < Names.Length; index++)
         {
-            if (!Requested(Names[index], subscription.RequestedMetrics)) continue;
+            if (!Requested(Names[index], subscription.RequestedMetrics))
+            {
+                continue;
+            }
             var metric = (Metric)index;
             var kind = IsCounter(metric) ? ClientTelemetryMetricKind.Counter : ClientTelemetryMetricKind.Gauge;
             var total = GetTotal(metric);
@@ -336,7 +421,10 @@ internal sealed class ShareConsumerTelemetryMetrics
             {
                 var elapsed = (now - _previousTimes[index]) / (double)_frequency;
                 value = elapsed > 0 ? Math.Max(0, total - _previousValues[index]) / elapsed : 0;
-                if (metric == Metric.RebalanceRatePerHour) value *= 3600;
+                if (metric == Metric.RebalanceRatePerHour)
+                {
+                    value *= 3600;
+                }
                 _previousTimes[index] = now;
                 _previousValues[index] = total;
             }
@@ -374,7 +462,12 @@ internal sealed class ShareConsumerTelemetryMetrics
     private static bool Requested(string name, IReadOnlyList<string> prefixes)
     {
         for (var index = 0; index < prefixes.Count; index++)
-            if (name.StartsWith(prefixes[index], StringComparison.Ordinal)) return true;
+        {
+            if (name.StartsWith(prefixes[index], StringComparison.Ordinal))
+            {
+                return true;
+            }
+        }
         return false;
     }
 
@@ -384,7 +477,10 @@ internal sealed class ShareConsumerTelemetryMetrics
         while (value > current)
         {
             var previous = Interlocked.CompareExchange(ref target, value, current);
-            if (previous == current) return;
+            if (previous == current)
+            {
+                return;
+            }
             current = previous;
         }
     }
@@ -413,7 +509,11 @@ internal sealed class ShareConsumerTelemetryMetrics
             Records = 0;
             ResetPending();
         }
-        internal void ResetPending() { PendingBytes = 0; PendingRecords = 0; }
+        internal void ResetPending()
+        {
+            PendingBytes = 0;
+            PendingRecords = 0;
+        }
     }
 
     private sealed class Measurement

@@ -55,7 +55,10 @@ public class ProduceRequestSegmentationBenchmarks
     }
 
     [Params((short)7, (short)13)]
-    public short Version { get; set; }
+    public short Version
+    {
+        get; set;
+    }
 
     [Benchmark]
     public int SerializeSingleBatch()
@@ -72,7 +75,9 @@ public class ProduceRequestSegmentationBenchmarks
             out var suffixLength);
 
         if (!segmented)
+        {
             throw new InvalidOperationException("Expected zero-copy Produce framing.");
+        }
 
         DekafPools.SerializationBuffers.Return(metadataArray, clearArray: false);
         return checked(prefixLength + (int)encodedRecords.Length + suffixLength);

@@ -92,8 +92,7 @@ public sealed class StreamsGroupTopologyDescriptionUpdateMessageTests
     private static StreamsGroupTopologyDescriptionUpdateResponse Read(byte[] bytes, out long consumed)
     {
         var reader = new KafkaProtocolReader(bytes);
-        var response = (StreamsGroupTopologyDescriptionUpdateResponse)
-            StreamsGroupTopologyDescriptionUpdateResponse.Read(ref reader, version: 0);
+        var response = (StreamsGroupTopologyDescriptionUpdateResponse)StreamsGroupTopologyDescriptionUpdateResponse.Read(ref reader, version: 0);
         consumed = reader.Consumed;
         return response;
     }

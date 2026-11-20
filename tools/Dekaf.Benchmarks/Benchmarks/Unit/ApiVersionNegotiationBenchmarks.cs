@@ -78,7 +78,10 @@ public class ApiVersionNegotiationBenchmarks
         public string Host => "benchmark";
         public int Port => 9092;
         public bool IsConnected => true;
-        public KafkaConnectionCapabilities Capabilities { get; } = capabilities;
+        public KafkaConnectionCapabilities Capabilities
+        {
+            get;
+        } = capabilities;
 
         public ValueTask ConnectAsync(CancellationToken cancellationToken = default) =>
             ValueTask.CompletedTask;

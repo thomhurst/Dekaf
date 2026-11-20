@@ -32,7 +32,9 @@ public sealed partial class KafkaConnectionTests
         var stream = server.GetStream();
         using var memoryPool = new FetchBufferMemoryPool(64);
         if (!synchronousAdmission)
+        {
             await Assert.That(memoryPool.TryReserve(64)).IsTrue();
+        }
         using var caller = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         var admissionStarted = new TaskCompletionSource<(Task Drain, bool CompletedBeforeReservation)>(
             TaskCreationOptions.RunContinuationsAsynchronously);
@@ -57,12 +59,16 @@ public sealed partial class KafkaConnectionTests
         if (!synchronousAdmission)
         {
             while (!connection.IsResponseAdmissionWaiting)
+            {
                 await Task.Delay(1, cancellationToken);
+            }
             await Assert.That(admission.Drain.IsCompleted).IsFalse();
         }
 
         if (!synchronousAdmission)
+        {
             memoryPool.Release(64);
+        }
         await admission.Drain.WaitAsync(TimeSpan.FromSeconds(5), cancellationToken);
         await Assert.That(connection.IsConnected).IsTrue();
     }
@@ -104,7 +110,9 @@ public sealed partial class KafkaConnectionTests
         await stream.WriteAsync(BuildEmptyFetchV16ResponseFrame(
             BinaryPrimitives.ReadInt32BigEndian(request.AsSpan(4))), cancellationToken);
         while (!connection.IsResponseAdmissionWaiting)
+        {
             await Task.Delay(1, cancellationToken);
+        }
 
         var drain = StartDrain(renewal.Token);
         await Assert.That(drain.IsCompleted).IsFalse();
@@ -167,16 +175,22 @@ public sealed partial class KafkaConnectionTests
         var fetchRequest = await ReadRequestFrameAsync(stream, cancellationToken);
         Task<ApiVersionsResponse>? control = null;
         if (sendBeforeWait)
+        {
             control = SendControl();
+        }
         await stream.WriteAsync(BuildEmptyFetchV16ResponseFrame(
             BinaryPrimitives.ReadInt32BigEndian(fetchRequest.AsSpan(4))), cancellationToken);
         while (!connection.IsResponseAdmissionWaiting)
+        {
             await Task.Delay(1, cancellationToken);
+        }
         control ??= SendControl();
         var controlRequest = await ReadRequestFrameAsync(stream, cancellationToken);
         if (outcome != "silent")
+        {
             await stream.WriteAsync(BuildApiVersionsV3ResponseFrame(
                 BinaryPrimitives.ReadInt32BigEndian(controlRequest.AsSpan(4))), cancellationToken);
+        }
 
         await Task.Delay(requestTimeout * 4, cancellationToken);
         await Assert.That(fetch.IsCompleted).IsFalse();
@@ -204,8 +218,10 @@ public sealed partial class KafkaConnectionTests
         else
         {
             if (outcome == "complete")
+            {
                 await Assert.That((await control.WaitAsync(TimeSpan.FromSeconds(5), cancellationToken)).ErrorCode)
                     .IsEqualTo(ErrorCode.None);
+            }
             await Assert.That(connection.IsConnected).IsTrue();
         }
 

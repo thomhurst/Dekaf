@@ -41,7 +41,9 @@ public sealed class PendingResponseArrayOwnershipTests : ScriptedProduceResponse
         var tasks = Enumerable.Range(0, 16).Select(_ => Task.Run(() =>
         {
             if (guard.TryClaim())
+            {
                 Interlocked.Increment(ref winners);
+            }
         }));
 
         await Task.WhenAll(tasks);

@@ -15,9 +15,15 @@ public sealed class ShareTelemetryObserverTests
     public async Task Snapshot_RoundTripPreservesRecordedSubscriptionDimensions()
     {
         // A report read on a newer harness must not rewrite historical dimensions.
-        var snapshot = new ShareTelemetrySnapshot { PushIntervalMilliseconds = 2000,
-            MaximumRetainedPayloads = 32, MaximumPayloadBytes = 8192, RequestedMetrics = ["historical"],
-            RetainedPayloads = 4, Workers = ShareTelemetryObserver.Inspect(Complete(), Clients, Identities, true)!.Workers };
+        var snapshot = new ShareTelemetrySnapshot
+        {
+            PushIntervalMilliseconds = 2000,
+            MaximumRetainedPayloads = 32,
+            MaximumPayloadBytes = 8192,
+            RequestedMetrics = ["historical"],
+            RetainedPayloads = 4,
+            Workers = ShareTelemetryObserver.Inspect(Complete(), Clients, Identities, true)!.Workers
+        };
         var restored = JsonSerializer.Deserialize<ShareTelemetrySnapshot>(JsonSerializer.Serialize(snapshot))!;
         await Assert.That(restored.PushIntervalMilliseconds).IsEqualTo(2000);
         await Assert.That(restored.MaximumRetainedPayloads).IsEqualTo(32);
@@ -112,8 +118,11 @@ public sealed class ShareTelemetryObserverTests
     {
         var metrics = new List<Metric>
         {
-            new() { Name = ShareTelemetryObserver.ApplicationMetric,
-                Gauge = new Gauge { DataPoints = { new NumberDataPoint { AsDouble = worker + 1 } } } },
+            new()
+            {
+                Name = ShareTelemetryObserver.ApplicationMetric,
+                Gauge = new Gauge { DataPoints = { new NumberDataPoint { AsDouble = worker + 1 } } }
+            },
             SumMetric(ShareTelemetryObserver.FetchMetric), SumMetric(ShareTelemetryObserver.RecordsMetric),
             SumMetric(ShareTelemetryObserver.AcknowledgementsMetric)
         };
@@ -124,8 +133,11 @@ public sealed class ShareTelemetryObserverTests
         return Envelope(worker, terminating, payload.ToByteArray());
     }
 
-    private static Metric SumMetric(string name) => new() { Name = name,
-        Sum = new Sum { IsMonotonic = true, AggregationTemporality = 1, DataPoints = { new NumberDataPoint { AsInt = 10 } } } };
+    private static Metric SumMetric(string name) => new()
+    {
+        Name = name,
+        Sum = new Sum { IsMonotonic = true, AggregationTemporality = 1, DataPoints = { new NumberDataPoint { AsInt = 10 } } }
+    };
     private static string Envelope(int worker, bool terminating, byte[] bytes) =>
         $"{Identities[worker]}\t{terminating}\t{Encode(Clients[worker])}\t{Encode("OTLP")}\t{Convert.ToBase64String(bytes)}\n";
     private static string Encode(string value) => Convert.ToBase64String(Encoding.UTF8.GetBytes(value));

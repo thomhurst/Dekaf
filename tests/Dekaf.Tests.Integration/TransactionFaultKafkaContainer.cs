@@ -1,10 +1,10 @@
+using System.Net.Http.Json;
+using System.Text.Json;
+using System.Text.Json.Serialization;
 using Dekaf.Admin;
 using DotNet.Testcontainers.Builders;
 using DotNet.Testcontainers.Containers;
 using DotNet.Testcontainers.Networks;
-using System.Net.Http.Json;
-using System.Text.Json;
-using System.Text.Json.Serialization;
 using Testcontainers.Toxiproxy;
 
 namespace Dekaf.Tests.Integration;
@@ -51,9 +51,15 @@ public class TransactionFaultKafkaContainer : KafkaTestContainer
             .Build();
     }
 
-    public string ProducerBootstrapServers { get; private set; } = string.Empty;
+    public string ProducerBootstrapServers
+    {
+        get; private set;
+    } = string.Empty;
 
-    public string ConsumerBootstrapServers { get; private set; } = string.Empty;
+    public string ConsumerBootstrapServers
+    {
+        get; private set;
+    } = string.Empty;
 
     public override async Task InitializeAsync()
     {
@@ -200,9 +206,13 @@ public class TransactionFaultKafkaContainer : KafkaTestContainer
             var configs = await admin.DescribeConfigsAsync([resource], cancellationToken: cancellationToken)
                 .ConfigureAwait(false);
             if (configs[resource].Any(entry => entry.Name == sessionTimeout && entry.Value == "6000"))
+            {
                 return;
+            }
             if (attempt == 20)
+            {
                 throw new TimeoutException($"Group {groupId} did not report {sessionTimeout}=6000.");
+            }
             await Task.Delay(TimeSpan.FromMilliseconds(250), cancellationToken).ConfigureAwait(false);
         }
     }
@@ -264,7 +274,9 @@ public class TransactionFaultKafkaContainer : KafkaTestContainer
                 cancellationToken).ConfigureAwait(false);
             // A toxic that is already gone is healed; anything else must not be mistaken for it.
             if (response.StatusCode != System.Net.HttpStatusCode.NotFound)
+            {
                 response.EnsureSuccessStatusCode();
+            }
 
             lock (_activeToxicsLock)
             {
@@ -288,7 +300,9 @@ public class TransactionFaultKafkaContainer : KafkaTestContainer
         lock (_activeToxicsLock)
         {
             if (!_activeToxics.Contains((proxy, name)))
+            {
                 _activeToxics.Add((proxy, name));
+            }
         }
 
         using var response = await _toxiproxyClient.PostAsJsonAsync(

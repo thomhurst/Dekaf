@@ -28,7 +28,9 @@ internal sealed class FixedMemoryStream : Stream
     {
         var newPosition = _position + count;
         if (newPosition > _memory.Length)
+        {
             throw new FixedMemoryStreamOverflowException(newPosition);
+        }
 
         buffer.AsSpan(offset, count).CopyTo(_memory.Span.Slice(_position));
         _position = newPosition;
@@ -38,7 +40,9 @@ internal sealed class FixedMemoryStream : Stream
     {
         var newPosition = _position + buffer.Length;
         if (newPosition > _memory.Length)
+        {
             throw new FixedMemoryStreamOverflowException(newPosition);
+        }
 
         buffer.CopyTo(_memory.Span.Slice(_position));
         _position = newPosition;
@@ -48,13 +52,17 @@ internal sealed class FixedMemoryStream : Stream
     {
         var newPosition = _position + 1;
         if (newPosition > _memory.Length)
+        {
             throw new FixedMemoryStreamOverflowException(newPosition);
+        }
 
         _memory.Span[_position] = value;
         _position = newPosition;
     }
 
-    public override void Flush() { }
+    public override void Flush()
+    {
+    }
 
     public override int Read(byte[] buffer, int offset, int count) =>
         throw new NotSupportedException();
@@ -68,5 +76,8 @@ internal sealed class FixedMemoryStream : Stream
 
 internal sealed class FixedMemoryStreamOverflowException(int requiredCapacity) : Exception
 {
-    public int RequiredCapacity { get; } = requiredCapacity;
+    public int RequiredCapacity
+    {
+        get;
+    } = requiredCapacity;
 }

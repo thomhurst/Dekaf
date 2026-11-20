@@ -10,12 +10,11 @@ using Dekaf.Diagnostics;
 using Dekaf.Errors;
 using Dekaf.Metadata;
 using Dekaf.Networking;
-using Dekaf.Protocol;
 using Dekaf.Producer;
+using Dekaf.Protocol;
 using Dekaf.Protocol.Messages;
 using Dekaf.Protocol.Records;
 using Dekaf.Security.Sasl;
-
 using NSubstitute;
 
 namespace Dekaf.Tests.Unit.Producer;
@@ -212,7 +211,9 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
             callback: null,
             estimatedSize: 1);
         if (!appendResult.Success)
+        {
             throw new InvalidOperationException("Test batch append failed.");
+        }
 
         return partitionBatch.Complete()!;
     }
@@ -251,7 +252,9 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
             pool,
             options,
             accumulator,
-            (_, _, _, _, _) => { },
+            (_, _, _, _, _) =>
+            {
+            },
             onPipelinedResponseAcquired: () => throw new InvalidOperationException("test"));
 
         try
@@ -376,7 +379,9 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
             Substitute.For<IConnectionPool>(),
             options,
             accumulator,
-            static (_, _, _, _, _) => { });
+            static (_, _, _, _, _) =>
+            {
+            });
 
         try
         {
@@ -423,7 +428,9 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
             Substitute.For<IConnectionPool>(),
             options,
             accumulator,
-            static (_, _, _, _, _) => { });
+            static (_, _, _, _, _) =>
+            {
+            });
         var sourceBuilder = new PartitionBatch(new TopicPartition(topic, 0), options);
         sourceBuilder.SetSplitBatchSizeLimit(4_096);
         for (var i = 0; i < 8; i++)
@@ -442,7 +449,9 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
                 callback: null,
                 estimatedSize: PartitionBatch.EstimateRecordSize(0, value.Length, null, 0));
             if (!appended.Success)
+            {
                 throw new InvalidOperationException("Test record did not fit.");
+            }
         }
 
         var source = sourceBuilder.Complete()!;
@@ -455,10 +464,14 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
             var children = accumulator.SplitForSenderRetry(
                 source,
                 source.Generation,
-                static () => { })!;
+                static () =>
+                {
+                })!;
             var generations = children.Select(static child => child.Generation).ToArray();
             foreach (var child in children)
+            {
                 child.WaitForPreSerializationIfStarted();
+            }
 
             await Assert.That(children).Count().IsGreaterThan(1);
             await Assert.That(children.All(static child => child.IsSendCompleted)).IsTrue();
@@ -574,7 +587,9 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
             pool,
             options,
             accumulator,
-            (_, _, _, _, _) => { },
+            (_, _, _, _, _) =>
+            {
+            },
             onWaveCoalesceStarted: () =>
             {
                 sender!.Enqueue(CreateTestBatch(valueTaskSourcePool, "test-topic", 1));
@@ -582,7 +597,9 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
                 // Expire both zero-linger deadlines after the sibling is queued.
                 var deadline = Stopwatch.GetTimestamp() + Stopwatch.Frequency / 1_000;
                 while (Stopwatch.GetTimestamp() < deadline)
+                {
                     Thread.SpinWait(32);
+                }
             },
             onIdleWaitStarted: () => Interlocked.Increment(ref idleWaitCount));
 
@@ -651,7 +668,9 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
             retryBackoffMaxMs: 10);
         var accumulator = new RecordAccumulator(options);
         var valueTaskSourcePool = new ValueTaskSourcePool<RecordMetadata>();
-        var sender = CreateSender(pool, options, accumulator, (_, _, _, _, _) => { },
+        var sender = CreateSender(pool, options, accumulator, (_, _, _, _, _) =>
+        {
+        },
             onIdlePendingSendAwaitStarted: () => idleAwaitEntered.TrySetResult());
 
         try
@@ -716,11 +735,15 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
         var eventChannelField = typeof(BrokerSender).GetField(
             "_eventChannel", BindingFlags.Instance | BindingFlags.NonPublic)!;
         BrokerSender? sender = null;
-        sender = CreateSender(pool, options, accumulator, (_, _, _, _, _) => { },
+        sender = CreateSender(pool, options, accumulator, (_, _, _, _, _) =>
+        {
+        },
             onIdlePendingSendAwaitStarted: () =>
             {
                 if (wakeConsumed.Task.IsCompleted)
+                {
                     return;
+                }
 
                 // On the send loop, about to await the write: fail it fatally, wait until its
                 // catch block has deferred the unmute and failed the batch, then consume the
@@ -787,17 +810,23 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
             pool,
             options,
             accumulator,
-            (_, _, _, _, _) => { },
+            (_, _, _, _, _) =>
+            {
+            },
             rerouteBatch: (batch, _) =>
             {
                 batch.Fail(injectedFailure);
                 if (Interlocked.Increment(ref reroutedCount) == 2)
+                {
                     allRerouted.TrySetResult();
+                }
             },
             onWaveCoalesceStarted: () =>
             {
                 if (Interlocked.Exchange(ref crashEnabled, 0) == 0)
+                {
                     return;
+                }
 
                 sender!.Enqueue(queuedDuringCrash!);
                 throw injectedFailure;
@@ -859,18 +888,24 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
             pool,
             options,
             accumulator,
-            (_, _, _, _, _) => { },
+            (_, _, _, _, _) =>
+            {
+            },
             rerouteBatch: (batch, _) =>
             {
                 reroutedSequences.Enqueue(batch.RecordBatch.BaseSequence);
                 batch.Fail(injectedFailure);
                 if (Interlocked.Increment(ref reroutedCount) == 3)
+                {
                     allRerouted.TrySetResult();
+                }
             },
             onWaveCoalesceStarted: () =>
             {
                 if (Interlocked.Exchange(ref crashEnabled, 0) != 0)
+                {
                     throw injectedFailure;
+                }
 
                 coalesceStarted.TrySetResult();
                 releaseCoalesce.Wait(cancellationToken);
@@ -946,17 +981,23 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
             pool,
             options,
             accumulator,
-            (_, _, _, _, _) => { },
+            (_, _, _, _, _) =>
+            {
+            },
             rerouteBatch: (batch, _) =>
             {
                 batch.Fail(injectedFailure);
                 if (Interlocked.Increment(ref reroutedCount) == 2)
+                {
                     allRerouted.TrySetResult();
+                }
             },
             onBrokerThrottle: _ =>
             {
                 if (Volatile.Read(ref throwOnThrottleObservation) != 0)
+                {
                     throw injectedFailure;
+                }
             });
 
         try
@@ -1022,7 +1063,9 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
             pool,
             options,
             accumulator,
-            (_, _, _, _, _) => { },
+            (_, _, _, _, _) =>
+            {
+            },
             onWaveCoalesceStarted: () =>
                 sender!.Enqueue(CreateTestBatch(valueTaskSourcePool, "test-topic", 1)));
 
@@ -1654,9 +1697,13 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
             var (exception, reportedFirst) = await acknowledged.Task.WaitAsync(cancellationToken);
 
             if (fatal)
+            {
                 await Assert.That(exception).IsTypeOf<FatalTransactionException>();
+            }
             else
+            {
                 await Assert.That(exception).IsTypeOf<AbortableTransactionException>();
+            }
             var transactionException = (TransactionException)exception!;
             await Assert.That(transactionException.ErrorCode).IsEqualTo(errorCode);
             await Assert.That(transactionException.TransactionalId).IsEqualTo("test-transaction");
@@ -1732,7 +1779,9 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
             await Assert.That(fatal.ErrorCode).IsEqualTo(errorCode);
             await Assert.That(fatal.TransactionalId).IsEqualTo("test-transaction");
             if (authorizationCause)
+            {
                 await Assert.That(fatal.InnerException).IsTypeOf<AuthorizationException>();
+            }
             await Assert.That(Volatile.Read(ref sendCount)).IsEqualTo(1);
         }
         finally
@@ -1946,7 +1995,9 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
         {
             // Runs after the carry-over check, between coalescing and the write.
             if (Volatile.Read(ref closeOnNextEnrollment) == 1)
+            {
                 accumulator.CloseTransactionalAppends();
+            }
             return TransactionPartitionEnrollmentResult.Enrolled;
         }
 
@@ -1999,9 +2050,13 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
         var (pool, _) = CreateMockConnection(responses, () =>
         {
             if (Interlocked.Increment(ref sendCount) == 1)
+            {
                 firstSent.TrySetResult();
+            }
             else
+            {
                 secondSent.TrySetResult();
+            }
         });
         cancellationToken = GuardUnscriptedSends(cancellationToken);
         var options = CreateOptions(
@@ -2019,7 +2074,9 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
             (topicPartition, _, _, _, exception) =>
             {
                 if (topicPartition.Partition == 0)
+                {
                     partitionZeroAcknowledged.TrySetResult(exception);
+                }
             },
             produceApiVersion: ProduceRequest.ImplicitTransactionPartitionEnrollmentVersion,
             isTransactional: true,
@@ -2250,7 +2307,9 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
         var options = CreateOptions();
         var accumulator = new RecordAccumulator(options);
         var valueTaskSourcePool = new ValueTaskSourcePool<RecordMetadata>();
-        var sender = CreateSender(pool, options, accumulator, (_, _, _, _, _) => { });
+        var sender = CreateSender(pool, options, accumulator, (_, _, _, _, _) =>
+        {
+        });
 
         try
         {
@@ -2292,12 +2351,18 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
             onLong: (instrument, measurement, tags, _) =>
             {
                 if (AccumulatorTestHelpers.GetTag(tags, DekafDiagnostics.MessagingDestinationName) != topic)
+                {
                     return;
+                }
 
                 if (instrument.Name == messagesSentName)
+                {
                     Interlocked.Add(ref messagesSent, measurement);
+                }
                 else
+                {
                     Interlocked.Add(ref bytesSent, measurement);
+                }
             });
 
         var connection = new TestKafkaConnection
@@ -2309,7 +2374,9 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
         var options = CreateOptions();
         var accumulator = new RecordAccumulator(options);
         var valueTaskSourcePool = new ValueTaskSourcePool<RecordMetadata>();
-        var sender = CreateSender(pool, options, accumulator, (_, _, _, _, _) => { });
+        var sender = CreateSender(pool, options, accumulator, (_, _, _, _, _) =>
+        {
+        });
 
         try
         {
@@ -2350,9 +2417,13 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
         listener.SetMeasurementEventCallback<long>((instrument, measurement, _, _) =>
         {
             if (instrument.Name == deferredName)
+            {
                 Interlocked.Add(ref deferredCount, measurement);
+            }
             else if (instrument.Name == recoveredName)
+            {
                 Interlocked.Add(ref recoveredCount, measurement);
+            }
         });
         listener.Start();
 
@@ -2360,7 +2431,9 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
         var (pool, _) = CreateScaleTrackingPool(connection);
         var options = CreateOptions();
         var accumulator = new RecordAccumulator(options);
-        var sender = CreateSender(pool, options, accumulator, (_, _, _, _, _) => { });
+        var sender = CreateSender(pool, options, accumulator, (_, _, _, _, _) =>
+        {
+        });
 
         try
         {
@@ -2423,9 +2496,13 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
         var sender = CreateSender(pool, options, accumulator, (_, _, _, count, error) =>
         {
             if (error is not null)
+            {
                 allAcknowledged.TrySetException(error);
+            }
             else if (Interlocked.Add(ref acknowledgedCount, count) == batchCount)
+            {
                 allAcknowledged.TrySetResult();
+            }
         });
 
         try
@@ -2437,7 +2514,9 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
             // coalescing consumes at most four batches per pass, so 511 queued batches
             // sustain more than the 100 pressure observations required for scaling.
             for (var i = 1; i < batchCount; i++)
+            {
                 sender.Enqueue(CreateTestBatch(vtPool, "test-topic", i % partitionCount));
+            }
 
             await Assert.That(Volatile.Read(ref sendCount)).IsEqualTo(1);
             await Assert.That(scaleRequested.Task.IsCompleted).IsFalse();
@@ -2484,7 +2563,9 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
         {
             var idx = Interlocked.Increment(ref sendCount) - 1;
             if (idx < sendSignals.Length)
+            {
                 sendSignals[idx].TrySetResult();
+            }
         });
         cancellationToken = GuardUnscriptedSends(cancellationToken);
         var options = CreateOptions(maxInFlight: 5);
@@ -2496,7 +2577,9 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
         var sender = CreateSender(pool, options, accumulator, (_, _, _, _, ex) =>
         {
             if (ex is null && Interlocked.Increment(ref acknowledgedCount) == 2)
+            {
                 allAcknowledged.TrySetResult();
+            }
         });
 
         try
@@ -2540,7 +2623,9 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
         {
             var index = Interlocked.Increment(ref sendCount) - 1;
             if (index < sendSignals.Length)
+            {
                 sendSignals[index].TrySetResult();
+            }
         });
         cancellationToken = GuardUnscriptedSends(cancellationToken);
         var options = CreateOptions(maxInFlight: 2, transactionalId: "test-transaction");
@@ -2580,7 +2665,9 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
             (_, _, _, _, exception) =>
             {
                 if (exception is null && Interlocked.Increment(ref acknowledged) == 2)
+                {
                     allAcknowledged.TrySetResult();
+                }
             },
             isTransactional: true,
             tryEnsurePartitionsInTransaction: TryEnsure);
@@ -2687,7 +2774,9 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
             connectionPool,
             options,
             accumulator,
-            (_, _, _, _, _) => { },
+            (_, _, _, _, _) =>
+            {
+            },
             isTransactional: true,
             tryEnsurePartitionsInTransaction: (batches, _, _, _, failedPartitions) =>
             {
@@ -2748,9 +2837,13 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
                 pendingPartitions.Add(batches[0].TopicPartition);
                 enrollmentCompleted = completed;
                 if (call == 1)
+                {
                     firstPartitionPending.TrySetResult();
+                }
                 else
+                {
                     twoPartitionsPending.TrySetResult();
+                }
                 return TransactionPartitionEnrollmentResult.Pending;
             }
 
@@ -2840,7 +2933,9 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
             HashSet<TopicPartition> failedPartitions)
         {
             if (Interlocked.Increment(ref enrollmentAttempts) != 2)
+            {
                 return TransactionPartitionEnrollmentResult.Enrolled;
+            }
 
             failedPartitions.Add(batches[0].TopicPartition);
             return TransactionPartitionEnrollmentResult.Failed(enrollmentError);
@@ -2903,7 +2998,9 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
             connectionPool,
             options,
             accumulator,
-            (_, _, _, _, _) => { },
+            (_, _, _, _, _) =>
+            {
+            },
             isTransactional: true,
             tryEnsurePartitionsInTransaction: (batches, _, completed, pendingPartitions, _) =>
             {
@@ -2970,7 +3067,9 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
         {
             var index = Interlocked.Increment(ref sendCount) - 1;
             if (index < sends.Length)
+            {
                 sends[index].TrySetResult();
+            }
         });
         cancellationToken = GuardUnscriptedSends(cancellationToken);
         var options = CreateOptions(
@@ -2985,7 +3084,9 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
         var sender = CreateSender(pool, options, accumulator, (_, _, _, _, exception) =>
         {
             if (exception is null && Interlocked.Increment(ref acknowledged) == 3)
+            {
                 allAcknowledged.TrySetResult();
+            }
         });
 
         try
@@ -3055,7 +3156,9 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
         var sender = CreateSender(pool, options, accumulator, (_, _, _, _, exception) =>
         {
             if (exception is null && Interlocked.Increment(ref acknowledged) == 2)
+            {
                 allAcknowledged.TrySetResult();
+            }
         });
 
         try
@@ -3114,7 +3217,9 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
         var sender = CreateSender(pool, options, accumulator, (_, _, _, _, ex) =>
         {
             if (ex is null)
+            {
                 acknowledged.TrySetResult();
+            }
         });
 
         try
@@ -3286,7 +3391,9 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
         var sender = CreateSender(pool, options, accumulator, (tp, offset, _, count, ex) =>
         {
             if (ex is null)
+            {
                 acknowledged.TrySetResult((offset, count));
+            }
         });
 
         try
@@ -3341,7 +3448,9 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
             pool,
             options,
             accumulator,
-            static (_, _, _, _, _) => { },
+            static (_, _, _, _, _) =>
+            {
+            },
             onWaveCoalesceStarted: () =>
             {
                 coalesceStarted.TrySetResult();
@@ -3409,9 +3518,13 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
             {
                 var failure = new OperationCanceledException("Batch was not enqueued before test cleanup.");
                 if (!batch1Enqueued)
+                {
                     batch1.Fail(failure);
+                }
                 if (!batch2Enqueued)
+                {
                     batch2.Fail(failure);
+                }
             }
             await sender.DisposeAsync();
             await deliveryCompletion.ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
@@ -3443,7 +3556,9 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
         {
             var idx = Interlocked.Increment(ref sendCount) - 1;
             if (idx < sendSignals.Length)
+            {
                 sendSignals[idx].TrySetResult();
+            }
         });
         cancellationToken = GuardUnscriptedSends(cancellationToken);
         var options = CreateOptions(maxInFlight: 1);
@@ -3456,7 +3571,9 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
         var sender = CreateSender(pool, options, accumulator, (_, _, _, _, ex) =>
         {
             if (ex is null && Interlocked.Increment(ref ackCount) >= 2)
+            {
                 allAcknowledged.TrySetResult();
+            }
         });
 
         try
@@ -3523,7 +3640,9 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
             batchSize: 100);
         var accumulator = new RecordAccumulator(options);
         var valueTaskSourcePool = new ValueTaskSourcePool<RecordMetadata>();
-        var sender = CreateSender(pool, options, accumulator, (_, _, _, _, _) => { });
+        var sender = CreateSender(pool, options, accumulator, (_, _, _, _, _) =>
+        {
+        });
 
         try
         {
@@ -3576,7 +3695,9 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
             batchSize: 100);
         var accumulator = new RecordAccumulator(options);
         var valueTaskSourcePool = new ValueTaskSourcePool<RecordMetadata>();
-        var sender = CreateSender(pool, options, accumulator, (_, _, _, _, _) => { });
+        var sender = CreateSender(pool, options, accumulator, (_, _, _, _, _) =>
+        {
+        });
 
         try
         {
@@ -3638,7 +3759,9 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
             pool,
             options,
             accumulator,
-            (_, _, _, _, _) => { },
+            (_, _, _, _, _) =>
+            {
+            },
             onBlockedBucketRequeued: () => blockedBucketRequeued.TrySetResult());
 
         try
@@ -3701,20 +3824,26 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
             pool,
             options,
             accumulator,
-            (_, _, _, _, _) => { },
+            (_, _, _, _, _) =>
+            {
+            },
             onBlockedBucketRequeued: () =>
             {
                 Interlocked.Increment(ref blockedBucketRequeues);
                 // Runs on the send loop, which records the failure, so this read is current.
                 // A pass after the second failure holds both retries of the partition.
                 if (Volatile.Read(ref second) is { RetryFailureCount: > 0 })
+                {
                     Interlocked.Increment(ref requeuesAfterSecondFailure);
+                }
             });
 
         object[] SentBatches(int request)
         {
             lock (connection.CapturedProduceRequests)
+            {
                 return connection.CapturedProduceRequests[request].RecordBatches.ToArray();
+            }
         }
 
         Task WaitForAsync(Func<bool> condition, string step) =>
@@ -3766,7 +3895,9 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
         finally
         {
             foreach (var response in responses)
+            {
                 response.TrySetResult(CreateSuccessResponse("test-topic", 0, baseOffset: 0));
+            }
             await sender.DisposeAsync();
             await accumulator.DisposeAsync();
             await valueTaskSourcePool.DisposeAsync();
@@ -3792,7 +3923,9 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
         {
             var index = Interlocked.Increment(ref sendCount) - 1;
             if (index == 0)
+            {
                 Interlocked.Exchange(ref staleBatch!._returnedToPool, 1);
+            }
             sendSignals[index].TrySetResult();
         });
         cancellationToken = GuardUnscriptedSends(cancellationToken);
@@ -3806,7 +3939,9 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
         var sender = CreateSender(pool, options, accumulator, (tp, _, _, _, ex) =>
         {
             if (tp.Partition == 1 && ex is null)
+            {
                 acknowledged.TrySetResult();
+            }
         });
 
         try
@@ -3849,7 +3984,9 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
         {
             var idx = Interlocked.Increment(ref sendCount) - 1;
             if (idx < sendSignals.Length)
+            {
                 sendSignals[idx].TrySetResult();
+            }
         });
         cancellationToken = GuardUnscriptedSends(cancellationToken);
         var options = CreateOptions();
@@ -3861,7 +3998,9 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
         var sender = CreateSender(pool, options, accumulator, (_, offset, _, _, ex) =>
         {
             if (ex is null)
+            {
                 acknowledged.TrySetResult(offset);
+            }
         });
 
         try
@@ -3946,7 +4085,9 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
             pool,
             options,
             accumulator,
-            onAcknowledgement: (_, _, _, _, _) => { },
+            onAcknowledgement: (_, _, _, _, _) =>
+            {
+            },
             metadataManager,
             rerouteBatch: (batch, _) => rerouted.TrySetResult(batch));
 
@@ -4031,12 +4172,16 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
             pool,
             options,
             accumulator,
-            onAcknowledgement: (_, _, _, _, _) => { },
+            onAcknowledgement: (_, _, _, _, _) =>
+            {
+            },
             metadataManager,
             rerouteBatch: (_, _) =>
             {
                 if (Interlocked.Increment(ref reroutedCount) == 2)
+                {
                     rerouted.TrySetResult();
+                }
             },
             onWaveCoalesceStarted: () =>
             {
@@ -4113,7 +4258,9 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
             {
                 var written = inner.TryWrite(item);
                 if (written)
+                {
                     Interlocked.Exchange(ref _afterFirstWrite, null)?.Invoke();
+                }
 
                 return written;
             }
@@ -4174,7 +4321,9 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
             .Returns(_ =>
             {
                 if (Interlocked.Increment(ref metadataRequests) > 1)
+                {
                     duplicateMetadataRequest.TrySetResult();
+                }
 
                 return new ValueTask<MetadataResponse>(CreateLeaderMetadataResponse(
                     topic, leaderId: 2, leaderEpoch: 2, partitionCount: 2));
@@ -4203,13 +4352,17 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
             pool,
             options,
             accumulator,
-            onAcknowledgement: (_, _, _, _, _) => { },
+            onAcknowledgement: (_, _, _, _, _) =>
+            {
+            },
             metadataManager,
             rerouteBatch: (batch, _) =>
             {
                 reroutedBatches.Enqueue(batch);
                 if (Interlocked.Increment(ref reroutedCount) == 2)
+                {
                     allRerouted.TrySetResult();
+                }
             },
             onWaveCoalesceStarted: () =>
             {
@@ -4329,7 +4482,9 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
             pool,
             options,
             accumulator,
-            (_, _, _, _, _) => { },
+            (_, _, _, _, _) =>
+            {
+            },
             metadataManager);
 
         try
@@ -4378,7 +4533,9 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
         {
             // Batches may coalesce into fewer requests, so signal when all TCSs are dequeued
             if (Interlocked.Increment(ref sendCount) >= 1)
+            {
                 allSent.TrySetResult();
+            }
         });
         cancellationToken = GuardUnscriptedSends(cancellationToken);
         var options = CreateOptions(maxInFlight: 5);
@@ -4396,7 +4553,9 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
                 {
                     ackOffsets.Add(offset);
                     if (ackOffsets.Count >= batchCount)
+                    {
                         allAcknowledged.TrySetResult();
+                    }
                 }
             }
         });
@@ -4442,8 +4601,11 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
                     }
                 ]
             };
+
             for (var i = batchCount - 1; i >= 0; i--)
+            {
                 tcsList[i].TrySetResult(CreateCombinedResponse(batchCount));
+            }
 
             await allAcknowledged.Task.WaitAsync(cancellationToken);
 
@@ -4558,7 +4720,9 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
         sender = CreateSender(pool, options, accumulator, (_, _, _, _, ex) =>
         {
             if (ex is null && Interlocked.Increment(ref acknowledgedCount) == 2)
+            {
                 allAcknowledged.TrySetResult();
+            }
         });
 
         try
@@ -4578,7 +4742,9 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
         finally
         {
             if (sender is not null)
+            {
                 await sender.DisposeAsync();
+            }
             await accumulator.DisposeAsync();
             await vtPool.DisposeAsync();
         }
@@ -4613,7 +4779,9 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
         {
             var idx = Interlocked.Increment(ref sendCount) - 1;
             if (idx < sendSignals.Length)
+            {
                 sendSignals[idx].TrySetResult();
+            }
         });
         cancellationToken = GuardUnscriptedSends(cancellationToken);
         var options = CreateOptions(maxInFlight: 1, retryBackoffMs: 0, retryBackoffMaxMs: 0);
@@ -4631,7 +4799,9 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
                 {
                     ackPartitions.Add(tp.Partition);
                     if (ackPartitions.Count >= 2)
+                    {
                         allAcknowledged.TrySetResult();
+                    }
                 }
             }
         });
@@ -4713,7 +4883,9 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
         var sender = CreateSender(pool, options, accumulator, (tp, offset, _, count, ex) =>
         {
             if (ex is null)
+            {
                 acknowledged.TrySetResult((offset, count));
+            }
         });
 
         try
@@ -4757,7 +4929,9 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
         {
             var idx = Interlocked.Increment(ref sendCount) - 1;
             if (idx < sendSignals.Length)
+            {
                 sendSignals[idx].TrySetResult();
+            }
         });
         cancellationToken = GuardUnscriptedSends(cancellationToken);
         var options = CreateOptions(maxInFlight: 2);
@@ -4775,7 +4949,9 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
                 {
                     ackOffsets.Add(offset);
                     if (ackOffsets.Count >= 2)
+                    {
                         allAcknowledged.TrySetResult();
+                    }
                 }
             }
         });
@@ -4847,7 +5023,9 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
         {
             var idx = Interlocked.Increment(ref sendCount) - 1;
             if (idx < sendSignals.Length)
+            {
                 sendSignals[idx].TrySetResult();
+            }
         });
         cancellationToken = GuardUnscriptedSends(cancellationToken);
 
@@ -4863,9 +5041,13 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
         var sender = CreateSender(pool, options, accumulator, (_, offset, _, _, ex) =>
         {
             if (ex is not null)
+            {
                 batch1Failed.TrySetResult();
+            }
             else
+            {
                 acknowledged.TrySetResult(offset);
+            }
         });
 
         try
@@ -4977,7 +5159,9 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
             (_, _, _, _, error) =>
             {
                 if (error is null && Interlocked.Increment(ref acknowledgementCount) == 3)
+                {
                     acknowledgements.TrySetResult();
+                }
             },
             getTimestamp: () => Volatile.Read(ref timestamp),
             delayForThrottle: (delayMs, token) =>
@@ -5060,7 +5244,9 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
             (_, _, _, _, error) =>
             {
                 if (error is null && Interlocked.Increment(ref acknowledgementCount) == 2)
+                {
                     acknowledgements.TrySetResult();
+                }
             },
             onBrokerThrottle: observedThrottleTimes.Add,
             getTimestamp: () => Volatile.Read(ref timestamp),
@@ -5133,7 +5319,9 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
             (_, _, _, _, error) =>
             {
                 if (error is null && Interlocked.Increment(ref acknowledgementCount) == 2)
+                {
                     acknowledgements.TrySetResult();
+                }
             },
             onBrokerThrottle: observedThrottleTimes.Add,
             delayForThrottle: (_, _) =>
@@ -5205,7 +5393,9 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
             (topicPartition, _, _, _, error) =>
             {
                 if (topicPartition.Partition == 1 && error is not null)
+                {
                     deliveryFailure.TrySetResult(error);
+                }
             },
             getTimestamp: () => Volatile.Read(ref fakeTimestamp),
             delayForThrottle: (delayMs, token) =>
@@ -5257,7 +5447,15 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
         var options = CreateOptions(unackedByteBudgetCapOverride: 4_096);
         var accumulator = new RecordAccumulator(options);
         var budget = new BrokerUnackedByteBudget(targetSeconds: 0.010, floorBytes: 100, initialCapBytes: 1);
-        var sender = CreateSender(pool, options, accumulator, (_, _, _, _, _) => { }, unackedBudget: budget);
+        var sender = CreateSender(
+            pool,
+            options,
+            accumulator,
+            (_, _, _, _, _) =>
+            {
+            },
+            unackedBudget: budget
+        );
 
         try
         {
@@ -5300,7 +5498,9 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
         var accumulator = new RecordAccumulator(options);
         var valueTaskSourcePool = new ValueTaskSourcePool<RecordMetadata>();
         var budget = new BrokerUnackedByteBudget(targetSeconds: 0.000001, floorBytes: 200, initialCapBytes: 1);
-        var sender = CreateSender(pool, options, accumulator, (_, _, _, _, _) => { },
+        var sender = CreateSender(pool, options, accumulator, (_, _, _, _, _) =>
+        {
+        },
             unackedBudget: budget);
 
         try
@@ -5359,7 +5559,9 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
         var accumulator = new RecordAccumulator(options);
         var valueTaskSourcePool = new ValueTaskSourcePool<RecordMetadata>();
         var budget = new BrokerUnackedByteBudget(targetSeconds: 0.010, floorBytes: 200, initialCapBytes: 1_000_000);
-        var sender = CreateSender(pool, options, accumulator, (_, _, _, _, _) => { },
+        var sender = CreateSender(pool, options, accumulator, (_, _, _, _, _) =>
+        {
+        },
             unackedBudget: budget);
 
         try
@@ -5405,7 +5607,9 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
             pool,
             options,
             accumulator,
-            (_, _, _, _, _) => { },
+            (_, _, _, _, _) =>
+            {
+            },
             unackedBudget: budget);
 
         try
@@ -5488,7 +5692,9 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
         var accumulator = new RecordAccumulator(options);
         var valueTaskSourcePool = new ValueTaskSourcePool<RecordMetadata>();
         var budget = new BrokerUnackedByteBudget(targetSeconds: 0.5, floorBytes: 200, initialCapBytes: 1);
-        var sender = CreateSender(pool, options, accumulator, (_, _, _, _, _) => { },
+        var sender = CreateSender(pool, options, accumulator, (_, _, _, _, _) =>
+        {
+        },
             unackedBudget: budget);
 
         try
@@ -5540,7 +5746,9 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
         var accumulator = new RecordAccumulator(options);
         var valueTaskSourcePool = new ValueTaskSourcePool<RecordMetadata>();
         var budget = new BrokerUnackedByteBudget(targetSeconds: 0.5, floorBytes: 200, initialCapBytes: 1);
-        var sender = CreateSender(pool, options, accumulator, (_, _, _, _, _) => { },
+        var sender = CreateSender(pool, options, accumulator, (_, _, _, _, _) =>
+        {
+        },
             unackedBudget: budget);
 
         try
@@ -5584,7 +5792,9 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
         var (pool, scaleRequested) = CreateScaleTrackingPool(connection);
 
         var budget = new BrokerUnackedByteBudget(targetSeconds: 0.010, floorBytes: 200, initialCapBytes: 1);
-        var sender = CreateSender(pool, options, accumulator, (_, _, _, _, _) => { },
+        var sender = CreateSender(pool, options, accumulator, (_, _, _, _, _) =>
+        {
+        },
             unackedBudget: budget);
 
         try
@@ -5592,11 +5802,15 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
             // Simulate a workload throttled by the admission gate: buffer utilization stays
             // near zero, but blocked admissions accumulate. This alone must trigger scale-up.
             for (var i = 0; i < 200; i++)
+            {
                 budget.RecordAdmissionBlock();
+            }
 
             // Keep the send loop iterating so it reaches the scale check.
             for (var i = 0; i < 32; i++)
+            {
                 sender.Enqueue(CreateTestBatch(valueTaskSourcePool, "test-topic", i % partitionCount));
+            }
 
             var targetCount = await scaleRequested.Task.WaitAsync(cancellationToken);
             await Assert.That(targetCount).IsGreaterThan(1);
@@ -5641,7 +5855,9 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
         var sender = CreateSender(pool, options, accumulator, (_, _, _, _, exception) =>
         {
             if (exception is not null)
+            {
                 failed.TrySetResult(exception);
+            }
         });
 
         try

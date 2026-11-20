@@ -8,9 +8,14 @@ public sealed class NoRetryPolicy : IRetryPolicy
     /// <summary>
     /// Singleton instance.
     /// </summary>
-    public static NoRetryPolicy Instance { get; } = new();
+    public static NoRetryPolicy Instance
+    {
+        get;
+    } = new();
 
-    private NoRetryPolicy() { }
+    private NoRetryPolicy()
+    {
+    }
 
     /// <inheritdoc />
     public TimeSpan? GetNextDelay(int attemptNumber, Exception exception) => null;

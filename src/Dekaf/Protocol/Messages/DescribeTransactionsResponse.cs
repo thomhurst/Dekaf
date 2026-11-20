@@ -14,8 +14,14 @@ public sealed class DescribeTransactionsResponse : IKafkaResponse
     // is kept for a future release, but v1 must not be negotiated until a released schema is re-verified.
     public static short HighestSupportedVersion => 0;
 
-    public int ThrottleTimeMs { get; init; }
-    public required IReadOnlyList<DescribeTransactionsResponseState> TransactionStates { get; init; }
+    public int ThrottleTimeMs
+    {
+        get; init;
+    }
+    public required IReadOnlyList<DescribeTransactionsResponseState> TransactionStates
+    {
+        get; init;
+    }
 
     public static IKafkaResponse Read(ref KafkaProtocolReader reader, short version)
     {
@@ -41,15 +47,42 @@ public sealed class DescribeTransactionsResponse : IKafkaResponse
 /// </summary>
 public sealed class DescribeTransactionsResponseState
 {
-    public ErrorCode ErrorCode { get; init; }
-    public required string TransactionalId { get; init; }
-    public required string TransactionState { get; init; }
-    public int TransactionTimeoutMs { get; init; }
-    public long TransactionStartTimeMs { get; init; }
-    public long? TransactionLastUpdateTimeMs { get; init; }
-    public long ProducerId { get; init; }
-    public short ProducerEpoch { get; init; }
-    public required IReadOnlyList<DescribeTransactionsResponseTopic> Topics { get; init; }
+    public ErrorCode ErrorCode
+    {
+        get; init;
+    }
+    public required string TransactionalId
+    {
+        get; init;
+    }
+    public required string TransactionState
+    {
+        get; init;
+    }
+    public int TransactionTimeoutMs
+    {
+        get; init;
+    }
+    public long TransactionStartTimeMs
+    {
+        get; init;
+    }
+    public long? TransactionLastUpdateTimeMs
+    {
+        get; init;
+    }
+    public long ProducerId
+    {
+        get; init;
+    }
+    public short ProducerEpoch
+    {
+        get; init;
+    }
+    public required IReadOnlyList<DescribeTransactionsResponseTopic> Topics
+    {
+        get; init;
+    }
 
     public static DescribeTransactionsResponseState Read(ref KafkaProtocolReader reader, short version)
     {
@@ -88,8 +121,14 @@ public sealed class DescribeTransactionsResponseState
 /// </summary>
 public sealed class DescribeTransactionsResponseTopic
 {
-    public required string Topic { get; init; }
-    public required IReadOnlyList<int> Partitions { get; init; }
+    public required string Topic
+    {
+        get; init;
+    }
+    public required IReadOnlyList<int> Partitions
+    {
+        get; init;
+    }
 
     public static DescribeTransactionsResponseTopic Read(ref KafkaProtocolReader reader)
     {

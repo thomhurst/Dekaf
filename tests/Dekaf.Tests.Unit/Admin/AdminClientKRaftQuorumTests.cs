@@ -95,8 +95,7 @@ public sealed class AdminClientKRaftQuorumTests
         await context.Client.AddRaftVoterAsync(
             voterId: 2,
             voterDirectoryId: directoryId,
-            endpoints:
-            [
+            endpoints: [
                 new RaftVoterEndpoint
                 {
                     Name = "CONTROLLER",
@@ -129,8 +128,7 @@ public sealed class AdminClientKRaftQuorumTests
         await Assert.That(async () => await context.Client.AddRaftVoterAsync(
                 voterId: 2,
                 voterDirectoryId: Guid.NewGuid(),
-                endpoints:
-                [
+                endpoints: [
                     new RaftVoterEndpoint
                     {
                         Name = "CONTROLLER",
@@ -259,8 +257,14 @@ public sealed class AdminClientKRaftQuorumTests
                 _metadataManager);
         }
 
-        public AdminClient Client { get; }
-        public IKafkaConnection Connection { get; }
+        public AdminClient Client
+        {
+            get;
+        }
+        public IKafkaConnection Connection
+        {
+            get;
+        }
 
         public void EnqueueDescribe(DescribeQuorumResponse response) => _describeResponses.Enqueue(response);
         public void EnqueueAdd(AddRaftVoterResponse response) => _addResponses.Enqueue(response);

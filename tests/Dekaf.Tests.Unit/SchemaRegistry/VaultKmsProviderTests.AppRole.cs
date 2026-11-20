@@ -36,15 +36,21 @@ public partial class VaultKmsProviderTests
         using var http = new HttpClient(new RecordingHandler((_, _) =>
         {
             if (++calls != 1)
+            {
                 return Task.FromResult(JsonResponse(SuccessfulLogin));
+            }
             return Task.FromResult(malformedJson ? JsonResponse("{") : new HttpResponseMessage(HttpStatusCode.Forbidden));
         }));
         var provider = new VaultAppRoleTokenProvider(http, "role", "secret");
 
         if (malformedJson)
+        {
             await Assert.That(async () => await provider.GetTokenAsync(VaultAddress, null)).Throws<JsonException>();
+        }
         else
+        {
             await Assert.That(async () => await provider.GetTokenAsync(VaultAddress, null)).Throws<HttpRequestException>();
+        }
 
         var recovered = await provider.GetTokenAsync(VaultAddress, null).AsTask().WaitAsync(TimeSpan.FromSeconds(10));
         await Assert.That(recovered).IsEqualTo("recovered-token");

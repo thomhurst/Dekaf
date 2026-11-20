@@ -170,7 +170,10 @@ public sealed partial class ConsumerCoordinatorKip848Tests : IAsyncDisposable
             {
                 Coordinators = [new Coordinator
                 {
-                    Key = "test-group", NodeId = -1, Host = string.Empty, Port = -1,
+                    Key = "test-group",
+                    NodeId = -1,
+                    Host = string.Empty,
+                    Port = -1,
                     ErrorCode = ErrorCode.GroupAuthorizationFailed
                 }]
             }));
@@ -318,18 +321,18 @@ public sealed partial class ConsumerCoordinatorKip848Tests : IAsyncDisposable
         Guid topicId,
         IReadOnlyList<int> partitions,
         IReadOnlyList<int> newPartitions) => new()
-    {
-        AssignedTopicPartitions =
-        [
-            new ConsumerGroupHeartbeatTopicPartitions
-            {
-                TopicId = topicId,
-                Partitions = partitions,
-                NewPartitions = newPartitions
-            }
-        ],
-        PendingTopicPartitions = []
-    };
+        {
+            AssignedTopicPartitions =
+            [
+                new ConsumerGroupHeartbeatTopicPartitions
+                {
+                    TopicId = topicId,
+                    Partitions = partitions,
+                    NewPartitions = newPartitions
+                }
+            ],
+            PendingTopicPartitions = []
+        };
 
     private static long GetCoordinatorLongField(ConsumerCoordinator coordinator, string fieldName)
     {
@@ -365,7 +368,9 @@ public sealed partial class ConsumerCoordinatorKip848Tests : IAsyncDisposable
         await Assert.That(topicPartitions![0].Partitions).Count().IsEqualTo(partitions.Length);
 
         for (var i = 0; i < partitions.Length; i++)
+        {
             await Assert.That(topicPartitions![0].Partitions[i]).IsEqualTo(partitions[i]);
+        }
     }
 
     #region Broker Version Guard
@@ -722,7 +727,9 @@ public sealed partial class ConsumerCoordinatorKip848Tests : IAsyncDisposable
             {
                 var request = callInfo.Arg<ConsumerGroupHeartbeatRequest>()!;
                 if (request.MemberEpoch > 0)
+                {
                     Interlocked.Increment(ref steadyHeartbeatCount);
+                }
 
                 return ValueTask.FromResult(new ConsumerGroupHeartbeatResponse
                 {
@@ -765,7 +772,9 @@ public sealed partial class ConsumerCoordinatorKip848Tests : IAsyncDisposable
             {
                 var request = callInfo.Arg<ConsumerGroupHeartbeatRequest>()!;
                 if (request.MemberEpoch == -1)
+                {
                     leaveRequest.TrySetResult(request);
+                }
 
                 return ValueTask.FromResult(new ConsumerGroupHeartbeatResponse
                 {
@@ -821,7 +830,9 @@ public sealed partial class ConsumerCoordinatorKip848Tests : IAsyncDisposable
                 }
 
                 if (request.MemberEpoch == -2)
+                {
                     leaveRequest.TrySetResult(request);
+                }
 
                 return ValueTask.FromResult(new ConsumerGroupHeartbeatResponse
                 {
@@ -2328,7 +2339,9 @@ public sealed partial class ConsumerCoordinatorKip848Tests : IAsyncDisposable
                 var fail = failNext;
                 failNext = false;
                 if (fail && transportFailure)
+                {
                     throw new TimeoutException("Heartbeat request timed out");
+                }
 
                 return ValueTask.FromResult(new ConsumerGroupHeartbeatResponse
                 {
@@ -2612,8 +2625,7 @@ public sealed partial class ConsumerCoordinatorKip848Tests : IAsyncDisposable
         var options = CreateConsumerProtocolOptions(
             heartbeatIntervalMs: 60_000,
             rebalanceListener: CreateListener("configured"),
-            additionalRebalanceListeners:
-            [
+            additionalRebalanceListeners: [
                 CreateListener("first"),
                 CreateListener("second")
             ]);
@@ -2651,8 +2663,7 @@ public sealed partial class ConsumerCoordinatorKip848Tests : IAsyncDisposable
         var calls = new List<string>();
         var options = CreateConsumerProtocolOptions(
             rebalanceListener: CreateListener("configured"),
-            additionalRebalanceListeners:
-            [
+            additionalRebalanceListeners: [
                 CreateListener("first"),
                 CreateListener("second")
             ]);
@@ -3971,7 +3982,9 @@ public sealed partial class ConsumerCoordinatorKip848Tests : IAsyncDisposable
                 }
 
                 if (requests.Count == 4)
+                {
                     fourthSent.TrySetResult(true);
+                }
                 return ValueTask.FromResult(new ConsumerGroupHeartbeatResponse
                 {
                     ErrorCode = ErrorCode.None,
@@ -4045,7 +4058,9 @@ public sealed partial class ConsumerCoordinatorKip848Tests : IAsyncDisposable
                 }
 
                 if (requests.Count == 2)
+                {
                     coordinator.RequestRejoin();
+                }
                 return ValueTask.FromResult(new ConsumerGroupHeartbeatResponse
                 {
                     ErrorCode = ErrorCode.None,
@@ -4112,7 +4127,9 @@ public sealed partial class ConsumerCoordinatorKip848Tests : IAsyncDisposable
                 }
 
                 if (count == 3)
+                {
                     thirdSent.TrySetResult(true);
+                }
                 return ValueTask.FromResult(new ConsumerGroupHeartbeatResponse
                 {
                     ErrorCode = ErrorCode.None,
@@ -4552,7 +4569,9 @@ public sealed partial class ConsumerCoordinatorKip848Tests : IAsyncDisposable
         topology.FailCoordinatorLease(attempt =>
         {
             if (attempt >= 3)
+            {
                 retried.TrySetResult(true);
+            }
             return new ObjectDisposedException(nameof(ConnectionPool));
         });
 
@@ -4952,7 +4971,9 @@ public sealed partial class ConsumerCoordinatorKip848Tests : IAsyncDisposable
             await Assert.That(((GroupException)caught).GroupId).IsEqualTo("test-group");
         }
         else
+        {
             await Assert.That(caught.GetType()).IsEqualTo(typeof(AuthorizationException));
+        }
         await Assert.That(callCount).IsEqualTo(2);
     }
 
@@ -5606,9 +5627,18 @@ public sealed partial class ConsumerCoordinatorKip848Tests : IAsyncDisposable
         private int _findCoordinatorCount;
         private int _coordinatorLeaseAttempts;
 
-        public IConnectionPool Pool { get; } = Substitute.For<IConnectionPool>();
-        public IKafkaConnection CoordinatorConnection { get; } = Substitute.For<IKafkaConnection>();
-        public MetadataManager MetadataManager { get; }
+        public IConnectionPool Pool
+        {
+            get;
+        } = Substitute.For<IConnectionPool>();
+        public IKafkaConnection CoordinatorConnection
+        {
+            get;
+        } = Substitute.For<IKafkaConnection>();
+        public MetadataManager MetadataManager
+        {
+            get;
+        }
         public int FindCoordinatorCount => Volatile.Read(ref _findCoordinatorCount);
         public int CoordinatorLeaseAttempts => Volatile.Read(ref _coordinatorLeaseAttempts);
 

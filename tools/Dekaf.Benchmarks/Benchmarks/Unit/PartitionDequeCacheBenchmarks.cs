@@ -91,7 +91,9 @@ public class PartitionDequeCacheBenchmarks
     {
         var checksum = 0;
         for (var i = 0; i < SequentialResolutionsPerInvoke; i++)
+        {
             checksum += _accumulator.ResolvePartitionDequeForTest("bench-topic", (i & 1) << 4);
+        }
 
         return checksum;
     }
@@ -106,7 +108,9 @@ public class PartitionDequeCacheBenchmarks
         RunWorkers();
 
         if (_workerException is { } exception)
+        {
             throw new InvalidOperationException("Partition-deque cache worker failed.", exception);
+        }
 
         return _partition0Checksum + _partition16Checksum;
     }
@@ -128,18 +132,26 @@ public class PartitionDequeCacheBenchmarks
         {
             start.WaitOne();
             if (_stopWorkers)
+            {
                 return;
+            }
 
             try
             {
                 var checksum = 0;
                 for (var i = 0; i < ConcurrentResolutionsPerWorker; i++)
+                {
                     checksum += _accumulator.ResolvePartitionDequeForTest("bench-topic", partition);
+                }
 
                 if (partition == 0)
+                {
                     _partition0Checksum = checksum;
+                }
                 else
+                {
                     _partition16Checksum = checksum;
+                }
             }
             catch (Exception exception)
             {

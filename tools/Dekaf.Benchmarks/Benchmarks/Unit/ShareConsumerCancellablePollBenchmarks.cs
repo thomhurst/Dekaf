@@ -17,24 +17,34 @@ public class ShareConsumerCancellablePollBenchmarks
     private ShareConsumerPollBenchmarks _buffered = null!;
 
     [Params(1, 1024)]
-    public int RecordCount { get; set; }
+    public int RecordCount
+    {
+        get; set;
+    }
 
     [Params(false, true)]
-    public bool AsynchronousResponse { get; set; }
+    public bool AsynchronousResponse
+    {
+        get; set;
+    }
 
     [GlobalSetup]
     public async ValueTask Setup()
     {
         _poll = new ShareConsumerPollBenchmarks
         {
-            RecordCount = RecordCount, AsynchronousResponse = AsynchronousResponse,
+            RecordCount = RecordCount,
+            AsynchronousResponse = AsynchronousResponse,
             PollCancellationToken = _cancellation.Token
         };
         await _poll.Setup();
         _buffered = new ShareConsumerPollBenchmarks
         {
-            RecordCount = RecordCount, BatchCount = 4, AsynchronousResponse = AsynchronousResponse,
-            PollCancellationToken = _cancellation.Token, CompatibilityMaxPollRecords = RecordCount
+            RecordCount = RecordCount,
+            BatchCount = 4,
+            AsynchronousResponse = AsynchronousResponse,
+            PollCancellationToken = _cancellation.Token,
+            CompatibilityMaxPollRecords = RecordCount
         };
         await _buffered.Setup();
     }

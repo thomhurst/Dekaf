@@ -64,7 +64,9 @@ public sealed class ControllerOnlyKafkaContainer : IAsyncInitializer, IAsyncDisp
     public async ValueTask DisposeAsync()
     {
         if (_container is not null)
+        {
             await _container.DisposeAsync().ConfigureAwait(false);
+        }
         _container = null;
     }
 

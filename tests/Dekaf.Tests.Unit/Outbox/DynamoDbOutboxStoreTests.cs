@@ -174,14 +174,18 @@ public sealed class DynamoDbOutboxStoreTests
         client.PutItemAsync(Arg.Any<PutItemRequest>(), Arg.Any<CancellationToken>()).Returns(call =>
         {
             lock (calls)
+            {
                 calls.Add(call.Arg<PutItemRequest>().Item.ContainsKey("StoppedAtUtc") ? "stopped" : "heartbeat");
+            }
             return new PutItemResponse();
         });
         client.UpdateItemAsync(Arg.Any<UpdateItemRequest>(), Arg.Any<CancellationToken>())
             .Returns<UpdateItemResponse>(_ =>
             {
                 lock (calls)
+                {
                     calls.Add("lease");
+                }
                 throw new ProvisionedThroughputExceededException("Throttled");
             });
         var store = new DynamoDbOutboxStore(client, Options, new FixedClock());
@@ -205,7 +209,9 @@ public sealed class DynamoDbOutboxStoreTests
         client.PutItemAsync(Arg.Any<PutItemRequest>(), Arg.Any<CancellationToken>()).Returns(call =>
         {
             if (call.Arg<PutItemRequest>().Item.ContainsKey("StoppedAtUtc"))
+            {
                 Interlocked.Increment(ref stopped);
+            }
             return new PutItemResponse();
         });
         // The host's shutdown deadline fires while the leases are being handed back.
@@ -513,7 +519,9 @@ public sealed class DynamoDbOutboxStoreTests
         client.QueryAsync(Arg.Any<QueryRequest>(), Arg.Any<CancellationToken>()).Returns(call =>
         {
             if (call.Arg<QueryRequest>().Select != Select.COUNT)
+            {
                 return new QueryResponse { Items = [.. Enumerable.Range(0, 40).Select(index => Message(1 + (index * 2)))] };
+            }
             probes++;
             return new QueryResponse { Count = 0 };
         });

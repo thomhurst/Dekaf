@@ -39,7 +39,9 @@ public sealed partial class ShareConsumerRenewalTests
         await Assert.That(await poll.MoveNextAsync()).IsTrue();
         var first = poll.Current;
         if (renewedSibling)
+        {
             fixture.Consumer.Acknowledge(first, AcknowledgeType.Renew);
+        }
         await Assert.That(await poll.MoveNextAsync()).IsTrue();
         var previous = poll.Current;
         await Assert.That(previous.Offset).IsEqualTo(43L);
@@ -253,13 +255,16 @@ public sealed partial class ShareConsumerRenewalTests
         }
         var response = new ShareFetchResponse
         {
-            ErrorCode = ErrorCode.None, NodeEndpoints = [],
+            ErrorCode = ErrorCode.None,
+            NodeEndpoints = [],
             Responses = [new ShareFetchResponseTopic
             {
                 TopicId = TopicId,
                 Partitions = [new ShareFetchResponsePartition
                 {
-                    PartitionIndex = 0, CurrentLeader = new(), RecordBytes = buffer.WrittenMemory,
+                    PartitionIndex = 0,
+                    CurrentLeader = new(),
+                    RecordBytes = buffer.WrittenMemory,
                     AcquiredRecords = [new ShareFetchAcquiredRecords { FirstOffset = 100, LastOffset = 105, DeliveryCount = 1 }]
                 }]
             }]
@@ -275,7 +280,9 @@ public sealed partial class ShareConsumerRenewalTests
         var raw = (IRawShareRecordAccessor)fixture.Consumer;
         raw.EnableRawRecordTracking();
         var hosted = (IHostedShareConsumer)fixture.Consumer;
-        hosted.ObserveAcknowledgements(static _ => { });
+        hosted.ObserveAcknowledgements(static _ =>
+        {
+        });
         using var stop = new CancellationTokenSource(TimeSpan.FromSeconds(10));
         long? receipt = null;
         var count = 0;
@@ -289,7 +296,10 @@ public sealed partial class ShareConsumerRenewalTests
             await Assert.That(Encoding.UTF8.GetString(value!)).IsEqualTo($"value-{suffix}");
             receipt ??= hosted.AcquisitionStartedTimestamp;
             await Assert.That(hosted.AcquisitionStartedTimestamp).IsEqualTo(receipt.Value);
-            if (++count == 6) break;
+            if (++count == 6)
+            {
+                break;
+            }
         }
         await Assert.That(count).IsEqualTo(6);
         await Assert.That(connection.ShareFetchRequests.Count).IsEqualTo(1);
@@ -319,7 +329,10 @@ public sealed partial class ShareConsumerRenewalTests
         await foreach (var record in fixture.Consumer.PollAsync(stop.Token))
         {
             offsets.Add(record.Offset);
-            if (offsets.Count == 3) break;
+            if (offsets.Count == 3)
+            {
+                break;
+            }
         }
         await Assert.That(offsets).IsEquivalentTo([200L, 201L, 202L]);
         await Assert.That(first.ShareFetchRequests.Count).IsEqualTo(1);
@@ -347,7 +360,13 @@ public sealed partial class ShareConsumerRenewalTests
         var first = new CapturingConnection(ApiKey.ShareFetch, 2)
         {
             ShareFetchResponses = new([firstResponse]),
-            OnSend = () => { if (firstFrame.Disposed) stop.Cancel(); }
+            OnSend = () =>
+            {
+                if (firstFrame.Disposed)
+                {
+                    stop.Cancel();
+                }
+            }
         };
         var second = new CapturingConnection(ApiKey.ShareFetch, 2, brokerId: 2)
         {
@@ -382,7 +401,10 @@ public sealed partial class ShareConsumerRenewalTests
             {
                 offsets.Add(record.Offset);
                 await Assert.That(record.Value).IsEqualTo("new-value");
-                if (offsets.Count == 6) break;
+                if (offsets.Count == 6)
+                {
+                    break;
+                }
             }
         }
         await Assert.That(offsets).IsEquivalentTo([100L, 101L, 102L, 200L, 201L, 202L]);
@@ -448,7 +470,10 @@ public sealed partial class ShareConsumerRenewalTests
         await foreach (var record in fixture.Consumer.PollAsync(timeout.Token))
         {
             offsets.Add(record.Offset);
-            if (offsets.Count == 5) break;
+            if (offsets.Count == 5)
+            {
+                break;
+            }
         }
         await Assert.That(offsets).IsEquivalentTo([42L, 43L, 44L, 45L, 46L]);
         await Assert.That(connection.ShareFetchRequests.Count).IsEqualTo(1);
@@ -560,14 +585,20 @@ public sealed partial class ShareConsumerRenewalTests
         await Assert.That(connection.ShareFetchRequests.Count).IsEqualTo(1);
         await Assert.That(frame.Disposed).IsTrue();
     }
+
     private class WindowCountingDeserializer(int failOnCall) : IDeserializer<string>
     {
-        internal int Calls { get; private set; }
+        internal int Calls
+        {
+            get; private set;
+        }
 
         public string Deserialize(ReadOnlyMemory<byte> data, SerializationContext context)
         {
             if (++Calls == failOnCall)
+            {
                 throw new FormatException("Record outside the first poll window failed deserialization.");
+            }
             return Serializers.String.Deserialize(data, context);
         }
     }
@@ -587,9 +618,18 @@ public sealed partial class ShareConsumerRenewalTests
 
     private sealed class LaterWindowPreparer : IDeserializer<string>, IAsyncDeserializerPreparer<string>
     {
-        internal TaskCompletionSource Entered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        internal bool Ready { get; set; }
-        internal int DeserializedCount { get; private set; }
+        internal TaskCompletionSource Entered
+        {
+            get;
+        } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        internal bool Ready
+        {
+            get; set;
+        }
+        internal int DeserializedCount
+        {
+            get; private set;
+        }
 
         public string Deserialize(ReadOnlyMemory<byte> data, SerializationContext context)
         {
@@ -615,10 +655,14 @@ public sealed partial class ShareConsumerRenewalTests
             return new ValueTask(Task.Delay(Timeout.Infinite, cancellationToken));
         }
     }
+
     private sealed class FirstRecordThenCancelPreparer : IDeserializer<string>, IAsyncDeserializerPreparer<string>
     {
         private int _calls;
-        internal TaskCompletionSource Entered { get; private set; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        internal TaskCompletionSource Entered
+        {
+            get; private set;
+        } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         internal void Reset()
         {
             _calls = 0;

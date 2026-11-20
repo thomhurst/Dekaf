@@ -81,10 +81,14 @@ internal static class DeterministicResponseFixtureFactory
         writer.WriteInt32(3);
         writer.WriteInt32(5_000);
         if (version == 0)
+        {
             writer.WriteInt32(42);
+        }
         writer.WriteInt32(10_000);
         if (version >= 1)
+        {
             writer.WriteInt64(4_294_967_296L);
+        }
 
         WriteCompactArrayLength(ref writer, 1);
         writer.WriteInt8(1);
@@ -96,7 +100,9 @@ internal static class DeterministicResponseFixtureFactory
         WriteCompactArrayLength(ref writer, 0);
         writer.WriteUnsignedVarInt(0);
         if (version >= 1)
+        {
             writer.WriteBoolean(true);
+        }
 
         writer.WriteInt32(7);
         WriteCompactArrayLength(ref writer, 1);
@@ -209,7 +215,9 @@ internal static class DeterministicResponseFixtureFactory
         writer.WriteInt16((short)ErrorCode.None);
         writer.WriteCompactNullableString(null);
         if (version >= 1)
+        {
             writer.WriteInt8(2);
+        }
         writer.WriteCompactString("cluster-a");
         writer.WriteInt32(2);
         WriteCompactArrayLength(ref writer, 2);
@@ -233,7 +241,9 @@ internal static class DeterministicResponseFixtureFactory
         writer.WriteInt32(port);
         writer.WriteCompactNullableString(rack);
         if (version >= 2)
+        {
             writer.WriteBoolean(isFenced);
+        }
         WriteEmptyTaggedFields(ref writer);
     }
 
@@ -285,7 +295,9 @@ internal static class DeterministicResponseFixtureFactory
         }
 
         if (version >= 1)
+        {
             writer.WriteInt32(17);
+        }
 
         if (version >= 3)
         {
@@ -308,7 +320,9 @@ internal static class DeterministicResponseFixtureFactory
         writer.WriteInt16(0);
         writer.WriteInt16(maxVersion);
         if (flexible)
+        {
             WriteEmptyTaggedFields(ref writer);
+        }
     }
 
     private static void WriteMetadataResponse(ref KafkaProtocolWriter writer)
@@ -354,7 +368,9 @@ internal static class DeterministicResponseFixtureFactory
             ErrorCode.UnknownTopicOrPartition,
             firstPartition: 2);
         if (version >= 8)
+        {
             writer.WriteInt32(0x3FFF);
+        }
         return buffer.WrittenSpan.ToArray();
     }
 
@@ -390,7 +406,9 @@ internal static class DeterministicResponseFixtureFactory
             ErrorCode.NotLeaderOrFollower,
             leaderId: 2);
         if (version >= 8)
+        {
             writer.WriteInt32(0x1FFF);
+        }
     }
 
     private static void WriteLegacyMetadataPartition(
@@ -404,7 +422,9 @@ internal static class DeterministicResponseFixtureFactory
         writer.WriteInt32(partition);
         writer.WriteInt32(leaderId);
         if (version >= 7)
+        {
             writer.WriteInt32(7);
+        }
         WriteLegacyInt32Array(ref writer, [1, 2, 3]);
         WriteLegacyInt32Array(ref writer, [1, 2]);
         WriteLegacyInt32Array(ref writer, [3]);
@@ -523,9 +543,13 @@ internal static class DeterministicResponseFixtureFactory
         writer.WriteInt64(42 + partition);
         writer.WriteInt64(1_700_000_000_000L + partition);
         if (version >= 5)
+        {
             writer.WriteInt64(5);
+        }
         if (version < 8)
+        {
             return;
+        }
 
         writer.WriteInt32(includeRecordError ? 1 : 0);
         if (includeRecordError)
@@ -544,9 +568,13 @@ internal static class DeterministicResponseFixtureFactory
         bool useTopicIds)
     {
         if (useTopicIds)
+        {
             writer.WriteUuid(topicId);
+        }
         else
+        {
             writer.WriteCompactString(topic);
+        }
         WriteCompactArrayLength(ref writer, 2);
         WriteProducePartition(ref writer, firstPartition, ErrorCode.None, includeRecordError: false);
         WriteProducePartition(
@@ -736,7 +764,9 @@ internal static class DeterministicResponseFixtureFactory
         writer.WriteInt64(100 + partition);
         writer.WriteInt64(90 + partition);
         if (version >= 5)
+        {
             writer.WriteInt64(5);
+        }
 
         writer.WriteInt32(partition == 0 ? 1 : 0);
         if (partition == 0)
@@ -746,11 +776,15 @@ internal static class DeterministicResponseFixtureFactory
         }
 
         if (version >= 11)
+        {
             writer.WriteInt32(partition == 0 ? 2 : -1);
+        }
 
         writer.WriteInt32(recordBatch?.Length ?? -1);
         if (recordBatch is not null)
+        {
             writer.WriteRawBytes(recordBatch);
+        }
     }
 
     private static void WriteConfig(
@@ -970,7 +1004,9 @@ internal static class DeterministicResponseFixtureFactory
     {
         writer.WriteInt16((short)errorCode);
         if (includeErrorMessage)
+        {
             writer.WriteCompactString(errorMessage);
+        }
         writer.WriteCompactString(groupId);
         writer.WriteCompactString(includeMembers ? "Stable" : "Dead");
         writer.WriteCompactString("consumer");
@@ -1107,7 +1143,9 @@ internal static class DeterministicResponseFixtureFactory
     {
         writer.WriteInt32(values.Count);
         for (var index = 0; index < values.Count; index++)
+        {
             writer.WriteInt32(values[index]);
+        }
     }
 
     private static void WriteCompactArrayLength(ref KafkaProtocolWriter writer, int count) =>

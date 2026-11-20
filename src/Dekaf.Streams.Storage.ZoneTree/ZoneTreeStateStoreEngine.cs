@@ -27,7 +27,10 @@ public sealed class ZoneTreeStateStoreEngine : IStateStoreEngine
     }
 
     /// <summary>Gets the engine.</summary>
-    public static ZoneTreeStateStoreEngine Instance { get; } = new();
+    public static ZoneTreeStateStoreEngine Instance
+    {
+        get;
+    } = new();
 
     /// <inheritdoc />
     public IKeyValueBytesStore CreateKeyValueStore(StateStoreContext context) =>

@@ -78,7 +78,9 @@ public sealed class ProtobufSchemaRegistrySerializer<
             _config.UseLatestVersion,
             _config.AutoRegisterSchemas);
         if (_schemaIdStrategy is not (SchemaIdSerializerStrategy.Prefix or SchemaIdSerializerStrategy.Header))
+        {
             throw new ArgumentOutOfRangeException(nameof(config), _schemaIdStrategy, "Unknown schema identity strategy.");
+        }
         if (_config.CustomSubjectNameStrategy is null)
         {
             _asyncSubjectNameStrategy = _config.AsyncSubjectNameStrategy
@@ -116,9 +118,13 @@ public sealed class ProtobufSchemaRegistrySerializer<
         // The latest registered schema can declare messages in another order than the local file,
         // so latest-version mode derives its message indexes from that schema during resolution.
         if (_schemaSelectionMode == SchemaSelectionMode.Latest)
+        {
             _resolvedMessageIndexes = new ConditionalWeakTable<Schema, ResolvedMessageIndexes>();
+        }
         if (_asyncSubjectNameStrategy is not null)
+        {
             _associatedSubjectSchemaIdCache = new SubjectSchemaIdCache();
+        }
 
         if (_asyncSubjectNameStrategy is AssociatedNameStrategy associatedNameStrategy)
         {
@@ -141,7 +147,9 @@ public sealed class ProtobufSchemaRegistrySerializer<
         ArgumentNullException.ThrowIfNull(value);
 
         if (_subjectSchemaIdCache.TryGet(topic, isKey, out var cached))
+        {
             return new ValueTask<ResolvedSchemaContext>(ToResolvedContext(cached));
+        }
 
         return PrepareCoreAsync(topic, isKey, cancellationToken);
     }
@@ -246,7 +254,9 @@ public sealed class ProtobufSchemaRegistrySerializer<
                 schemaEntry.Schema,
                 _config.ValidationRulesFailFast);
             if (_schemaIdStrategy == SchemaIdSerializerStrategy.Header)
+            {
                 WriteIdentityHeader(context, in schemaEntry);
+            }
             destination.Advance(totalSize);
             return;
         }
@@ -260,12 +270,18 @@ public sealed class ProtobufSchemaRegistrySerializer<
         }
 
         if (_payloadTransformMode == ProtobufPayloadTransformMode.None)
+        {
             value.WriteTo(span.Slice(payloadOffset, protoSize));
+        }
         else
+        {
             transformedPayload.Span.CopyTo(span.Slice(payloadOffset, transformedPayload.Length));
+        }
 
         if (_schemaIdStrategy == SchemaIdSerializerStrategy.Header)
+        {
             WriteIdentityHeader(context, in schemaEntry);
+        }
 
         destination.Advance(totalSize);
     }
@@ -342,7 +358,9 @@ public sealed class ProtobufSchemaRegistrySerializer<
                 schemaEntry.Schema,
                 _config.ValidationRulesFailFast);
             if (_schemaIdStrategy == SchemaIdSerializerStrategy.Header)
+            {
                 WriteIdentityHeader(context, in schemaEntry);
+            }
             destination.Advance(totalSize);
             return;
         }
@@ -357,12 +375,18 @@ public sealed class ProtobufSchemaRegistrySerializer<
 
         // Write the protobuf message
         if (_payloadTransformMode == ProtobufPayloadTransformMode.None)
+        {
             value.WriteTo(span.Slice(payloadOffset, protoSize));
+        }
         else
+        {
             transformedPayload.Span.CopyTo(span.Slice(payloadOffset, transformedPayload.Length));
+        }
 
         if (_schemaIdStrategy == SchemaIdSerializerStrategy.Header)
+        {
             WriteIdentityHeader(context, in schemaEntry);
+        }
 
         destination.Advance(totalSize);
     }
@@ -373,13 +397,19 @@ public sealed class ProtobufSchemaRegistrySerializer<
         int schemaId)
     {
         if (_inlineRuleExecutor is null || _config.RuleExecutor is not SchemaRegistryRuleExecutor ruleExecutor)
+        {
             return _config.RuleExecutor!.TransformSerializedPayload(payload, context);
+        }
 
         if (_config.ValidationRulesExecution == ValidationRulesExecution.BeforeDomainRules)
+        {
             _inlineRuleExecutor.Validate(payload, schemaId, context.Schema, _config.ValidationRulesFailFast);
+        }
         payload = ruleExecutor.TransformSerializedDomainPayload(payload, context);
         if (_config.ValidationRulesExecution == ValidationRulesExecution.AfterDomainRules)
+        {
             _inlineRuleExecutor.Validate(payload, schemaId, context.Schema, _config.ValidationRulesFailFast);
+        }
         return ruleExecutor.TransformSerializedEncodingPayload(payload, context);
     }
 
@@ -397,7 +427,9 @@ public sealed class ProtobufSchemaRegistrySerializer<
     private SubjectSchemaIdCache.SubjectSchemaIdCacheEntry GetSchemaForContext(string topic, bool isKey)
     {
         if (_subjectSchemaIdCache.TryGet(topic, isKey, out var cached))
+        {
             return cached;
+        }
 
         return GetSchemaForContextSlow(topic, isKey);
     }
@@ -409,7 +441,9 @@ public sealed class ProtobufSchemaRegistrySerializer<
             ? _subjectSchemaIdCache
             : Volatile.Read(ref _associatedSubjectSchemaIdCache)!;
         if (cache.TryGet(topic, isKey, out var cached))
+        {
             return cached;
+        }
 
         if (_asyncSubjectNameStrategy is not null)
         {
@@ -451,7 +485,9 @@ public sealed class ProtobufSchemaRegistrySerializer<
         {
             var cache = Volatile.Read(ref _associatedSubjectSchemaIdCache)!;
             if (cache.TryGet(topic, isKey, out var cached))
+            {
                 return new ValueTask<ResolvedSchemaContext>(ToResolvedContext(cached));
+            }
 
             return PrepareAssociatedCoreAsync(
                 topic,
@@ -519,12 +555,16 @@ public sealed class ProtobufSchemaRegistrySerializer<
                     subject,
                     in value);
                 if (ReferenceEquals(cache, Volatile.Read(ref _associatedSubjectSchemaIdCache)))
+                {
                     return ToResolvedContext(cached);
+                }
             }
 
             cache = Volatile.Read(ref _associatedSubjectSchemaIdCache)!;
             if (cache.TryGet(topic, isKey, out var current))
+            {
                 return ToResolvedContext(current);
+            }
         }
 
         throw new InvalidOperationException(
@@ -700,7 +740,9 @@ public sealed class ProtobufSchemaRegistrySerializer<
     {
         ValidateDescriptor(schemaId, _descriptor.File, schema);
         if (!_config.UseSchemaReferences)
+        {
             return;
+        }
 
         var resolvedReferences = new Dictionary<SchemaReferenceKey, Schema>();
         await ValidateReferencesAsync(
@@ -731,7 +773,9 @@ public sealed class ProtobufSchemaRegistrySerializer<
             {
                 var candidate = references![referenceIndex];
                 if (!string.Equals(candidate.Name, dependency.Name, StringComparison.Ordinal))
+                {
                     continue;
+                }
                 if (matchingReference is not null)
                 {
                     throw new InvalidOperationException(
@@ -744,7 +788,9 @@ public sealed class ProtobufSchemaRegistrySerializer<
             if (matchingReference is null)
             {
                 if (IsKnownType(dependency.Name))
+                {
                     continue;
+                }
 
                 throw new InvalidOperationException(
                     $"Schema ID {schemaId} is missing Protobuf reference '{dependency.Name}'.");
@@ -803,7 +849,9 @@ public sealed class ProtobufSchemaRegistrySerializer<
             var selectedDescriptor = FileDescriptorProto.Parser.ParseFrom(
                 Convert.FromBase64String(schemaString));
             if (!string.Equals(selectedDescriptor.Name, RegistrySerializedRootName, StringComparison.Ordinal))
+            {
                 return false;
+            }
 
             var expectedDescriptor = descriptor.ToProto();
             selectedDescriptor.Name = expectedDescriptor.Name;
@@ -869,7 +917,9 @@ public sealed class ProtobufSchemaRegistrySerializer<
             resolved.Schema!,
             new ResolvedMessageIndexes(resolved.Schema!, messageIndexes));
         if (_schemaIdStrategy == SchemaIdSerializerStrategy.Header)
+        {
             CacheIdentityHeaderFrame(resolved.Schema!, resolved.SchemaId, resolved.SchemaGuidFrame, messageIndexes);
+        }
 
         return resolved;
     }
@@ -878,7 +928,9 @@ public sealed class ProtobufSchemaRegistrySerializer<
     private byte[] GetMessageIndexes(Schema? schema)
     {
         if (_resolvedMessageIndexes is null)
+        {
             return _encodedMessageIndexes;
+        }
 
         var last = Volatile.Read(ref _lastResolvedMessageIndexes);
         return last is not null && ReferenceEquals(last.Schema, schema)
@@ -964,7 +1016,9 @@ public sealed class ProtobufSchemaRegistrySerializer<
             }
 
             if (index < 0)
+            {
                 return null;
+            }
 
             indexes[depth] = index;
             messages = messages[index].NestedType;
@@ -1029,12 +1083,16 @@ public sealed class ProtobufSchemaRegistrySerializer<
             System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static);
 
         if (descriptorProperty == null)
+        {
             throw new InvalidOperationException($"Type {typeof(T).Name} does not have a static Descriptor property");
+        }
 
         var descriptor = descriptorProperty.GetValue(null) as MessageDescriptor;
 
         if (descriptor == null)
+        {
             throw new InvalidOperationException($"Could not get MessageDescriptor for type {typeof(T).Name}");
+        }
 
         return descriptor;
     }
@@ -1059,7 +1117,9 @@ public sealed class ProtobufSchemaRegistrySerializer<
         {
             var dependency = file.Dependencies[index];
             if (_config.SkipKnownTypes && IsKnownType(dependency.Name))
+            {
                 continue;
+            }
 
             var registered = await RegisterOrLookupDependencyAsync(
                 dependency,
@@ -1082,10 +1142,14 @@ public sealed class ProtobufSchemaRegistrySerializer<
         CancellationToken cancellationToken)
     {
         if (state.Completed.TryGetValue(dependency.Name, out var completed))
+        {
             return completed;
+        }
 
         if (!state.Visiting.Add(dependency.Name))
+        {
             throw new InvalidOperationException($"Cyclic Protobuf schema reference detected at '{dependency.Name}'.");
+        }
 
         try
         {
@@ -1229,23 +1293,44 @@ public sealed class ProtobufSchemaRegistrySerializer<
 
     private sealed class ReferenceRegistrationState(string topic, bool isKey)
     {
-        internal string Topic { get; } = topic;
-        internal bool IsKey { get; } = isKey;
-        internal Dictionary<string, RegisteredDependency> Completed { get; } = new(StringComparer.Ordinal);
-        internal HashSet<string> Visiting { get; } = new(StringComparer.Ordinal);
+        internal string Topic
+        {
+            get;
+        } = topic;
+        internal bool IsKey
+        {
+            get;
+        } = isKey;
+        internal Dictionary<string, RegisteredDependency> Completed
+        {
+            get;
+        } = new(StringComparer.Ordinal);
+        internal HashSet<string> Visiting
+        {
+            get;
+        } = new(StringComparer.Ordinal);
     }
 
     private readonly record struct RegisteredDependency(string Subject, int Version);
 
     private sealed class IdentityHeaderFrame(ReadOnlyMemory<byte> value)
     {
-        internal ReadOnlyMemory<byte> Value { get; } = value;
+        internal ReadOnlyMemory<byte> Value
+        {
+            get;
+        } = value;
     }
 
     private sealed class ResolvedMessageIndexes(Schema schema, byte[] value)
     {
-        internal Schema Schema { get; } = schema;
-        internal byte[] Value { get; } = value;
+        internal Schema Schema
+        {
+            get;
+        } = schema;
+        internal byte[] Value
+        {
+            get;
+        } = value;
     }
 
     private static int[] CalculateMessageIndexes(MessageDescriptor descriptor)
@@ -1292,7 +1377,9 @@ public sealed class ProtobufSchemaRegistrySerializer<
     public ValueTask DisposeAsync()
     {
         if (_ownsClient)
+        {
             _schemaRegistry.Dispose();
+        }
         return ValueTask.CompletedTask;
     }
 

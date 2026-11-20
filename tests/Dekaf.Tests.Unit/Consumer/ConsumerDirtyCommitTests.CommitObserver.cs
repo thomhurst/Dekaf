@@ -389,7 +389,10 @@ public sealed partial class ConsumerDirtyCommitTests
 
     private sealed class RecordingCommitObserver(List<OffsetCommitRequest> requests) : IOffsetCommitObserver
     {
-        public List<ObservedCommit> Calls { get; } = [];
+        public List<ObservedCommit> Calls
+        {
+            get;
+        } = [];
 
         public object? OnCommitStarting(OffsetCommitObservation observation)
         {
@@ -423,7 +426,9 @@ public sealed partial class ConsumerDirtyCommitTests
         public async ValueTask OnCommitAsync(CancellationToken cancellationToken)
         {
             if (Interlocked.Increment(ref _attempts) != 1)
+            {
                 return;
+            }
 
             _started.SetResult();
             await _release.Task.WaitAsync(cancellationToken);
@@ -436,14 +441,38 @@ public sealed partial class ConsumerDirtyCommitTests
         int requestsAtStart,
         long recordCount)
     {
-        public long RecordCount { get; } = recordCount;
-        public long? CompletedRecordCount { get; set; }
-        public OffsetCommitReason Reason { get; } = reason;
-        public TopicPartitionOffset[] Offsets { get; } = offsets;
-        public int RequestsAtStart { get; } = requestsAtStart;
-        public bool Completed { get; set; }
-        public bool StateMatched { get; set; }
-        public Exception? Exception { get; set; }
+        public long RecordCount
+        {
+            get;
+        } = recordCount;
+        public long? CompletedRecordCount
+        {
+            get; set;
+        }
+        public OffsetCommitReason Reason
+        {
+            get;
+        } = reason;
+        public TopicPartitionOffset[] Offsets
+        {
+            get;
+        } = offsets;
+        public int RequestsAtStart
+        {
+            get;
+        } = requestsAtStart;
+        public bool Completed
+        {
+            get; set;
+        }
+        public bool StateMatched
+        {
+            get; set;
+        }
+        public Exception? Exception
+        {
+            get; set;
+        }
     }
 
     private sealed class ThrowingCommitObserver : IOffsetCommitObserver

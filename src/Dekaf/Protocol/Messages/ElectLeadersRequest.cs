@@ -14,18 +14,27 @@ public sealed class ElectLeadersRequest : IKafkaRequest<ElectLeadersResponse>
     /// Type of election: 0 = Preferred, 1 = Unclean.
     /// Only supported in v1+.
     /// </summary>
-    public byte ElectionType { get; init; }
+    public byte ElectionType
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Topics with partitions to elect leaders for.
     /// Null means elect leaders for all partitions.
     /// </summary>
-    public IReadOnlyList<ElectLeadersRequestTopic>? TopicPartitions { get; init; }
+    public IReadOnlyList<ElectLeadersRequestTopic>? TopicPartitions
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Timeout in milliseconds.
     /// </summary>
-    public int TimeoutMs { get; init; } = 30000;
+    public int TimeoutMs
+    {
+        get; init;
+    } = 30000;
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {
@@ -59,12 +68,18 @@ public sealed class ElectLeadersRequestTopic
     /// <summary>
     /// The topic name.
     /// </summary>
-    public required string Topic { get; init; }
+    public required string Topic
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The partition indexes.
     /// </summary>
-    public required IReadOnlyList<int> Partitions { get; init; }
+    public required IReadOnlyList<int> Partitions
+    {
+        get; init;
+    }
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {

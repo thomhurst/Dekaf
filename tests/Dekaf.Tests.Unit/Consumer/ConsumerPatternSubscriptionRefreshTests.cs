@@ -41,7 +41,9 @@ public sealed class ConsumerPatternSubscriptionRefreshTests
         // Without an established subscription the next attempt is due after the retry backoff
         // (1 ms here), not after the 30 s refresh interval.
         while (!await InvokeRefreshFilteredTopicsAsync(consumer, filter))
+        {
             await Task.Yield();
+        }
 
         await Assert.That(consumer.Subscription).Contains("orders-eu");
         await Assert.That(consumer.Subscription).Contains("orders-us");

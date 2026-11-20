@@ -239,7 +239,9 @@ public class ConsumeAsyncStagingSerdeBenchmarks
         ReadOnlyMemory<byte> bytes = _valueBytes;
         var lengthSum = 0;
         for (var i = 0; i < MessageCount; i++)
+        {
             lengthSum += Encoding.UTF8.GetString(bytes.Span).Length;
+        }
         return lengthSum;
     }
 
@@ -251,7 +253,9 @@ public class ConsumeAsyncStagingSerdeBenchmarks
             await foreach (var _ in consumer.ConsumeAsync(_iterationCancellation!.Token).ConfigureAwait(false))
             {
                 if (++count == MessageCount)
+                {
                     _iterationCancellation.Cancel();
+                }
             }
         }
         catch (OperationCanceledException) when (_iterationCancellation!.IsCancellationRequested)

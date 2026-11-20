@@ -52,7 +52,9 @@ public sealed class DynamoDbOutboxWriter : IDynamoDbOutboxWriter
     {
         ArgumentNullException.ThrowIfNull(messages);
         if (messages.Count == 0)
+        {
             return [];
+        }
 
         var perBucket = new Dictionary<int, int>();
         for (var index = 0; index < messages.Count; index++)
@@ -86,9 +88,13 @@ public sealed class DynamoDbOutboxWriter : IDynamoDbOutboxWriter
     {
         ArgumentNullException.ThrowIfNull(message);
         if (_notifier is IOutboxBucketNotifier bucketNotifier)
+        {
             bucketNotifier.NotifyCommitted(message.Bucket);
+        }
         else
+        {
             _notifier?.NotifyCommitted();
+        }
     }
 
     /// <inheritdoc />
@@ -96,7 +102,9 @@ public sealed class DynamoDbOutboxWriter : IDynamoDbOutboxWriter
     {
         ArgumentNullException.ThrowIfNull(messages);
         if (messages.Count == 0 || _notifier is null)
+        {
             return;
+        }
 
         if (_notifier is not IOutboxBucketNotifier bucketNotifier)
         {
@@ -113,7 +121,9 @@ public sealed class DynamoDbOutboxWriter : IDynamoDbOutboxWriter
         // A HashSet keeps the exact bucket ids on the cross-process notification transport.
         var buckets = new HashSet<int>();
         for (var index = 0; index < messages.Count; index++)
+        {
             buckets.Add(messages[index].Bucket);
+        }
         bucketNotifier.NotifyCommitted(buckets);
     }
 
@@ -146,7 +156,9 @@ public sealed class DynamoDbOutboxWriter : IDynamoDbOutboxWriter
     {
         ArgumentNullException.ThrowIfNull(messages);
         if (messages.Count == 0)
+        {
             return;
+        }
         if (messages.Count > MaxTransactionItems)
         {
             throw new ArgumentException(
@@ -180,12 +192,16 @@ public sealed class DynamoDbOutboxWriter : IDynamoDbOutboxWriter
     private static bool AreSameMessages(List<CancellationReason>? reasons, IReadOnlyList<OutboxMessage> messages)
     {
         if (reasons is null || reasons.Count != messages.Count)
+        {
             return false;
+        }
 
         for (var index = 0; index < messages.Count; index++)
         {
             if (reasons[index].Code != "ConditionalCheckFailed" || !IsSameMessage(reasons[index].Item, messages[index]))
+            {
                 return false;
+            }
         }
 
         return true;

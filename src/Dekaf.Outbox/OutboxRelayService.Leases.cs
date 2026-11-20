@@ -15,7 +15,10 @@ public sealed partial class OutboxRelayService
 
     private sealed class StopDeadline(CancellationToken token)
     {
-        internal CancellationToken Token { get; } = token;
+        internal CancellationToken Token
+        {
+            get;
+        } = token;
     }
 
     /// <summary>
@@ -38,7 +41,9 @@ public sealed partial class OutboxRelayService
     private async ValueTask MarkPublishedBeforeStopAsync(int bucket, IReadOnlyList<OutboxMessage> published)
     {
         if (Volatile.Read(ref _stopDeadline) is not { } deadline || deadline.Token.IsCancellationRequested)
+        {
             return;
+        }
 
         try
         {
@@ -61,7 +66,9 @@ public sealed partial class OutboxRelayService
     {
         var executeTask = ExecuteTask;
         if (_ownershipStore is null || executeTask is null)
+        {
             return;
+        }
 
         // The base stop also returns when the shutdown deadline fires first. A relay that is
         // still running can still be publishing, and releasing then would invite a peer
@@ -74,7 +81,9 @@ public sealed partial class OutboxRelayService
 
         // The completed loop is what makes its state safe to read from the stopping thread.
         if (!_acquisitionAttempted || Volatile.Read(ref _leasesReleased) != 0)
+        {
             return;
+        }
 
         // A deadline that has already passed fails every request of the release. Nothing is
         // started, and a later stop that has time left can still hand the leases back.
@@ -85,7 +94,9 @@ public sealed partial class OutboxRelayService
         }
 
         if (Interlocked.Exchange(ref _leasesReleased, 1) != 0)
+        {
             return;
+        }
 
         try
         {
@@ -130,7 +141,9 @@ public sealed partial class OutboxRelayService
         // batch creates timer and cancellation allocations proportional to throughput.
         if (_renewalDelay is not null && (_renewalDelay.IsCompleted ||
             _renewalDelayDuration - _timeProvider.GetElapsedTime(_renewalDelayStarted) <= delay))
+        {
             return _renewalDelay;
+        }
 
         CancelRenewalDelay();
         _renewalDelayCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -144,7 +157,9 @@ public sealed partial class OutboxRelayService
         for (var i = 0; i < _ownedBuckets.Count; i++)
         {
             if (_ownedBuckets[i] == bucket)
+            {
                 return true;
+            }
         }
 
         return false;
@@ -163,16 +178,22 @@ public sealed partial class OutboxRelayService
             return new ValueTask<bool>(false);
         }
         if (_renewalStore is not null)
+        {
             return _leaseTimestamp == 0 || leaseAge >= _options.LeaseRenewInterval
                 ? RenewOwnedLeasesAsync(cancellationToken) : new ValueTask<bool>(true);
+        }
 
         var publishBudget = _options.MaxPublishDuration!.Value;
         var latestStart = _options.LeaseDuration - publishBudget - _options.LeaseRenewInterval;
         if (leaseAge >= latestStart)
+        {
             return RefreshPublishLeaseAsync(bucket, publishBudget, latestStart, cancellationToken);
+        }
 
         if (ownsBucket)
+        {
             return new ValueTask<bool>(true);
+        }
 
         LogInsufficientPublishLease(publishBudget);
         ResetLeaseState();

@@ -10,7 +10,10 @@ namespace Dekaf.Tests.Unit;
 /// </summary>
 internal sealed class CapturingLogger : ILogger
 {
-    public ConcurrentQueue<(LogLevel Level, string Message)> Messages { get; } = new();
+    public ConcurrentQueue<(LogLevel Level, string Message)> Messages
+    {
+        get;
+    } = new();
 
     public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
 

@@ -1,9 +1,9 @@
 using System.Reflection;
 using Dekaf.Consumer;
 using Dekaf.Consumer.DeadLetter;
-using Dekaf.Networking;
 using Dekaf.Extensions.DependencyInjection;
 using Dekaf.Extensions.Hosting;
+using Dekaf.Networking;
 using Dekaf.Security.Sasl;
 using Dekaf.ShareConsumer;
 using Microsoft.Extensions.Configuration;
@@ -34,8 +34,14 @@ public class ShareConsumerConfigurationRegistrationTests
             void Configure(IServiceProvider provider, ShareConsumerBuilder<string, string> consumer) =>
                 consumer.WithClientId(provider.GetRequiredService<Settings>().ClientId).WithMaxPollRecords(3);
 
-            if (keyed) builder.AddShareConsumerFromConfiguration<string, string>("orders", configuration, Configure);
-            else builder.AddShareConsumerFromConfiguration<string, string>(configuration, Configure);
+            if (keyed)
+            {
+                builder.AddShareConsumerFromConfiguration<string, string>("orders", configuration, Configure);
+            }
+            else
+            {
+                builder.AddShareConsumerFromConfiguration<string, string>(configuration, Configure);
+            }
         });
         await using var provider = services.BuildServiceProvider();
 
@@ -194,8 +200,14 @@ public class ShareConsumerConfigurationRegistrationTests
             void Configure(IServiceProvider _, ShareConsumerBuilder<string, string> consumer) =>
                 consumer.WithBootstrapServers("code:9092").WithGroupId("from-code");
 
-            if (keyed) builder.AddShareConsumerFromConfiguration<string, string>("orders", configuration, Configure);
-            else builder.AddShareConsumerFromConfiguration<string, string>(configuration, Configure);
+            if (keyed)
+            {
+                builder.AddShareConsumerFromConfiguration<string, string>("orders", configuration, Configure);
+            }
+            else
+            {
+                builder.AddShareConsumerFromConfiguration<string, string>(configuration, Configure);
+            }
         });
         await using var provider = services.BuildServiceProvider();
 
@@ -220,8 +232,14 @@ public class ShareConsumerConfigurationRegistrationTests
         {
             void Configure(IServiceProvider _, ShareConsumerBuilder<string, string> consumer) => calls++;
 
-            if (keyed) builder.AddShareConsumerFromConfiguration<string, string>("orders", configuration, Configure);
-            else builder.AddShareConsumerFromConfiguration<string, string>(configuration, Configure);
+            if (keyed)
+            {
+                builder.AddShareConsumerFromConfiguration<string, string>("orders", configuration, Configure);
+            }
+            else
+            {
+                builder.AddShareConsumerFromConfiguration<string, string>(configuration, Configure);
+            }
         });
         await Assert.That(calls).IsEqualTo(0);
         await using var provider = services.BuildServiceProvider();
@@ -233,7 +251,9 @@ public class ShareConsumerConfigurationRegistrationTests
         await Assert.That(provider.GetServices<IInitializableKafkaClient>().Single()).IsSameReferenceAs(consumer);
         await Assert.That(calls).IsEqualTo(1);
         if (keyed)
+        {
             await Assert.That(provider.GetService<IKafkaShareConsumer<string, string>>()).IsNull();
+        }
     }
 
     [Test]
@@ -245,10 +265,18 @@ public class ShareConsumerConfigurationRegistrationTests
         var services = new ServiceCollection();
         services.AddDekaf(builder =>
         {
-            void Configure(IServiceProvider _, ShareConsumerBuilder<string, string> consumer) { }
+            void Configure(IServiceProvider _, ShareConsumerBuilder<string, string> consumer)
+            {
+            }
 
-            if (keyed) builder.AddShareConsumerFromConfiguration<string, string>("orders", configuration, Configure, dlq => dlq.WithTopicSuffix(".dead"));
-            else builder.AddShareConsumerFromConfiguration<string, string>(configuration, Configure, dlq => dlq.WithTopicSuffix(".dead"));
+            if (keyed)
+            {
+                builder.AddShareConsumerFromConfiguration<string, string>("orders", configuration, Configure, dlq => dlq.WithTopicSuffix(".dead"));
+            }
+            else
+            {
+                builder.AddShareConsumerFromConfiguration<string, string>(configuration, Configure, dlq => dlq.WithTopicSuffix(".dead"));
+            }
         });
         await using var provider = services.BuildServiceProvider();
 
@@ -268,10 +296,18 @@ public class ShareConsumerConfigurationRegistrationTests
         var services = new ServiceCollection();
         services.AddDekaf(builder =>
         {
-            void Configure(IServiceProvider _, ShareConsumerBuilder<string, string> consumer) { }
+            void Configure(IServiceProvider _, ShareConsumerBuilder<string, string> consumer)
+            {
+            }
 
-            if (keyed) builder.AddShareConsumerServiceFromConfiguration<DeadLetterWorker, string, string>("orders", configuration, Configure, dlq => dlq.WithMaxFailures(4));
-            else builder.AddShareConsumerServiceFromConfiguration<DeadLetterWorker, string, string>(configuration, Configure, dlq => dlq.WithMaxFailures(4));
+            if (keyed)
+            {
+                builder.AddShareConsumerServiceFromConfiguration<DeadLetterWorker, string, string>("orders", configuration, Configure, dlq => dlq.WithMaxFailures(4));
+            }
+            else
+            {
+                builder.AddShareConsumerServiceFromConfiguration<DeadLetterWorker, string, string>(configuration, Configure, dlq => dlq.WithMaxFailures(4));
+            }
         });
         await using var provider = services.BuildServiceProvider();
 
@@ -292,14 +328,20 @@ public class ShareConsumerConfigurationRegistrationTests
         string? configured, ShareAcknowledgementMode? fromCallback, ShareAcknowledgementMode expected)
     {
         var values = new Dictionary<string, string?> { ["BootstrapServers"] = "broker:9092", ["GroupId"] = "workers" };
-        if (configured is not null) values["AcknowledgementMode"] = configured;
+        if (configured is not null)
+        {
+            values["AcknowledgementMode"] = configured;
+        }
         var configuration = Configuration(values);
         var services = new ServiceCollection();
         services.AddDekaf(builder => builder.AddShareConsumerServiceFromConfiguration<Worker, string, string>(
             configuration,
             (_, consumer) =>
             {
-                if (fromCallback is { } mode) consumer.WithAcknowledgementMode(mode);
+                if (fromCallback is { } mode)
+                {
+                    consumer.WithAcknowledgementMode(mode);
+                }
             }));
         await using var provider = services.BuildServiceProvider();
 
@@ -319,15 +361,31 @@ public class ShareConsumerConfigurationRegistrationTests
         services.AddDekaf(dekaf =>
         {
             builder = dekaf;
-            if (keyed) dekaf.AddShareConsumerService<Worker, string, string>("orders", Configure);
-            else dekaf.AddShareConsumerService<Worker, string, string>(Configure);
+            if (keyed)
+            {
+                dekaf.AddShareConsumerService<Worker, string, string>("orders", Configure);
+            }
+            else
+            {
+                dekaf.AddShareConsumerService<Worker, string, string>(Configure);
+            }
         });
         var registered = services.ToArray();
 
         void Duplicate()
         {
-            if (keyed) builder.AddShareConsumerServiceFromConfiguration<Worker, string, string>("orders", configuration, (_, _) => { });
-            else builder.AddShareConsumerServiceFromConfiguration<Worker, string, string>(configuration, (_, _) => { });
+            if (keyed)
+            {
+                builder.AddShareConsumerServiceFromConfiguration<Worker, string, string>("orders", configuration, (_, _) =>
+                {
+                });
+            }
+            else
+            {
+                builder.AddShareConsumerServiceFromConfiguration<Worker, string, string>(configuration, (_, _) =>
+                {
+                });
+            }
         }
 
         await Assert.That(Duplicate).Throws<InvalidOperationException>();
@@ -342,7 +400,9 @@ public class ShareConsumerConfigurationRegistrationTests
         services.AddDekaf(dekaf => builder = dekaf);
         var registered = services.Count;
         var configuration = Configuration([]);
-        Action<IServiceProvider, ShareConsumerBuilder<string, string>> configure = (_, _) => { };
+        Action<IServiceProvider, ShareConsumerBuilder<string, string>> configure = (_, _) =>
+        {
+        };
         Action<IServiceProvider, ShareConsumerBuilder<string, string>> missing = null!;
 
         await Assert.That(() => DekafBuilderShareConsumerExtensions.AddShareConsumerFromConfiguration(null!, configuration, configure)).Throws<ArgumentNullException>();
@@ -407,7 +467,10 @@ public class ShareConsumerConfigurationRegistrationTests
             ["GroupId"] = "workers",
             ["AutoOffsetResetDuration"] = "00:05:00"
         };
-        if (policy is not null) values["AutoOffsetReset"] = policy;
+        if (policy is not null)
+        {
+            values["AutoOffsetReset"] = policy;
+        }
         var configuration = Configuration(values);
         var services = new ServiceCollection();
         services.AddDekaf(builder => builder.AddShareConsumer<string, string>(configuration));
@@ -446,8 +509,14 @@ public class ShareConsumerConfigurationRegistrationTests
             void Configure(IServiceProvider provider, ShareConsumerBuilder<string, string> consumer) =>
                 consumer.WithClientId(provider.GetRequiredService<Settings>().ClientId);
 
-            if (keyed) builder.AddShareConsumerServiceFromConfiguration<Worker, string, string>("orders", configuration, Configure);
-            else builder.AddShareConsumerServiceFromConfiguration<Worker, string, string>(configuration, Configure);
+            if (keyed)
+            {
+                builder.AddShareConsumerServiceFromConfiguration<Worker, string, string>("orders", configuration, Configure);
+            }
+            else
+            {
+                builder.AddShareConsumerServiceFromConfiguration<Worker, string, string>(configuration, Configure);
+            }
         });
         await using var provider = services.BuildServiceProvider();
 
@@ -498,7 +567,10 @@ public class ShareConsumerConfigurationRegistrationTests
     private sealed class Worker(IKafkaShareConsumer<string, string> consumer)
         : KafkaShareConsumerService<string, string>(consumer, NullLogger.Instance)
     {
-        public IKafkaShareConsumer<string, string> Consumer { get; } = consumer;
+        public IKafkaShareConsumer<string, string> Consumer
+        {
+            get;
+        } = consumer;
         protected override IEnumerable<string> Topics => ["orders"];
         protected override ValueTask ProcessAsync(ShareConsumeResult<string, string> record, CancellationToken cancellationToken) => ValueTask.CompletedTask;
     }
@@ -506,8 +578,14 @@ public class ShareConsumerConfigurationRegistrationTests
     private sealed class DeadLetterWorker(IKafkaShareConsumer<string, string> consumer, DeadLetterOptions? deadLetter = null)
         : KafkaShareConsumerService<string, string>(consumer, NullLogger.Instance, deadLetter)
     {
-        public IKafkaShareConsumer<string, string> Consumer { get; } = consumer;
-        public DeadLetterOptions? DeadLetter { get; } = deadLetter;
+        public IKafkaShareConsumer<string, string> Consumer
+        {
+            get;
+        } = consumer;
+        public DeadLetterOptions? DeadLetter
+        {
+            get;
+        } = deadLetter;
         protected override IEnumerable<string> Topics => ["orders"];
         protected override ValueTask ProcessAsync(ShareConsumeResult<string, string> record, CancellationToken cancellationToken) => ValueTask.CompletedTask;
     }
@@ -515,7 +593,10 @@ public class ShareConsumerConfigurationRegistrationTests
     private sealed class OtherWorker(IKafkaShareConsumer<string, string> consumer)
         : KafkaShareConsumerService<string, string>(consumer, NullLogger.Instance)
     {
-        public IKafkaShareConsumer<string, string> Consumer { get; } = consumer;
+        public IKafkaShareConsumer<string, string> Consumer
+        {
+            get;
+        } = consumer;
         protected override IEnumerable<string> Topics => ["orders"];
         protected override ValueTask ProcessAsync(ShareConsumeResult<string, string> record, CancellationToken cancellationToken) => ValueTask.CompletedTask;
     }

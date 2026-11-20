@@ -145,7 +145,10 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))
         {
             messages.Add(msg);
-            if (messages.Any(m => m.Key != "warmup")) break;
+            if (messages.Any(m => m.Key != "warmup"))
+            {
+                break;
+            }
         }
 
         // Assert - filter out warmup
@@ -211,7 +214,10 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
                 .Select(m => m.Partition)
                 .Distinct()
                 .Count();
-            if (coveredPartitions >= 2) break;
+            if (coveredPartitions >= 2)
+            {
+                break;
+            }
         }
 
         // Assert - should only get messages from partitions 0 and 2 (filter out warmup)
@@ -280,9 +286,14 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
         {
             messages.Add(msg);
             if (msg.Key != "warmup")
+            {
                 seenPartitions.Add(msg.Partition);
+            }
             // Break only when we've seen messages from ALL 3 partitions
-            if (seenPartitions.Count >= 3) break;
+            if (seenPartitions.Count >= 3)
+            {
+                break;
+            }
         }
         LogPhase("consume done", sw);
 
@@ -339,7 +350,10 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))
         {
             messages.Add(msg);
-            if (messages.Count(m => m.Key != "warmup") >= 10) break;
+            if (messages.Count(m => m.Key != "warmup") >= 10)
+            {
+                break;
+            }
         }
 
         // Assert - all 10 messages received and in order (filter out warmup)
@@ -412,7 +426,10 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
             if (msg.Partition == 0)
             {
                 messages.Add(msg);
-                if (messages.Count >= 2) break;
+                if (messages.Count >= 2)
+                {
+                    break;
+                }
             }
         }
         LogPhase("consume done", sw);
@@ -482,8 +499,13 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
         {
             messages.Add(msg);
             if (msg.Key != "warmup")
+            {
                 seenPartitions.Add(msg.Partition);
-            if (seenPartitions.Count >= 10) break;
+            }
+            if (seenPartitions.Count >= 10)
+            {
+                break;
+            }
         }
         LogPhase("consume done", sw);
 
@@ -555,7 +577,10 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))
         {
             messages.Add(msg);
-            if (messages.Count(m => m.Key == "consistent-key") >= 5) break;
+            if (messages.Count(m => m.Key == "consistent-key") >= 5)
+            {
+                break;
+            }
         }
         LogPhase("consume done", sw);
 

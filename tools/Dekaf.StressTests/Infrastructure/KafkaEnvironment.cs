@@ -5,8 +5,8 @@ using Docker.DotNet.Models;
 using DotNet.Testcontainers.Builders;
 using DotNet.Testcontainers.Configurations;
 using DotNet.Testcontainers.Containers;
-using DotNet.Testcontainers.Networks;
 using DotNet.Testcontainers.Images;
+using DotNet.Testcontainers.Networks;
 using Testcontainers.Kafka;
 
 namespace Dekaf.StressTests.Infrastructure;
@@ -19,7 +19,10 @@ namespace Dekaf.StressTests.Infrastructure;
 internal sealed class KafkaEnvironment : IAsyncDisposable
 {
     internal const string KafkaImage = "apache/kafka:4.3.1";
-    internal static ConsensusProtocol SingleBrokerConsensusProtocol { get; } = ConsensusProtocol.KRaft;
+    internal static ConsensusProtocol SingleBrokerConsensusProtocol
+    {
+        get;
+    } = ConsensusProtocol.KRaft;
 
     // Raw ContainerBuilder has no Kafka-aware readiness check, so "started" would
     // otherwise mean only "container running" — brokers still forming the KRaft quorum
@@ -116,7 +119,10 @@ internal sealed class KafkaEnvironment : IAsyncDisposable
     /// round-trip log budget derives from this so the workflow's tmpfs sizing stays the
     /// single source of truth for how much unretained data a scenario may leave behind.
     /// </summary>
-    internal static long? BrokerTmpfsSizeBytes { get; } = ParseByteSize(BrokerTmpfsSize);
+    internal static long? BrokerTmpfsSizeBytes
+    {
+        get;
+    } = ParseByteSize(BrokerTmpfsSize);
 
     // Accepts the docker tmpfs size grammar the workflow uses: bare bytes or a k/m/g
     // (or b) suffix, case-insensitive, e.g. "6g" or "512m".
@@ -145,10 +151,16 @@ internal sealed class KafkaEnvironment : IAsyncDisposable
         return long.TryParse(digits, out var number) && number > 0 ? number * multiplier : null;
     }
 
-    public string BootstrapServers { get; }
+    public string BootstrapServers
+    {
+        get;
+    }
     private readonly KafkaContainer? _container;
     private IFutureDockerImage? _telemetryImage;
-    public Uri? TelemetryReceiverEndpoint { get; private init; }
+    public Uri? TelemetryReceiverEndpoint
+    {
+        get; private init;
+    }
     private readonly List<IContainer>? _clusterContainers;
     private readonly INetwork? _network;
 
@@ -189,17 +201,28 @@ internal sealed class KafkaEnvironment : IAsyncDisposable
     public static async Task<KafkaEnvironment> CreateAsync(int brokerCount = 1, bool enableShareGroups = false, bool enableFollowerRecovery = false, bool enableTelemetryReceiver = false)
     {
         if (enableFollowerRecovery && brokerCount != 3)
+        {
             throw new ArgumentException("Follower recovery requires three brokers.", nameof(brokerCount));
+        }
         if (enableTelemetryReceiver && (!enableShareGroups || brokerCount != 1))
+        {
             throw new ArgumentException("Telemetry stress requires one managed share broker.");
+        }
         if (enableShareGroups && brokerCount != 1)
+        {
             throw new ArgumentException("The hosted-share lane requires one broker.", nameof(brokerCount));
+        }
         var externalBootstrap = Environment.GetEnvironmentVariable("KAFKA_BOOTSTRAP_SERVERS");
         if (!string.IsNullOrEmpty(externalBootstrap))
         {
             if (enableFollowerRecovery)
+            {
                 throw new InvalidOperationException("Follower recovery requires a harness-owned rack-aware cluster.");
-            if (enableTelemetryReceiver) throw new ArgumentException("Telemetry stress requires its managed receiver broker; unset KAFKA_BOOTSTRAP_SERVERS.");
+            }
+            if (enableTelemetryReceiver)
+            {
+                throw new ArgumentException("Telemetry stress requires its managed receiver broker; unset KAFKA_BOOTSTRAP_SERVERS.");
+            }
             Console.WriteLine($"Using external Kafka at {externalBootstrap}");
             return new KafkaEnvironment(externalBootstrap, null);
         }
@@ -230,10 +253,12 @@ internal sealed class KafkaEnvironment : IAsyncDisposable
             }
             var builder = new KafkaBuilder(image?.FullName ?? KafkaImage);
             if (enableTelemetryReceiver)
+            {
                 builder = builder.WithPortBinding(8080, true)
                     .WithEnvironment("KAFKA_METRIC_REPORTERS", "dekaf.testing.RecordingTelemetryReporter")
                     .WithEnvironment("DEKAF_TELEMETRY_MAX_PAYLOADS", ShareTelemetryObserver.MaximumPayloads.ToString())
                     .WithEnvironment("DEKAF_TELEMETRY_MAX_BYTES", ShareTelemetryObserver.MaximumPayloadBytes.ToString());
+            }
             builder = SingleBrokerConsensusProtocol switch
             {
                 ConsensusProtocol.KRaft => builder.WithKRaft(),
@@ -289,8 +314,14 @@ internal sealed class KafkaEnvironment : IAsyncDisposable
         }
         catch
         {
-            try { if (ownedContainer is not null) await ownedContainer.DisposeAsync().ConfigureAwait(false); }
-            finally { if (image is not null) await image.DisposeAsync().ConfigureAwait(false); }
+            try
+            {
+                if (ownedContainer is not null)
+                {
+                    await ownedContainer.DisposeAsync().ConfigureAwait(false);
+                }
+            }
+            finally { if (image is not null) { await image.DisposeAsync().ConfigureAwait(false); } }
             throw;
         }
     }
@@ -372,7 +403,11 @@ internal sealed class KafkaEnvironment : IAsyncDisposable
             // Clean up already-started containers and network on partial startup failure
             foreach (var c in containers)
             {
-                try { await c.DisposeAsync().ConfigureAwait(false); } catch { }
+                try
+                {
+                    await c.DisposeAsync().ConfigureAwait(false);
+                }
+                catch { }
             }
 
             await network.DisposeAsync().ConfigureAwait(false);
@@ -456,7 +491,9 @@ internal sealed class KafkaEnvironment : IAsyncDisposable
         await using var admin = CreateAdminClient(BootstrapServers);
         var assignments = new Dictionary<int, IReadOnlyList<int>>(partitions);
         for (var p = 0; p < partitions; p++)
+        {
             assignments.Add(p, [1, 2]);
+        }
         await admin.CreateTopicsAsync([new NewTopic
         {
             Name = topic,
@@ -472,7 +509,9 @@ internal sealed class KafkaEnvironment : IAsyncDisposable
             if (descriptions[topic].Partitions.Count == partitions
                 && descriptions[topic].Partitions.All(static p => p.LeaderId == 1
                     && p.ReplicaNodes.SequenceEqual([1, 2]) && p.IsrNodes.Contains(1) && p.IsrNodes.Contains(2)))
+            {
                 return;
+            }
             await Task.Delay(250, timeout.Token).ConfigureAwait(false);
         }
     }
@@ -680,12 +719,18 @@ internal sealed class KafkaEnvironment : IAsyncDisposable
     {
         if (_container is not null)
         {
-            try { await DumpBrokerDiagnosticsAsync(_container, "kafka").ConfigureAwait(false); }
+            try
+            {
+                await DumpBrokerDiagnosticsAsync(_container, "kafka").ConfigureAwait(false);
+            }
             finally
             {
                 Console.WriteLine("Stopping Kafka container...");
-                try { await _container.DisposeAsync().ConfigureAwait(false); }
-                finally { if (_telemetryImage is not null) await _telemetryImage.DisposeAsync().ConfigureAwait(false); }
+                try
+                {
+                    await _container.DisposeAsync().ConfigureAwait(false);
+                }
+                finally { if (_telemetryImage is not null) { await _telemetryImage.DisposeAsync().ConfigureAwait(false); } }
             }
         }
 
@@ -709,7 +754,10 @@ internal sealed class KafkaEnvironment : IAsyncDisposable
 
             if (_network is not null)
             {
-                try { await _network.DisposeAsync().ConfigureAwait(false); }
+                try
+                {
+                    await _network.DisposeAsync().ConfigureAwait(false);
+                }
                 catch (Exception ex) { exceptions.Add(ex); }
             }
 

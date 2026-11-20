@@ -36,7 +36,10 @@ public sealed class DescribeStreamsGroupsOptions
     /// Requires StreamsGroupDescribe v1 (Kafka 4.4+). The outcome is reported per group in
     /// <see cref="StreamsGroupDescription.TopologyDescriptionStatus"/>.
     /// </summary>
-    public bool IncludeTopologyDescription { get; init; }
+    public bool IncludeTopologyDescription
+    {
+        get; init;
+    }
 }
 
 /// <summary>

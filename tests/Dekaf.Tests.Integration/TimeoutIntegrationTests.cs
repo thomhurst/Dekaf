@@ -116,7 +116,11 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka) : KafkaIntegratio
         finally
         {
             // Ensure cleanup even if test fails
-            try { await producer.DisposeAsync().ConfigureAwait(false); } catch { /* already disposed or disposing */ }
+            try
+            {
+                await producer.DisposeAsync().ConfigureAwait(false);
+            }
+            catch { /* already disposed or disposing */ }
         }
     }
 
@@ -329,7 +333,10 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka) : KafkaIntegratio
 
         // Act - Flush without sending any messages
         var startTime = Environment.TickCount64;
-        { using var flushCts = new CancellationTokenSource(TimeSpan.FromSeconds(30)); await producer.FlushAsync(flushCts.Token).ConfigureAwait(false); }
+        {
+            using var flushCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+            await producer.FlushAsync(flushCts.Token).ConfigureAwait(false);
+        }
         var elapsed = Environment.TickCount64 - startTime;
 
         // Assert - Should complete quickly (< 1 second)
@@ -359,7 +366,11 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka) : KafkaIntegratio
         finally
         {
             // Ensure cleanup even if test fails
-            try { await producer.DisposeAsync().ConfigureAwait(false); } catch { /* already disposed */ }
+            try
+            {
+                await producer.DisposeAsync().ConfigureAwait(false);
+            }
+            catch { /* already disposed */ }
         }
     }
 
@@ -400,7 +411,11 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka) : KafkaIntegratio
         finally
         {
             // Ensure cleanup even if test fails
-            try { await producer.DisposeAsync().ConfigureAwait(false); } catch { /* already disposed or disposing */ }
+            try
+            {
+                await producer.DisposeAsync().ConfigureAwait(false);
+            }
+            catch { /* already disposed or disposing */ }
         }
     }
 
@@ -475,7 +490,11 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka) : KafkaIntegratio
         finally
         {
             // Ensure cleanup even if test fails
-            try { await producer.DisposeAsync().ConfigureAwait(false); } catch { /* already disposed */ }
+            try
+            {
+                await producer.DisposeAsync().ConfigureAwait(false);
+            }
+            catch { /* already disposed */ }
         }
     }
 
@@ -622,7 +641,9 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka) : KafkaIntegratio
             var cts = new CancellationTokenSource();
 
             if (i % 2 == 1)
+            {
                 cts.Cancel(); // Cancel odd ones
+            }
 
             tasks.Add(Task.Run(async () =>
             {
@@ -765,7 +786,10 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka) : KafkaIntegratio
         await Assert.That(metadata.Offset).IsGreaterThanOrEqualTo(0);
 
         // Flush to ensure all fire-and-forget messages are also delivered
-        { using var flushCts2 = new CancellationTokenSource(TimeSpan.FromSeconds(30)); await producer.FlushAsync(flushCts2.Token).ConfigureAwait(false); }
+        {
+            using var flushCts2 = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+            await producer.FlushAsync(flushCts2.Token).ConfigureAwait(false);
+        }
     }
 
     #endregion
@@ -871,7 +895,11 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka) : KafkaIntegratio
         }
         finally
         {
-            try { await producer.DisposeAsync().ConfigureAwait(false); } catch { /* already disposed */ }
+            try
+            {
+                await producer.DisposeAsync().ConfigureAwait(false);
+            }
+            catch { /* already disposed */ }
         }
     }
 
@@ -955,7 +983,10 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka) : KafkaIntegratio
         }
 
         // Flush completes successfully — all messages were queued
-        { using var flushCts = new CancellationTokenSource(TimeSpan.FromSeconds(30)); await producer.FlushAsync(flushCts.Token).ConfigureAwait(false); }
+        {
+            using var flushCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+            await producer.FlushAsync(flushCts.Token).ConfigureAwait(false);
+        }
     }
 
     #endregion

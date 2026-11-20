@@ -20,25 +20,35 @@ public sealed class PartitionedRecordLifetimeTests
         var disposedInsideCallback = -1;
         var calls = 0;
         KafkaConsumer<ReadOnlyMemory<byte>, ReadOnlyMemory<byte>> consumer = null!;
+
         void Revoke()
         {
             consumer.Unassign();
             disposedInsideCallback = memory.DisposeCount;
         }
+
         consumer = new KafkaConsumer<ReadOnlyMemory<byte>, ReadOnlyMemory<byte>>(
             new ConsumerOptions
             {
                 BootstrapServers = ["localhost:9092"],
                 OffsetCommitMode = OffsetCommitMode.Manual,
                 QueuedMinMessages = 1,
-                Interceptors = [new CallbackRawInterceptor(() => { calls++; Revoke(); })]
+                Interceptors = [
+                    new CallbackRawInterceptor(() =>
+                    {
+                        calls++;
+                        Revoke();
+                    })
+                ]
             }, Serializers.RawBytes,
             disposeDuringDeserialization ? new CallbackRawDeserializer(Revoke) : Serializers.RawBytes);
         await using var ownedConsumer = consumer;
         var consumerType = consumer.GetType();
+
         System.Reflection.FieldInfo Field(string name) => consumerType.GetField(name,
             System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)
             ?? throw new InvalidOperationException($"{name} field not found.");
+
         Field("_initialized").SetValue(consumer, true);
         consumer.Assign(pending.TopicPartition);
         Field("_lastManualAssignmentEnsureVersion").SetValue(consumer, Field("_assignmentEnsureVersion").GetValue(consumer));
@@ -69,7 +79,9 @@ public sealed class PartitionedRecordLifetimeTests
             return result;
         }
 
-        public void OnCommit(IReadOnlyList<TopicPartitionOffset> offsets) { }
+        public void OnCommit(IReadOnlyList<TopicPartitionOffset> offsets)
+        {
+        }
     }
 
     private sealed class CallbackRawDeserializer(Action callback) : IDeserializer<ReadOnlyMemory<byte>>
@@ -87,7 +99,11 @@ public sealed class PartitionedRecordLifetimeTests
         var acceptedMemory = new ReusedMemory();
         var rejectedMemory = new ReusedMemory();
         var lane = new PartitionLane<ReadOnlyMemory<byte>, ReadOnlyMemory<byte>>(
-            new TopicPartition("lifetime", 0), 1, static (_, _) => default, static _ => { }, static (_, _) => { });
+            new TopicPartition("lifetime", 0), 1, static (_, _) => default, static _ =>
+            {
+            }, static (_, _) =>
+            {
+            });
         try
         {
             ConsumeResult<ReadOnlyMemory<byte>, ReadOnlyMemory<byte>> accepted;
@@ -107,7 +123,9 @@ public sealed class PartitionedRecordLifetimeTests
 
                     await Assert.That(lane.TryEnqueueForTest(accepted)).IsTrue();
                     for (var attempt = 0; attempt < 256; attempt++)
+                    {
                         await Assert.That(lane.TryEnqueueForTest(rejectedRecords.Current)).IsFalse();
+                    }
                 }
                 await Assert.That(rejectedMemory.DisposeCount).IsEqualTo(1);
             }
@@ -116,14 +134,18 @@ public sealed class PartitionedRecordLifetimeTests
             await Assert.That(lane.TryEnqueueForTest(accepted)).IsFalse();
             var dequeued = lane.TryReadMessage(out var message);
             if (dequeued)
+            {
                 message.ReleaseStorage();
+            }
             await Assert.That(dequeued).IsTrue();
             await Assert.That(acceptedMemory.DisposeCount).IsEqualTo(1);
         }
         finally
         {
             while (lane.TryReadMessage(out var remaining))
+            {
                 remaining.ReleaseStorage();
+            }
         }
     }
 
@@ -224,7 +246,9 @@ public sealed class PartitionedRecordLifetimeTests
             await Assert.That(messages[0].Value).IsEqualTo("original");
             await Assert.That(Encoding.UTF8.GetString(messages[0].Headers[0].Value.Span)).IsEqualTo("header");
             if (failHandler)
+            {
                 throw failure;
+            }
         }, new PartitionedProcessingOptions
         {
             Ordering = ordering,
@@ -241,15 +265,21 @@ public sealed class PartitionedRecordLifetimeTests
         {
             releaseHandler.TrySetResult();
             if (failHandler)
+            {
                 await Assert.That(async () => await run).Throws<InvalidOperationException>();
+            }
             else
+            {
                 await run;
+            }
         }
         await Assert.That(memory.DisposeCount).IsEqualTo(1);
         // Automatic completion may start before routing, or retire the startup
         // reservation while the first handler is queued. Both release all storage.
         if (reservation is not null)
+        {
             await Assert.That(reservation.Nodes).IsNull();
+        }
     }
 
     private static async IAsyncEnumerable<ConsumeBatch<string, string>> FetchStrings(
@@ -263,7 +293,9 @@ public sealed class PartitionedRecordLifetimeTests
         }
         fetchAdvanced.TrySetResult();
         if (keepOpen)
+        {
             await Task.Delay(Timeout.Infinite, cancellationToken);
+        }
     }
 
     [Test]
@@ -297,13 +329,19 @@ public sealed class PartitionedRecordLifetimeTests
             {
                 cancellationObserved.TrySetResult();
                 if (blockCallback)
+                {
                     releaseCallback.Wait();
+                }
             });
             handlerStarted.TrySetResult();
             if (ignoreCancellation)
+            {
                 await releaseHandler.Task;
+            }
             else
+            {
                 await releaseHandler.Task.WaitAsync(token);
+            }
             await Assert.That(Encoding.UTF8.GetString(message.Value.Span)).IsEqualTo("original");
         }, new PartitionedProcessingOptions
         {
@@ -416,9 +454,13 @@ public sealed class PartitionedRecordLifetimeTests
             await advanced.Task.WaitAsync(timeout.Token);
             await Assert.That(memory.DisposeCount).IsEqualTo(0);
             if (lost)
+            {
                 consumer.LoseFromCoordinator(partition);
+            }
             else
+            {
                 await consumer.RevokeFromCoordinatorAsync(partition).WaitAsync(timeout.Token);
+            }
             await memory.Disposed.Task.WaitAsync(timeout.Token);
             await Assert.That(memory.DisposeCount).IsEqualTo(1);
         }
@@ -449,7 +491,9 @@ public sealed class PartitionedRecordLifetimeTests
         }
         fetchAdvanced.TrySetResult();
         if (keepOpen)
+        {
             await Task.Delay(Timeout.Infinite, cancellationToken);
+        }
     }
 
     [Test]
@@ -478,7 +522,9 @@ public sealed class PartitionedRecordLifetimeTests
                 await firstStarted.Task.WaitAsync(timeout.Token);
             }
             using (second)
+            {
                 yield return new ConsumeBatch<BorrowedKey, ReadOnlyMemory<byte>>(second, new BorrowedKeyDeserializer(sameKeyFound), Serializers.RawBytes);
+            }
             advanced.TrySetResult();
         }
 
@@ -557,7 +603,9 @@ public sealed class PartitionedRecordLifetimeTests
             => new(result.Topic, result.Partition, result.Offset, result.Key, result.Value, result.Headers,
                 result.Timestamp.ToUnixTimeMilliseconds(), result.TimestampType, result.LeaderEpoch);
 
-        public void OnCommit(IReadOnlyList<TopicPartitionOffset> offsets) { }
+        public void OnCommit(IReadOnlyList<TopicPartitionOffset> offsets)
+        {
+        }
     }
 
     // Public so NSubstitute can construct the generic consumer proxy for this test key.
@@ -568,7 +616,9 @@ public sealed class PartitionedRecordLifetimeTests
         {
             var equal = Bytes.Span.SequenceEqual(other.Bytes.Span);
             if (equal)
+            {
                 sameKeyFound.TrySetResult();
+            }
             return equal;
         }
         public override bool Equals(object? obj) => obj is BorrowedKey other && Equals(other);
@@ -594,7 +644,10 @@ public sealed class PartitionedRecordLifetimeTests
         private readonly byte[] _bytes = "keyoriginalheader"u8.ToArray();
         public ReadOnlyMemory<byte> Memory => _bytes;
         public int DisposeCount;
-        public TaskCompletionSource Disposed { get; } = NewSignal();
+        public TaskCompletionSource Disposed
+        {
+            get;
+        } = NewSignal();
         public void Dispose()
         {
             Interlocked.Increment(ref DisposeCount);

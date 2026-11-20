@@ -29,7 +29,9 @@ internal static class AssociationValidation
         ArgumentException.ThrowIfNullOrWhiteSpace(request.ResourceType);
         ArgumentNullException.ThrowIfNull(request.Associations);
         if (request.Associations.Count == 0)
+        {
             throw new ArgumentException("At least one association is required.", nameof(request));
+        }
 
         for (var index = 0; index < request.Associations.Count; index++)
         {
@@ -54,15 +56,21 @@ internal static class AssociationValidation
     private static void ValidateTypes(IReadOnlyList<string>? associationTypes)
     {
         if (associationTypes is null)
+        {
             return;
+        }
 
         for (var index = 0; index < associationTypes.Count; index++)
+        {
             ArgumentException.ThrowIfNullOrWhiteSpace(associationTypes[index]);
+        }
     }
 
     private static void ValidateOptionalFilter(string? value, string paramName)
     {
         if (value is not null && string.IsNullOrWhiteSpace(value))
+        {
             throw new ArgumentException("Value cannot be empty or whitespace.", paramName);
+        }
     }
 }

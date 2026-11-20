@@ -38,7 +38,10 @@ public sealed class OutboxRelationalMetricsTests
         {
             DataSource = $"{database.Hostname},{database.GetMappedPublicPort(1433)}",
             InitialCatalog = "outbox_metrics",
-            UserID = "sa", Password = password, TrustServerCertificate = true, Pooling = false
+            UserID = "sa",
+            Password = password,
+            TrustServerCertificate = true,
+            Pooling = false
         };
         var commands = new Commands();
         var options = new DbContextOptionsBuilder<Context>().UseSqlServer(connection.ConnectionString)
@@ -56,7 +59,9 @@ public sealed class OutboxRelationalMetricsTests
 
         var oldest = new DateTimeOffset(2026, 9, 1, 8, 0, 0, TimeSpan.Zero);
         foreach (var timestamp in new[] { oldest.AddHours(2), oldest, oldest.AddHours(1) })
+        {
             context.AddOutboxMessage(new OutboxMessage { MessageId = Guid.NewGuid(), Bucket = 0, Topic = "metrics", CreatedAtUtc = timestamp });
+        }
         await context.SaveChangesAsync(timeout.Token);
         commands.Count = 0;
         var sample = await store.GetPendingMetricsAsync(timeout.Token);

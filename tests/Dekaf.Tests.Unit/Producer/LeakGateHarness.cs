@@ -25,9 +25,13 @@ internal static class LeakGateHarness
         Exception? failWith = null)
     {
         if (failWith is not null)
+        {
             batch.Fail(failWith);
+        }
         else
+        {
             batch.CompleteSend(offset, DateTimeOffset.UtcNow);
+        }
 
         accumulator.ReleaseBatchMemory(batch);
         accumulator.OnBatchExitsPipeline(batch);
@@ -45,7 +49,9 @@ internal static class LeakGateHarness
         int failEveryNthBatch)
     {
         if (!accumulator.TryDrainBatch(out var batch))
+        {
             return false;
+        }
 
         var sequence = Interlocked.Increment(ref counters.DrainSequence);
         var recordCount = batch!.RecordBatch.Records.Count;
@@ -91,14 +97,22 @@ internal static class LeakGateHarness
             }
 
             if (drained)
+            {
                 continue;
+            }
             if (counters.StopRequested)
+            {
                 break;
+            }
 
             if (waitMode == DrainWaitMode.WakeupSignal)
+            {
                 await accumulator.WaitForWakeupAsync(5);
+            }
             else
+            {
                 await Task.Delay(1, cancellationToken);
+            }
         }
     }
 
@@ -156,16 +170,24 @@ internal static class LeakGateHarness
                 }
 
                 if (!appendTask.IsCompleted)
+                {
                     reservationWaitObserved?.TrySetResult();
+                }
 
                 var accepted = await appendTask;
                 if (!accepted)
+                {
                     break;
+                }
 
                 if (completionTask is not null)
+                {
                     completionTasks.Add(completionTask);
+                }
                 else
+                {
                     acceptedFireAndForget++;
+                }
 
                 acceptedTotal++;
                 Interlocked.Increment(ref counters.AcceptedTotal);

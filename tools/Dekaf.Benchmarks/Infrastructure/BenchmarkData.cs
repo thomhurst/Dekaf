@@ -14,7 +14,9 @@ public static class BenchmarkData
     {
         var keys = new string[count];
         for (var i = 0; i < count; i++)
+        {
             keys[i] = $"key-{i}";
+        }
         return keys;
     }
 }

@@ -1,6 +1,6 @@
+using System.Collections.Concurrent;
 using BenchmarkDotNet.Attributes;
 using BenchmarkDotNet.Columns;
-using System.Collections.Concurrent;
 using Dekaf.Consumer;
 using Dekaf.Networking;
 using Dekaf.Producer;
@@ -22,7 +22,10 @@ public class ObjectPoolMigrationBenchmarks
     private TrackedPool _tracked = null!;
 
     [Params(32, 128, 256)]
-    public int Capacity { get; set; }
+    public int Capacity
+    {
+        get; set;
+    }
 
     [GlobalSetup]
     public void Setup()
@@ -72,7 +75,9 @@ public class ObjectPoolMigrationBenchmarks
         public PooledItem Rent()
         {
             if (!_items.TryPop(out var item))
+            {
                 return new PooledItem();
+            }
 
             Interlocked.Decrement(ref _count);
             return item;
@@ -95,7 +100,9 @@ public class ObjectPoolMigrationBenchmarks
     {
         protected override PooledItem Create() => new();
 
-        protected override void Reset(PooledItem item) { }
+        protected override void Reset(PooledItem item)
+        {
+        }
     }
 
     private readonly struct PooledItemPolicy : IPooledObjectPolicy<PooledItem>

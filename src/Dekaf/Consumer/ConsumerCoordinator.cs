@@ -261,13 +261,25 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     {
         public static readonly SubscriptionState Empty = new(null, null, 0, 0);
 
-        public StringSet? Topics { get; } = topics;
+        public StringSet? Topics
+        {
+            get;
+        } = topics;
 
-        public string? Regex { get; } = regex;
+        public string? Regex
+        {
+            get;
+        } = regex;
 
-        public int Generation { get; } = generation;
+        public int Generation
+        {
+            get;
+        } = generation;
 
-        public int Version { get; } = version;
+        public int Version
+        {
+            get;
+        } = version;
     }
     private IReadOnlyList<ConsumerGroupHeartbeatTopicPartitions>? _cachedOwnedTopicPartitions;
     private int _cachedOwnedTopicPartitionsVersion = -1;
@@ -310,8 +322,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         Action<IReadOnlyList<TopicPartition>>? onPartitionsRevoked,
         Action<IReadOnlyList<TopicPartition>>? onPartitionsRevoking,
         Func<IReadOnlyList<TopicPartition>, CancellationToken, ValueTask>? onPartitionsRevokedAsync = null,
-        Func<IEnumerable<TopicPartition>, IEnumerable<TopicPartition>, long, IRebalanceConsumerScope>?
-            createRebalanceConsumerScope = null,
+        Func<IEnumerable<TopicPartition>, IEnumerable<TopicPartition>, long, IRebalanceConsumerScope>? createRebalanceConsumerScope = null,
         Action<IReadOnlyList<TopicPartition>, long>? onPartitionsRevokingAt = null)
     {
         _options = options;
@@ -408,7 +419,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     private void RecordPollIfLossNotificationComplete(long timestamp)
     {
         if (Volatile.Read(ref _maxPollLossNotificationPending) != 0)
+        {
             return;
+        }
 
         RecordPoll(timestamp);
     }
@@ -417,13 +430,17 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     {
         var expiration = await TryExpireMaxPollIntervalAsync(cancellationToken).ConfigureAwait(false);
         if (expiration.Expired)
+        {
             await CompleteMaxPollExpirationAsync(expiration.Lost).ConfigureAwait(false);
+        }
 
         // Another overdue foreground poll may have won _lock and started loss callbacks
         // after this call passed RecordPollAsync's initial guard. Its expired generation
         // must remain unchanged until those callbacks finish.
         if (Volatile.Read(ref _maxPollLossNotificationPending) != 0)
+        {
             return;
+        }
 
         cancellationToken.ThrowIfCancellationRequested();
         // Advance only after loss callbacks so prefetch cannot rejoin during notification.
@@ -465,7 +482,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
         if (Volatile.Read(ref _maxPollExpiredAtPollVersion) < 0
             && !IsCurrentPollGenerationExpired())
+        {
             return;
+        }
 
         throw new GroupException(
             ErrorCode.FencedMemberEpoch,
@@ -525,7 +544,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     private void ThrowIfMembershipChangedSince(int membershipVersion)
     {
         if (Volatile.Read(ref _membershipVersion) == membershipVersion)
+        {
             return;
+        }
 
         throw new GroupException(
             ErrorCode.FencedMemberEpoch,
@@ -541,21 +562,20 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     private bool IsCurrentPollGenerationExpired(long timestamp)
     {
         if (Volatile.Read(ref _maxPollExpiredAtPollVersion) == Volatile.Read(ref _pollVersion))
+        {
             return true;
+        }
 
         if (Volatile.Read(ref _foregroundPollActivityCount) != 0)
+        {
             return false;
+        }
 
         return _state == CoordinatorState.Stable
             && timestamp - Volatile.Read(ref _lastPollTimestamp) >= _maxPollIntervalStopwatchTicks;
     }
 
-    internal async ValueTask<(
-        TopicPartitionSet Assignment,
-        int Version,
-        HashSet<TopicPartition>? Revocations,
-        HashSet<TopicPartition> NewlyExpandedPartitions,
-        Dictionary<TopicPartition, long>? RevocationSequences)>
+    internal async ValueTask<(TopicPartitionSet Assignment, int Version, HashSet<TopicPartition>? Revocations, HashSet<TopicPartition> NewlyExpandedPartitions, Dictionary<TopicPartition, long>? RevocationSequences)>
         GetAssignmentSnapshotAndDrainRevocationsAsync(CancellationToken cancellationToken)
     {
         while (true)
@@ -607,7 +627,10 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     /// generation was taken but which was not enqueued yet stays pending. Read by the single
     /// drainer (the owner's assignment sync, under its assignment lock) right after the drain.
     /// </summary>
-    internal IReadOnlyDictionary<TopicPartition, long>? DrainedRevocationGenerations { get; private set; }
+    internal IReadOnlyDictionary<TopicPartition, long>? DrainedRevocationGenerations
+    {
+        get; private set;
+    }
 
     internal void RestoreRevokedPartitionsSinceLastSync(HashSet<TopicPartition> revoked)
     {
@@ -627,7 +650,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         int assignmentVersion)
     {
         if (initializedPartitions.Count == 0)
+        {
             return;
+        }
 
         lock (_assignmentStateLock)
         {
@@ -635,20 +660,26 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             // A newer assignment or classification must not be acknowledged by work that
             // used an older snapshot; the next assignment-sync pass will apply it instead.
             if (Volatile.Read(ref _assignmentVersion) != assignmentVersion)
+            {
                 return;
+            }
 
             HashSet<TopicPartition>? remaining = null;
             foreach (var partition in initializedPartitions)
             {
                 if (!_newlyExpandedPartitions.Contains(partition))
+                {
                     continue;
+                }
 
                 remaining ??= new HashSet<TopicPartition>(_newlyExpandedPartitions);
                 remaining.Remove(partition);
             }
 
             if (remaining is not null)
+            {
                 _newlyExpandedPartitions = remaining;
+            }
         }
     }
 
@@ -682,10 +713,14 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             // fence on the join alone would let a commit made before this sync send those stale
             // offsets under the new epoch.
             if (_state == CoordinatorState.Stable)
+            {
                 Volatile.Write(ref _membershipFenced, 0);
+            }
 
             if (Volatile.Read(ref _maxPollExpiredAtPollVersion) != Volatile.Read(ref _pollVersion))
+            {
                 Volatile.Write(ref _maxPollExpiredAtPollVersion, -1);
+            }
 
             return true;
         }
@@ -717,7 +752,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         // Heartbeat expiry invokes user callbacks outside _lock. Keep its poll generation
         // unchanged so EnsureActiveGroup cannot rejoin until notification completes.
         if (Volatile.Read(ref _maxPollLossNotificationPending) != 0)
+        {
             return true;
+        }
 
         if (Volatile.Read(ref _foregroundPollActivityCount) != 0)
         {
@@ -728,7 +765,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         // One timestamp read serves the expiry check, the poll record, and the caller.
         timestamp = Stopwatch.GetTimestamp();
         if (IsCurrentPollGenerationExpired(timestamp))
+        {
             return false;
+        }
 
         RecordPollIfLossNotificationComplete(timestamp);
         return true;
@@ -781,7 +820,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         ArgumentNullException.ThrowIfNull(listener);
 
         if (Interlocked.CompareExchange(ref _runtimeRebalanceListener, listener, null) is not null)
+        {
             throw new InvalidOperationException("A partitioned runtime rebalance listener is already registered.");
+        }
 
         return new RuntimeRebalanceListenerRegistration(this, listener);
     }
@@ -800,7 +841,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         public void Dispose()
         {
             if (Interlocked.Exchange(ref _disposed, 1) == 0)
+            {
                 coordinator.UnregisterRuntimeRebalanceListener(listener);
+            }
         }
     }
 
@@ -812,14 +855,18 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         foreach (var kvp in topicGroups)
         {
             if (kvp.Value.Count != 0)
+            {
                 continue;
+            }
 
             emptyTopics ??= new string[topicGroups.Count];
             emptyTopics[emptyTopicCount++] = kvp.Key;
         }
 
         if (emptyTopics is null)
+        {
             return;
+        }
 
         for (var i = 0; i < emptyTopicCount; i++)
         {
@@ -880,7 +927,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     internal void RequestLeaveGroup(bool holdUntilReleased = false)
     {
         if (string.IsNullOrEmpty(_options.GroupId))
+        {
             return;
+        }
 
         // Before reading _membershipRequested: a join either sees this flag or is seen below.
         Interlocked.Exchange(ref _leaveRequested, 1);
@@ -898,34 +947,44 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         // Stops a heartbeat response in flight from publishing (it is validated under the state
         // lock); the leave sets it again under that lock, after any join in flight completes.
         if (_state == CoordinatorState.Stable)
+        {
             _state = CoordinatorState.Unjoined;
+        }
 
         lock (_leaveGate)
         {
             // A leave still running covers this request: no join can start a new membership
             // until it has completed (see WaitForPendingLeaveAsync).
             if (!_pendingLeave.IsCompleted)
+            {
                 return;
+            }
 
             // A leave started from inside a rebalance callback must not inherit the callback's
             // drain scope, or it would skip the callbacks it has to deliver.
             var restoreFlow = !ExecutionContext.IsFlowSuppressed();
             AsyncFlowControl flowControl = default;
             if (restoreFlow)
+            {
                 flowControl = ExecutionContext.SuppressFlow();
+            }
             try
             {
                 Volatile.Write(ref _leaveInProgress, 1);
                 var ownerReady = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
                 if (!holdUntilReleased)
+                {
                     ownerReady.TrySetResult();
+                }
                 Volatile.Write(ref _leaveOwnerReady, ownerReady);
                 Volatile.Write(ref _pendingLeave, Task.Run(() => LeaveGroupForUnsubscribeAsync(ownerReady.Task)));
             }
             finally
             {
                 if (restoreFlow)
+                {
                     flowControl.Undo();
+                }
             }
         }
     }
@@ -959,7 +1018,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     internal ValueTask WaitForLeaveBeforeCommitAsync(CancellationToken cancellationToken)
     {
         if (Volatile.Read(ref _leaveInProgress) == 0 || IsInsideOwnRebalanceCallback())
+        {
             return default;
+        }
 
         var pendingLeave = Volatile.Read(ref _pendingLeave);
         return pendingLeave.IsCompleted
@@ -985,11 +1046,15 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     private async ValueTask<bool> WaitForPendingLeaveAsync(CancellationToken cancellationToken)
     {
         if (Volatile.Read(ref _leaveRequested) != 0)
+        {
             return false;
+        }
 
         var pendingLeave = Volatile.Read(ref _pendingLeave);
         if (pendingLeave.IsCompleted)
+        {
             return true;
+        }
 
         await pendingLeave.WaitAsync(cancellationToken).ConfigureAwait(false);
 
@@ -1089,7 +1154,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             _unresolvedAssignment = null;
             _unresolvedResolvedNames = null;
             if (owned.Count == 0)
+            {
                 return;
+            }
 
             Interlocked.Increment(ref _assignmentVersion);
             EnqueuePendingRebalanceCallback(
@@ -1140,11 +1207,15 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         CancellationToken cancellationToken)
     {
         if (Volatile.Read(ref _disposed) != 0)
+        {
             throw new ObjectDisposedException(nameof(ConsumerCoordinator));
+        }
 
 
         if (string.IsNullOrEmpty(_options.GroupId))
+        {
             return;
+        }
 
         ThrowIfFatalHeartbeatException();
 
@@ -1179,7 +1250,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             {
                 // Same topics, possibly read at a newer generation: requests now answer it.
                 if (subscriptionGeneration > subscription.Generation)
+                {
                     UpdateSubscription(topics, subscribedTopicRegex, subscriptionGeneration);
+                }
                 return;
             }
 
@@ -1263,21 +1336,29 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     {
         var exception = Interlocked.Exchange(ref _fatalHeartbeatException, null);
         if (exception is not null)
+        {
             throw exception;
+        }
     }
 
     private static bool SetEquals(StringSet? current, StringSet next)
     {
         if (ReferenceEquals(current, next))
+        {
             return true;
+        }
 
         if (current is null || current.Count != next.Count)
+        {
             return false;
+        }
 
         foreach (var topic in next)
         {
             if (!current.Contains(topic))
+            {
                 return false;
+            }
         }
 
         return true;
@@ -1305,11 +1386,16 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     private void MarkSubscriptionSent(int version, int lastSent)
     {
         if (version != lastSent)
+        {
             Interlocked.CompareExchange(ref _lastSentSubscriptionVersion, version, lastSent);
+        }
     }
 
     // Runs inside UpdateSubscription once the new topics are visible to heartbeat requests.
-    internal Action? AfterSubscriptionTopicsUpdatedForTest { get; set; }
+    internal Action? AfterSubscriptionTopicsUpdatedForTest
+    {
+        get; set;
+    }
 
     internal (int Generation, bool Changed, StringSet? Topics) ReadSubscriptionForRequestForTest()
     {
@@ -1335,11 +1421,15 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         {
             var current = _subscriptionState;
             if (subscriptionGeneration < current.Generation)
+            {
                 return;
+            }
 
             var matches = SubscriptionMatches(current, topics, subscribedTopicRegex);
             if (matches && subscriptionGeneration == current.Generation)
+            {
                 return;
+            }
 
             var next = matches
                 ? new SubscriptionState(current.Topics, current.Regex, subscriptionGeneration, current.Version)
@@ -1347,7 +1437,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             if (ReferenceEquals(Interlocked.CompareExchange(ref _subscriptionState, next, current), current))
             {
                 if (!matches)
+                {
                     AfterSubscriptionTopicsUpdatedForTest?.Invoke();
+                }
                 return;
             }
         }
@@ -1433,7 +1525,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                     errorCode == ErrorCode.CoordinatorLoadInProgress)
                 {
                     if (attempt == maxRetries - 1)
+                    {
                         break;
+                    }
 
                     var retryDelayMs = CalculateRequestRetryBackoff(attempt + 1);
                     LogCoordinatorNotAvailableRetry(attempt + 1, maxRetries, retryDelayMs);
@@ -1445,7 +1539,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                 if (errorCode != ErrorCode.None)
                 {
                     if (errorCode == ErrorCode.GroupAuthorizationFailed)
+                    {
                         throw KafkaException.FromErrorCode(errorCode, $"FindCoordinator failed: {errorCode}");
+                    }
 
                     throw new Errors.GroupException(errorCode, $"FindCoordinator failed: {errorCode}")
                     {
@@ -1487,7 +1583,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                         .ConfigureAwait(false);
                     var refreshedBrokers = _metadataManager.Metadata.GetBrokers();
                     if (refreshedBrokers.Count > 0)
+                    {
                         brokers = refreshedBrokers;
+                    }
                 }
 
                 var retryDelayMs = CalculateRequestRetryBackoff(attempt + 1);
@@ -1561,7 +1659,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             if (Volatile.Read(ref _closing) != 0
                 || Volatile.Read(ref _disposed) != 0
                 || Volatile.Read(ref _leaveRequested) != 0)
+            {
                 return;
+            }
 
             oldCts = _heartbeatCts;
             oldTask = _heartbeatTask;
@@ -1731,7 +1831,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             for (var index = 0; index < additionalListeners.Length; index++)
             {
                 if (position++ < completed)
+                {
                     continue;
+                }
 
                 var context = BeginAssignedCallback(assignedCallback);
                 try
@@ -1782,7 +1884,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     private AssignedCallbackContext? BeginAssignedCallback(AssignedCallbackInfo? assignedCallback)
     {
         if (assignedCallback is null)
+        {
             return null;
+        }
 
         var context = new AssignedCallbackContext(
             this,
@@ -1794,7 +1898,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         // change since the assignment was published starts the call with staging ended.
         Interlocked.Exchange(ref _currentAssignedCallback, context);
         if (assignedCallback.SubscriptionGeneration != Volatile.Read(ref _subscriptionGeneration))
+        {
             context.Deactivate();
+        }
         Interlocked.Increment(ref _assignedCallbacksRunning);
         return context;
     }
@@ -1802,7 +1908,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     private void EndAssignedCallback(AssignedCallbackContext? context)
     {
         if (context is null)
+        {
             return;
+        }
 
         context.Deactivate();
         Interlocked.CompareExchange(ref _currentAssignedCallback, null, context);
@@ -1816,11 +1924,20 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         long revocationSequence,
         int subscriptionGeneration)
     {
-        public HashSet<TopicPartition> Partitions { get; } = partitions;
+        public HashSet<TopicPartition> Partitions
+        {
+            get;
+        } = partitions;
 
-        public long RevocationSequence { get; } = revocationSequence;
+        public long RevocationSequence
+        {
+            get;
+        } = revocationSequence;
 
-        public int SubscriptionGeneration { get; } = subscriptionGeneration;
+        public int SubscriptionGeneration
+        {
+            get;
+        } = subscriptionGeneration;
     }
 
     private sealed record HeartbeatCallbackFailure(Exception Exception, int JoinStateVersion);
@@ -1833,14 +1950,23 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     /// </summary>
     private sealed class PendingRebalanceCallback
     {
-        public IReadOnlyList<TopicPartition>? Lost { get; init; }
+        public IReadOnlyList<TopicPartition>? Lost
+        {
+            get; init;
+        }
 
-        public ConsumerHeartbeatResult Deferred { get; init; }
+        public ConsumerHeartbeatResult Deferred
+        {
+            get; init;
+        }
 
         // The published assignment when this notification arose, for a consumer-aware
         // listener's scope. Assignment sets are replaced, never mutated, so the reference is a
         // stable snapshot.
-        public required HashSet<TopicPartition> Assignment { get; init; }
+        public required HashSet<TopicPartition> Assignment
+        {
+            get; init;
+        }
 
         // _revocationSequence when this notification was queued, after its own revocations were
         // recorded, so only later revocations or losses make its seeks stale. Set under
@@ -1855,7 +1981,10 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
         public bool RevokedDelivered;
 
-        public IReadOnlyList<ConsumerGroupHeartbeatTopicPartitions>? PreviousOwnedTopicPartitions { get; init; }
+        public IReadOnlyList<ConsumerGroupHeartbeatTopicPartitions>? PreviousOwnedTopicPartitions
+        {
+            get; init;
+        }
         public int ReconciliationCompleted;
 
         // Set when the internal revocation commit starts, so it runs once whichever drain
@@ -1880,7 +2009,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     private void ThrowIfCallbackDeliveryStopped(CancellationToken cancellationToken)
     {
         if (Volatile.Read(ref _callbackDeliveryClosed) != 0)
+        {
             throw new OperationCanceledException("The consumer coordinator has been disposed.");
+        }
 
         cancellationToken.ThrowIfCancellationRequested();
     }
@@ -1895,7 +2026,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             callback.RevocationSequence = Volatile.Read(ref _revocationSequence);
             // Kept when the publisher captured it with the assignment it published.
             if (callback.SubscriptionGeneration == -1)
+            {
                 callback.SubscriptionGeneration = CurrentPublicationSubscriptionGeneration();
+            }
             if (!reserved)
             {
                 Interlocked.Increment(ref _pendingRebalanceCallbackCount);
@@ -1914,13 +2047,19 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     private bool HasQueuedRebalanceCallbacks()
     {
         if (!_pendingRebalanceCallbacks.IsEmpty)
+        {
             return true;
+        }
 
         if (Volatile.Read(ref _pendingRebalanceCallbackCount) == 0)
+        {
             return false;
+        }
 
         lock (_pendingPublishLock)
+        {
             return !_pendingRebalanceCallbacks.IsEmpty;
+        }
     }
 
     /// <summary>
@@ -1931,18 +2070,24 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     private void ReleaseReservedRebalanceCallbacks()
     {
         if (_pendingRebalanceCallbacks.IsEmpty)
+        {
             return;
+        }
 
         foreach (var pending in _pendingRebalanceCallbacks)
         {
             if (Volatile.Read(ref pending.PollVisibility) != 0)
+            {
                 continue;
+            }
 
             // Count first, then make the entry unowned. If a drainer dequeued it (or another
             // release counted it) in between, take the count back.
             Interlocked.Increment(ref _pendingRebalanceCallbackCount);
             if (Interlocked.CompareExchange(ref pending.PollVisibility, 1, 0) != 0)
+            {
                 Interlocked.Decrement(ref _pendingRebalanceCallbackCount);
+            }
         }
     }
 
@@ -1972,21 +2117,27 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             // it out is brief. Nothing on the poll path reads this; a commit reads it once.
             var version = Volatile.Read(ref _membershipVersion);
             if ((version & 1) == 0)
+            {
                 return version;
+            }
 
             // A commit started by a hook the publication itself runs, on this thread or on one
             // that hook waits for, cannot wait for the publication to end. It gets the version
             // from before the publication instead, so it is rejected as a commit from the
             // previous membership: never a deadlock, never offsets sent under the wrong one.
             if (ReferenceEquals(t_publishingCoordinator, this))
+            {
                 return version - 1;
+            }
 
             var waitStarted = Stopwatch.GetTimestamp();
             var spinner = new SpinWait();
             while (((version = Volatile.Read(ref _membershipVersion)) & 1) != 0)
             {
                 if (Stopwatch.GetTimestamp() - waitStarted > MembershipPublicationWaitTicks)
+                {
                     return version - 1;
+                }
 
                 spinner.SpinOnce();
             }
@@ -2022,7 +2173,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         int? ownershipMemberEpoch = null)
     {
         if (string.IsNullOrEmpty(_options.GroupId))
+        {
             return;
+        }
 
         // The version was read before the fence flag: FenceMembership sets the flag before it
         // advances the version, so a commit that passes the check below under a membership that
@@ -2048,7 +2201,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                 ThrowIfMaxPollIntervalExpired();
 
                 if (_coordinatorId < 0)
+                {
                     await FindCoordinatorAsync(cancellationToken).ConfigureAwait(false);
+                }
 
                 var coordinatorId = _coordinatorId;
                 if (coordinatorId < 0)
@@ -2115,7 +2270,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
                 ReadCommitIdentity(membershipVersion, out var commitMemberId, out var commitMemberEpoch);
                 if (ownershipMemberEpoch is { } ownershipEpoch)
+                {
                     commitMemberEpoch = ownershipEpoch;
+                }
                 var request = new OffsetCommitRequest
                 {
                     GroupId = _options.GroupId!,
@@ -2267,7 +2424,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         CancellationToken cancellationToken)
     {
         if (string.IsNullOrEmpty(_options.GroupId))
+        {
             return new Dictionary<TopicPartition, TopicPartitionOffset>();
+        }
 
         var configuredTimeout = TimeSpan.FromMilliseconds(_options.RequestTimeoutMs);
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -2295,7 +2454,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                             // A retried pass reports the partitions its own response found unstable.
                             unstablePartitions?.Clear();
                             if (_coordinatorId < 0)
+                            {
                                 await FindCoordinatorCoreAsync(retryOnFailure, operationToken).ConfigureAwait(false);
+                            }
 
                             var coordinatorId = _coordinatorId;
                             if (coordinatorId < 0)
@@ -2424,7 +2585,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                                         if (partition.ErrorCode != ErrorCode.None)
                                         {
                                             if (TryDeferUnstablePartition(unstablePartitions, topic.Name, partition))
+                                            {
                                                 continue;
+                                            }
                                             throw CreatePartitionFetchException(topic.Name, partition);
                                         }
 
@@ -2478,7 +2641,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                                             if (partition.ErrorCode != ErrorCode.None)
                                             {
                                                 if (TryDeferUnstablePartition(unstablePartitions, topicName, partition))
+                                                {
                                                     continue;
+                                                }
                                                 throw CreatePartitionFetchException(topicName, partition);
                                             }
 
@@ -2539,14 +2704,18 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                         // the assignment refresher's coalescing, backoff and disposal drain; a slow
                         // refresh must not block delivery from already positioned partitions.
                         if (ex is not KafkaException failure || ShouldRefreshMetadataForGroupRetry(failure))
+                        {
                             _unresolvedRefresher.Request();
+                        }
 
                         // No recovery callback runs in single-attempt mode. Preserve its rejoin
                         // signal, so membership recovery still happens outside the assignment lock.
                         if (_state == CoordinatorState.Unjoined
                             && _subscriptionState.Topics is not null
                             && Volatile.Read(ref _leaveRequested) == 0)
+                        {
                             throw new GroupRejoinRequiredException(_options.GroupId);
+                        }
 
                         // Rediscover on the next poll, without a network wait in this failure pass.
                         if (ex is KafkaException
@@ -2555,7 +2724,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                             }
                             || TransportFailureClassifier.IsSocketLevelFailure(ex)
                             || TransportFailureClassifier.IsClientRoutingFailure(ex))
+                        {
                             _coordinatorId = -1;
+                        }
                         throw;
                     }
                     catch (GroupException ex) when (retryOnFailure && ex.ErrorCode == ErrorCode.UnstableOffsetCommit)
@@ -2575,11 +2746,12 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             finally
             {
                 if (fetchLockHeld)
+                {
                     _fetchLock.Release();
+                }
             }
         }
-        catch (OperationCanceledException ex) when (
-            !cancellationToken.IsCancellationRequested
+        catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested
             && timeout.IsCancellationRequested)
         {
             // A retried fetch reports the failure it was still hitting as the cancellation's cause.
@@ -2596,7 +2768,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         OffsetFetchResponsePartition partition)
     {
         if (unstablePartitions is null || partition.ErrorCode != ErrorCode.UnstableOffsetCommit)
+        {
             return false;
+        }
 
         unstablePartitions.Add(new TopicPartition(topic, partition.PartitionIndex));
         return true;
@@ -2621,7 +2795,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         {
             // A rejoin delivers rebalance callbacks; the caller cannot run them where it is.
             if (!rejoinOnMembershipLoss)
+            {
                 throw new GroupRejoinRequiredException(_options.GroupId);
+            }
 
             // Under the generation that subscription was read at: if the owner has changed it
             // since, this rejoin answers the old one and its assignments do not stage.
@@ -2721,11 +2897,13 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         _state = CoordinatorState.Unjoined;
         var lost = ClearAssignment();
         if (lost is not null)
+        {
             EnqueuePendingRebalanceCallback(new PendingRebalanceCallback
             {
                 Lost = lost,
                 Assignment = _assignedPartitions
             });
+        }
     }
 
     private IReadOnlyList<TopicPartition>? ClearAssignment()
@@ -2754,7 +2932,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         _unresolvedRefresher.Reset();
 
         if (revoked is not null)
+        {
             _onPartitionsRevoked?.Invoke(revoked);
+        }
 
         return revoked;
     }
@@ -2783,7 +2963,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             // it runs the commit and completes it, so assignment sync waits for it.
             ReleaseReservedRebalanceCallbacks();
             if (rebalanceListenerLockHeld)
+            {
                 _rebalanceListenerLock.Release();
+            }
         }
     }
 
@@ -2844,14 +3026,20 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             assignedCallback,
             cancellationToken);
 
-    internal Telemetry.ClientTelemetryMetricCollector? TelemetryMetricCollector { get; init; }
+    internal Telemetry.ClientTelemetryMetricCollector? TelemetryMetricCollector
+    {
+        get; init;
+    }
 
     /// <summary>
     /// True when the owner (KafkaConsumer) keeps per-partition state for the assignment and
     /// acknowledges each synchronization through <see cref="AcknowledgeAssignmentSync"/>. A fence's
     /// commit block then lasts until that acknowledgement; otherwise a successful rejoin lifts it.
     /// </summary>
-    internal bool SynchronizesAssignment { get; init; }
+    internal bool SynchronizesAssignment
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The partitions revoked or lost since the owner last synchronized its assignment, without
@@ -2860,12 +3048,16 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     internal HashSet<TopicPartition>? PeekPartitionsRevokedSinceLastSync()
     {
         if (_revokedPartitionsSinceLastSync.IsEmpty)
+        {
             return null;
+        }
 
         lock (_assignmentStateLock)
+        {
             return _revokedPartitionsSinceLastSync.IsEmpty
                 ? null
                 : new HashSet<TopicPartition>(_revokedPartitionsSinceLastSync.Select(static entry => entry.Partition));
+        }
     }
     private Telemetry.StandardClientTelemetryMetrics? StandardTelemetryMetrics => TelemetryMetricCollector?.StandardMetrics;
 
@@ -2931,7 +3123,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                     if (_state != CoordinatorState.Stable ||
                         Volatile.Read(ref _maxPollExpirationVersion) != maxPollExpirationVersion ||
                         IsCurrentPollGenerationExpired())
+                    {
                         return default;
+                    }
 
                     memberIdSnapshot = _memberId;
                     memberEpochSnapshot = _generationId;
@@ -2972,7 +3166,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             // Thread-safety: _memberId is only null on the initial join path (protected by _lock)
             // or after ResetMemberState() which also transitions to Unjoined before any heartbeat loop restart.
             if (memberIdSnapshot is null && version >= 1 && !discardIfMembershipChanged)
+            {
                 _memberId = memberIdSnapshot = Guid.NewGuid().ToString();
+            }
 
             var memberId = memberIdSnapshot ?? string.Empty;
 
@@ -3008,8 +3204,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             // of null ("unchanged"), which would leave the broker on the old subscription.
             // Always send topics on initial/re-join — KIP-848 requires SubscribedTopicNames to be
             // non-null when joining.
-            var (stamp, subscriptionChanged, currentSubscribedTopicRegex, currentSubscribedTopics,
-                    subscriptionVersion, lastSentVersion) =
+            var (stamp, subscriptionChanged, currentSubscribedTopicRegex, currentSubscribedTopics, subscriptionVersion, lastSentVersion) =
                 ReadSubscriptionForRequest();
             requestSubscriptionGeneration = stamp;
             sentSubscriptionVersion = subscriptionVersion;
@@ -3047,9 +3242,13 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             // accepts it, and waiting for the locks can be cancelled, so it stays pending until
             // then (#4162).
             if (discardIfMembershipChanged && response.Assignment is not null)
+            {
                 fullRequestPendingSnapshot = Interlocked.Increment(ref _heartbeatFullRequestPending);
+            }
             else
+            {
                 Interlocked.CompareExchange(ref _heartbeatFullRequestPending, 0, fullRequestPendingSnapshot);
+            }
         }
 
         // The broker sends an assignment only when it changes. One that names a topic this
@@ -3086,7 +3285,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
              (response.MemberId is { } joinedMemberId && joinedMemberId != memberIdSnapshot));
         var membershipChange = publishingMembership ? BeginMembershipChange() : default;
         if (joinSucceeded && !publishingMembership)
+        {
             Interlocked.Increment(ref _joinStateVersion);
+        }
 
         // A steady heartbeat reports a fence without waiting for the locks, so stopping the loop
         // cannot discard it: the loop applies it under the state lock, checked against the
@@ -3118,7 +3319,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             {
                 // Identity and assignment are published (or processing failed): even again.
                 if (publishingMembership)
+                {
                     membershipChange.Dispose();
+                }
             }
         }
 
@@ -3140,7 +3343,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                         _joinStateVersion != joinStateVersion ||
                         Volatile.Read(ref _maxPollExpirationVersion) != maxPollExpirationVersion ||
                         IsCurrentPollGenerationExpired())
+                    {
                         return default;
+                    }
 
                     if (response.Assignment is not null)
                     {
@@ -3158,10 +3363,14 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                         rebalanceStarted = _deferredHeartbeatAssignmentStarted;
                     }
                     if (canPublish)
+                    {
                         _deferredHeartbeatAssignment = null;
+                    }
 
                     if (!ReferenceEquals(response.Assignment, assignment))
+                    {
                         response = WithAssignment(response, assignment);
+                    }
                     result = ProcessConsumerGroupHeartbeatResponse(
                         response,
                         isInitial,
@@ -3210,7 +3419,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         {
             await InvokePendingRebalanceCallbacksCoreAsync(cancellationToken).ConfigureAwait(false);
             if (result.AssignmentChanged)
+            {
                 StandardTelemetryMetrics?.RebalanceCompleted(rebalanceStarted);
+            }
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -3233,7 +3444,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         ConsumerGroupHeartbeatAssignment? assignment)
     {
         if (assignment is null)
+        {
             return default;
+        }
 
         Interlocked.Increment(ref _assignmentProcessingCount);
         return new AssignmentProcessingScope(this);
@@ -3248,7 +3461,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         public void Dispose()
         {
             if (_coordinator is { } coordinator)
+            {
                 Interlocked.Decrement(ref coordinator._assignmentProcessingCount);
+            }
         }
     }
 
@@ -3270,18 +3485,26 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         Volatile.Write(ref _lastHeartbeatFailure, null);
 
         if (!isInitial && ownedTopicPartitions is not null)
+        {
             Volatile.Write(ref _sentOwnedTopicPartitionsVersion, assignmentVersion);
+        }
 
         if (response.MemberId is not null)
+        {
             _memberId = response.MemberId;
+        }
 
         if (response.HeartbeatIntervalMs > 0)
+        {
             _heartbeatIntervalMs = response.HeartbeatIntervalMs;
+        }
 
         try
         {
             if (response.Assignment is not null)
+            {
                 return ProcessConsumerGroupAssignment(response.Assignment, requestSubscriptionGeneration);
+            }
 
             return default;
         }
@@ -3347,7 +3570,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         HashSet<TopicPartition> assignedPartitions)
     {
         if (assignedPartitions.Count == 0)
+        {
             return null;
+        }
 
         var byTopic = new Dictionary<string, List<int>>();
         foreach (var tp in assignedPartitions)
@@ -3365,7 +3590,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         {
             var topicInfo = _metadataManager.Metadata.GetTopic(topicName);
             if (topicInfo is null || topicInfo.TopicId == Guid.Empty)
+            {
                 continue;
+            }
 
             result.Add(new ConsumerGroupHeartbeatTopicPartitions
             {
@@ -3382,10 +3609,14 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         bool forceSend)
     {
         if (!forceSend && Volatile.Read(ref _sentOwnedTopicPartitionsVersion) == assignmentVersion)
+        {
             return null;
+        }
 
         if (Volatile.Read(ref _cachedOwnedTopicPartitionsVersion) == assignmentVersion)
+        {
             return _cachedOwnedTopicPartitions;
+        }
 
         var ownedTopicPartitions = _assignedPartitions.Count == 0
             ? []
@@ -3411,7 +3642,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     {
         var pending = _unresolvedAssignment;
         if (pending is null)
+        {
             return null;
+        }
 
         if (ReferenceEquals(_metadataManager.Metadata.CaptureSnapshot(), Volatile.Read(ref _unresolvedSnapshot)))
         {
@@ -3435,7 +3668,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         for (var i = 0; i < topics.Count; i++)
         {
             if (PendingAssignmentTopics.TryResolve(snapshot, resolvedNames, topics[i].TopicId, out var name))
+            {
                 names[topics[i].TopicId] = name;
+            }
         }
 
         return names;
@@ -3444,15 +3679,15 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     private static ConsumerGroupHeartbeatResponse WithAssignment(
         ConsumerGroupHeartbeatResponse response,
         ConsumerGroupHeartbeatAssignment? assignment) => new()
-    {
-        ThrottleTimeMs = response.ThrottleTimeMs,
-        ErrorCode = response.ErrorCode,
-        ErrorMessage = response.ErrorMessage,
-        MemberId = response.MemberId,
-        MemberEpoch = response.MemberEpoch,
-        HeartbeatIntervalMs = response.HeartbeatIntervalMs,
-        Assignment = assignment
-    };
+        {
+            ThrottleTimeMs = response.ThrottleTimeMs,
+            ErrorCode = response.ErrorCode,
+            ErrorMessage = response.ErrorMessage,
+            MemberId = response.MemberId,
+            MemberEpoch = response.MemberEpoch,
+            HeartbeatIntervalMs = response.HeartbeatIntervalMs,
+            Assignment = assignment
+        };
 
     /// <summary>
     /// The latest background refresh for assignment or deferred-offset recovery. Lets tests wait for it.
@@ -3475,7 +3710,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         var retry = ReferenceEquals(assignment, _unresolvedAssignment);
         // A pending assignment answers the request that delivered it, not the one now replaying it.
         if (retry)
+        {
             requestSubscriptionGeneration = Volatile.Read(ref _unresolvedAssignmentSubscriptionGeneration);
+        }
         // Resolve against one snapshot, recorded below: an update during processing makes the next
         // heartbeat process the assignment again.
         var snapshot = _metadataManager.Metadata.CaptureSnapshot();
@@ -3489,7 +3726,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             {
                 // Warn once per assignment; the retries on later heartbeats stay quiet.
                 if (!retry)
+                {
                     LogUnknownTopicIdInAssignment(tp.TopicId);
+                }
                 unknownTopics++;
                 continue;
             }
@@ -3556,7 +3795,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                 : null;
             Volatile.Write(ref _unresolvedSnapshot, unknownTopics > 0 ? snapshot : null);
             if (unknownTopics > 0 && !retry)
+            {
                 Volatile.Write(ref _unresolvedAssignmentSubscriptionGeneration, requestSubscriptionGeneration);
+            }
             _unresolvedAssignment = unknownTopics > 0 ? assignment : null;
 
             // The heartbeat loop can acknowledge ownership before the poll loop initializes
@@ -3565,7 +3806,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             foreach (var partition in _newlyExpandedPartitions)
             {
                 if (newAssignment.Contains(partition))
+                {
                     newlyExpandedPartitions.Add(partition);
+                }
             }
 
             classificationChanged = !_newlyExpandedPartitions.SetEquals(newlyExpandedPartitions);
@@ -3579,14 +3822,22 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                 // subscription the request answered is still current; any change from here on
                 // (even before the callbacks are queued below) ends that.
                 if (requestSubscriptionGeneration == Volatile.Read(ref _subscriptionGeneration))
+                {
                     publishedSubscriptionGeneration = requestSubscriptionGeneration;
+                }
 
                 if (revoked is not null)
+                {
                     EnqueueRevokedPartitions(revoked, revocationGeneration, revocationSequence);
+                }
                 if (revocationCommitCompletion is not null)
+                {
                     _pendingRevocationCommit = revocationCommitCompletion.Task;
+                }
                 if (assignmentCallbacksCompletion is not null)
+                {
                     _pendingAssignmentCallbacks = assignmentCallbacksCompletion.Task;
+                }
             }
         }
 
@@ -3594,15 +3845,21 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         {
             // A new assignment refreshes without the backoff an earlier unresolved one built up.
             if (!retry)
+            {
                 _unresolvedRefresher.Reset();
+            }
             _unresolvedRefresher.Request();
         }
 
         if (revoked is not null)
+        {
             _onPartitionsRevoked?.Invoke(revoked);
+        }
 
         if (changed)
+        {
             LogConsumerProtocolAssignmentUpdate(assigned?.Count ?? 0, revoked?.Count ?? 0);
+        }
 
         var result = new ConsumerHeartbeatResult(
             changed,
@@ -3612,7 +3869,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             assignmentCallbacksCompletion);
         AfterAssignmentPublishedForTest?.Invoke();
         if (changed)
+        {
             ReserveRebalanceCallbacks(result, newAssignment, oldAssignment, publishedSubscriptionGeneration);
+        }
 
         return result;
     }
@@ -3625,7 +3884,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     private (long Sequence, long Generation) NotifyRevoking(IReadOnlyList<TopicPartition>? revoked)
     {
         if (revoked is null)
+        {
             return (0, 0);
+        }
 
         // While the owner's subscription has changed since the one this member answers (it
         // abandoned the group assignment), nothing it keeps can consult revocation sequences, and
@@ -3669,19 +3930,25 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     private void PruneRevocationSequences()
     {
         if (_partitionRevocationSequences.IsEmpty)
+        {
             return;
+        }
 
         lock (_pendingPublishLock)
         {
             var threshold = Volatile.Read(ref _revocationSequence);
             foreach (var pending in _pendingRebalanceCallbacks)
+            {
                 threshold = Math.Min(threshold, pending.RevocationSequence);
+            }
 
             foreach (var entry in _partitionRevocationSequences)
             {
                 // Conditional on the value, so a revocation recorded concurrently is kept.
                 if (entry.Value <= threshold)
+                {
                     ((ICollection<KeyValuePair<TopicPartition, long>>)_partitionRevocationSequences).Remove(entry);
+                }
             }
         }
     }
@@ -3689,14 +3956,19 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     internal int RevocationSequenceCountForTest => _partitionRevocationSequences.Count;
 
     // Runs after a heartbeat publishes an assignment, before its callbacks are queued.
-    internal Action? AfterAssignmentPublishedForTest { get; set; }
+    internal Action? AfterAssignmentPublishedForTest
+    {
+        get; set;
+    }
 
     internal int RevocationSequenceTrackingCountForTest
     {
         get
         {
             lock (_assignmentStateLock)
+            {
                 return _lastPartitionRevocationSequences.Count + _enqueuedRevocationSequences.Count;
+            }
         }
     }
 
@@ -3803,7 +4075,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         // sees that a join may run and starts a leave, or this sees the request and returns.
         Interlocked.Exchange(ref _membershipRequested, 1);
         if (!await WaitForPendingLeaveAsync(cancellationToken).ConfigureAwait(false))
+        {
             return;
+        }
 
         UpdateSubscription(topics, subscribedTopicRegex, subscriptionGeneration);
 
@@ -3826,7 +4100,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         // A max-poll expiry delivering its loss keeps the join from publishing until it
         // completes (the poll generation cannot advance), and its owner drains the queue.
         if (Volatile.Read(ref _maxPollLossNotificationPending) == 0)
+        {
             await InvokePendingRebalanceCallbacksAsync(cancellationToken).ConfigureAwait(false);
+        }
 
         await _lock.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
@@ -3834,7 +4110,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             ThrowIfFatalHeartbeatException();
 
             if (_state == CoordinatorState.Stable)
+            {
                 return;
+            }
 
             var expiredPollVersion = Volatile.Read(ref _maxPollExpiredAtPollVersion);
             if (expiredPollVersion >= 0)
@@ -3842,7 +4120,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                 // Background prefetch also calls EnsureActiveGroup. Do not let it rejoin a
                 // member evicted for max.poll.interval until the application polls again.
                 if (Volatile.Read(ref _pollVersion) == expiredPollVersion)
+                {
                     return;
+                }
 
                 // Keep the marker until this join succeeds so commits stay locally fenced.
                 // Reuse the member identity for this process. Static and dynamic members both
@@ -3860,10 +4140,14 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             {
                 // The owner unsubscribed while this join waited for the lock or retried: stop.
                 if (Volatile.Read(ref _leaveRequested) != 0)
+                {
                     return;
+                }
 
                 if (Stopwatch.GetElapsedTime(startedAt) >= rebalanceTimeout)
+                {
                     throw CreateJoinTimeoutException(startedAt, rebalanceTimeout, lastJoinFailure);
+                }
 
                 try
                 {
@@ -3897,8 +4181,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                             sentJoinStateVersion: null,
                             joinToken).ConfigureAwait(false);
                     }
-                    catch (Exception ex) when (
-                        ex is not OperationCanceledException || !joinToken.IsCancellationRequested)
+                    catch (Exception ex) when (ex is not OperationCanceledException || !joinToken.IsCancellationRequested)
                     {
                         Volatile.Write(ref _lastHeartbeatFailure, ex.Message);
                         throw;
@@ -3912,14 +4195,18 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                     // offsets it stored for the lost partitions. A direct user of the coordinator
                     // keeps no such state, so the rejoin itself lifts the fence.
                     if (!SynchronizesAssignment)
+                    {
                         Volatile.Write(ref _membershipFenced, 0);
+                    }
                     if (Volatile.Read(ref _foregroundPollActivityCount) != 0)
+                    {
                         RefreshPollDeadline();
+                    }
 
                     Diagnostics.DekafMetrics.RebalanceDuration.Record(
                         Stopwatch.GetElapsedTime(startedAt).TotalSeconds,
                         new System.Diagnostics.TagList
-                            { { Diagnostics.DekafDiagnostics.MessagingConsumerGroupName, _options.GroupId } });
+                        { { Diagnostics.DekafDiagnostics.MessagingConsumerGroupName, _options.GroupId } });
 
                     LogJoinedGroup(_options.GroupId!, _memberId!, _generationId);
                 }
@@ -3960,11 +4247,17 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                     cancellationToken.ThrowIfCancellationRequested();
 
                     if (ex is ObjectDisposedException)
+                    {
                         LogCoordinatorConnectionDisposed();
+                    }
                     else if (lastJoinFailure is null)
+                    {
                         LogCoordinatorUnreachableDuringJoin(ex, _coordinatorId, _options.GroupId!);
+                    }
                     else
+                    {
                         LogCoordinatorStillUnreachableDuringJoin(ex, _coordinatorId, _options.GroupId!, retryFailureCount + 1);
+                    }
 
                     lastJoinFailure = ex;
                     MarkCoordinatorUnknown();
@@ -3982,8 +4275,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                 }
             }
         }
-        catch (OperationCanceledException) when (
-            !cancellationToken.IsCancellationRequested && joinDeadline.IsCancellationRequested)
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested && joinDeadline.IsCancellationRequested)
         {
             // The join deadline, not the caller, ended an attempt or a backoff still in flight.
             joinFailed = true;
@@ -4011,7 +4303,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         // than the session timeout. Publication remains serialized by the listener lock.
         // Initial ownership can be reported immediately: no previous ownership is being released.
         if (_state == CoordinatorState.Stable)
+        {
             await StartConsumerProtocolHeartbeatAsync().ConfigureAwait(false);
+        }
 
         await FireConsumerProtocolRebalanceListenersAsync(heartbeatResult, cancellationToken).ConfigureAwait(false);
         StandardTelemetryMetrics?.RebalanceCompleted(rebalanceStarted);
@@ -4072,7 +4366,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                             delayCancellation.Token);
                         await Task.WhenAny(delay, callbacks).WaitAsync(cancellationToken).ConfigureAwait(false);
                         if (callbacks.IsCompleted)
+                        {
                             completedCallbacks = callbacks;
+                        }
                     }
                     finally
                     {
@@ -4083,7 +4379,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                 var callbackFailure = Interlocked.Exchange(ref _heartbeatCallbackFailure, null);
                 if (callbackFailure is not null &&
                     callbackFailure.JoinStateVersion == Volatile.Read(ref _joinStateVersion))
+                {
                     ExceptionDispatchInfo.Capture(callbackFailure.Exception).Throw();
+                }
 
                 var expiration = await TryExpireMaxPollIntervalAsync(cancellationToken).ConfigureAwait(false);
                 if (expiration.Expired)
@@ -4095,7 +4393,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
                 // A foreground poll may have expired the member while this loop waited for _lock.
                 if (_state != CoordinatorState.Stable)
+                {
                     break;
+                }
 
                 heartbeatCoordinatorId = _coordinatorId;
                 if (heartbeatCoordinatorId < 0)
@@ -4133,9 +4433,13 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             catch (Exception ex)
             {
                 if (transientFailureCount == 0)
+                {
                     LogHeartbeatFailed(ex);
+                }
                 else
+                {
                     LogHeartbeatStillFailing(ex, transientFailureCount + 1);
+                }
                 Volatile.Write(ref _lastHeartbeatFailure, ex.Message);
 
                 if (ex is BrokerVersionException or AuthorizationException or AuthenticationException)
@@ -4162,7 +4466,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                             if (!await TryFenceFromHeartbeatAsync(
                                     joinStateVersion.Value,
                                     forgetMember: ge.ErrorCode == ErrorCode.UnknownMemberId).ConfigureAwait(false))
+                            {
                                 return;
+                            }
 
                             try
                             {
@@ -4218,20 +4524,28 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             ? IsRetriableCoordinatorError(groupException.ErrorCode)
             : IsRetriableJoinFailure(exception);
         if (!transient)
+        {
             return false;
+        }
 
         // A foreground rejoin owns coordinator discovery once the member left Stable.
         if (_state != CoordinatorState.Stable)
+        {
             return false;
+        }
 
         var sinceLastSuccess = Stopwatch.GetElapsedTime(Volatile.Read(ref _lastSuccessfulHeartbeatTimestamp));
         if (sinceLastSuccess >= TimeSpan.FromMilliseconds(_options.SessionTimeoutMs))
+        {
             return false;
+        }
 
         // Invalidate only the coordinator this heartbeat used, never one a concurrent commit
         // or offset fetch just discovered. Membership state is untouched.
         if (_coordinatorId == heartbeatCoordinatorId)
+        {
             _coordinatorId = -1;
+        }
 
         return true;
     }
@@ -4243,14 +4557,18 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         {
             var retryDelay = TimeSpan.FromMilliseconds(CalculateRequestRetryBackoff(transientFailureCount));
             if (retryDelay < heartbeatDelay)
+            {
                 heartbeatDelay = retryDelay;
+            }
         }
 
         var remaining = TimeSpan.FromMilliseconds(_options.MaxPollIntervalMs)
             - Stopwatch.GetElapsedTime(Volatile.Read(ref _lastPollTimestamp));
 
         if (remaining <= TimeSpan.Zero)
+        {
             return TimeSpan.Zero;
+        }
 
         return remaining < heartbeatDelay ? remaining : heartbeatDelay;
     }
@@ -4262,7 +4580,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         try
         {
             if (_state != CoordinatorState.Stable)
+            {
                 return default;
+            }
 
             if (Volatile.Read(ref _foregroundPollActivityCount) != 0)
             {
@@ -4273,7 +4593,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             var pollVersion = Volatile.Read(ref _pollVersion);
             var lastPollTimestamp = Volatile.Read(ref _lastPollTimestamp);
             if (Stopwatch.GetTimestamp() - lastPollTimestamp < _maxPollIntervalStopwatchTicks)
+            {
                 return default;
+            }
 
             // Record the poll generation that expired. A prefetch loop may continue calling
             // EnsureActiveGroup, but only a new foreground poll increments this generation.
@@ -4312,7 +4634,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         {
             // The loss was queued behind earlier callbacks; the ordered drain delivers them all.
             if (lost is { Count: > 0 })
+            {
                 await InvokePendingRebalanceCallbacksAsync(CancellationToken.None).ConfigureAwait(false);
+            }
         }
         finally
         {
@@ -4338,7 +4662,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     private async ValueTask InvokePendingRebalanceCallbacksAsync(CancellationToken cancellationToken)
     {
         if (!HasQueuedRebalanceCallbacks() || IsInsideOwnRebalanceCallback())
+        {
             return;
+        }
 
         await _rebalanceListenerLock.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
@@ -4358,7 +4684,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     private async ValueTask InvokePendingRebalanceCallbacksCoreAsync(CancellationToken cancellationToken)
     {
         if (!HasQueuedRebalanceCallbacks())
+        {
             return;
+        }
 
         // The value reverts when this async method returns; tasks a listener starts inherit it,
         // so the scope is also deactivated. Allocated once per drain of a non-empty queue.
@@ -4370,7 +4698,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             {
                 ThrowIfCallbackDeliveryStopped(cancellationToken);
                 if (Volatile.Read(ref _leaveInProgress) != 0)
+                {
                     scope.MarkLeave();
+                }
 
                 if (pending.Lost is { } lost)
                 {
@@ -4394,7 +4724,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                                 try
                                 {
                                     if (_onPartitionsRevokedAsync is not null)
+                                    {
                                         await _onPartitionsRevokedAsync(revoked, cancellationToken).ConfigureAwait(false);
+                                    }
                                 }
                                 catch (OperationCanceledException)
                                 {
@@ -4451,7 +4783,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                 // Count down only after the entry has left the queue.
                 _pendingRebalanceCallbacks.TryDequeue(out _);
                 if (Interlocked.Exchange(ref pending.PollVisibility, 2) == 1)
+                {
                     Interlocked.Decrement(ref _pendingRebalanceCallbackCount);
+                }
 
                 // Its scope is invalidated, so revocations only it could predate are forgotten.
                 PruneRevocationSequences();
@@ -4512,10 +4846,14 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         lock (_assignmentStateLock)
         {
             if (_enqueuedRevocationSequences.Count == 0)
+            {
                 return;
+            }
 
             foreach (var queued in _enqueuedRevocationSequences)
+            {
                 PruneRevocationSequence(queued.Key, queued.Value);
+            }
             _enqueuedRevocationSequences.Clear();
         }
     }
@@ -4544,7 +4882,10 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         private int _active = 1;
         private int _leave;
 
-        public ConsumerCoordinator Coordinator { get; } = coordinator;
+        public ConsumerCoordinator Coordinator
+        {
+            get;
+        } = coordinator;
 
         public bool IsActive => Volatile.Read(ref _active) != 0;
 
@@ -4565,11 +4906,20 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     {
         private int _active = 1;
 
-        public ConsumerCoordinator Coordinator { get; } = coordinator;
+        public ConsumerCoordinator Coordinator
+        {
+            get;
+        } = coordinator;
 
-        public HashSet<TopicPartition> Partitions { get; } = partitions;
+        public HashSet<TopicPartition> Partitions
+        {
+            get;
+        } = partitions;
 
-        public long RevocationSequence { get; } = revocationSequence;
+        public long RevocationSequence
+        {
+            get;
+        } = revocationSequence;
 
         public bool IsActive => Volatile.Read(ref _active) != 0;
 
@@ -4584,7 +4934,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     internal async ValueTask InvokePendingRebalanceCallbacksUnlessCancelledAsync(CancellationToken cancellationToken)
     {
         if (!HasQueuedRebalanceCallbacks())
+        {
             return;
+        }
 
         // The wait is bounded by the token even when a listener ignores it (close, disposal, a
         // failed join or a leave must not hang on one). An abandoned drain keeps its entry queued
@@ -4619,7 +4971,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     private void FenceMembershipIfCurrent(int joinStateVersion, bool forgetMember)
     {
         if (_state == CoordinatorState.Stable && _joinStateVersion == joinStateVersion)
+        {
             FenceMembership(forgetMember);
+        }
     }
 
     private static bool IsMembershipFence(Exception exception) =>
@@ -4818,10 +5172,14 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         CancellationToken responseCancellationToken = default)
     {
         if (!Enum.IsDefined(operation))
+        {
             throw new ArgumentOutOfRangeException(nameof(operation), operation, "The group membership operation is invalid.");
+        }
 
         if (Volatile.Read(ref _disposed) != 0)
+        {
             return;
+        }
 
         // An unsubscribe's leave still running finishes first, so the member is left once; it
         // usually leaves nothing for this one to do. Waited for only within this leave's budget.
@@ -4917,7 +5275,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     public async ValueTask DisposeAsync()
     {
         if (Interlocked.Exchange(ref _disposed, 1) != 0)
+        {
             return;
+        }
         LogCoordinatorDisposing();
 
         // An unsubscribe's leave still running is cut short; it never throws.

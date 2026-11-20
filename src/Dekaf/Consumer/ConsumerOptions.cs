@@ -53,43 +53,64 @@ public sealed class ConsumerOptions
     /// <summary>
     /// Bootstrap servers (host:port,host:port).
     /// </summary>
-    public required IReadOnlyList<string> BootstrapServers { get; init; }
+    public required IReadOnlyList<string> BootstrapServers
+    {
+        get; init;
+    }
 
     internal const string DefaultClientId = "dekaf-consumer";
 
     /// <summary>
     /// Client ID.
     /// </summary>
-    public string? ClientId { get; init; } = DefaultClientId;
+    public string? ClientId
+    {
+        get; init;
+    } = DefaultClientId;
 
     /// <summary>
     /// Consumer group ID.
     /// </summary>
-    public string? GroupId { get; init; }
+    public string? GroupId
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Group instance ID for static membership.
     /// </summary>
-    public string? GroupInstanceId { get; init; }
+    public string? GroupInstanceId
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The server-side partition assignor for KIP-848 group coordination.
     /// Common values are "uniform" and "range".
     /// When null, the broker uses its default assignor.
     /// </summary>
-    public string? GroupRemoteAssignor { get; init; }
+    public string? GroupRemoteAssignor
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Logical rack ID of this consumer. Brokers use this for rack-aware assignment and
     /// preferred read-replica selection when the cluster has rack metadata configured.
     /// </summary>
-    public string? ClientRack { get; init; }
+    public string? ClientRack
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Offset commit mode controlling how offsets are stored and committed.
     /// Default is <see cref="OffsetCommitMode.Auto"/>.
     /// </summary>
-    public OffsetCommitMode OffsetCommitMode { get; init; } = OffsetCommitMode.Auto;
+    public OffsetCommitMode OffsetCommitMode
+    {
+        get; init;
+    } = OffsetCommitMode.Auto;
 
     /// <summary>
     /// Auto-commit interval in milliseconds. Must be positive; use
@@ -110,7 +131,10 @@ public sealed class ConsumerOptions
     /// Disable to call <c>StoreOffset</c> after processing succeeds while keeping
     /// automatic background commits enabled.
     /// </summary>
-    public bool EnableAutoOffsetStore { get; init; } = true;
+    public bool EnableAutoOffsetStore
+    {
+        get; init;
+    } = true;
 
     /// <summary>
     /// Controls when automatically stored offsets become committable.
@@ -119,17 +143,26 @@ public sealed class ConsumerOptions
     /// Confluent-style at-most-once staging. Ignored when
     /// <see cref="EnableAutoOffsetStore"/> is false.
     /// </summary>
-    public OffsetStoreTiming OffsetStoreTiming { get; init; } = OffsetStoreTiming.AfterProcessing;
+    public OffsetStoreTiming OffsetStoreTiming
+    {
+        get; init;
+    } = OffsetStoreTiming.AfterProcessing;
 
     /// <summary>
     /// Auto offset reset behavior.
     /// </summary>
-    public AutoOffsetReset AutoOffsetReset { get; init; } = AutoOffsetReset.Latest;
+    public AutoOffsetReset AutoOffsetReset
+    {
+        get; init;
+    } = AutoOffsetReset.Latest;
 
     /// <summary>
     /// Duration used when <see cref="AutoOffsetReset"/> is <see cref="AutoOffsetReset.ByDuration"/>.
     /// </summary>
-    public TimeSpan? AutoOffsetResetDuration { get; init; }
+    public TimeSpan? AutoOffsetResetDuration
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Optional offset reset behavior for partitions that the group coordinator identifies as
@@ -137,23 +170,35 @@ public sealed class ConsumerOptions
     /// Requires ConsumerGroupHeartbeat v2, which no released Kafka version ships yet (Kafka 4.4.0
     /// ships v0-1), so Dekaf does not negotiate it and the base policy currently applies.
     /// </summary>
-    public AutoOffsetReset? AutoOffsetResetNewPartitions { get; init; }
+    public AutoOffsetReset? AutoOffsetResetNewPartitions
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Duration used when <see cref="AutoOffsetResetNewPartitions"/> is
     /// <see cref="AutoOffsetReset.ByDuration"/>.
     /// </summary>
-    public TimeSpan? AutoOffsetResetNewPartitionsDuration { get; init; }
+    public TimeSpan? AutoOffsetResetNewPartitionsDuration
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Fetch minimum bytes.
     /// </summary>
-    public int FetchMinBytes { get; init; } = 1;
+    public int FetchMinBytes
+    {
+        get; init;
+    } = 1;
 
     /// <summary>
     /// Fetch maximum bytes.
     /// </summary>
-    public int FetchMaxBytes { get; init; } = 52428800;
+    public int FetchMaxBytes
+    {
+        get; init;
+    } = 52428800;
 
     /// <summary>
     /// Aggregate raw Fetch response memory limit in bytes across queued and in-flight
@@ -165,63 +210,96 @@ public sealed class ConsumerOptions
     /// consumer can make progress. Such an oversized response is admitted only when it is
     /// the pool's sole reservation.
     /// </remarks>
-    public long FetchBufferMemoryBytes { get; init; } = 100L * 1024 * 1024;
+    public long FetchBufferMemoryBytes
+    {
+        get; init;
+    } = 100L * 1024 * 1024;
 
     /// <summary>
     /// Maximum bytes per partition.
     /// </summary>
-    public int MaxPartitionFetchBytes { get; init; } = 1048576;
+    public int MaxPartitionFetchBytes
+    {
+        get; init;
+    } = 1048576;
 
     /// <summary>
     /// Fetch maximum wait time in milliseconds.
     /// </summary>
-    public int FetchMaxWaitMs { get; init; } = 200;
+    public int FetchMaxWaitMs
+    {
+        get; init;
+    } = 200;
 
     /// <summary>
     /// Enable KIP-227 incremental fetch sessions when supported by the broker.
     /// </summary>
-    public bool EnableFetchSessions { get; init; } = true;
+    public bool EnableFetchSessions
+    {
+        get; init;
+    } = true;
 
     /// <summary>
     /// Maximum poll records.
     /// </summary>
-    public int MaxPollRecords { get; init; } = 500;
+    public int MaxPollRecords
+    {
+        get; init;
+    } = 500;
 
     /// <summary>
     /// Maximum poll interval in milliseconds.
     /// </summary>
-    public int MaxPollIntervalMs { get; init; } = 300000;
+    public int MaxPollIntervalMs
+    {
+        get; init;
+    } = 300000;
 
     /// <summary>
     /// Local tolerance for transient heartbeat failures in milliseconds before rejoining the group.
     /// Default is 45000. With the KIP-848 consumer protocol, broker setting
     /// <c>group.consumer.session.timeout.ms</c> controls member eviction; this value is not sent to the broker.
     /// </summary>
-    public int SessionTimeoutMs { get; init; } = 45000;
+    public int SessionTimeoutMs
+    {
+        get; init;
+    } = 45000;
 
     /// <summary>
     /// Fallback heartbeat interval in milliseconds until the broker supplies an interval. Default is 3000.
     /// With the KIP-848 consumer protocol, the broker controls the heartbeat cadence through
     /// <c>group.consumer.heartbeat.interval.ms</c> and returns it in heartbeat responses.
     /// </summary>
-    public int HeartbeatIntervalMs { get; init; } = 3000;
+    public int HeartbeatIntervalMs
+    {
+        get; init;
+    } = 3000;
 
     /// <summary>
     /// Maximum time in milliseconds for the consumer to complete a group rebalance.
     /// Sent to the broker on the initial KIP-848 heartbeat and used to bound the
     /// automatic revoked-offset commit. Default is 60000.
     /// </summary>
-    public int RebalanceTimeoutMs { get; init; } = 60000;
+    public int RebalanceTimeoutMs
+    {
+        get; init;
+    } = 60000;
 
     /// <summary>
     /// Isolation level for transactional reads.
     /// </summary>
-    public IsolationLevel IsolationLevel { get; init; } = IsolationLevel.ReadUncommitted;
+    public IsolationLevel IsolationLevel
+    {
+        get; init;
+    } = IsolationLevel.ReadUncommitted;
 
     /// <summary>
     /// Request timeout in milliseconds.
     /// </summary>
-    public int RequestTimeoutMs { get; init; } = 30000;
+    public int RequestTimeoutMs
+    {
+        get; init;
+    } = 30000;
 
     /// <summary>
     /// Aggregate timeout in milliseconds for finite consumer API operations.
@@ -232,19 +310,28 @@ public sealed class ConsumerOptions
     /// retries, and multi-broker fan-out. It does not apply to the long-lived
     /// <c>ConsumeAsync</c>, <c>ConsumeBatchAsync</c>, or <c>ConsumeRawBatchAsync</c> streams.
     /// </remarks>
-    public int DefaultApiTimeoutMs { get; init; } = 60000;
+    public int DefaultApiTimeoutMs
+    {
+        get; init;
+    } = 60000;
 
     /// <summary>
     /// Initial delay in milliseconds for retrying failed broker requests.
     /// Equivalent to Kafka's <c>retry.backoff.ms</c>.
     /// </summary>
-    public int RetryBackoffMs { get; init; } = 100;
+    public int RetryBackoffMs
+    {
+        get; init;
+    } = 100;
 
     /// <summary>
     /// Maximum delay in milliseconds for retrying repeatedly failed broker requests.
     /// Equivalent to Kafka's <c>retry.backoff.max.ms</c>.
     /// </summary>
-    public int RetryBackoffMaxMs { get; init; } = 1000;
+    public int RetryBackoffMaxMs
+    {
+        get; init;
+    } = 1000;
 
     /// <summary>
     /// Initial delay in milliseconds before reconnecting to a broker after a connection failure.
@@ -283,12 +370,18 @@ public sealed class ConsumerOptions
     /// Default is 9 minutes, below Kafka's default broker-side 10 minute idle timeout.
     /// Set to -1 to disable client-side idle connection reaping.
     /// </summary>
-    public int ConnectionsMaxIdleMs { get; init; } = ConnectionOptions.DefaultConnectionsMaxIdleMs;
+    public int ConnectionsMaxIdleMs
+    {
+        get; init;
+    } = ConnectionOptions.DefaultConnectionsMaxIdleMs;
 
     /// <summary>
     /// Maximum time allowed for socket connection setup, including TLS/SASL handshakes.
     /// </summary>
-    public TimeSpan ConnectionTimeout { get; init; } = ConnectionOptions.DefaultConnectionTimeout;
+    public TimeSpan ConnectionTimeout
+    {
+        get; init;
+    } = ConnectionOptions.DefaultConnectionTimeout;
 
     /// <summary>
     /// Maximum connection setup timeout after consecutive failures. Defaults to
@@ -306,69 +399,108 @@ public sealed class ConsumerOptions
     /// <summary>
     /// Whether to enable TCP keepalive on broker sockets.
     /// </summary>
-    public bool EnableTcpKeepAlive { get; init; } = ConnectionOptions.DefaultEnableTcpKeepAlive;
+    public bool EnableTcpKeepAlive
+    {
+        get; init;
+    } = ConnectionOptions.DefaultEnableTcpKeepAlive;
 
     /// <summary>
     /// Idle time before TCP keepalive probes start. Unsupported platforms ignore this.
     /// </summary>
-    public TimeSpan TcpKeepAliveTime { get; init; } = ConnectionOptions.DefaultTcpKeepAliveTime;
+    public TimeSpan TcpKeepAliveTime
+    {
+        get; init;
+    } = ConnectionOptions.DefaultTcpKeepAliveTime;
 
     /// <summary>
     /// Interval between TCP keepalive probes. Unsupported platforms ignore this.
     /// </summary>
-    public TimeSpan TcpKeepAliveInterval { get; init; } = ConnectionOptions.DefaultTcpKeepAliveInterval;
+    public TimeSpan TcpKeepAliveInterval
+    {
+        get; init;
+    } = ConnectionOptions.DefaultTcpKeepAliveInterval;
 
     /// <summary>
     /// Number of TCP keepalive probes before the connection is considered dead.
     /// Unsupported platforms ignore this.
     /// </summary>
-    public int TcpKeepAliveRetryCount { get; init; } = ConnectionOptions.DefaultTcpKeepAliveRetryCount;
+    public int TcpKeepAliveRetryCount
+    {
+        get; init;
+    } = ConnectionOptions.DefaultTcpKeepAliveRetryCount;
 
     /// <summary>
     /// Whether to verify CRC-32C for consumed record batches. Enabled by default.
     /// </summary>
-    public bool CheckCrcs { get; init; } = true;
+    public bool CheckCrcs
+    {
+        get; init;
+    } = true;
 
     /// <summary>
     /// Use TLS.
     /// </summary>
-    public bool UseTls { get; init; }
+    public bool UseTls
+    {
+        get; init;
+    }
 
     /// <summary>
     /// TLS configuration for SSL/mTLS connections.
     /// When set, <see cref="UseTls"/> is automatically enabled.
     /// </summary>
-    public TlsConfig? TlsConfig { get; init; }
+    public TlsConfig? TlsConfig
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Custom TLS certificate validation callback.
     /// </summary>
-    public RemoteCertificateValidationCallback? RemoteCertificateValidationCallback { get; init; }
+    public RemoteCertificateValidationCallback? RemoteCertificateValidationCallback
+    {
+        get; init;
+    }
 
     /// <summary>
     /// SASL authentication mechanism.
     /// </summary>
-    public SaslMechanism SaslMechanism { get; init; } = SaslMechanism.None;
+    public SaslMechanism SaslMechanism
+    {
+        get; init;
+    } = SaslMechanism.None;
 
     /// <summary>
     /// SASL username for PLAIN and SCRAM authentication.
     /// </summary>
-    public string? SaslUsername { get; init; }
+    public string? SaslUsername
+    {
+        get; init;
+    }
 
     /// <summary>
     /// SASL password for PLAIN and SCRAM authentication.
     /// </summary>
-    public string? SaslPassword { get; init; }
+    public string? SaslPassword
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Dynamic credential provider for PLAIN and SCRAM authentication.
     /// </summary>
-    public Func<CancellationToken, ValueTask<SaslCredentials>>? SaslCredentialProvider { get; init; }
+    public Func<CancellationToken, ValueTask<SaslCredentials>>? SaslCredentialProvider
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Whether SCRAM authentication uses Kafka delegation token credentials.
     /// </summary>
-    public bool SaslScramTokenAuth { get; init; }
+    public bool SaslScramTokenAuth
+    {
+        get; init;
+    }
 
     private int _saslScramMaxIterations = ScramAuthenticator.DefaultMaxIterations;
 
@@ -390,43 +522,67 @@ public sealed class ConsumerOptions
     /// <summary>
     /// GSSAPI (Kerberos) configuration. Required when SaslMechanism is Gssapi.
     /// </summary>
-    public GssapiConfig? GssapiConfig { get; init; }
+    public GssapiConfig? GssapiConfig
+    {
+        get; init;
+    }
 
     /// <summary>
     /// OAuth bearer token configuration for OAUTHBEARER authentication.
     /// </summary>
-    public OAuthBearerConfig? OAuthBearerConfig { get; init; }
+    public OAuthBearerConfig? OAuthBearerConfig
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Custom OAuth bearer token provider function for OAUTHBEARER authentication.
     /// Takes precedence over <see cref="OAuthBearerConfig"/> if both are specified.
     /// </summary>
-    public Func<CancellationToken, ValueTask<OAuthBearerToken>>? OAuthBearerTokenProvider { get; init; }
+    public Func<CancellationToken, ValueTask<OAuthBearerToken>>? OAuthBearerTokenProvider
+    {
+        get; init;
+    }
 
     /// <summary>
     /// AWS_MSK_IAM configuration.
     /// </summary>
-    public AwsMskIamConfig? AwsMskIamConfig { get; init; }
+    public AwsMskIamConfig? AwsMskIamConfig
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Rebalance listener.
     /// </summary>
-    public IRebalanceListener? RebalanceListener { get; init; }
+    public IRebalanceListener? RebalanceListener
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Maximum time to await <see cref="IPartitionStopListener.OnPartitionsStoppedAsync"/>
     /// during graceful shutdown. The callback token is cancelled when this timeout expires.
     /// Default is 5 seconds.
     /// </summary>
-    public TimeSpan PartitionStopTimeout { get; init; } = TimeSpan.FromSeconds(5);
+    public TimeSpan PartitionStopTimeout
+    {
+        get; init;
+    } = TimeSpan.FromSeconds(5);
 
     /// <summary>
     /// Rebalance listener that receives a callback-scoped restricted consumer view.
     /// </summary>
     /// <remarks>Takes precedence over <see cref="RebalanceListener"/> when both are set.</remarks>
-    public IConsumerAwareRebalanceListener? ConsumerAwareRebalanceListener { get; init; }
+    public IConsumerAwareRebalanceListener? ConsumerAwareRebalanceListener
+    {
+        get; init;
+    }
 
-    internal IRebalanceListener[]? AdditionalRebalanceListeners { get; init; }
+    internal IRebalanceListener[]? AdditionalRebalanceListeners
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Observer called before and after each offset commit the consumer sends on the
@@ -436,18 +592,27 @@ public sealed class ConsumerOptions
     /// (<see cref="OffsetCommitReason.Stop"/>). Commits the application requests with
     /// <c>CommitAsync</c> are not observed.
     /// </summary>
-    public IOffsetCommitObserver? CommitObserver { get; init; }
+    public IOffsetCommitObserver? CommitObserver
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Socket send buffer size in bytes. Set to 0 to use system default.
     /// </summary>
-    public int SocketSendBufferBytes { get; init; }
+    public int SocketSendBufferBytes
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Socket receive buffer size in bytes. Set to 0 to use system default.
     /// Larger buffers can improve throughput for high-volume consumers.
     /// </summary>
-    public int SocketReceiveBufferBytes { get; init; }
+    public int SocketReceiveBufferBytes
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Minimum number of messages to prefetch per partition.
@@ -469,7 +634,10 @@ public sealed class ConsumerOptions
     /// The new default of 100000 matches Confluent's <c>queued.min.messages</c> default.
     /// </para>
     /// </remarks>
-    public int QueuedMinMessages { get; init; } = 100000;
+    public int QueuedMinMessages
+    {
+        get; init;
+    } = 100000;
 
     /// <summary>
     /// Maximum total size of prefetched messages in kilobytes.
@@ -490,12 +658,18 @@ public sealed class ConsumerOptions
     /// against the process-wide total.
     /// </para>
     /// </summary>
-    public int QueuedMaxMessagesKbytes { get; init; } = 65536;
+    public int QueuedMaxMessagesKbytes
+    {
+        get; init;
+    } = 65536;
 
     /// <summary>
     /// True when QueuedMaxMessagesKbytes was auto-tuned from the global memory budget.
     /// </summary>
-    internal bool IsAutoTuned { get; init; }
+    internal bool IsAutoTuned
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Enable partition end-of-file (EOF) events.
@@ -506,13 +680,19 @@ public sealed class ConsumerOptions
     /// The EOF event fires once per "catch up" - it will fire again after new messages
     /// arrive and are consumed. Default is false.
     /// </summary>
-    public bool EnablePartitionEof { get; init; }
+    public bool EnablePartitionEof
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Optional predicate invoked after record parsing and before key/value deserialization.
     /// Rejected records advance consumer position but are not delivered.
     /// </summary>
-    public IConsumerRecordFilter? RecordFilter { get; init; }
+    public IConsumerRecordFilter? RecordFilter
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Strategy for recovering cluster metadata when all known brokers become unavailable.
@@ -521,21 +701,30 @@ public sealed class ConsumerOptions
     /// change during rolling upgrades.
     /// Default is <see cref="MetadataRecoveryStrategy.Rebootstrap"/>.
     /// </summary>
-    public MetadataRecoveryStrategy MetadataRecoveryStrategy { get; init; } = MetadataRecoveryStrategy.Rebootstrap;
+    public MetadataRecoveryStrategy MetadataRecoveryStrategy
+    {
+        get; init;
+    } = MetadataRecoveryStrategy.Rebootstrap;
 
     /// <summary>
     /// Whether new broker connections verify the expected cluster and node identity (KIP-1242).
     /// Default is true; ignored when <see cref="MetadataRecoveryStrategy"/> is
     /// <see cref="MetadataRecoveryStrategy.None"/>.
     /// </summary>
-    public bool MetadataClusterCheckEnabled { get; init; } = true;
+    public bool MetadataClusterCheckEnabled
+    {
+        get; init;
+    } = true;
 
     /// <summary>
     /// Whether topic metadata lookups ask the broker to auto-create missing topics
     /// (Java's <c>allow.auto.create.topics</c>). The broker creates a topic only when its
     /// <c>auto.create.topics.enable</c> is also true. Default is true.
     /// </summary>
-    public bool AllowAutoCreateTopics { get; init; } = true;
+    public bool AllowAutoCreateTopics
+    {
+        get; init;
+    } = true;
 
     /// <summary>
     /// How long in milliseconds to wait before triggering a rebootstrap when all known brokers
@@ -543,36 +732,54 @@ public sealed class ConsumerOptions
     /// <see cref="MetadataRecoveryStrategy.Rebootstrap"/>.
     /// Default is 300000 (5 minutes).
     /// </summary>
-    public int MetadataRecoveryRebootstrapTriggerMs { get; init; } = 300000;
+    public int MetadataRecoveryRebootstrapTriggerMs
+    {
+        get; init;
+    } = 300000;
 
     /// <summary>
     /// Controls how broker hostnames are resolved before connecting.
     /// </summary>
-    public ClientDnsLookup ClientDnsLookup { get; init; } = ClientDnsLookup.UseAllDnsIps;
+    public ClientDnsLookup ClientDnsLookup
+    {
+        get; init;
+    } = ClientDnsLookup.UseAllDnsIps;
 
     /// <summary>
     /// Maximum time in milliseconds spent retrying initial bootstrap DNS resolution.
     /// Corresponds to Kafka's <c>bootstrap.resolve.timeout.ms</c>, but defaults to 120000 (the original
     /// KIP-909 value) where Kafka 4.4 defaults to 0. Zero resolves once with no deadline.
     /// </summary>
-    public int BootstrapResolveTimeoutMs { get; init; } = 120000;
+    public int BootstrapResolveTimeoutMs
+    {
+        get; init;
+    } = 120000;
 
     /// <summary>
     /// DNS resolver used by connections. Internal for deterministic tests.
     /// </summary>
-    internal ClientDnsEndpointResolver DnsResolver { get; init; } = ClientDnsEndpointResolver.Default;
+    internal ClientDnsEndpointResolver DnsResolver
+    {
+        get; init;
+    } = ClientDnsEndpointResolver.Default;
 
     /// <summary>
     /// Application-level retry policy for message processing in hosted consumer services.
     /// When set, the consumer service will use this policy to determine delays between retries.
     /// When <c>null</c>, existing retry behavior is unchanged.
     /// </summary>
-    public IRetryPolicy? RetryPolicy { get; init; }
+    public IRetryPolicy? RetryPolicy
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Application metrics registered for broker telemetry subscriptions.
     /// </summary>
-    public IReadOnlyList<ApplicationTelemetryMetric> ApplicationMetrics { get; init; } = [];
+    public IReadOnlyList<ApplicationTelemetryMetric> ApplicationMetrics
+    {
+        get; init;
+    } = [];
 
     /// <summary>
     /// Maximum number of overlapping prefetch operations.
@@ -583,7 +790,10 @@ public sealed class ConsumerOptions
     /// Higher values (up to 8) allow more overlapping fetches, which can improve
     /// throughput for single-broker setups by hiding network latency. Default is 3.
     /// </summary>
-    public int PrefetchPipelineDepth { get; init; } = 3;
+    public int PrefetchPipelineDepth
+    {
+        get; init;
+    } = 3;
 
     /// <summary>
     /// Number of TCP connections to maintain per broker.
@@ -595,7 +805,10 @@ public sealed class ConsumerOptions
     /// Use adaptive scaling (<see cref="EnableAdaptiveConnections"/>) for
     /// automatic connection scaling based on fetch pressure.
     /// </summary>
-    public int ConnectionsPerBroker { get; init; } = 2;
+    public int ConnectionsPerBroker
+    {
+        get; init;
+    } = 2;
 
     /// <summary>
     /// Whether to enable adaptive connection scaling based on fetch pressure.
@@ -604,7 +817,10 @@ public sealed class ConsumerOptions
     /// based on demand.
     /// Default: true.
     /// </summary>
-    public bool EnableAdaptiveConnections { get; init; } = true;
+    public bool EnableAdaptiveConnections
+    {
+        get; init;
+    } = true;
 
     /// <summary>
     /// Maximum connections per broker when adaptive scaling is enabled.
@@ -629,20 +845,29 @@ public sealed class ConsumerOptions
     /// and <see cref="FetchMaxBytes"/> based on the ratio of processing time to fetch latency.
     /// Default is false.
     /// </summary>
-    public bool EnableAdaptiveFetchSizing { get; init; }
+    public bool EnableAdaptiveFetchSizing
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Configuration for adaptive fetch sizing. Only used when <see cref="EnableAdaptiveFetchSizing"/>
     /// is true. When null and adaptive sizing is enabled, sensible defaults are used.
     /// </summary>
-    public AdaptiveFetchSizingOptions? AdaptiveFetchSizingOptions { get; init; }
+    public AdaptiveFetchSizingOptions? AdaptiveFetchSizingOptions
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Consumer interceptors, called in order during the consume pipeline.
     /// Interceptors are called on consume (OnConsume) and on commit (OnCommit).
     /// Interceptor exceptions are caught and logged, not propagated.
     /// </summary>
-    internal IReadOnlyList<object>? Interceptors { get; init; }
+    internal IReadOnlyList<object>? Interceptors
+    {
+        get; init;
+    }
 }
 
 /// <summary>
@@ -714,7 +939,10 @@ internal interface IConsumerRebalanceEventSource
     /// True while the consumer leaves its group (unsubscribe, close, or a switch to manual
     /// assignment). Revocations delivered meanwhile end the membership.
     /// </summary>
-    bool IsLeavingGroup { get; }
+    bool IsLeavingGroup
+    {
+        get;
+    }
 }
 
 /// <summary>Whether the member still owns a delivered record's partition under the ownership the record was fetched in.</summary>

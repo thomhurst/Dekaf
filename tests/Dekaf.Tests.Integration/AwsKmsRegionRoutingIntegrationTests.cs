@@ -84,7 +84,10 @@ public sealed class AwsKmsRegionRoutingIntegrationTests
             _serving = ServeAsync();
         }
 
-        public int Port { get; }
+        public int Port
+        {
+            get;
+        }
         public int RequestCount => Volatile.Read(ref _requestCount);
 
         private async Task ServeAsync()
@@ -105,7 +108,9 @@ public sealed class AwsKmsRegionRoutingIntegrationTests
                     }
                     var body = new char[int.Parse(headers["Content-Length"], System.Globalization.CultureInfo.InvariantCulture)];
                     if (await reader.ReadBlockAsync(body, _stopping.Token) != body.Length)
+                    {
                         throw new EndOfStreamException("Incomplete KMS request.");
+                    }
                     using var document = JsonDocument.Parse(new string(body));
                     var region = document.RootElement.GetProperty("KeyId").GetString()!.Split(':')[3];
                     var routedCorrectly = headers["Host"] == $"kms.{region}.amazonaws.com" &&

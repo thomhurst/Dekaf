@@ -1,8 +1,8 @@
-using System.Reflection;
 using System.Net.Security;
+using System.Reflection;
+using Dekaf.Consumer;
 using Dekaf.Metadata;
 using Dekaf.Networking;
-using Dekaf.Consumer;
 using Dekaf.Producer;
 using Dekaf.Security.Sasl;
 using Dekaf.Streams;

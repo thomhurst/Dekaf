@@ -43,7 +43,10 @@ public static class AdminClientPartitionExpansionExtensions
 public sealed class NewPartitions
 {
     /// <summary>The total partition count after expansion, not the number to add.</summary>
-    public required int TotalCount { get; init; }
+    public required int TotalCount
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Replica broker IDs for each additional partition, or null for controller assignment.
@@ -51,15 +54,24 @@ public sealed class NewPartitions
     /// list must match the topic replication factor. The first broker is the preferred replica.
     /// The controller validates these constraints against current cluster state.
     /// </summary>
-    public IReadOnlyList<IReadOnlyList<int>>? ReplicaAssignments { get; init; }
+    public IReadOnlyList<IReadOnlyList<int>>? ReplicaAssignments
+    {
+        get; init;
+    }
 }
 
 /// <summary>Options for partition expansion.</summary>
 public sealed class CreatePartitionsOptions
 {
     /// <summary>Broker operation timeout in milliseconds.</summary>
-    public int TimeoutMs { get; init; } = 30000;
+    public int TimeoutMs
+    {
+        get; init;
+    } = 30000;
 
     /// <summary>Validate the expansion without changing partitions or replica assignments.</summary>
-    public bool ValidateOnly { get; init; }
+    public bool ValidateOnly
+    {
+        get; init;
+    }
 }

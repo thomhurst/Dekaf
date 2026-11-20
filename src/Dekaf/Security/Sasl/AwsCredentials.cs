@@ -26,22 +26,34 @@ public sealed class AwsCredentials
     /// <summary>
     /// AWS access key ID.
     /// </summary>
-    public string AccessKeyId { get; }
+    public string AccessKeyId
+    {
+        get;
+    }
 
     /// <summary>
     /// AWS secret access key.
     /// </summary>
-    public string SecretAccessKey { get; }
+    public string SecretAccessKey
+    {
+        get;
+    }
 
     /// <summary>
     /// Optional AWS session token for temporary credentials.
     /// </summary>
-    public string? SessionToken { get; }
+    public string? SessionToken
+    {
+        get;
+    }
 
     /// <summary>
     /// Optional expiration time for temporary credentials.
     /// </summary>
-    public DateTimeOffset? Expiration { get; }
+    public DateTimeOffset? Expiration
+    {
+        get;
+    }
 }
 
 /// <summary>

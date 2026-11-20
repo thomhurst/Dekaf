@@ -9,41 +9,62 @@ public sealed class DeadLetterOptions
     /// Topic name suffix appended to the source topic to form the DLQ topic name.
     /// Default: ".DLQ"
     /// </summary>
-    public string TopicSuffix { get; init; } = ".DLQ";
+    public string TopicSuffix
+    {
+        get; init;
+    } = ".DLQ";
 
     /// <summary>
     /// Number of processing failures required before routing a message to the DLQ.
     /// Default: 1 (dead-letter on first failure).
     /// </summary>
-    public int MaxFailures { get; init; } = 1;
+    public int MaxFailures
+    {
+        get; init;
+    } = 1;
 
     /// <summary>
     /// Whether to include exception details (message, type) in DLQ message headers.
     /// Default: true.
     /// </summary>
-    public bool IncludeExceptionInHeaders { get; init; } = true;
+    public bool IncludeExceptionInHeaders
+    {
+        get; init;
+    } = true;
 
     /// <summary>
     /// Whether to await DLQ produce acknowledgment (guaranteed delivery) or use fire-and-forget.
     /// Default: true (await acknowledgment), so a failed message cannot be committed away
     /// before its dead-letter copy is durable. Set to false for fire-and-forget throughput.
     /// </summary>
-    public bool AwaitDelivery { get; init; } = true;
+    public bool AwaitDelivery
+    {
+        get; init;
+    } = true;
 
     /// <summary>
     /// Bootstrap servers for the DLQ producer. If null, must be configured via <see cref="ConfigureProducer"/>.
     /// </summary>
-    public string? BootstrapServers { get; init; }
+    public string? BootstrapServers
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Optional configuration overrides for the internal DLQ producer.
     /// The producer uses byte[] serializers by default.
     /// </summary>
-    public Action<ProducerBuilder<byte[]?, byte[]?>>? ConfigureProducer { get; init; }
+    public Action<ProducerBuilder<byte[]?, byte[]?>>? ConfigureProducer
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Optional tiered retry-topic configuration. When configured, failed messages are produced
     /// to retry topics before the dead letter queue.
     /// </summary>
-    public RetryTopicOptions? RetryTopics { get; init; }
+    public RetryTopicOptions? RetryTopics
+    {
+        get; init;
+    }
 }

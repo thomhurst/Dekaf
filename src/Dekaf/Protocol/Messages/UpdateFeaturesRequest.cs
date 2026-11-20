@@ -10,9 +10,18 @@ public sealed class UpdateFeaturesRequest : IKafkaRequest<UpdateFeaturesResponse
     public static short LowestSupportedVersion => 0;
     public static short HighestSupportedVersion => 2;
 
-    public int TimeoutMs { get; init; } = 60000;
-    public required IReadOnlyList<UpdateFeatureData> FeatureUpdates { get; init; }
-    public bool ValidateOnly { get; init; }
+    public int TimeoutMs
+    {
+        get; init;
+    } = 60000;
+    public required IReadOnlyList<UpdateFeatureData> FeatureUpdates
+    {
+        get; init;
+    }
+    public bool ValidateOnly
+    {
+        get; init;
+    }
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {
@@ -23,7 +32,9 @@ public sealed class UpdateFeaturesRequest : IKafkaRequest<UpdateFeaturesResponse
             version);
 
         if (version >= 1)
+        {
             writer.WriteBoolean(ValidateOnly);
+        }
 
         writer.WriteEmptyTaggedFields();
     }
@@ -34,9 +45,18 @@ public sealed class UpdateFeaturesRequest : IKafkaRequest<UpdateFeaturesResponse
 /// </summary>
 public sealed class UpdateFeatureData
 {
-    public required string Feature { get; init; }
-    public short MaxVersionLevel { get; init; }
-    public FeatureUpdateType UpgradeType { get; init; } = FeatureUpdateType.Upgrade;
+    public required string Feature
+    {
+        get; init;
+    }
+    public short MaxVersionLevel
+    {
+        get; init;
+    }
+    public FeatureUpdateType UpgradeType
+    {
+        get; init;
+    } = FeatureUpdateType.Upgrade;
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {
@@ -44,9 +64,13 @@ public sealed class UpdateFeatureData
         writer.WriteInt16(MaxVersionLevel);
 
         if (version == 0)
+        {
             writer.WriteBoolean(UpgradeType is not FeatureUpdateType.Upgrade);
+        }
         else
+        {
             writer.WriteInt8((sbyte)UpgradeType);
+        }
 
         writer.WriteEmptyTaggedFields();
     }

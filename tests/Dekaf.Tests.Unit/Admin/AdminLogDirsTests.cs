@@ -553,7 +553,10 @@ public sealed class AdminLogDirsTests
             return connection;
         }
 
-        public AdminClient Client { get; }
+        public AdminClient Client
+        {
+            get;
+        }
 
         public void EnqueueDescribe(DescribeLogDirsResponse response) => _describeResponses.Enqueue(response);
 

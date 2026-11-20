@@ -319,8 +319,14 @@ public sealed class AdminClientDelegationTokenTests
                 _metadataManager);
         }
 
-        public AdminClient Client { get; }
-        public IKafkaConnection Connection { get; }
+        public AdminClient Client
+        {
+            get;
+        }
+        public IKafkaConnection Connection
+        {
+            get;
+        }
 
         public void EnqueueCreate(CreateDelegationTokenResponse response) => _createResponses.Enqueue(response);
         public void EnqueueRenew(RenewDelegationTokenResponse response) => _renewResponses.Enqueue(response);

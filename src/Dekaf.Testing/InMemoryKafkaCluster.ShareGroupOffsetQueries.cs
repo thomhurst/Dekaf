@@ -7,7 +7,9 @@ public sealed partial class InMemoryKafkaCluster
         lock (_gate)
         {
             if (_shareGroupOffsets.TryGetValue(groupId, out var offsets))
+            {
                 return new(offsets);
+            }
             return new();
         }
     }

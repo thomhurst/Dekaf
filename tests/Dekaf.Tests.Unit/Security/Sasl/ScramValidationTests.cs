@@ -47,7 +47,9 @@ public class ScramValidationTests
         foreach (var mechanism in new[] { SaslMechanism.ScramSha256, SaslMechanism.ScramSha512 })
         {
             foreach (var challenge in challenges)
+            {
                 yield return (mechanism, challenge);
+            }
         }
     }
 
@@ -103,7 +105,9 @@ public class ScramValidationTests
         foreach (var mechanism in new[] { SaslMechanism.ScramSha256, SaslMechanism.ScramSha512 })
         {
             foreach (var challenge in challenges)
+            {
                 yield return (mechanism, challenge);
+            }
         }
     }
 
@@ -127,7 +131,9 @@ public class ScramValidationTests
         var signature = exchange.Signature.ToCharArray();
         var lastPayload = signature.Length - 1;
         while (signature[lastPayload] == '=')
+        {
             lastPayload--;
+        }
         signature[lastPayload] = alphabet[alphabet.IndexOf(signature[lastPayload]) + 1];
         var nonCanonical = new string(signature);
 #if NET11_0_OR_GREATER
@@ -160,7 +166,9 @@ public class ScramValidationTests
         var authenticator = serverFinal ? new Exchange(mechanism).Authenticator
             : new ScramAuthenticator(mechanism, "test-user", "test-password");
         if (!serverFinal)
+        {
             authenticator.GetInitialResponse();
+        }
         await Assert.That(() => authenticator.EvaluateChallenge([0xff]))
             .Throws<AuthenticationException>().WithMessageContaining("UTF-8");
     }
@@ -265,13 +273,29 @@ public class ScramValidationTests
             .Throws<InvalidOperationException>().WithMessageContaining("Failed");
         await Assert.That(authenticator.IsComplete).IsFalse();
     }
+
     private sealed class Exchange
     {
-        public ScramAuthenticator Authenticator { get; }
-        public string ClientFirst { get; }
-        public byte[] ClientProof { get; }
-        public byte[] ExpectedClientProof { get; }
-        public string Signature { get; }
+        public ScramAuthenticator Authenticator
+        {
+            get;
+        }
+        public string ClientFirst
+        {
+            get;
+        }
+        public byte[] ClientProof
+        {
+            get;
+        }
+        public byte[] ExpectedClientProof
+        {
+            get;
+        }
+        public string Signature
+        {
+            get;
+        }
 
         public Exchange(SaslMechanism mechanism, bool tokenAuth = false, int iterations = 16,
             int maxIterations = ScramAuthenticator.DefaultMaxIterations, string firstExtensions = "", bool emptySalt = false)
@@ -288,14 +312,18 @@ public class ScramValidationTests
             var algorithm = mechanism == SaslMechanism.ScramSha256 ? HashAlgorithmName.SHA256 : HashAlgorithmName.SHA512;
             var size = mechanism == SaslMechanism.ScramSha256 ? 32 : 64;
             var salted = Rfc2898DeriveBytes.Pbkdf2("test-password"u8.ToArray(), salt, iterations, algorithm, size);
+
             byte[] Hmac(byte[] key, byte[] data) => mechanism == SaslMechanism.ScramSha256
                 ? HMACSHA256.HashData(key, data) : HMACSHA512.HashData(key, data);
+
             var clientKey = Hmac(salted, "Client Key"u8.ToArray());
             var storedKey = mechanism == SaslMechanism.ScramSha256 ? SHA256.HashData(clientKey) : SHA512.HashData(clientKey);
             var clientSignature = Hmac(storedKey, transcript);
             ExpectedClientProof = new byte[size];
             for (var index = 0; index < size; index++)
+            {
                 ExpectedClientProof[index] = (byte)(clientKey[index] ^ clientSignature[index]);
+            }
             Signature = Convert.ToBase64String(Hmac(Hmac(salted, "Server Key"u8.ToArray()), transcript));
         }
     }

@@ -853,7 +853,9 @@ public class JsonSchemaValidationBenchmarks
         }
         schema.Append("{}");
         for (var index = 0; index < depth; index++)
+        {
             schema.Append("]}");
+        }
         return schema.ToString();
     }
 
@@ -873,7 +875,9 @@ public class JsonSchemaValidationBenchmarks
         for (var index = 0; index < itemCount; index++)
         {
             if (index != 0)
+            {
                 payload.Append(',');
+            }
             payload.Append(index);
         }
     }
@@ -884,7 +888,9 @@ public class JsonSchemaValidationBenchmarks
         var json = new StringBuilder(duplicateCount * invalid.Length + 80);
         json.Append('{');
         for (var index = 0; index < duplicateCount; index++)
+        {
             json.Append(invalid);
+        }
         json.Append("\"details\":{\"a\":1,\"b\":2,\"c\":3,\"d\":4,\"e\":5,\"f\":6,\"g\":7,\"h\":8}}");
         return Encoding.UTF8.GetBytes(json.ToString());
     }
@@ -896,10 +902,14 @@ public class JsonSchemaValidationBenchmarks
         schema.Append("{\"properties\":{");
         payload.Append('{');
         for (var index = 0; index < propertyCount; index++)
+        {
             AppendDistinctDuplicateProperty(schema, payload, index);
+        }
         schema.Append("}}");
         for (var index = 0; index < propertyCount; index++)
+        {
             payload.Append(",\"p").Append(index).Append("\":1");
+        }
         payload.Append('}');
         return (schema.ToString(), Encoding.UTF8.GetBytes(payload.ToString()));
     }
@@ -923,7 +933,9 @@ public class JsonSchemaValidationBenchmarks
     private static void AppendNestedValue(StringBuilder json, int depth)
     {
         for (var index = 0; index < depth; index++)
+        {
             json.Append("{\"value\":");
+        }
         json.Append('1');
         json.Append('}', depth);
     }
@@ -934,7 +946,9 @@ public class JsonSchemaValidationBenchmarks
         var path = new StringBuilder("this");
         var payload = new StringBuilder(depth * 12);
         for (var index = 0; index < depth; index++)
+        {
             AppendTerminalPrefixLevel(expression, path, payload);
+        }
         payload.Append("{}");
         payload.Append('}', depth);
         var schema = $$"""
@@ -952,7 +966,9 @@ public class JsonSchemaValidationBenchmarks
     {
         path.Append(".child");
         if (expression.Length != 0)
+        {
             expression.Append(" && ");
+        }
         expression.Append(path).Append(" != null");
         payload.Append("{\"child\":");
     }
@@ -972,7 +988,9 @@ public class JsonSchemaValidationBenchmarks
         schema.Append(
             "{\"type\":\"integer\",\"confluent:rules\":[{\"name\":\"positive\",\"expr\":\"this > 0\"}]}");
         for (var index = 0; index < depth; index++)
+        {
             schema.Append("}}]}");
+        }
         payload.Append('1');
         payload.Append('}', depth);
         return (schema.ToString(), Encoding.UTF8.GetBytes(payload.ToString()));
@@ -993,21 +1011,27 @@ public class JsonSchemaValidationBenchmarks
         }
         schema.Append("{}");
         for (var index = 0; index < depth; index++)
+        {
             schema.Append("]}");
+        }
 
         var payload = new StringBuilder(itemCount * 4);
         payload.Append('{');
         for (var index = 0; index < depth; index++)
         {
             if (index != 0)
+            {
                 payload.Append(',');
+            }
             payload.Append("\"member").Append(index).Append("\":").Append(index);
         }
         payload.Append(",\"items\":[");
         for (var index = 0; index < itemCount; index++)
         {
             if (index != 0)
+            {
                 payload.Append(',');
+            }
             payload.Append(index);
         }
         payload.Append("]}");
@@ -1027,14 +1051,18 @@ public class JsonSchemaValidationBenchmarks
         }
         schema.Append("{}");
         for (var index = 0; index < depth; index++)
+        {
             schema.Append("]}");
+        }
 
         var payload = new StringBuilder(itemCount * 4);
         payload.Append('[');
         for (var index = 0; index < itemCount; index++)
         {
             if (index != 0)
+            {
                 payload.Append(',');
+            }
             payload.Append(index);
         }
         payload.Append(']');

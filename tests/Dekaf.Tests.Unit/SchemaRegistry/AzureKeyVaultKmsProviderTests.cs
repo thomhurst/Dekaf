@@ -424,7 +424,9 @@ public class AzureKeyVaultKmsProviderTests
 
         await Assert.That(factory.CreateCount).IsEqualTo(1);
         for (var index = 0; index < results.Length; index++)
+        {
             await Assert.That(results[index]).IsEquivalentTo(new byte[] { (byte)(index + 1) });
+        }
     }
 
     [Test]
@@ -507,16 +509,16 @@ public class AzureKeyVaultKmsProviderTests
         string keyId = KeyUri,
         string type = AzureKeyVaultKmsProvider.DefaultType,
         bool saveVersion = false) => new()
-    {
-        KmsType = type,
-        KmsKeyId = keyId,
-        KmsProps = saveVersion
-            ? new Dictionary<string, string>(StringComparer.Ordinal)
-            {
-                [AzureKeyVaultKmsProvider.SaveVersionProperty] = bool.TrueString
-            }
-            : null
-    };
+        {
+            KmsType = type,
+            KmsKeyId = keyId,
+            KmsProps = saveVersion
+                ? new Dictionary<string, string>(StringComparer.Ordinal)
+                {
+                    [AzureKeyVaultKmsProvider.SaveVersionProperty] = bool.TrueString
+                }
+                : null
+        };
 
     private static async Task<WrapResult> WaitForCancellationAsync(CancellationToken cancellationToken)
     {
@@ -544,7 +546,10 @@ public class AzureKeyVaultKmsProviderTests
         private int _createCount;
         private Exception? _nextCreationException;
 
-        internal ConcurrentBag<Uri> CreatedKeyIds { get; } = [];
+        internal ConcurrentBag<Uri> CreatedKeyIds
+        {
+            get;
+        } = [];
 
         internal int CreateCount => Volatile.Read(ref _createCount);
 
@@ -556,7 +561,9 @@ public class AzureKeyVaultKmsProviderTests
             Interlocked.Increment(ref _createCount);
             CreatedKeyIds.Add(keyId);
             if (Interlocked.Exchange(ref _nextCreationException, null) is { } exception)
+            {
                 throw exception;
+            }
 
             return create(keyId);
         }

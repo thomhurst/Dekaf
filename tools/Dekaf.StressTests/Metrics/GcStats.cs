@@ -17,10 +17,22 @@ internal sealed class GcStats : IDisposable
     private long _largestCounterRebase;
     private bool _captured;
 
-    public int Gen0 { get; private set; }
-    public int Gen1 { get; private set; }
-    public int Gen2 { get; private set; }
-    public long? AllocatedBytes { get; private set; }
+    public int Gen0
+    {
+        get; private set;
+    }
+    public int Gen1
+    {
+        get; private set;
+    }
+    public int Gen2
+    {
+        get; private set;
+    }
+    public long? AllocatedBytes
+    {
+        get; private set;
+    }
 
     public GcStats() : this(
         // A single lifetime-counter delta can go negative when allocation contexts from
@@ -58,7 +70,9 @@ internal sealed class GcStats : IDisposable
         lock (_gate)
         {
             if (_captured)
+            {
                 return;
+            }
 
             SampleAllocationCore();
             Gen0 = GC.CollectionCount(0) - _gen0Before;
@@ -83,7 +97,9 @@ internal sealed class GcStats : IDisposable
         lock (_gate)
         {
             if (!_captured)
+            {
                 SampleAllocationCore();
+            }
         }
     }
 
@@ -92,9 +108,13 @@ internal sealed class GcStats : IDisposable
         var current = _readAllocatedBytes();
         var delta = current - _lastAllocatedBytes;
         if (delta >= 0)
+        {
             _allocatedBytes += delta;
+        }
         else
+        {
             _largestCounterRebase = Math.Max(_largestCounterRebase, -delta);
+        }
 
         _lastAllocatedBytes = current;
     }
@@ -112,10 +132,22 @@ internal sealed class GcStats : IDisposable
 
 internal sealed class GcSnapshot
 {
-    public required int Gen0Collections { get; init; }
-    public required int Gen1Collections { get; init; }
-    public required int Gen2Collections { get; init; }
-    public required long? AllocatedBytes { get; init; }
+    public required int Gen0Collections
+    {
+        get; init;
+    }
+    public required int Gen1Collections
+    {
+        get; init;
+    }
+    public required int Gen2Collections
+    {
+        get; init;
+    }
+    public required long? AllocatedBytes
+    {
+        get; init;
+    }
 
     public string FormatAllocatedBytes()
     {

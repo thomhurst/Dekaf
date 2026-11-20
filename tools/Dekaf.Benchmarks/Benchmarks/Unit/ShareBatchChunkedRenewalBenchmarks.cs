@@ -13,18 +13,26 @@ public class ShareBatchChunkedRenewalBenchmarks
     private ShareConsumerPollBenchmarks _poll = null!;
 
     [Params(256, 1024, 4096)]
-    public int RecordCount { get; set; }
+    public int RecordCount
+    {
+        get; set;
+    }
 
     [Params(1, 64)]
-    public int ReplayChunkSize { get; set; }
+    public int ReplayChunkSize
+    {
+        get; set;
+    }
 
     [GlobalSetup]
     public ValueTask Setup()
     {
         _poll = new ShareConsumerPollBenchmarks
         {
-            RecordCount = RecordCount, BatchCount = 1,
-            RenewalMode = true, ReplayChunkSize = ReplayChunkSize
+            RecordCount = RecordCount,
+            BatchCount = 1,
+            RenewalMode = true,
+            ReplayChunkSize = ReplayChunkSize
         };
         return _poll.Setup();
     }

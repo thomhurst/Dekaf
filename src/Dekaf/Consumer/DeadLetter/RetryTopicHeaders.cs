@@ -43,7 +43,9 @@ public static class RetryTopicHeaders
         foreach (var header in originalHeaders)
         {
             if (!IsRetryHeader(header.Key))
+            {
                 headers.Add(header);
+            }
         }
 
         headers.Add(SourceTopicKey, sourceTopic);
@@ -102,13 +104,17 @@ public static class RetryTopicHeaders
     private static string? GetHeaderValue(IReadOnlyList<Header>? headers, string key)
     {
         if (headers is null)
+        {
             return null;
+        }
 
         for (var i = 0; i < headers.Count; i++)
         {
             var header = headers[i];
             if (header.Key == key)
+            {
                 return header.GetValueAsString();
+            }
         }
 
         return null;

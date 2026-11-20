@@ -22,21 +22,29 @@ public class ConsumerBufferedBatchBenchmarks
     private Record[][] _records = null!;
 
     [Params(65, 1025)]
-    public int BatchSize { get; set; }
+    public int BatchSize
+    {
+        get; set;
+    }
 
     [GlobalSetup]
     public void Setup()
     {
         if (MessageCount % KafkaConsumer<Ignore, ReadOnlyMemory<byte>>.PollRefreshRecordInterval == 0
             || MessageCount % BatchSize != 0)
+        {
             throw new InvalidOperationException("End after a complete batch and off the poll-refresh boundary.");
+        }
         _records = [new Record[RecordsPerFetch]];
         var payload = new byte[16];
         for (var i = 0; i < RecordsPerFetch; i++)
+        {
             _records[0][i] = new Record { OffsetDelta = i, IsKeyNull = true, Value = payload };
+        }
         _consumer = new KafkaConsumer<Ignore, ReadOnlyMemory<byte>>(new ConsumerOptions
         {
-            BootstrapServers = ["localhost:9092"], OffsetCommitMode = OffsetCommitMode.Auto,
+            BootstrapServers = ["localhost:9092"],
+            OffsetCommitMode = OffsetCommitMode.Auto,
             QueuedMinMessages = 1
         }, Serializers.Ignore, Serializers.RawBytes);
         BufferedConsumerHarness.InitializeForBufferedFastPath(_consumer, Topic, 0);
@@ -46,8 +54,10 @@ public class ConsumerBufferedBatchBenchmarks
     {
         BufferedConsumerHarness.DrainPendingFetches(_consumer);
         for (var i = 0; i < FetchCount; i++)
+        {
             BufferedConsumerHarness.AppendPendingFetch(_consumer, Topic, 0, _records, 1,
                 RecordsPerFetch, (long)i * RecordsPerFetch);
+        }
     }
 
     [Benchmark(OperationsPerInvoke = MessageCount)]
@@ -57,8 +67,12 @@ public class ConsumerBufferedBatchBenchmarks
         using var cancellation = new CancellationTokenSource();
         var count = 0;
         await foreach (var record in _consumer.ConsumeAsync(cancellation.Token).ConfigureAwait(false))
+        {
             if (++count == MessageCount)
+            {
                 cancellation.Cancel();
+            }
+        }
         return count;
     }
 
@@ -74,7 +88,9 @@ public class ConsumerBufferedBatchBenchmarks
         {
             count += batch.Count;
             if (count == MessageCount)
+            {
                 cancellation.Cancel();
+            }
         }
         return count;
     }

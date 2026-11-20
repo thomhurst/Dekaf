@@ -55,11 +55,16 @@ public sealed class TopologyDescriptionKafkaContainer : KafkaContainerDefault
 
     public override async ValueTask DisposeAsync()
     {
-        try { await base.DisposeAsync(); }
+        try
+        {
+            await base.DisposeAsync();
+        }
         finally
         {
             if (_image is not null)
+            {
                 await _image.DisposeAsync();
+            }
         }
     }
 }

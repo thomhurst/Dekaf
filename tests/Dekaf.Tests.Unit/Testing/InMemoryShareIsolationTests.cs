@@ -168,14 +168,18 @@ public sealed class InMemoryShareIsolationTests
             {
                 var configs = new Dictionary<ConfigResource, IReadOnlyList<ConfigAlter>>();
                 foreach (var resource in resources)
+                {
                     configs.Add(resource, [ConfigAlter.Set(IsolationConfig, resource == Workers ? "invalid" : "read_committed")]);
+                }
                 await admin.IncrementalAlterConfigsAsync(configs);
             }
             else
             {
                 var configs = new Dictionary<ConfigResource, IReadOnlyList<ConfigEntry>>();
                 foreach (var resource in resources)
+                {
                     configs.Add(resource, [new() { Name = IsolationConfig, Value = resource == Workers ? "invalid" : "read_committed" }]);
+                }
                 await admin.AlterConfigsAsync(configs);
             }
         });
@@ -232,7 +236,9 @@ public sealed class InMemoryShareIsolationTests
         await transaction.ProduceAsync("orders", "key", "first");
         await transaction.ProduceAsync("orders", "key", "second");
         if (abort)
+        {
             await transaction.AbortAsync();
+        }
         await using var ordinaryProducer = new InMemoryProducer<string, string>(cluster);
         var ordinary = await ordinaryProducer.ProduceAsync("orders", "key", "ordinary");
         await using var consumer = new InMemoryShareConsumer<string, string>(cluster,
@@ -295,7 +301,9 @@ public sealed class InMemoryShareIsolationTests
     private static async Task ConfigureAsync(InMemoryKafkaCluster cluster, string? isolation)
     {
         if (isolation is null)
+        {
             return;
+        }
         await using var admin = new InMemoryAdminClient(cluster);
         await admin.IncrementalAlterConfigsAsync(new Dictionary<ConfigResource, IReadOnlyList<ConfigAlter>>
         {
@@ -313,7 +321,9 @@ public sealed class InMemoryShareIsolationTests
     private static void EnableFaultPath(InMemoryKafkaCluster cluster, bool enabled)
     {
         if (!enabled)
+        {
             return;
+        }
         // A pre-released barrier exercises fault acquisition without a timing dependency.
         cluster.FaultPlan.PauseNext(new(KafkaFaultOperation.ShareConsume, "orders", 0, Workers.Name)).Release();
     }

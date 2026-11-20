@@ -106,8 +106,14 @@ public sealed class AspireShareConsumerIntegrationTests(KafkaTestContainer kafka
             ("Aspire:Dekaf:ShareConsumer:Config:AutoOffsetReset", "Earliest"));
         builder.Services.AddSingleton(state);
         builder.Services.AddSingleton(new WorkerTopic(topic));
-        if (keyed) builder.AddKeyedDekafShareConsumerService<Worker, string, string>("messaging");
-        else builder.AddDekafShareConsumerService<Worker, string, string>("messaging");
+        if (keyed)
+        {
+            builder.AddKeyedDekafShareConsumerService<Worker, string, string>("messaging");
+        }
+        else
+        {
+            builder.AddDekafShareConsumerService<Worker, string, string>("messaging");
+        }
         builder.AddDekafProducer<string, string>("messaging");
 
         using var host = builder.Build();
@@ -115,7 +121,9 @@ public sealed class AspireShareConsumerIntegrationTests(KafkaTestContainer kafka
         await host.StartAsync(timeout.Token);
         var producer = host.Services.GetRequiredService<IKafkaProducer<string, string>>();
         for (var index = 0; index < 5; index++)
+        {
             await producer.ProduceAsync(topic, $"key-{index}", $"value-{index}", timeout.Token);
+        }
 
         await state.Completed.Task.WaitAsync(timeout.Token);
         var report = await AspireHost.WaitForHealthyAsync(host.Services, timeout.Token);
@@ -131,13 +139,21 @@ public sealed class AspireShareConsumerIntegrationTests(KafkaTestContainer kafka
 
     private sealed class WorkerState(int expected)
     {
-        public ConcurrentDictionary<string, byte> Values { get; } = new();
-        public TaskCompletionSource Completed { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public ConcurrentDictionary<string, byte> Values
+        {
+            get;
+        } = new();
+        public TaskCompletionSource Completed
+        {
+            get;
+        } = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         public void Record(string value)
         {
             if (Values.TryAdd(value, 0) && Values.Count >= expected)
+            {
                 Completed.TrySetResult();
+            }
         }
     }
 
@@ -175,11 +191,19 @@ public sealed class AspireSchemaRegistryIntegrationTests(KafkaWithSchemaRegistry
             ("ConnectionStrings:registry", testInfra.RegistryUrl),
             ("Aspire:Dekaf:Consumer:Config:GroupId", $"aspire-sr-{Guid.NewGuid():N}"),
             ("Aspire:Dekaf:Consumer:Config:AutoOffsetReset", "Earliest"));
+
         ISchemaRegistryClient Registry(IServiceProvider services) => keyed
             ? services.GetRequiredKeyedService<ISchemaRegistryClient>("registry")
             : services.GetRequiredService<ISchemaRegistryClient>();
-        if (keyed) builder.AddKeyedDekafSchemaRegistryClient("registry");
-        else builder.AddDekafSchemaRegistryClient("registry");
+
+        if (keyed)
+        {
+            builder.AddKeyedDekafSchemaRegistryClient("registry");
+        }
+        else
+        {
+            builder.AddDekafSchemaRegistryClient("registry");
+        }
         builder.AddDekafProducer<string, Order>("messaging", configureBuilder: (services, producer) =>
             producer.UseJsonSchemaRegistry(Registry(services), OrderSchema));
         builder.AddDekafConsumer<string, Order>("messaging", configureBuilder: (services, consumer) => consumer
@@ -228,7 +252,9 @@ internal static class AspireHost
         {
             var report = await health.CheckHealthAsync(cancellationToken);
             if (report.Status == HealthStatus.Healthy)
+            {
                 return report;
+            }
 
             try
             {

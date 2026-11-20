@@ -383,11 +383,15 @@ public class CustomCaServerCertificateValidationTests
             {
                 var read = await stream.ReadAsync(buffer.AsMemory(length), _cts.Token);
                 if (read == 0)
+                {
                     break;
+                }
 
                 length += read;
                 if (buffer.AsSpan(0, length).IndexOf("\r\n\r\n"u8) >= 0)
+                {
                     break;
+                }
             }
 
             // Request line: "GET /path HTTP/1.1"

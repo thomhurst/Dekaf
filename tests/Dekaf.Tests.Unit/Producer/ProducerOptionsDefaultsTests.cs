@@ -1,5 +1,5 @@
-using Dekaf.Producer;
 using Dekaf.Networking;
+using Dekaf.Producer;
 using Dekaf.Protocol.Records;
 using Dekaf.Security.Sasl;
 

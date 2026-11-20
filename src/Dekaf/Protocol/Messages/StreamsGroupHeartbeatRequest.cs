@@ -10,23 +10,74 @@ internal sealed class StreamsGroupHeartbeatRequest : IKafkaRequest<StreamsGroupH
     public static short LowestSupportedVersion => 0;
     public static short HighestSupportedVersion => 1;
 
-    public required string GroupId { get; init; }
-    public required string MemberId { get; init; }
-    public required int MemberEpoch { get; init; }
-    public int EndpointInformationEpoch { get; init; }
-    public string? InstanceId { get; init; }
-    public string? RackId { get; init; }
-    public int RebalanceTimeoutMs { get; init; } = -1;
-    public StreamsGroupHeartbeatTopology? Topology { get; init; }
-    public IReadOnlyList<StreamsGroupHeartbeatTaskIds>? ActiveTasks { get; init; }
-    public IReadOnlyList<StreamsGroupHeartbeatTaskIds>? StandbyTasks { get; init; }
-    public IReadOnlyList<StreamsGroupHeartbeatTaskIds>? WarmupTasks { get; init; }
-    public string? ProcessId { get; init; }
-    public StreamsGroupHeartbeatEndpoint? UserEndpoint { get; init; }
-    public IReadOnlyList<StreamsGroupHeartbeatKeyValue>? ClientTags { get; init; }
-    public IReadOnlyList<StreamsGroupHeartbeatTaskOffset>? TaskOffsets { get; init; }
-    public IReadOnlyList<StreamsGroupHeartbeatTaskOffset>? TaskEndOffsets { get; init; }
-    public bool ShutdownApplication { get; init; }
+    public required string GroupId
+    {
+        get; init;
+    }
+    public required string MemberId
+    {
+        get; init;
+    }
+    public required int MemberEpoch
+    {
+        get; init;
+    }
+    public int EndpointInformationEpoch
+    {
+        get; init;
+    }
+    public string? InstanceId
+    {
+        get; init;
+    }
+    public string? RackId
+    {
+        get; init;
+    }
+    public int RebalanceTimeoutMs
+    {
+        get; init;
+    } = -1;
+    public StreamsGroupHeartbeatTopology? Topology
+    {
+        get; init;
+    }
+    public IReadOnlyList<StreamsGroupHeartbeatTaskIds>? ActiveTasks
+    {
+        get; init;
+    }
+    public IReadOnlyList<StreamsGroupHeartbeatTaskIds>? StandbyTasks
+    {
+        get; init;
+    }
+    public IReadOnlyList<StreamsGroupHeartbeatTaskIds>? WarmupTasks
+    {
+        get; init;
+    }
+    public string? ProcessId
+    {
+        get; init;
+    }
+    public StreamsGroupHeartbeatEndpoint? UserEndpoint
+    {
+        get; init;
+    }
+    public IReadOnlyList<StreamsGroupHeartbeatKeyValue>? ClientTags
+    {
+        get; init;
+    }
+    public IReadOnlyList<StreamsGroupHeartbeatTaskOffset>? TaskOffsets
+    {
+        get; init;
+    }
+    public IReadOnlyList<StreamsGroupHeartbeatTaskOffset>? TaskEndOffsets
+    {
+        get; init;
+    }
+    public bool ShutdownApplication
+    {
+        get; init;
+    }
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {
@@ -66,8 +117,14 @@ internal sealed class StreamsGroupHeartbeatRequest : IKafkaRequest<StreamsGroupH
 
 internal sealed class StreamsGroupHeartbeatTopology
 {
-    public int Epoch { get; init; }
-    public required IReadOnlyList<StreamsGroupHeartbeatSubtopology> Subtopologies { get; init; }
+    public int Epoch
+    {
+        get; init;
+    }
+    public required IReadOnlyList<StreamsGroupHeartbeatSubtopology> Subtopologies
+    {
+        get; init;
+    }
 
     public static void WriteNullable(ref KafkaProtocolWriter writer, StreamsGroupHeartbeatTopology? topology)
     {
@@ -88,13 +145,34 @@ internal sealed class StreamsGroupHeartbeatTopology
 
 internal sealed class StreamsGroupHeartbeatSubtopology
 {
-    public required string SubtopologyId { get; init; }
-    public required IReadOnlyList<string> SourceTopics { get; init; }
-    public required IReadOnlyList<string> SourceTopicRegex { get; init; }
-    public required IReadOnlyList<StreamsGroupHeartbeatTopicInfo> StateChangelogTopics { get; init; }
-    public required IReadOnlyList<string> RepartitionSinkTopics { get; init; }
-    public required IReadOnlyList<StreamsGroupHeartbeatTopicInfo> RepartitionSourceTopics { get; init; }
-    public required IReadOnlyList<StreamsGroupHeartbeatCopartitionGroup> CopartitionGroups { get; init; }
+    public required string SubtopologyId
+    {
+        get; init;
+    }
+    public required IReadOnlyList<string> SourceTopics
+    {
+        get; init;
+    }
+    public required IReadOnlyList<string> SourceTopicRegex
+    {
+        get; init;
+    }
+    public required IReadOnlyList<StreamsGroupHeartbeatTopicInfo> StateChangelogTopics
+    {
+        get; init;
+    }
+    public required IReadOnlyList<string> RepartitionSinkTopics
+    {
+        get; init;
+    }
+    public required IReadOnlyList<StreamsGroupHeartbeatTopicInfo> RepartitionSourceTopics
+    {
+        get; init;
+    }
+    public required IReadOnlyList<StreamsGroupHeartbeatCopartitionGroup> CopartitionGroups
+    {
+        get; init;
+    }
 
     public void Write(ref KafkaProtocolWriter writer)
     {
@@ -122,10 +200,22 @@ internal sealed class StreamsGroupHeartbeatSubtopology
 
 internal sealed class StreamsGroupHeartbeatTopicInfo
 {
-    public required string Name { get; init; }
-    public int Partitions { get; init; }
-    public short ReplicationFactor { get; init; }
-    public required IReadOnlyList<StreamsGroupHeartbeatKeyValue> TopicConfigs { get; init; }
+    public required string Name
+    {
+        get; init;
+    }
+    public int Partitions
+    {
+        get; init;
+    }
+    public short ReplicationFactor
+    {
+        get; init;
+    }
+    public required IReadOnlyList<StreamsGroupHeartbeatKeyValue> TopicConfigs
+    {
+        get; init;
+    }
 
     public void Write(ref KafkaProtocolWriter writer)
     {
@@ -141,9 +231,18 @@ internal sealed class StreamsGroupHeartbeatTopicInfo
 
 internal sealed class StreamsGroupHeartbeatCopartitionGroup
 {
-    public required IReadOnlyList<short> SourceTopics { get; init; }
-    public required IReadOnlyList<short> SourceTopicRegex { get; init; }
-    public required IReadOnlyList<short> RepartitionSourceTopics { get; init; }
+    public required IReadOnlyList<short> SourceTopics
+    {
+        get; init;
+    }
+    public required IReadOnlyList<short> SourceTopicRegex
+    {
+        get; init;
+    }
+    public required IReadOnlyList<short> RepartitionSourceTopics
+    {
+        get; init;
+    }
 
     public void Write(ref KafkaProtocolWriter writer)
     {
@@ -161,8 +260,14 @@ internal sealed class StreamsGroupHeartbeatCopartitionGroup
 
 internal sealed class StreamsGroupHeartbeatKeyValue
 {
-    public required string Key { get; init; }
-    public required string Value { get; init; }
+    public required string Key
+    {
+        get; init;
+    }
+    public required string Value
+    {
+        get; init;
+    }
 
     public void Write(ref KafkaProtocolWriter writer)
     {
@@ -174,8 +279,14 @@ internal sealed class StreamsGroupHeartbeatKeyValue
 
 internal sealed class StreamsGroupHeartbeatEndpoint
 {
-    public required string Host { get; init; }
-    public ushort Port { get; init; }
+    public required string Host
+    {
+        get; init;
+    }
+    public ushort Port
+    {
+        get; init;
+    }
 
     public void Write(ref KafkaProtocolWriter writer)
     {
@@ -210,9 +321,18 @@ internal sealed class StreamsGroupHeartbeatEndpoint
 
 internal sealed class StreamsGroupHeartbeatTaskOffset
 {
-    public required string SubtopologyId { get; init; }
-    public int Partition { get; init; }
-    public long Offset { get; init; }
+    public required string SubtopologyId
+    {
+        get; init;
+    }
+    public int Partition
+    {
+        get; init;
+    }
+    public long Offset
+    {
+        get; init;
+    }
 
     public void Write(ref KafkaProtocolWriter writer)
     {
@@ -225,8 +345,14 @@ internal sealed class StreamsGroupHeartbeatTaskOffset
 
 internal sealed class StreamsGroupHeartbeatTaskIds
 {
-    public required string SubtopologyId { get; init; }
-    public required IReadOnlyList<int> Partitions { get; init; }
+    public required string SubtopologyId
+    {
+        get; init;
+    }
+    public required IReadOnlyList<int> Partitions
+    {
+        get; init;
+    }
 
     public void Write(ref KafkaProtocolWriter writer)
     {

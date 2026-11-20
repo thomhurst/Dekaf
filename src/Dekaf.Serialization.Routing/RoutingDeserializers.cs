@@ -63,7 +63,9 @@ public sealed class TopicRoutingDeserializer<TBase> :
     public TBase Deserialize(ReadOnlyMemory<byte> data, SerializationContext context)
     {
         if (_routes.TryGetRoute(context.Topic, out var route))
+        {
             return route.Deserialize(data, context);
+        }
 
         throw MissingRoute("topic", context.Topic, context);
     }
@@ -77,7 +79,9 @@ public sealed class TopicRoutingDeserializer<TBase> :
         out TBase value)
     {
         if (_routes.TryGetRoute(context.Topic, out var route))
+        {
             return DeserializerPreparation.TryDeserialize(route, data, context, out value);
+        }
 
         throw MissingRoute("topic", context.Topic, context);
     }
@@ -88,7 +92,9 @@ public sealed class TopicRoutingDeserializer<TBase> :
         CancellationToken cancellationToken)
     {
         if (_routes.TryGetRoute(context.Topic, out var route))
+        {
             return DeserializerPreparation.PrepareAsync(route, data, context, cancellationToken);
+        }
 
         throw MissingRoute("topic", context.Topic, context);
     }
@@ -99,7 +105,9 @@ public sealed class TopicRoutingDeserializer<TBase> :
         in RecordHeaderRoutingLookup headers)
     {
         if (_routes.TryGetRoute(context.Topic, out var route))
+        {
             return RecordHeaderDeserializer.DeserializeChild(route, data, context, in headers);
+        }
 
         throw MissingRoute("topic", context.Topic, context);
     }
@@ -147,7 +155,9 @@ public sealed class TopicRoutingDeserializer<TBase> :
         SerializationContext context)
     {
         if (_routes.TryGetRoute(context.Topic, out var route))
+        {
             return RecordHeaderDeserializer.DeserializeCallerOwned(route, data, context);
+        }
 
         throw MissingRoute("topic", context.Topic, context);
     }
@@ -233,11 +243,15 @@ public sealed class SchemaIdRoutingDeserializer<TBase> :
     public TBase Deserialize(ReadOnlyMemory<byte> data, SerializationContext context)
     {
         if (IsTombstone(context))
+        {
             return null!;
+        }
 
         var schemaId = ReadSchemaId(data, context);
         if (_routes.TryGetRoute(schemaId, out var route))
+        {
             return route.Deserialize(data, context);
+        }
 
         throw MissingRoute(schemaId, context);
     }
@@ -258,7 +272,9 @@ public sealed class SchemaIdRoutingDeserializer<TBase> :
 
         var schemaId = ReadSchemaId(data, context);
         if (_routes.TryGetRoute(schemaId, out var route))
+        {
             return DeserializerPreparation.TryDeserialize(route, data, context, out value);
+        }
 
         throw MissingRoute(schemaId, context);
     }
@@ -269,11 +285,15 @@ public sealed class SchemaIdRoutingDeserializer<TBase> :
         CancellationToken cancellationToken)
     {
         if (IsTombstone(context))
+        {
             return default;
+        }
 
         var schemaId = ReadSchemaId(data, context);
         if (_routes.TryGetRoute(schemaId, out var route))
+        {
             return DeserializerPreparation.PrepareAsync(route, data, context, cancellationToken);
+        }
 
         throw MissingRoute(schemaId, context);
     }
@@ -284,11 +304,15 @@ public sealed class SchemaIdRoutingDeserializer<TBase> :
         in RecordHeaderRoutingLookup headers)
     {
         if (IsTombstone(context))
+        {
             return null!;
+        }
 
         var schemaId = ReadSchemaId(data, context);
         if (_routes.TryGetRoute(schemaId, out var route))
+        {
             return RecordHeaderDeserializer.DeserializeChild(route, data, context, in headers);
+        }
 
         throw MissingRoute(schemaId, context);
     }
@@ -326,7 +350,9 @@ public sealed class SchemaIdRoutingDeserializer<TBase> :
         CancellationToken cancellationToken)
     {
         if (IsTombstone(context))
+        {
             return default;
+        }
 
         var schemaId = ReadSchemaId(data, context);
         if (_routes.TryGetRoute(schemaId, out var route))
@@ -347,11 +373,15 @@ public sealed class SchemaIdRoutingDeserializer<TBase> :
         SerializationContext context)
     {
         if (IsTombstone(context))
+        {
             return null!;
+        }
 
         var schemaId = ReadSchemaId(data, context);
         if (_routes.TryGetRoute(schemaId, out var route))
+        {
             return RecordHeaderDeserializer.DeserializeCallerOwned(route, data, context);
+        }
 
         throw MissingRoute(schemaId, context);
     }
@@ -367,7 +397,9 @@ public sealed class SchemaIdRoutingDeserializer<TBase> :
     private static int ReadSchemaId(ReadOnlyMemory<byte> data, SerializationContext context)
     {
         if (data.Length >= HeaderSize && data.Span[0] == 0)
+        {
             return BinaryPrimitives.ReadInt32BigEndian(data.Span.Slice(1, sizeof(int)));
+        }
 
         throw new SerializationException("Schema-ID routing requires Confluent framing.")
         {
@@ -483,6 +515,8 @@ internal sealed class AsyncDeserializerRoute<TBase, TDerived>(IDeserializer<TDer
     void IRecordHeaderRoutingProvider.CollectHeaderNames(List<string> names)
     {
         if (_deserializer is IRecordHeaderRoutingProvider provider)
+        {
             provider.CollectHeaderNames(names);
+        }
     }
 }

@@ -85,7 +85,9 @@ internal sealed class OffsetCompletionBatch
         // Slabs retain their initialized prefix across pool returns. Publication
         // reaches the first uninitialized slot only at a chunk boundary.
         for (var index = start; index < end; index++)
+        {
             nodes[index] ??= new CompletedOffsetNode();
+        }
     }
 
     internal CompletedOffsetNode GetCompletionNode(int index) => Nodes![index];
@@ -112,14 +114,18 @@ internal sealed class OffsetCompletionBatch
         _remaining = _abandoned ? 0 : _remaining - (uint.MaxValue - (uint)published);
         TryReturn();
         if (Nodes is not null)
+        {
             LaneIdentity.FinishReservation(this);
+        }
     }
 
     internal void Abandon()
     {
         _abandoned = true;
         if (!_publishing)
+        {
             _remaining = 0;
+        }
         TryReturn();
     }
 
@@ -138,13 +144,17 @@ internal sealed class OffsetCompletionBatch
     internal void Complete()
     {
         if (--_remaining == 0)
+        {
             TryReturn();
+        }
     }
 
     private void TryReturn()
     {
         if (_remaining != 0 || _ranges != 0 || Nodes is null)
+        {
             return;
+        }
         if (_owner is OffsetCompletionPair pair)
         {
             _owner = pair.LaneIdentity;
@@ -172,7 +182,9 @@ internal sealed class OffsetCompletionBatch
         // A finalizer can also see an abandoned, unreachable lane whose tree was
         // never retired. Its live range links must not enter the shared node pool.
         if (nodes is not null && _ranges == 0)
+        {
             ArrayPool<CompletedOffsetNode>.Shared.Return(nodes);
+        }
     }
 }
 
@@ -204,20 +216,30 @@ internal sealed class OffsetCompletionPair : IDisposable
     internal void Add(OffsetCompletionBatch batch)
     {
         if (_first is null)
+        {
             _first = batch;
+        }
         else
+        {
             _second = batch;
+        }
         batch.Join(this);
     }
 
     internal void Release(OffsetCompletionBatch batch)
     {
         if (ReferenceEquals(_first, batch))
+        {
             _first = null;
+        }
         else
+        {
             _second = null;
+        }
         if (_first is null && _second is null)
+        {
             Dispose();
+        }
     }
 
     public void Dispose()
@@ -249,7 +271,10 @@ internal sealed class CompletedOffsetRanges
     private GCHandle[]? _weakReservations;
     // Keep lifecycle flags in the count word so weak tracking does not grow each lane.
     private int _reservationState;
-    internal int Count { get; private set; }
+    internal int Count
+    {
+        get; private set;
+    }
     internal bool IsRetired => (_reservationState & RetiredFlag) != 0;
     private int ReservationCount => _reservationState & ReservationCountMask;
 
@@ -261,14 +286,20 @@ internal sealed class CompletedOffsetRanges
             return;
         }
         if (_reservations is null)
+        {
             _reservations = ArrayPool<object?>.Shared.Rent(16);
+        }
         else if (ReservationCount == _reservations.Length)
+        {
             GrowReservations();
+        }
         var index = ReservationCount;
         batch.ReservationIndex = index;
         _reservations[index] = batch;
         if (_weakReservations is not null)
+        {
             _weakReservations[index] = default;
+        }
         _reservationState++;
     }
 
@@ -292,20 +323,26 @@ internal sealed class CompletedOffsetRanges
         }
         Array.Copy(previous, next, ReservationCount);
         if (previousWeak is not null)
+        {
             Array.Copy(previousWeak, nextWeak!, ReservationCount);
+        }
         // Publish both arrays together. A failed rent must leave the old index valid.
         _reservations = next;
         _weakReservations = nextWeak;
         ArrayPool<object?>.Shared.Return(previous, clearArray: true);
         if (previousWeak is not null)
+        {
             ArrayPool<GCHandle>.Shared.Return(previousWeak, clearArray: true);
+        }
     }
 
     internal void RemoveReservation(OffsetCompletionBatch batch)
     {
         var index = batch.ReservationIndex;
         if (index < 0)
+        {
             return;
+        }
         RemoveReservation(index);
         batch.ReservationIndex = -1;
     }
@@ -314,7 +351,9 @@ internal sealed class CompletedOffsetRanges
     {
         var index = pair.ReservationIndex;
         if (index < 0)
+        {
             return;
+        }
         RemoveReservation(index);
         pair.ReservationIndex = -1;
     }
@@ -322,29 +361,41 @@ internal sealed class CompletedOffsetRanges
     private static void SetReservationIndex(object reservation, int index)
     {
         if (reservation is OffsetCompletionBatch batch)
+        {
             batch.ReservationIndex = index;
+        }
         else
+        {
             ((OffsetCompletionPair)reservation).ReservationIndex = index;
+        }
     }
 
     private void RemoveReservation(int index)
     {
         if (index == 0)
+        {
             _reservationState &= ~FinishedReservationFlag;
+        }
         if (_weakReservations is not null && _weakReservations[index].IsAllocated)
+        {
             _weakReservations[index].Free();
+        }
         var last = --_reservationState & ReservationCountMask;
         if (index != last)
         {
             var moved = GetReservation(last);
             _reservations![index] = _reservations[last];
             if (_weakReservations is not null)
+            {
                 _weakReservations[index] = _weakReservations[last];
+            }
             SetReservationIndex(moved, index);
         }
         _reservations![last] = null;
         if (_weakReservations is not null)
+        {
             _weakReservations[last] = default;
+        }
     }
 
     // Keep at most two finished batches for prompt retirement and pool reuse.
@@ -353,7 +404,9 @@ internal sealed class CompletedOffsetRanges
     internal void FinishReservation(OffsetCompletionBatch batch)
     {
         if (IsRetired || batch.ReservationIndex < 0)
+        {
             return;
+        }
         if ((_reservationState & FinishedReservationFlag) != 0)
         {
             if (_reservations![0] is OffsetCompletionBatch previous)
@@ -447,7 +500,9 @@ internal sealed class CompletedOffsetRanges
     private void Clear(CompletedOffsetNode? node)
     {
         if (node is null)
+        {
             return;
+        }
         Clear(node.Left);
         Clear(node.Right);
         Free(node);
@@ -468,7 +523,9 @@ internal sealed class CompletedOffsetRanges
         }
         var left = Floor(previous);
         if (left is not null && left.End >= offset)
+        {
             return false;
+        }
         var right = Find(offset);
         var advances = previous == committed;
         if (right is not null)
@@ -521,7 +578,9 @@ internal sealed class CompletedOffsetRanges
         {
             var key = node.Start;
             if (key == start)
+            {
                 return node;
+            }
             node = start < key ? node.Left : node.Right;
         }
         return default;
@@ -534,7 +593,9 @@ internal sealed class CompletedOffsetRanges
         while (node is not null)
         {
             if (node.Start > start)
+            {
                 node = node.Left;
+            }
             else
             {
                 floor = node;
@@ -553,20 +614,30 @@ internal sealed class CompletedOffsetRanges
     private static CompletedOffsetNode Insert(CompletedOffsetNode? root, CompletedOffsetNode node)
     {
         if (root is null)
+        {
             return node;
+        }
         if (node.Start < root.Start)
+        {
             root.Left = Insert(root.Left, node);
+        }
         else
+        {
             root.Right = Insert(root.Right, node);
+        }
         return Balance(root);
     }
 
     private CompletedOffsetNode? Remove(CompletedOffsetNode root, long start)
     {
         if (start < root.Start)
+        {
             root.Left = Remove(root.Left!, start);
+        }
         else if (start > root.Start)
+        {
             root.Right = Remove(root.Right!, start);
+        }
         else
         {
             if (root.Left is null || root.Right is null)
@@ -577,7 +648,9 @@ internal sealed class CompletedOffsetRanges
             }
             var successor = root.Right;
             while (successor.Left is not null)
+            {
                 successor = successor.Left;
+            }
             root.Start = successor.Start;
             root.End = successor.End;
             root.Epoch = successor.Epoch;
@@ -601,13 +674,17 @@ internal sealed class CompletedOffsetRanges
         if (balance > 1)
         {
             if (Height(left!.Left) < Height(left!.Right))
+            {
                 node.Left = RotateLeft(left!);
+            }
             return RotateRight(node);
         }
         if (balance < -1)
         {
             if (Height(right!.Right) < Height(right!.Left))
+            {
                 node.Right = RotateRight(right!);
+            }
             return RotateLeft(node);
         }
         return node;

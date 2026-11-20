@@ -17,7 +17,10 @@ public class OffsetStoreBenchmarks
     private StructOffsetList _structOffsets;
 
     [Params(1, 8, 64)]
-    public int PartitionCount { get; set; }
+    public int PartitionCount
+    {
+        get; set;
+    }
 
     [GlobalSetup]
     public void Setup()
@@ -27,7 +30,9 @@ public class OffsetStoreBenchmarks
             .Build();
         _offsets = new TopicPartitionOffset[PartitionCount];
         for (var partition = 0; partition < _offsets.Length; partition++)
+        {
             _offsets[partition] = new TopicPartitionOffset("offset-store-benchmark", partition, 42, leaderEpoch: 3);
+        }
 
         _offsetList = _offsets.ToList();
         _structOffsets = new StructOffsetList(_offsets);
@@ -41,7 +46,9 @@ public class OffsetStoreBenchmarks
     public void RepeatedSingle()
     {
         for (var index = 0; index < _offsets.Length; index++)
+        {
             _consumer.StoreOffset(_offsets[index]);
+        }
     }
 
     [Benchmark]

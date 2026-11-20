@@ -59,20 +59,26 @@ internal static class KafkaClientStatusFactory
         int count)
     {
         if (count == 0)
+        {
             return Array.Empty<TopicPartition>();
+        }
 
         var copy = new TopicPartition[count];
         var index = 0;
         foreach (var topicPartition in assignment)
         {
             if ((uint)index >= (uint)copy.Length)
+            {
                 break;
+            }
 
             copy[index++] = topicPartition;
         }
 
         if (index != copy.Length)
+        {
             Array.Resize(ref copy, index);
+        }
 
         return new ReadOnlyCollection<TopicPartition>(copy);
     }

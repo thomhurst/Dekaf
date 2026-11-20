@@ -17,22 +17,34 @@ public sealed class TxnOffsetCommitRequest : IKafkaRequest<TxnOffsetCommitRespon
     /// <summary>
     /// The transactional ID.
     /// </summary>
-    public required string TransactionalId { get; init; }
+    public required string TransactionalId
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The consumer group ID.
     /// </summary>
-    public required string GroupId { get; init; }
+    public required string GroupId
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The producer ID.
     /// </summary>
-    public long ProducerId { get; init; }
+    public long ProducerId
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The producer epoch.
     /// </summary>
-    public short ProducerEpoch { get; init; }
+    public short ProducerEpoch
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The classic generation ID or consumer-protocol member epoch (v3+). Default -1.
@@ -57,17 +69,26 @@ public sealed class TxnOffsetCommitRequest : IKafkaRequest<TxnOffsetCommitRespon
     /// <summary>
     /// The member ID of the consumer (v3+).
     /// </summary>
-    public string MemberId { get; init; } = string.Empty;
+    public string MemberId
+    {
+        get; init;
+    } = string.Empty;
 
     /// <summary>
     /// The group instance ID for static membership (v3+).
     /// </summary>
-    public string? GroupInstanceId { get; init; }
+    public string? GroupInstanceId
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The topics and partitions with offsets to commit.
     /// </summary>
-    public required IReadOnlyList<TxnOffsetCommitRequestTopic> Topics { get; init; }
+    public required IReadOnlyList<TxnOffsetCommitRequestTopic> Topics
+    {
+        get; init;
+    }
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {
@@ -96,16 +117,29 @@ public sealed class TxnOffsetCommitRequest : IKafkaRequest<TxnOffsetCommitRespon
 /// </summary>
 public sealed class TxnOffsetCommitRequestTopic
 {
-    public string Name { get; init; } = string.Empty;
-    public Guid TopicId { get; init; }
-    public required IReadOnlyList<TxnOffsetCommitRequestPartition> Partitions { get; init; }
+    public string Name
+    {
+        get; init;
+    } = string.Empty;
+    public Guid TopicId
+    {
+        get; init;
+    }
+    public required IReadOnlyList<TxnOffsetCommitRequestPartition> Partitions
+    {
+        get; init;
+    }
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {
         if (version >= TxnOffsetCommitRequest.TopicIdVersion)
+        {
             writer.WriteUuid(TopicId);
+        }
         else
+        {
             writer.WriteCompactString(Name);
+        }
 
         writer.WriteCompactArray(
             Partitions,
@@ -121,18 +155,30 @@ public sealed class TxnOffsetCommitRequestTopic
 /// </summary>
 public sealed class TxnOffsetCommitRequestPartition
 {
-    public required int PartitionIndex { get; init; }
-    public required long CommittedOffset { get; init; }
+    public required int PartitionIndex
+    {
+        get; init;
+    }
+    public required long CommittedOffset
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The committed leader epoch (v2+). Default -1.
     /// </summary>
-    public int CommittedLeaderEpoch { get; init; } = -1;
+    public int CommittedLeaderEpoch
+    {
+        get; init;
+    } = -1;
 
     /// <summary>
     /// Optional metadata for the committed offset.
     /// </summary>
-    public string? CommittedMetadata { get; init; }
+    public string? CommittedMetadata
+    {
+        get; init;
+    }
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {

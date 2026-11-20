@@ -5,12 +5,11 @@ using System.Reflection;
 using Dekaf.Compression;
 using Dekaf.Metadata;
 using Dekaf.Networking;
-using Dekaf.Protocol;
 using Dekaf.Producer;
+using Dekaf.Protocol;
 using Dekaf.Protocol.Messages;
 using Dekaf.Protocol.Records;
 using Microsoft.Extensions.Logging;
-
 using NSubstitute;
 
 namespace Dekaf.Tests.Unit.Producer;
@@ -57,7 +56,9 @@ public sealed class BrokerSenderMuteOrderingTests : ScriptedProduceResponseFixtu
         var vtPool = new ValueTaskSourcePool<RecordMetadata>();
         using var sendLogger = new PipelinedSendLogger(expectedSends: 1);
         var testTimestamp = Stopwatch.GetTimestamp();
-        var sender = CreateSender(pool, options, accumulator, (_, _, _, _, _) => { },
+        var sender = CreateSender(pool, options, accumulator, (_, _, _, _, _) =>
+        {
+        },
             logger: sendLogger,
             getTimestamp: () => Volatile.Read(ref testTimestamp));
         var batch = CreateTestBatch(vtPool, "test-topic", partition: 0);
@@ -130,7 +131,9 @@ public sealed class BrokerSenderMuteOrderingTests : ScriptedProduceResponseFixtu
         var sender = CreateSender(pool, options, accumulator, (_, _, _, _, exception) =>
             {
                 if (exception is not null)
+                {
                     Interlocked.Increment(ref failedBatches);
+                }
             },
             logger: sendLogger,
             getTimestamp: () => Volatile.Read(ref testTimestamp));
@@ -148,7 +151,9 @@ public sealed class BrokerSenderMuteOrderingTests : ScriptedProduceResponseFixtu
             // request timeout sees only the first as timed out.
             var betweenSends = Stopwatch.GetTimestamp();
             while (Stopwatch.GetTimestamp() == betweenSends)
+            {
                 Thread.SpinWait(1);
+            }
 
             // Another client of the shared pool retires the connection: this sender's next
             // send is refused a lease on it and pins the pool's replacement, while the first
@@ -206,7 +211,9 @@ public sealed class BrokerSenderMuteOrderingTests : ScriptedProduceResponseFixtu
         var sender = CreateSender(pool, options, accumulator, (_, _, _, _, exception) =>
         {
             if (exception is not null)
+            {
                 failure.TrySetResult(exception);
+            }
         });
 
         try
@@ -227,7 +234,10 @@ public sealed class BrokerSenderMuteOrderingTests : ScriptedProduceResponseFixtu
 
     private sealed class RetirementRecordingPool(IConnectionPool inner) : IConnectionPool, IConnectionRetirementPool
     {
-        public ConcurrentQueue<(int BrokerId, IKafkaConnection Connection)> Retired { get; } = new();
+        public ConcurrentQueue<(int BrokerId, IKafkaConnection Connection)> Retired
+        {
+            get;
+        } = new();
 
         public void RetireConnection(int brokerId, IKafkaConnection connection) =>
             Retired.Enqueue((brokerId, connection));
@@ -470,7 +480,9 @@ public sealed class BrokerSenderMuteOrderingTests : ScriptedProduceResponseFixtu
             new CompressionCodecRegistry(),
             inflightTracker: new PartitionInflightTracker(),
             getProduceApiVersion: () => 9,
-            setProduceApiVersion: _ => { },
+            setProduceApiVersion: _ =>
+            {
+            },
             isTransactional: () => false,
             tryEnsurePartitionsInTransaction: null,
             bumpEpoch: null,
@@ -579,7 +591,9 @@ public sealed class BrokerSenderMuteOrderingTests : ScriptedProduceResponseFixtu
                 pool,
                 options,
                 accumulator,
-                onAcknowledgement: (_, _, _, _, _) => { },
+                onAcknowledgement: (_, _, _, _, _) =>
+                {
+                },
                 metadataManager,
                 brokerId: brokerId);
 
@@ -635,7 +649,9 @@ public sealed class BrokerSenderMuteOrderingTests : ScriptedProduceResponseFixtu
             (_, _, _, _, ex) =>
             {
                 if (ex is null)
+                {
                     acknowledged.TrySetResult();
+                }
             },
             metadataManager,
             logger: sendLogger);
@@ -696,7 +712,9 @@ public sealed class BrokerSenderMuteOrderingTests : ScriptedProduceResponseFixtu
         metadataManager.Metadata.Update(CreateRoutingMetadata(partitionZeroLeader: 2));
         var vtPool = new ValueTaskSourcePool<RecordMetadata>();
         using var sendLogger = new PipelinedSendLogger(expectedSends: 1);
-        var sender = CreateSender(pool, options, accumulator, (_, _, _, _, _) => { }, metadataManager,
+        var sender = CreateSender(pool, options, accumulator, (_, _, _, _, _) =>
+        {
+        }, metadataManager,
             logger: sendLogger);
         var getConnection = typeof(BrokerSender).GetMethod(
             "GetConnectionForPartition", BindingFlags.Instance | BindingFlags.NonPublic)!;
@@ -749,7 +767,9 @@ public sealed class BrokerSenderMuteOrderingTests : ScriptedProduceResponseFixtu
         var vtPool = new ValueTaskSourcePool<RecordMetadata>();
         using var sendLogger = new PipelinedSendLogger(expectedSends: 1);
         var testTimestamp = Stopwatch.GetTimestamp();
-        var sender = CreateSender(pool, options, accumulator, (_, _, _, _, _) => { }, metadataManager,
+        var sender = CreateSender(pool, options, accumulator, (_, _, _, _, _) =>
+        {
+        }, metadataManager,
             logger: sendLogger,
             getTimestamp: () => Volatile.Read(ref testTimestamp));
         var getConnection = typeof(BrokerSender).GetMethod(
@@ -820,7 +840,9 @@ public sealed class BrokerSenderMuteOrderingTests : ScriptedProduceResponseFixtu
             pool,
             options,
             accumulator,
-            onAcknowledgement: (_, _, _, _, _) => { },
+            onAcknowledgement: (_, _, _, _, _) =>
+            {
+            },
             metadataManager);
         var getConnection = typeof(BrokerSender).GetMethod(
             "GetConnectionForPartition",
@@ -934,13 +956,17 @@ public sealed class BrokerSenderMuteOrderingTests : ScriptedProduceResponseFixtu
             (_, offset, _, _, ex) =>
             {
                 if (ex is not null)
+                {
                     return;
+                }
 
                 lock (acknowledgedOffsets)
                 {
                     acknowledgedOffsets.Add(offset);
                     if (acknowledgedOffsets.Count == 2)
+                    {
                         allAcknowledged.Set();
+                    }
                 }
             },
             logger: sendLogger);
@@ -954,7 +980,9 @@ public sealed class BrokerSenderMuteOrderingTests : ScriptedProduceResponseFixtu
             {
                 string acks;
                 lock (acknowledgedOffsets)
+                {
                     acks = string.Join(',', acknowledgedOffsets);
+                }
                 string captured;
                 lock (connection.CapturedProduceRequests)
                 {
@@ -976,7 +1004,9 @@ public sealed class BrokerSenderMuteOrderingTests : ScriptedProduceResponseFixtu
 
             sender.Enqueue(firstBatch);
             if (!sendLogger.TryWaitForSend(0, DiagnosticWaitTimeout, ct))
+            {
                 throw new TimeoutException($"Send 1 never happened: {Diagnose()}");
+            }
 
             await Assert.That(accumulator.IsMuted(firstBatch.TopicPartition)).IsFalse();
 
@@ -984,14 +1014,18 @@ public sealed class BrokerSenderMuteOrderingTests : ScriptedProduceResponseFixtu
             sender.Enqueue(secondBatch);
 
             if (!sendLogger.TryWaitForSend(1, DiagnosticWaitTimeout, ct))
+            {
                 throw new TimeoutException($"Send 2 never happened: {Diagnose()}");
+            }
             await Assert.That(sendLogger.SendCount).IsEqualTo(2);
 
             responses[0].SetResult(CreateSuccessResponse("test-topic", partition: 0, baseOffset: 100));
             responses[1].SetResult(CreateSuccessResponse("test-topic", partition: 0, baseOffset: 101));
 
             if (!allAcknowledged.Wait(DiagnosticWaitTimeout, ct))
+            {
                 throw new TimeoutException($"Acknowledgements never arrived: {Diagnose()}");
+            }
             await Assert.That(acknowledgedOffsets).IsEquivalentTo([100L, 101L]);
         }
         finally
@@ -1028,7 +1062,9 @@ public sealed class BrokerSenderMuteOrderingTests : ScriptedProduceResponseFixtu
             (_, _, _, _, ex) =>
             {
                 if (ex is null)
+                {
                     acknowledged.TrySetResult();
+                }
             },
             logger: sendLogger);
 
@@ -1091,7 +1127,9 @@ public sealed class BrokerSenderMuteOrderingTests : ScriptedProduceResponseFixtu
             maxInFlight: 2,
             enableIdempotence: false);
         var accumulator = new RecordAccumulator(options);
-        var sender = CreateSender(pool, options, accumulator, (_, _, _, _, _) => { });
+        var sender = CreateSender(pool, options, accumulator, (_, _, _, _, _) =>
+        {
+        });
 
         try
         {
@@ -1155,7 +1193,9 @@ public sealed class BrokerSenderMuteOrderingTests : ScriptedProduceResponseFixtu
             (_, _, _, _, ex) =>
             {
                 if (ex is null && Interlocked.Increment(ref acknowledgedCount) == 2)
+                {
                     allAcknowledged.TrySetResult();
+                }
             });
 
         try
@@ -1175,7 +1215,9 @@ public sealed class BrokerSenderMuteOrderingTests : ScriptedProduceResponseFixtu
             firstWrite.TrySetResult();
             secondWrite.TrySetResult();
             if (sender is not null)
+            {
                 await sender.DisposeAsync();
+            }
             await accumulator.DisposeAsync();
             await vtPool.DisposeAsync();
         }
@@ -1189,7 +1231,9 @@ public sealed class BrokerSenderMuteOrderingTests : ScriptedProduceResponseFixtu
         var options = CreateOptions();
         var accumulator = new RecordAccumulator(options);
         var vtPool = new ValueTaskSourcePool<RecordMetadata>();
-        var sender = CreateSender(pool, options, accumulator, (_, _, _, _, _) => { });
+        var sender = CreateSender(pool, options, accumulator, (_, _, _, _, _) =>
+        {
+        });
 
         try
         {
@@ -1231,7 +1275,9 @@ public sealed class BrokerSenderMuteOrderingTests : ScriptedProduceResponseFixtu
         var options = CreateOptions();
         var accumulator = new RecordAccumulator(options);
         var sourcePool = new ValueTaskSourcePool<RecordMetadata>();
-        var sender = CreateSender(pool, options, accumulator, (_, _, _, _, _) => { });
+        var sender = CreateSender(pool, options, accumulator, (_, _, _, _, _) =>
+        {
+        });
 
         try
         {
@@ -1315,7 +1361,9 @@ public sealed class BrokerSenderMuteOrderingTests : ScriptedProduceResponseFixtu
         var (pool, _) = CreateMockConnection(responseQueue);
         var options = CreateOptions(maxRequestSize: maxRequestSize);
         var accumulator = new RecordAccumulator(options);
-        var sender = CreateSender(pool, options, accumulator, (_, _, _, _, _) => { });
+        var sender = CreateSender(pool, options, accumulator, (_, _, _, _, _) =>
+        {
+        });
 
         try
         {
@@ -1367,7 +1415,9 @@ public sealed class BrokerSenderMuteOrderingTests : ScriptedProduceResponseFixtu
         var (pool, _) = CreateMockConnection(responseQueue);
         var options = CreateOptions();
         var accumulator = new RecordAccumulator(options);
-        var sender = CreateSender(pool, options, accumulator, (_, _, _, _, _) => { });
+        var sender = CreateSender(pool, options, accumulator, (_, _, _, _, _) =>
+        {
+        });
 
         try
         {
@@ -1417,7 +1467,9 @@ public sealed class BrokerSenderMuteOrderingTests : ScriptedProduceResponseFixtu
         var options = CreateOptions();
         var accumulator = new RecordAccumulator(options);
         var vtPool = new ValueTaskSourcePool<RecordMetadata>();
-        var sender = CreateSender(pool, options, accumulator, (_, _, _, _, _) => { });
+        var sender = CreateSender(pool, options, accumulator, (_, _, _, _, _) =>
+        {
+        });
 
         try
         {
@@ -1500,7 +1552,9 @@ public sealed class BrokerSenderMuteOrderingTests : ScriptedProduceResponseFixtu
             pool,
             options,
             accumulator,
-            onAcknowledgement: (_, _, _, _, _) => { },
+            onAcknowledgement: (_, _, _, _, _) =>
+            {
+            },
             metadataManager,
             rerouteBatch: (batch, _) => rerouted.TrySetResult(batch));
 
@@ -1577,13 +1631,17 @@ public sealed class BrokerSenderMuteOrderingTests : ScriptedProduceResponseFixtu
         var barrierRequested = new TaskCompletionSource<BrokerSender>(TaskCreationOptions.RunContinuationsAsynchronously);
         var iterationGate = new TwoIterationGateLogger();
         iterationGate.ReleaseSecond();
-        await using var sender = CreateSender(pool, options, accumulator, (_, _, _, _, _) => { },
+        await using var sender = CreateSender(pool, options, accumulator, (_, _, _, _, _) =>
+        {
+        },
             metadataManager, rerouteBatch: (batch, _) =>
             {
                 rerouted.Add(batch);
                 mutedDuringReroute.Add(accumulator.IsMuted(batch.TopicPartition));
                 if (rerouted.Count == totalBatches)
+                {
                     handoffComplete.TrySetResult();
+                }
             }, logger: iterationGate,
             requestRerouteBarrier: deferBarrier ? source => barrierRequested.TrySetResult(source) : null);
 
@@ -1647,7 +1705,9 @@ public sealed class BrokerSenderMuteOrderingTests : ScriptedProduceResponseFixtu
             // Model the source finishing its barrier after the destination observes A's
             // mute, but before the destination examines B in the same coalesce pass.
             if (Interlocked.Exchange(ref muteReleased, 1) == 0)
+            {
                 accumulator.UnmutePartition(topicPartition);
+            }
         });
         iterationGate.ReleaseSecond();
         var acknowledgedCounts = new List<int>();
@@ -1662,7 +1722,9 @@ public sealed class BrokerSenderMuteOrderingTests : ScriptedProduceResponseFixtu
 
             acknowledgedCounts.Add(count);
             if (acknowledgedCounts.Count == 2)
+            {
                 allAcknowledged.TrySetResult();
+            }
         }, brokerId: 2, logger: iterationGate);
 
         try
@@ -1719,7 +1781,9 @@ public sealed class BrokerSenderMuteOrderingTests : ScriptedProduceResponseFixtu
         {
             var idx = Interlocked.Increment(ref sendCount) - 1;
             if (idx < sendSignals.Length)
+            {
                 sendSignals[idx].TrySetResult();
+            }
         });
         ct = GuardUnscriptedSends(ct);
         var options = CreateOptions();
@@ -1738,7 +1802,9 @@ public sealed class BrokerSenderMuteOrderingTests : ScriptedProduceResponseFixtu
                 {
                     ackOrder.Add((tp.Partition, offset));
                     if (ackOrder.Count >= 2)
+                    {
                         allAcknowledged.TrySetResult();
+                    }
                 }
             }
         });
@@ -1821,7 +1887,9 @@ public sealed class BrokerSenderMuteOrderingTests : ScriptedProduceResponseFixtu
             var send = Interlocked.Increment(ref sendCount);
             IReadOnlyList<(string Name, Guid TopicId, int Partition)> requestedTopics;
             lock (connection.CapturedProduceRequests)
+            {
                 requestedTopics = connection.CapturedProduceRequests[^1].Topics;
+            }
 
             var partitions = new List<(int partition, ErrorCode errorCode, long baseOffset)>(
                 requestedTopics.Count);
@@ -1880,7 +1948,9 @@ public sealed class BrokerSenderMuteOrderingTests : ScriptedProduceResponseFixtu
                     ackPartitions.Add((tp.Partition, offset));
                     // batch B (p1) + batch A retry (p0) + batch C (p1) = 3 acks
                     if (ackPartitions.Count >= 3)
+                    {
                         allAcknowledged.TrySetResult();
+                    }
                 }
             }
         });
@@ -1905,7 +1975,9 @@ public sealed class BrokerSenderMuteOrderingTests : ScriptedProduceResponseFixtu
             var firstResponsePayload = await firstSend.Task.WaitAsync(TimeSpan.FromSeconds(30), ct);
             IReadOnlyList<(string Name, Guid TopicId, int Partition)> firstRequest;
             lock (connection.CapturedProduceRequests)
+            {
                 firstRequest = connection.CapturedProduceRequests[0].Topics;
+            }
             await Assert.That(firstRequest.Select(static topic => topic.Partition))
                 .IsEquivalentTo([0, 1]);
 
@@ -1970,7 +2042,9 @@ public sealed class BrokerSenderMuteOrderingTests : ScriptedProduceResponseFixtu
 
             IReadOnlyList<(string Name, Guid TopicId, int Partition)> requestedTopics;
             lock (connection.CapturedProduceRequests)
+            {
                 requestedTopics = connection.CapturedProduceRequests[^1].Topics;
+            }
 
             var partitions = new List<(int partition, ErrorCode errorCode, long baseOffset)>(
                 requestedTopics.Count);
@@ -2008,7 +2082,9 @@ public sealed class BrokerSenderMuteOrderingTests : ScriptedProduceResponseFixtu
                 {
                     ackPartitions.Add((tp.Partition, offset));
                     if (ackPartitions.Count >= 3)
+                    {
                         allAcknowledged.TrySetResult();
+                    }
                 }
             }
         });
@@ -2065,7 +2141,9 @@ public sealed class BrokerSenderMuteOrderingTests : ScriptedProduceResponseFixtu
         {
             var idx = Interlocked.Increment(ref sendCount) - 1;
             if (idx < sendSignals.Length)
+            {
                 sendSignals[idx].TrySetResult();
+            }
         });
         ct = GuardUnscriptedSends(ct);
         var options = CreateOptions();
@@ -2084,7 +2162,9 @@ public sealed class BrokerSenderMuteOrderingTests : ScriptedProduceResponseFixtu
                 {
                     ackOffsets.Add(offset);
                     if (ackOffsets.Count >= 2)
+                    {
                         allAcknowledged.TrySetResult();
+                    }
                 }
             }
         });
@@ -2145,7 +2225,9 @@ public sealed class BrokerSenderMuteOrderingTests : ScriptedProduceResponseFixtu
         {
             var idx = Interlocked.Increment(ref sendCount) - 1;
             if (idx < sendSignals.Length)
+            {
                 sendSignals[idx].TrySetResult();
+            }
         });
         ct = GuardUnscriptedSends(ct);
         var options = CreateOptions();
@@ -2215,7 +2297,9 @@ public sealed class BrokerSenderMuteOrderingTests : ScriptedProduceResponseFixtu
         {
             var idx = Interlocked.Increment(ref sendCount) - 1;
             if (idx < sendSignals.Length)
+            {
                 sendSignals[idx].TrySetResult();
+            }
         });
         ct = GuardUnscriptedSends(ct);
         var options = CreateOptions();
@@ -2234,7 +2318,9 @@ public sealed class BrokerSenderMuteOrderingTests : ScriptedProduceResponseFixtu
                 {
                     ackOffsets.Add(offset);
                     if (ackOffsets.Count >= 2)
+                    {
                         allAcknowledged.TrySetResult();
+                    }
                 }
             }
         });
@@ -2306,7 +2392,9 @@ public sealed class BrokerSenderMuteOrderingTests : ScriptedProduceResponseFixtu
         {
             var idx = Interlocked.Increment(ref sendCount) - 1;
             if (idx < sendSignals.Length)
+            {
                 sendSignals[idx].TrySetResult();
+            }
         });
         ct = GuardUnscriptedSends(ct);
         var options = CreateOptions();
@@ -2327,7 +2415,9 @@ public sealed class BrokerSenderMuteOrderingTests : ScriptedProduceResponseFixtu
                 {
                     ackList.Add((tp.Partition, offset));
                     if (ackList.Count >= 3)
+                    {
                         allAcknowledged.TrySetResult();
+                    }
                 }
             }
         });
@@ -2407,7 +2497,9 @@ public sealed class BrokerSenderMuteOrderingTests : ScriptedProduceResponseFixtu
         {
             var index = Interlocked.Increment(ref sendCount) - 1;
             if (index < sendSignals.Length)
+            {
                 sendSignals[index].TrySetResult();
+            }
         });
         ct = GuardUnscriptedSends(ct);
         var options = CreateOptions(maxInFlight: 1);
@@ -2419,13 +2511,17 @@ public sealed class BrokerSenderMuteOrderingTests : ScriptedProduceResponseFixtu
         var replacement = CreateSender(pool, options, accumulator, (tp, _, _, count, ex) =>
         {
             if (tp.Partition != 0 || ex is not null)
+            {
                 return;
+            }
 
             lock (acknowledgedMessageCounts)
             {
                 acknowledgedMessageCounts.Add(count);
                 if (acknowledgedMessageCounts.Count == 3)
+                {
                     allAcknowledged.TrySetResult();
+                }
             }
         });
         var crashLogger = new ThrowOnArmedIterationLogger();
@@ -2433,7 +2529,9 @@ public sealed class BrokerSenderMuteOrderingTests : ScriptedProduceResponseFixtu
             pool,
             options,
             accumulator,
-            onAcknowledgement: (_, _, _, _, _) => { },
+            onAcknowledgement: (_, _, _, _, _) =>
+            {
+            },
             rerouteBatch: replacement.Enqueue,
             logger: crashLogger);
 
@@ -2493,14 +2591,18 @@ public sealed class BrokerSenderMuteOrderingTests : ScriptedProduceResponseFixtu
 
             var unmuteDeadline = Stopwatch.GetTimestamp() + (5 * Stopwatch.Frequency);
             while (accumulator.IsMuted(topicPartition) && Stopwatch.GetTimestamp() < unmuteDeadline)
+            {
                 await Task.Delay(1, ct);
+            }
             await Assert.That(accumulator.IsMuted(topicPartition)).IsFalse();
         }
         finally
         {
             crashLogger.Arm();
             for (var i = 0; i < responses.Length; i++)
+            {
                 responses[i].TrySetResult(CreateSuccessResponse("test-topic", partition: 0, baseOffset: 10 + i));
+            }
 
             await exited.DisposeAsync();
             await replacement.DisposeAsync();
@@ -2549,7 +2651,9 @@ public sealed class BrokerSenderMuteOrderingTests : ScriptedProduceResponseFixtu
         {
             var idx = Interlocked.Increment(ref sendCount) - 1;
             if (idx < sendSignals.Length)
+            {
                 sendSignals[idx].TrySetResult();
+            }
         });
         ct = GuardUnscriptedSends(ct);
         var options = CreateOptions(maxInFlight: 2);
@@ -2570,7 +2674,9 @@ public sealed class BrokerSenderMuteOrderingTests : ScriptedProduceResponseFixtu
                     ackList.Add((tp.Partition, offset));
                     // B + X + Y + D + A retry + C = 6
                     if (ackList.Count >= 6)
+                    {
                         allAcknowledged.TrySetResult();
+                    }
                 }
             }
         }, logger: iterationGate);
@@ -2662,10 +2768,16 @@ public sealed class BrokerSenderMuteOrderingTests : ScriptedProduceResponseFixtu
             new(TaskCreationOptions.RunContinuationsAsynchronously);
         private int _iteration;
 
-        public TaskCompletionSource FirstIteration { get; } =
+        public TaskCompletionSource FirstIteration
+        {
+            get;
+        } =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
 
-        public TaskCompletionSource SecondIteration { get; } =
+        public TaskCompletionSource SecondIteration
+        {
+            get;
+        } =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         public void ReleaseFirst() => _firstRelease.TrySetResult();
@@ -2684,7 +2796,9 @@ public sealed class BrokerSenderMuteOrderingTests : ScriptedProduceResponseFixtu
             Func<TState, Exception?, string> formatter)
         {
             if (eventId.Name == "LogPartitionMuted")
+            {
                 onPartitionMuted?.Invoke();
+            }
 
             if (eventId.Name != "LogSendLoopIteration"
                 && !formatter(state, exception).Contains("send loop iteration", StringComparison.Ordinal))
@@ -2713,7 +2827,10 @@ public sealed class BrokerSenderMuteOrderingTests : ScriptedProduceResponseFixtu
         private readonly TaskCompletionSource _crashGate =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
 
-        public TaskCompletionSource FirstIteration { get; } =
+        public TaskCompletionSource FirstIteration
+        {
+            get;
+        } =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         public void Arm()
@@ -2744,7 +2861,9 @@ public sealed class BrokerSenderMuteOrderingTests : ScriptedProduceResponseFixtu
             FirstIteration.TrySetResult();
             _crashGate.Task.GetAwaiter().GetResult();
             if (Volatile.Read(ref _armed) != 0 && Interlocked.Exchange(ref _thrown, 1) == 0)
+            {
                 throw new InvalidOperationException("Injected send-loop crash");
+            }
         }
     }
 
@@ -2771,7 +2890,9 @@ public sealed class BrokerSenderMuteOrderingTests : ScriptedProduceResponseFixtu
         public void Dispose()
         {
             foreach (var signal in _sendSignals)
+            {
                 signal.Dispose();
+            }
         }
 
         public void WaitForSend(int index, CancellationToken cancellationToken) =>
@@ -2793,14 +2914,20 @@ public sealed class BrokerSenderMuteOrderingTests : ScriptedProduceResponseFixtu
             // balloon the queue — or keep paying for message formatting — while the test waits
             // out its timeout.
             if (Interlocked.Increment(ref _eventCount) <= 200)
+            {
                 _events.Enqueue($"{eventId.Name}: {formatter(state, exception)}{(exception is null ? "" : $" [{exception.GetType().Name}: {exception.Message}]")}");
+            }
 
             if (eventId.Name != "LogPipelinedSend")
+            {
                 return;
+            }
 
             var index = Interlocked.Increment(ref _sendCount) - 1;
             if ((uint)index < (uint)_sendSignals.Length)
+            {
                 _sendSignals[index].Set();
+            }
         }
     }
 
@@ -2817,7 +2944,15 @@ public sealed class BrokerSenderMuteOrderingTests : ScriptedProduceResponseFixtu
         var accumulator = new RecordAccumulator(options);
         var vtPool = new ValueTaskSourcePool<RecordMetadata>();
         var iterationGate = new TwoIterationGateLogger();
-        var sender = CreateSender(pool, options, accumulator, (_, _, _, _, _) => { }, logger: iterationGate);
+        var sender = CreateSender(
+            pool,
+            options,
+            accumulator,
+            (_, _, _, _, _) =>
+            {
+            },
+            logger: iterationGate
+        );
         var mutePartition = typeof(BrokerSender).GetMethod(
             "MutePartition", BindingFlags.Instance | BindingFlags.NonPublic)!;
         var deferUnmute = typeof(BrokerSender).GetMethod(

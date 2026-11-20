@@ -23,19 +23,31 @@ internal sealed class DynamoDbLeasePlan
     }
 
     /// <summary>Leases this relay already owns and renews.</summary>
-    public IReadOnlyList<int> Keep { get; }
+    public IReadOnlyList<int> Keep
+    {
+        get;
+    }
 
     /// <summary>Leases this relay owns beyond its fair share and hands back.</summary>
-    public IReadOnlyList<int> Release { get; }
+    public IReadOnlyList<int> Release
+    {
+        get;
+    }
 
     /// <summary>Free leases this relay tries to take.</summary>
-    public IReadOnlyList<int> Claim { get; }
+    public IReadOnlyList<int> Claim
+    {
+        get;
+    }
 
     /// <summary>
     /// <see cref="OutboxFairShare.StandbyRank"/> of a relay that holds nothing and has no
     /// share; -1 for every other relay.
     /// </summary>
-    public int StandbyRank { get; }
+    public int StandbyRank
+    {
+        get;
+    }
 }
 
 /// <summary>
@@ -69,7 +81,9 @@ internal static class DynamoDbLeasePlanner
         int bucketCount, List<string> activeRelayIds, string relayId, ReadOnlySpan<DynamoDbLeaseState> leases)
     {
         if (leases.Length != bucketCount)
+        {
             throw new ArgumentException("One lease state per bucket is required.", nameof(leases));
+        }
 
         // What every relay holds, as this relay sees it: a lapsed lease is free, except this
         // relay's own, which the owner condition still lets it renew.
@@ -87,21 +101,28 @@ internal static class DynamoDbLeasePlanner
 
             held[lease.Owner] = held.GetValueOrDefault(lease.Owner) + 1;
             if (lease.Owner == relayId)
+            {
                 owned.Add(bucket);
+            }
         }
 
         // Every relay's share from one pass, and with it every range: a range starts where
         // the shares of the relays that sort before it end.
         if (!activeRelayIds.Contains(relayId))
+        {
             activeRelayIds.Add(relayId);
+        }
         var shares = OutboxFairShare.ComputeAll(bucketCount, activeRelayIds, held);
         var starts = new int[shares.Length];
         for (var lower = 1; lower < shares.Length; lower++)
+        {
             starts[lower] = starts[lower - 1] + shares[lower - 1];
+        }
 
         var rank = activeRelayIds.IndexOf(relayId);
         var share = shares[rank];
         var first = starts[rank];
+
         bool InRange(int bucket) => bucket >= first && bucket < first + share;
 
         // Keep the assigned range first. What an over-share relay hands back is then what its
@@ -126,13 +147,17 @@ internal static class DynamoDbLeasePlanner
     private static int StandbyRank(int[] shares, int rank, int ownedCount)
     {
         if (shares[rank] > 0 || ownedCount > 0)
+        {
             return -1;
+        }
 
         var standbysBefore = 0;
         for (var lower = 0; lower < rank; lower++)
         {
             if (shares[lower] == 0)
+            {
                 standbysBefore++;
+            }
         }
 
         return standbysBefore;
@@ -149,11 +174,15 @@ internal static class DynamoDbLeasePlanner
     {
         var claims = new List<int>();
         if (Array.IndexOf(free, true) < 0)
+        {
             return claims;
+        }
 
         var deficits = new int[shares.Length];
         for (var rank = 0; rank < shares.Length; rank++)
+        {
             deficits[rank] = Math.Max(0, shares[rank] - held.GetValueOrDefault(sortedRelayIds[rank]));
+        }
 
         // First every relay takes the free buckets of its own range. Ranges are disjoint, so
         // these claims cannot overlap whatever order the relays run in.
@@ -162,7 +191,9 @@ internal static class DynamoDbLeasePlanner
             for (var bucket = starts[rank]; bucket < starts[rank] + shares[rank] && deficits[rank] > 0; bucket++)
             {
                 if (free[bucket])
+                {
                     Take(rank, bucket);
+                }
             }
         }
 
@@ -174,7 +205,9 @@ internal static class DynamoDbLeasePlanner
             for (; deficits[rank] > 0 && next < free.Length; next++)
             {
                 if (free[next])
+                {
                     Take(rank, next);
+                }
             }
         }
 
@@ -186,7 +219,9 @@ internal static class DynamoDbLeasePlanner
             free[bucket] = false;
             deficits[rank]--;
             if (rank == ownRank)
+            {
                 claims.Add(bucket);
+            }
         }
     }
 }

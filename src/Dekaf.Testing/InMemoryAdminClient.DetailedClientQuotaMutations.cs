@@ -18,7 +18,9 @@ public sealed partial class InMemoryAdminClient : IDetailedClientQuotaMutationAd
                 if (options?.ValidateOnly != true)
                 {
                     lock (_clientQuotas)
+                    {
                         ApplyClientQuotaAlteration(item);
+                    }
                 }
                 return ErrorCode.None;
             }, options?.TimeoutMs ?? 30000, cancellationToken);

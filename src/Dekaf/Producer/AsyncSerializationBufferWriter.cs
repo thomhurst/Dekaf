@@ -73,7 +73,9 @@ internal sealed class AsyncSerializationBufferWriter : IBufferWriter<byte>
         ArgumentOutOfRangeException.ThrowIfNegative(count);
 
         if (_buffer is null || _written + count > _buffer.Length)
+        {
             throw new InvalidOperationException("Cannot advance past the end of the buffer");
+        }
 
         _written += count;
     }
@@ -113,7 +115,9 @@ internal sealed class AsyncSerializationBufferWriter : IBufferWriter<byte>
     private void EnsureCapacity(int sizeHint)
     {
         if (sizeHint < 1)
+        {
             sizeHint = 1;
+        }
 
         if (_buffer is null)
         {
@@ -122,7 +126,9 @@ internal sealed class AsyncSerializationBufferWriter : IBufferWriter<byte>
         }
 
         if (_buffer.Length - _written < sizeHint)
+        {
             Grow(sizeHint);
+        }
     }
 
     private void Grow(int sizeHint)
@@ -133,7 +139,9 @@ internal sealed class AsyncSerializationBufferWriter : IBufferWriter<byte>
         var newSize = (int)Math.Max(doubled, required);
 
         if (newSize <= _buffer.Length)
+        {
             throw new InvalidOperationException("Cannot grow buffer: maximum size reached.");
+        }
 
         var newBuffer = ProducerDataPool.BytePool.Rent(newSize);
         _buffer.AsSpan(0, _written).CopyTo(newBuffer);

@@ -142,7 +142,9 @@ public class AsyncConsumerSerdePoolingBenchmarks
         for (var i = 0; i < PollsPerIteration; i++)
         {
             if (await consumer.ConsumeOneAsync(PollTimeout).ConfigureAwait(false) is null)
+            {
                 throw new InvalidOperationException("Buffered benchmark record was unavailable.");
+            }
         }
     }
 

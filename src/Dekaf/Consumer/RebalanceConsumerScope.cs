@@ -67,9 +67,13 @@ internal sealed class RebalanceConsumerScope<TKey, TValue> : IRebalanceConsumerS
     {
         var consumer = GetConsumer();
         if (_newlyAssigned.Contains(new TopicPartition(offset.Topic, offset.Partition)))
+        {
             _stageSeek(offset);
+        }
         else
+        {
             consumer.Positions.Seek(offset);
+        }
     }
 
     public void SeekToBeginning(params TopicPartition[] partitions) =>
@@ -116,9 +120,13 @@ internal sealed class RebalanceConsumerScope<TKey, TValue> : IRebalanceConsumerS
                 partition.Partition,
                 offset);
             if (_newlyAssigned.Contains(partition))
+            {
                 _stageSeek(topicPartitionOffset);
+            }
             else
+            {
                 consumer.Positions.Seek(topicPartitionOffset);
+            }
         }
     }
 }

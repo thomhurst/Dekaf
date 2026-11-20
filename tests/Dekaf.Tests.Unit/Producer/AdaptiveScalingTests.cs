@@ -318,7 +318,9 @@ public class AdaptiveScalingTests
         for (var p = 0; p < partitionCount; p++)
         {
             if (p % oldCount != p % newCount)
+            {
                 changed++;
+            }
         }
 
         // At least some partitions should change (scale is meaningful)

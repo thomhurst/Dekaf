@@ -71,7 +71,9 @@ public class InMemoryConsumeAsyncOwnershipBenchmarks
         {
             _result = result;
             if (++count == NormalRecordCount)
+            {
                 _normalCancellation.Cancel();
+            }
         }
 
         return count;
@@ -98,7 +100,9 @@ public class InMemoryConsumeAsyncOwnershipBenchmarks
         {
             _result = result;
             if (++count == NormalRecordCount)
+            {
                 _headerCancellation.Cancel();
+            }
         }
 
         return count;
@@ -110,14 +114,18 @@ public class InMemoryConsumeAsyncOwnershipBenchmarks
         _sharedCluster = new InMemoryKafkaCluster();
         var producer = new InMemoryProducer<Ignore, Ignore>(_sharedCluster);
         for (var index = 0; index < 3; index++)
+        {
             producer.ProduceAsync(Topic, default, default).GetAwaiter().GetResult();
+        }
 
         _sharedConsumer = CreateConsumer(_sharedCluster);
         _sharedConsumer.Subscribe(Topic);
         _sharedStream = _sharedConsumer.ConsumeAsync().GetAsyncEnumerator();
         var firstMove = _sharedStream.MoveNextAsync();
         if (!firstMove.IsCompletedSuccessfully || !firstMove.Result)
+        {
             throw new InvalidOperationException("Shared-waiter setup could not consume the first record synchronously.");
+        }
 
         _sharedBarrier = _sharedCluster.FaultPlan.PauseNext(
             new KafkaFaultScope(KafkaFaultOperation.Commit, groupId: GroupId));
@@ -139,15 +147,21 @@ public class InMemoryConsumeAsyncOwnershipBenchmarks
     {
         var sharedMove = _sharedStream.MoveNextAsync();
         if (sharedMove.IsCompleted)
+        {
             throw new InvalidOperationException("Shared waiter did not suspend behind the proof owner.");
+        }
         if (!_sharedBarrier.Release())
+        {
             throw new InvalidOperationException("Shared-waiter barrier was already released.");
+        }
 
         _result = await _sharedOwner.ConfigureAwait(false)
             ?? throw new InvalidOperationException("Proof owner did not consume the second record.");
         await _sharedConsumer.CommitAsync().ConfigureAwait(false);
         if (!await sharedMove.ConfigureAwait(false))
+        {
             throw new InvalidOperationException("Shared waiter did not resume with the third record.");
+        }
 
         _result = _sharedStream.Current;
     }

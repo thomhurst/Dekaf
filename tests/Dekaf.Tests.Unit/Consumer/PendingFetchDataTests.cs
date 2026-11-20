@@ -218,8 +218,14 @@ public class PendingFetchDataTests
 
     private sealed class RecordingSlabPool : ArrayPool<Record>
     {
-        public Record[]? Returned { get; private set; }
-        public bool? ReturnedWithClear { get; private set; }
+        public Record[]? Returned
+        {
+            get; private set;
+        }
+        public bool? ReturnedWithClear
+        {
+            get; private set;
+        }
 
         public override Record[] Rent(int minimumLength) => new Record[minimumLength];
 

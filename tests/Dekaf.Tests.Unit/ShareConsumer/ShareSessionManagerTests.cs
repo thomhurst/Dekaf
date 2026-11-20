@@ -183,7 +183,9 @@ public class ShareSessionManagerTests
         // The last reset is followed by one increment, then one per remaining iteration.
         const int expected = 1 + (updates - 1 - lastReset);
         for (var broker = 0; broker < brokers; broker++)
+        {
             await Assert.That(manager.GetSessionEpoch(broker)).IsEqualTo(expected);
+        }
     }
 
     [Test]

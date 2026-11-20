@@ -61,9 +61,13 @@ public sealed class AdminClientDetailedSecurityTests
             {
                 var request = call.Arg<CreateAclsRequest>();
                 if (++calls == 1)
+                {
                     return ValueTask.FromResult(new CreateAclsResponse { Results = [new(), new() { ErrorCode = ErrorCode.NotController }, new() { ErrorCode = ErrorCode.ClusterAuthorizationFailed, ErrorMessage = "denied" }] });
+                }
                 if (request.Creations.Count != 1 || request.Creations[0].ResourceName != "same")
+                {
                     throw new InvalidOperationException("Replayed a completed ACL occurrence.");
+                }
                 return ValueTask.FromResult(new CreateAclsResponse { Results = [new()] });
             });
         var results = await admin.CreateAclsDetailedAsync([binding, binding, Binding("bad")]);
@@ -113,7 +117,9 @@ public sealed class AdminClientDetailedSecurityTests
                 }
                 if (request.Deletions!.Count != 1 || request.Deletions[0].Name != "retry"
                     || upsert.Salt[0] != 0 || !ReferenceEquals(sentSalt, upsert.Salt) || !ReferenceEquals(sentPassword, upsert.SaltedPassword))
+                {
                     throw new InvalidOperationException("Retry changed user atomicity or credential snapshot.");
+                }
                 return ValueTask.FromResult(new AlterUserScramCredentialsResponse { Results = [new() { User = "retry" }] });
             });
         var results = await admin.AlterUserScramCredentialsDetailedAsync([
@@ -130,9 +136,12 @@ public sealed class AdminClientDetailedSecurityTests
         var (admin, connection) = CreateAdmin();
         await using var client = admin;
         connection.SendAsync<AlterUserScramCredentialsRequest, AlterUserScramCredentialsResponse>(Arg.Any<AlterUserScramCredentialsRequest>(), Arg.Any<short>(), Arg.Any<CancellationToken>())
-            .Returns(ValueTask.FromResult(new AlterUserScramCredentialsResponse { Results = [
+            .Returns(ValueTask.FromResult(new AlterUserScramCredentialsResponse
+            {
+                Results = [
                 new() { User = "bad", ErrorCode = ErrorCode.ClusterAuthorizationFailed, ErrorMessage = "original" },
-                new() { User = "duplicate" }, new() { User = "duplicate" }, new() { User = "done" }, new() { User = "extra" }] }));
+                new() { User = "duplicate" }, new() { User = "duplicate" }, new() { User = "done" }, new() { User = "extra" }]
+            }));
         var results = await admin.AlterUserScramCredentialsDetailedAsync([Delete("done"), Delete("bad"), Delete("duplicate"), Delete("missing")]);
         await Assert.That(results.Count).IsEqualTo(4);
         await Assert.That(results["done"].IsSuccess).IsTrue();
@@ -151,7 +160,11 @@ public sealed class AdminClientDetailedSecurityTests
         await using var client = admin;
         var failure = new IOException("response lost");
         var calls = 0;
-        Configure(connection, scram, () => { calls++; throw failure; });
+        Configure(connection, scram, () =>
+        {
+            calls++;
+            throw failure;
+        });
         var results = await Invoke(admin, scram);
         await Assert.That(calls).IsEqualTo(1);
         await Assert.That(results.Single().Outcome).IsEqualTo(AdminMutationOutcome.Unknown);
@@ -166,7 +179,11 @@ public sealed class AdminClientDetailedSecurityTests
         var (admin, connection) = CreateAdmin();
         await using var client = admin;
         using var cancellation = new CancellationTokenSource();
-        Configure(connection, scram, () => { cancellation.Cancel(); throw new OperationCanceledException(cancellation.Token); });
+        Configure(connection, scram, () =>
+        {
+            cancellation.Cancel();
+            throw new OperationCanceledException(cancellation.Token);
+        });
         var results = await Invoke(admin, scram, token: cancellation.Token);
         await Assert.That(results.Single().Outcome).IsEqualTo(AdminMutationOutcome.Unknown);
     }
@@ -221,10 +238,22 @@ public sealed class AdminClientDetailedSecurityTests
     private static void Configure(IKafkaConnection connection, bool scram, Action onSend)
     {
         if (scram)
+        {
             connection.SendAsync<AlterUserScramCredentialsRequest, AlterUserScramCredentialsResponse>(Arg.Any<AlterUserScramCredentialsRequest>(), Arg.Any<short>(), Arg.Any<CancellationToken>())
-                .Returns(_ => { onSend(); return ValueTask.FromResult(new AlterUserScramCredentialsResponse { Results = [new() { User = "a" }] }); });
+                .Returns(_ =>
+                {
+                    onSend();
+                    return ValueTask.FromResult(new AlterUserScramCredentialsResponse { Results = [new() { User = "a" }] });
+                });
+        }
         else
+        {
             connection.SendAsync<CreateAclsRequest, CreateAclsResponse>(Arg.Any<CreateAclsRequest>(), Arg.Any<short>(), Arg.Any<CancellationToken>())
-                .Returns(_ => { onSend(); return ValueTask.FromResult(new CreateAclsResponse { Results = [new()] }); });
+                .Returns(_ =>
+                {
+                    onSend();
+                    return ValueTask.FromResult(new CreateAclsResponse { Results = [new()] });
+                });
+        }
     }
 }

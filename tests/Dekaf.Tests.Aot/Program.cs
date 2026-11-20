@@ -502,7 +502,9 @@ internal static class AotSmoke
     private static void Require(bool condition, string message)
     {
         if (!condition)
+        {
             throw new InvalidOperationException(message);
+        }
     }
 
     private sealed class TokenEndpointHandler : HttpMessageHandler
@@ -526,7 +528,10 @@ internal static class AotSmoke
 
     private sealed class CompatibilityConfigurationHandler : HttpMessageHandler
     {
-        internal int RequestCount { get; private set; }
+        internal int RequestCount
+        {
+            get; private set;
+        }
 
         protected override async Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request,
@@ -558,7 +563,10 @@ internal static class AotSmoke
 
     private sealed class AssociationHandler : HttpMessageHandler
     {
-        internal int RequestCount { get; private set; }
+        internal int RequestCount
+        {
+            get; private set;
+        }
 
         protected override async Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request,
@@ -625,7 +633,10 @@ internal static class AotSmoke
 
     private sealed class GuidSchemaHandler : HttpMessageHandler
     {
-        internal int RequestCount { get; private set; }
+        internal int RequestCount
+        {
+            get; private set;
+        }
 
         protected override Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request,
@@ -683,7 +694,9 @@ internal static class AotSmoke
             cancellationToken.ThrowIfCancellationRequested();
 
             if (_schemasBySubject.TryGetValue(subject, out var existing))
+            {
                 return Task.FromResult(existing.Id);
+            }
 
             var id = _nextId++;
             var guid = GuidFromId(id);
@@ -716,7 +729,9 @@ internal static class AotSmoke
             cancellationToken.ThrowIfCancellationRequested();
             var parsedGuid = Guid.Parse(guid);
             if (_schemasByGuid.TryGetValue((parsedGuid, format), out var cached))
+            {
                 return Task.FromResult(cached);
+            }
 
             var schema = _schemasByGuid[(parsedGuid, null)];
             _schemasByGuid[(parsedGuid, format)] = schema;
@@ -731,7 +746,9 @@ internal static class AotSmoke
             cancellationToken.ThrowIfCancellationRequested();
             var registered = _schemasBySubject[subject];
             if (registered.Id != id)
+            {
                 throw new KeyNotFoundException($"Schema {id} is not registered under subject '{subject}'.");
+            }
 
             return Task.FromResult(registered.Schema);
         }
@@ -800,12 +817,16 @@ internal static class AotSmoke
         {
             cancellationToken.ThrowIfCancellationRequested();
             if (!_schemasBySubject.Remove(subject, out var registered))
+            {
                 return Task.FromResult<IReadOnlyList<int>>([]);
+            }
 
             _schemasById.Remove(registered.Id);
             var guid = Guid.Parse(registered.Guid!);
             foreach (var key in _schemasByGuid.Keys.Where(key => key.Guid == guid).ToArray())
+            {
                 _schemasByGuid.Remove(key);
+            }
 
             return Task.FromResult<IReadOnlyList<int>>([registered.Version]);
         }
@@ -874,7 +895,9 @@ internal static class AotSmoke
             cancellationToken.ThrowIfCancellationRequested();
             var output = input.ToArray();
             for (var index = 0; index < output.Length; index++)
+            {
                 output[index] ^= 0xa5;
+            }
             return output;
         }
     }
@@ -895,8 +918,14 @@ internal sealed class AotAvroRecord : ISpecificRecord
         }
         """);
 
-    public int Id { get; set; }
-    public string Name { get; set; } = string.Empty;
+    public int Id
+    {
+        get; set;
+    }
+    public string Name
+    {
+        get; set;
+    } = string.Empty;
     public AvroSchema Schema => _SCHEMA;
 
     public AotAvroRecord()
@@ -929,11 +958,20 @@ internal sealed class AotAvroRecord : ISpecificRecord
 [AvroRecord(Name = "AotAvroPoco", Namespace = "Dekaf.Tests.Aot")]
 internal sealed partial class AotAvroPoco
 {
-    public int Id { get; init; }
-    public required string Name { get; init; }
+    public int Id
+    {
+        get; init;
+    }
+    public required string Name
+    {
+        get; init;
+    }
 
     [AvroField(Precision = 8, Scale = 2)]
-    public decimal Amount { get; init; }
+    public decimal Amount
+    {
+        get; init;
+    }
 }
 
 internal sealed class AotProtobufMessage : IMessage<AotProtobufMessage>, IBufferMessage
@@ -1013,9 +1051,18 @@ internal sealed class AotProtobufMessage : IMessage<AotProtobufMessage>, IBuffer
         return MessageOptions.Parser.ParseFrom(optionsStream.ToArray());
     }
 
-    public int Id { get; set; }
-    public string Name { get; set; } = string.Empty;
-    public double Value { get; set; }
+    public int Id
+    {
+        get; set;
+    }
+    public string Name
+    {
+        get; set;
+    } = string.Empty;
+    public double Value
+    {
+        get; set;
+    }
     public static MessageParser<AotProtobufMessage> Parser => ParserInstance;
     public static MessageDescriptor Descriptor => DescriptorInstance;
     MessageDescriptor IMessage.Descriptor => DescriptorInstance;
@@ -1024,11 +1071,17 @@ internal sealed class AotProtobufMessage : IMessage<AotProtobufMessage>, IBuffer
     {
         var size = 0;
         if (Id != 0)
+        {
             size += 1 + CodedOutputStream.ComputeInt32Size(Id);
+        }
         if (!string.IsNullOrEmpty(Name))
+        {
             size += 1 + CodedOutputStream.ComputeStringSize(Name);
+        }
         if (Value != 0)
+        {
             size += 1 + 8;
+        }
         return size;
     }
 
@@ -1049,11 +1102,17 @@ internal sealed class AotProtobufMessage : IMessage<AotProtobufMessage>, IBuffer
     public void MergeFrom(AotProtobufMessage message)
     {
         if (message.Id != 0)
+        {
             Id = message.Id;
+        }
         if (!string.IsNullOrEmpty(message.Name))
+        {
             Name = message.Name;
+        }
         if (message.Value != 0)
+        {
             Value = message.Value;
+        }
     }
 
     public void MergeFrom(CodedInputStream input)

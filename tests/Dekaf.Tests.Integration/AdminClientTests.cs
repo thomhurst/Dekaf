@@ -520,7 +520,9 @@ public class AdminClientTests(KafkaTestContainer kafka) : KafkaIntegrationTest(k
                 cancellationToken: timeout.Token).ConfigureAwait(false);
             var errorCode = results[new TopicPartition(offset.Topic, offset.Partition)].ErrorCode;
             if (!errorCode.IsRetriable())
+            {
                 return results;
+            }
         }
     }
 
@@ -616,8 +618,7 @@ public class AdminClientTests(KafkaTestContainer kafka) : KafkaIntegrationTest(k
                 .ConfigureAwait(false);
             await Assert.That(offsetsAfter).DoesNotContainKey(new TopicPartition(topic, 0));
         }
-        catch (Exception ex) when (
-            ex is TimeoutException ||
+        catch (Exception ex) when (ex is TimeoutException ||
             ex is ArgumentNullException ||
             ex.Message.Contains("timed out") ||
             ex.Message.Contains("Broken pipe") ||
@@ -1135,7 +1136,9 @@ public class AdminClientTests(KafkaTestContainer kafka) : KafkaIntegrationTest(k
             .WithBootstrapServers(KafkaContainer.BootstrapServers).WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest);
         if (staticMember)
+        {
             builder.WithGroupInstanceId(instanceId);
+        }
         await using var consumer = await builder.BuildAsync();
         consumer.Subscribe(topic);
         await Assert.That(await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(30), deadline.Token)).IsNotNull();
@@ -1152,9 +1155,13 @@ public class AdminClientTests(KafkaTestContainer kafka) : KafkaIntegrationTest(k
         await Assert.That(result.Succeeded).IsTrue();
         await Assert.That(result.Members).Count().IsEqualTo(1);
         if (staticMember)
+        {
             await Assert.That(result.Members[0].GroupInstanceId).IsEqualTo(instanceId);
+        }
         else
+        {
             await Assert.That(result.Members[0].MemberId).IsEqualTo(memberId);
+        }
     }
 
     [Test]

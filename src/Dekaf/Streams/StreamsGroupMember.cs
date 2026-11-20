@@ -110,7 +110,9 @@ internal sealed partial class StreamsGroupMember : IStreamsGroupMember, IStreams
         _retryBackoffMaxMs = retryBackoffMaxMs;
         _requestWriteStartedCallback = MarkRequestWriteStarted;
         if (options.AssignmentListener is { } assignmentListener)
+        {
             _assignmentNotifier = new StreamsGroupAssignmentNotifier(assignmentListener, _logger);
+        }
         _heartbeatTimer = new Timer(
             static state => ((StreamsGroupMember)state!).QueueHeartbeat(),
             this,
@@ -127,14 +129,18 @@ internal sealed partial class StreamsGroupMember : IStreamsGroupMember, IStreams
     {
         ThrowIfClosed();
         if (_initialized)
+        {
             return;
+        }
 
         await _initializeLock.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
             ThrowIfClosed();
             if (_initialized)
+            {
                 return;
+            }
 
             await _metadataManager.InitializeAsync(cancellationToken).ConfigureAwait(false);
             ThrowIfClosed();
@@ -164,7 +170,9 @@ internal sealed partial class StreamsGroupMember : IStreamsGroupMember, IStreams
     {
         ArgumentNullException.ThrowIfNull(initialState);
         if (initialState.Topology is null)
+        {
             throw new ArgumentException("The initial Streams group state must include a topology.", nameof(initialState));
+        }
 
         return QueueOperationAsync(MemberCommand.Join(initialState), cancellationToken);
     }
@@ -200,7 +208,9 @@ internal sealed partial class StreamsGroupMember : IStreamsGroupMember, IStreams
         foreach (var offset in offsets)
         {
             if (!partitionsByTopic.TryGetValue(offset.Topic, out var partitions))
+            {
                 partitionsByTopic.Add(offset.Topic, partitions = []);
+            }
 
             partitions.Add(new OffsetCommitRequestPartition
             {
@@ -212,11 +222,15 @@ internal sealed partial class StreamsGroupMember : IStreamsGroupMember, IStreams
         }
 
         if (partitionsByTopic.Count == 0)
+        {
             return;
+        }
 
         var topics = new List<OffsetCommitRequestTopic>(partitionsByTopic.Count);
         foreach (var entry in partitionsByTopic)
+        {
             topics.Add(new OffsetCommitRequestTopic { Name = entry.Key, Partitions = entry.Value });
+        }
 
         var coordinatorId = Volatile.Read(ref _coordinatorId);
         for (var attempt = 1; ; attempt++)
@@ -244,7 +258,9 @@ internal sealed partial class StreamsGroupMember : IStreamsGroupMember, IStreams
             try
             {
                 if (coordinatorId < 0)
+                {
                     coordinatorId = await FindCoordinatorAsync(cancellationToken).ConfigureAwait(false);
+                }
 
                 OffsetCommitResponse response;
                 using (var lease = await _connectionPool.LeaseConnectionAsync(coordinatorId, cancellationToken)
@@ -277,21 +293,26 @@ internal sealed partial class StreamsGroupMember : IStreamsGroupMember, IStreams
                     foreach (var partition in topic.Partitions)
                     {
                         if (partition.ErrorCode != ErrorCode.None)
+                        {
                             error = partition.ErrorCode;
+                        }
                     }
                 }
 
                 if (error == ErrorCode.None)
+                {
                     return;
+                }
             }
-            catch (Exception exception) when (
-                attempt < MaxOffsetCommitAttempts && IsRetriableConnectionFailure(exception))
+            catch (Exception exception) when (attempt < MaxOffsetCommitAttempts && IsRetriableConnectionFailure(exception))
             {
                 error = ErrorCode.CoordinatorNotAvailable;
             }
 
             if (error is ErrorCode.NotCoordinator or ErrorCode.CoordinatorNotAvailable)
+            {
                 coordinatorId = -1;
+            }
 
             // A stale or fenced epoch means the assignment changed: the caller must not retry these offsets.
             var retriable = error.IsRetriable()
@@ -315,7 +336,9 @@ internal sealed partial class StreamsGroupMember : IStreamsGroupMember, IStreams
     {
         ArgumentNullException.ThrowIfNull(options);
         if (!Enum.IsDefined(options.GroupMembershipOperation))
+        {
             throw new ArgumentOutOfRangeException(nameof(options));
+        }
         cancellationToken.ThrowIfCancellationRequested();
         MemberCommand command;
         var enqueueClose = false;
@@ -376,7 +399,9 @@ internal sealed partial class StreamsGroupMember : IStreamsGroupMember, IStreams
         {
             await _workerTask.WaitAsync(cancellationToken).ConfigureAwait(false);
             if (_assignmentNotifier is not null)
+            {
                 await _assignmentNotifier.StopAsync().WaitAsync(cancellationToken).ConfigureAwait(false);
+            }
         }
         catch (Exception) when (closeFailure is not null && !cancellationToken.IsCancellationRequested)
         {
@@ -395,7 +420,9 @@ internal sealed partial class StreamsGroupMember : IStreamsGroupMember, IStreams
     public async ValueTask DisposeAsync()
     {
         if (Interlocked.Exchange(ref _disposed, 1) != 0)
+        {
             return;
+        }
 
         try
         {
@@ -427,7 +454,9 @@ internal sealed partial class StreamsGroupMember : IStreamsGroupMember, IStreams
 
         var backgroundFailure = Volatile.Read(ref _backgroundFailure);
         if (backgroundFailure is not null && command.Kind != MemberCommandKind.Join)
+        {
             throw CreateBackgroundFailureException(backgroundFailure);
+        }
 
         command.CancellationToken = cancellationToken;
         await EnqueueCommandAsync(command, cancellationToken).ConfigureAwait(false);
@@ -449,7 +478,9 @@ internal sealed partial class StreamsGroupMember : IStreamsGroupMember, IStreams
         {
             ThrowIfClosed();
             if (_commands.Writer.TryWrite(command))
+            {
                 return ValueTask.CompletedTask;
+            }
         }
 
         return EnqueueCommandSlowAsync(command, cancellationToken);
@@ -466,8 +497,7 @@ internal sealed partial class StreamsGroupMember : IStreamsGroupMember, IStreams
         {
             await _commands.Writer.WriteAsync(command, admissionCancellation.Token).ConfigureAwait(false);
         }
-        catch (OperationCanceledException) when (
-            _commandAdmissionCancellation.IsCancellationRequested &&
+        catch (OperationCanceledException) when (_commandAdmissionCancellation.IsCancellationRequested &&
             !cancellationToken.IsCancellationRequested)
         {
             throw new ObjectDisposedException(nameof(StreamsGroupMember));
@@ -496,7 +526,9 @@ internal sealed partial class StreamsGroupMember : IStreamsGroupMember, IStreams
                     }
 
                     if (!_commands.Reader.TryRead(out var command))
+                    {
                         break;
+                    }
 
                     if (Volatile.Read(ref _closeCommand) is { } racedCloseCommand)
                     {
@@ -561,7 +593,9 @@ internal sealed partial class StreamsGroupMember : IStreamsGroupMember, IStreams
             _commands.Writer.TryComplete(exception);
             Volatile.Read(ref _closeCommand)?.Completion.TrySetException(exception);
             while (_commands.Reader.TryRead(out var command))
+            {
                 command.Completion.TrySetException(exception);
+            }
         }
         finally
         {
@@ -569,9 +603,13 @@ internal sealed partial class StreamsGroupMember : IStreamsGroupMember, IStreams
             // The worker publishes every change, so none can follow. CloseAsync waits for the running callback.
             // A worker that stopped on a failure, not a close, still delivers what it queued, such as lost tasks.
             if (Volatile.Read(ref _closeCommand) is null)
+            {
                 _assignmentNotifier?.Complete();
+            }
             else
+            {
                 _ = _assignmentNotifier?.StopAsync();
+            }
         }
     }
 
@@ -589,7 +627,9 @@ internal sealed partial class StreamsGroupMember : IStreamsGroupMember, IStreams
         while (_commands.Reader.TryRead(out var pending))
         {
             if (ReferenceEquals(pending, command) || pending.Kind == MemberCommandKind.Heartbeat)
+            {
                 continue;
+            }
             CompleteAbandonedCommand(pending, disposed);
         }
     }
@@ -618,9 +658,13 @@ internal sealed partial class StreamsGroupMember : IStreamsGroupMember, IStreams
         ObjectDisposedException disposed)
     {
         if (command.CancellationToken.IsCancellationRequested)
+        {
             command.Completion.TrySetCanceled(command.CancellationToken);
+        }
         else
+        {
             command.Completion.TrySetException(disposed);
+        }
     }
 
     private async ValueTask<StreamsGroupHeartbeatResult> ProcessOperationAsync(
@@ -628,9 +672,13 @@ internal sealed partial class StreamsGroupMember : IStreamsGroupMember, IStreams
         CancellationToken cancellationToken)
     {
         if (command.Kind != MemberCommandKind.Join && _memberEpoch <= 0)
+        {
             throw new InvalidOperationException("JoinAsync must complete before updating a Streams group member.");
+        }
         if (command.Kind == MemberCommandKind.Join && _memberEpoch > 0)
+        {
             throw new InvalidOperationException("The Streams group member has already joined.");
+        }
 
         var previousState = CaptureOperationState();
         StreamsGroupHeartbeatResponse response;
@@ -691,7 +739,9 @@ internal sealed partial class StreamsGroupMember : IStreamsGroupMember, IStreams
         };
         var result = ApplyResponse(response, createResult: true, clearOmittedAssignment)!;
         if (command.Kind == MemberCommandKind.Join)
+        {
             Volatile.Write(ref _backgroundFailure, null);
+        }
         ScheduleHeartbeat();
         return result;
     }
@@ -701,7 +751,9 @@ internal sealed partial class StreamsGroupMember : IStreamsGroupMember, IStreams
         if (_memberEpoch <= 0 ||
             Volatile.Read(ref _closeRequested) != 0 ||
             Volatile.Read(ref _heartbeatsSuspendedForTesting) != 0)
+        {
             return;
+        }
 
         try
         {
@@ -721,7 +773,9 @@ internal sealed partial class StreamsGroupMember : IStreamsGroupMember, IStreams
         }
 
         if (Volatile.Read(ref _closeRequested) == 0 && Volatile.Read(ref _backgroundFailure) is null)
+        {
             ScheduleHeartbeat();
+        }
     }
 
     private void HandleBackgroundHeartbeatFailure(Exception exception)
@@ -730,7 +784,9 @@ internal sealed partial class StreamsGroupMember : IStreamsGroupMember, IStreams
         // next JoinAsync, so the failure must surface instead of being retried silently.
         var fatal = IsFatalHeartbeatFailure(exception) || _memberEpoch <= 0;
         if (fatal)
+        {
             MarkUnjoined();
+        }
         Volatile.Write(
             ref _backgroundFailure,
             fatal ? exception : null);
@@ -741,13 +797,17 @@ internal sealed partial class StreamsGroupMember : IStreamsGroupMember, IStreams
     private void StartTopologyDescriptionPublication()
     {
         if (_topology is null || _topologyDescription is null)
+        {
             return;
+        }
 
         var current = _topologyDescriptionPublication;
         if (current is not null && !current.Cancellation.IsCancellationRequested)
         {
             if (!current.Task.IsCompleted)
+            {
                 return;
+            }
             current.Cancellation.Dispose();
             current = null;
         }
@@ -772,7 +832,9 @@ internal sealed partial class StreamsGroupMember : IStreamsGroupMember, IStreams
     {
         var publication = _topologyDescriptionPublication;
         if (publication is null)
+        {
             return;
+        }
 
         _topologyDescriptionPublication = null;
         publication.Cancellation.Cancel();
@@ -806,7 +868,9 @@ internal sealed partial class StreamsGroupMember : IStreamsGroupMember, IStreams
             try
             {
                 if (coordinatorId < 0)
+                {
                     coordinatorId = await FindCoordinatorAsync(cancellationToken).ConfigureAwait(false);
+                }
 
                 StreamsGroupTopologyDescriptionUpdateResponse response;
                 using (var lease = await _connectionPool.LeaseConnectionAsync(coordinatorId, cancellationToken)
@@ -815,7 +879,9 @@ internal sealed partial class StreamsGroupMember : IStreamsGroupMember, IStreams
                     var connection = lease.Connection;
                     // A coordinator without the API has no plugin to store the description.
                     if (!_metadataManager.HasApiKey(connection, ApiKey.StreamsGroupTopologyDescriptionUpdate))
+                    {
                         return;
+                    }
 
                     var version = _metadataManager.GetNegotiatedApiVersion(
                         connection,
@@ -852,8 +918,7 @@ internal sealed partial class StreamsGroupMember : IStreamsGroupMember, IStreams
             {
                 return;
             }
-            catch (Exception exception) when (
-                IsRetriableConnectionFailure(exception)
+            catch (Exception exception) when (IsRetriableConnectionFailure(exception)
                 || exception is GroupException { ErrorCode: { } errorCode } && errorCode.IsRetriable())
             {
                 coordinatorId = -1;
@@ -917,8 +982,7 @@ internal sealed partial class StreamsGroupMember : IStreamsGroupMember, IStreams
                     .ConfigureAwait(false);
             }
         }
-        catch (AmbiguousHeartbeatException exception)
-            when (!retainMembership
+        catch (AmbiguousHeartbeatException exception) when (!retainMembership
                 && exception.InnerException is GroupException
                 {
                     ErrorCode: ErrorCode.FencedMemberEpoch or ErrorCode.UnknownMemberId
@@ -931,15 +995,13 @@ internal sealed partial class StreamsGroupMember : IStreamsGroupMember, IStreams
             ExceptionDispatchInfo.Capture(exception.InnerException!).Throw();
             throw;
         }
-        catch (GroupException exception)
-            when (!retainMembership
+        catch (GroupException exception) when (!retainMembership
                 && membershipWasAmbiguous
                 && exception.ErrorCode is ErrorCode.FencedMemberEpoch or ErrorCode.UnknownMemberId)
         {
             // Membership loss proves an ambiguously completed join or update is no longer active.
         }
-        catch (GroupException exception)
-            when (exception.ErrorCode is ErrorCode.FencedMemberEpoch or ErrorCode.UnknownMemberId)
+        catch (GroupException exception) when (exception.ErrorCode is ErrorCode.FencedMemberEpoch or ErrorCode.UnknownMemberId)
         {
             retainMembership = false;
             throw;
@@ -986,7 +1048,9 @@ internal sealed partial class StreamsGroupMember : IStreamsGroupMember, IStreams
             for (var attempt = 0; attempt < attemptLimit; attempt++)
             {
                 if (_coordinatorId < 0)
+                {
                     _coordinatorId = await FindCoordinatorAsync(cancellationToken).ConfigureAwait(false);
+                }
 
                 StreamsGroupHeartbeatResponse response;
                 _requestWriteStarted = false;
@@ -1028,8 +1092,7 @@ internal sealed partial class StreamsGroupMember : IStreamsGroupMember, IStreams
                             .ConfigureAwait(false);
                     }
                 }
-                catch (Exception exception) when (
-                    trackAmbiguousRequestFailure
+                catch (Exception exception) when (trackAmbiguousRequestFailure
                     && _requestWriteStarted
                     && exception is OperationCanceledException
                     && cancellationToken.IsCancellationRequested)
@@ -1037,8 +1100,7 @@ internal sealed partial class StreamsGroupMember : IStreamsGroupMember, IStreams
                     ambiguousCompletionObserved = true;
                     throw;
                 }
-                catch (Exception exception) when (
-                    IsRetriableConnectionFailure(exception)
+                catch (Exception exception) when (IsRetriableConnectionFailure(exception)
                     && (exception is not OperationCanceledException || !cancellationToken.IsCancellationRequested))
                 {
                     _coordinatorId = -1;
@@ -1049,9 +1111,13 @@ internal sealed partial class StreamsGroupMember : IStreamsGroupMember, IStreams
                         ambiguousCompletionObserved = true;
                     }
                     if (attempt == attemptLimit - 1)
+                    {
                         throw;
+                    }
                     if (recoverFencing)
+                    {
                         request = CreateRecoveryRequest(recoveryRejoins, shutdownApplication);
+                    }
                     await DelayForRetryAsync(attempt + 1, cancellationToken).ConfigureAwait(false);
                     continue;
                 }
@@ -1083,10 +1149,14 @@ internal sealed partial class StreamsGroupMember : IStreamsGroupMember, IStreams
                     && request.MemberEpoch == 0)
                 {
                     if (unreleasedStartedAt < 0)
+                    {
                         unreleasedStartedAt = Stopwatch.GetTimestamp();
+                    }
                     var elapsed = Stopwatch.GetElapsedTime(unreleasedStartedAt);
                     if (elapsed >= _options.RebalanceTimeout)
+                    {
                         throw CreateGroupException(response);
+                    }
 
                     var remainingMs = Math.Max(
                         1,
@@ -1107,12 +1177,18 @@ internal sealed partial class StreamsGroupMember : IStreamsGroupMember, IStreams
                     or ErrorCode.CoordinatorLoadInProgress)
                 {
                     if (attempt == attemptLimit - 1)
+                    {
                         throw CreateGroupException(response);
+                    }
 
                     if (response.ErrorCode != ErrorCode.CoordinatorLoadInProgress)
+                    {
                         _coordinatorId = -1;
+                    }
                     if (recoverFencing)
+                    {
                         request = CreateRecoveryRequest(recoveryRejoins, shutdownApplication);
+                    }
                     await DelayForRetryAsync(attempt + 1, cancellationToken).ConfigureAwait(false);
                     continue;
                 }
@@ -1145,7 +1221,9 @@ internal sealed partial class StreamsGroupMember : IStreamsGroupMember, IStreams
         catch
         {
             if (fencingObserved)
+            {
                 MarkUnjoined();
+            }
             throw;
         }
     }
@@ -1237,7 +1315,9 @@ internal sealed partial class StreamsGroupMember : IStreamsGroupMember, IStreams
                     or ErrorCode.CoordinatorLoadInProgress)
                 {
                     if (attempt == 4)
+                    {
                         break;
+                    }
                     await DelayForRetryAsync(attempt + 1, cancellationToken).ConfigureAwait(false);
                     continue;
                 }
@@ -1252,8 +1332,7 @@ internal sealed partial class StreamsGroupMember : IStreamsGroupMember, IStreams
                 _connectionPool.RegisterBroker(coordinator.NodeId, coordinator.Host, coordinator.Port);
                 return coordinator.NodeId;
             }
-            catch (Exception exception) when (
-                IsRetriableConnectionFailure(exception)
+            catch (Exception exception) when (IsRetriableConnectionFailure(exception)
                 && !cancellationToken.IsCancellationRequested)
             {
                 if (attempt == 4)
@@ -1307,15 +1386,15 @@ internal sealed partial class StreamsGroupMember : IStreamsGroupMember, IStreams
             errorCode,
             "The Streams group heartbeat loop failed.",
             exception)
-            { GroupId = GroupId },
+        { GroupId = GroupId },
         _ => new GroupException("The Streams group heartbeat loop failed.", exception)
-            { GroupId = GroupId }
+        { GroupId = GroupId }
     };
 
     private GroupException CreateGroupException(StreamsGroupHeartbeatResponse response) => new(
         response.ErrorCode,
         $"StreamsGroupHeartbeat failed: {response.ErrorCode} - {response.ErrorMessage}")
-        { GroupId = GroupId };
+    { GroupId = GroupId };
 
     private StreamsGroupHeartbeatResult? ApplyResponse(
         StreamsGroupHeartbeatResponse response,
@@ -1327,11 +1406,15 @@ internal sealed partial class StreamsGroupMember : IStreamsGroupMember, IStreams
             || response.EndpointInformationEpoch != _endpointInformationEpoch
             || (!string.IsNullOrEmpty(response.MemberId) && response.MemberId != _memberId);
         if (!string.IsNullOrEmpty(response.MemberId))
+        {
             _memberId = response.MemberId;
+        }
 
         _memberEpoch = response.MemberEpoch;
         if (response.HeartbeatIntervalMs > 0)
+        {
             _heartbeatIntervalMs = response.HeartbeatIntervalMs;
+        }
 
         var current = _snapshot;
         var fallbackAssignment = clearOmittedAssignment ? EmptyAssignment : current.Assignment;
@@ -1357,7 +1440,9 @@ internal sealed partial class StreamsGroupMember : IStreamsGroupMember, IStreams
 
         _endpointInformationEpoch = response.EndpointInformationEpoch;
         if (heartbeatRequestChanged)
+        {
             _steadyRequestCache.Invalidate();
+        }
         var assignmentReturned = response.ActiveTasks is not null
             || response.StandbyTasks is not null
             || response.WarmupTasks is not null;
@@ -1408,10 +1493,14 @@ internal sealed partial class StreamsGroupMember : IStreamsGroupMember, IStreams
         _assignmentNotifier?.PublishAssignment(assignment);
 
         if (response.TopologyDescriptionRequired)
+        {
             StartTopologyDescriptionPublication();
+        }
 
         if (!createResult)
+        {
             return null;
+        }
 
         return new StreamsGroupHeartbeatResult
         {
@@ -1448,22 +1537,38 @@ internal sealed partial class StreamsGroupMember : IStreamsGroupMember, IStreams
         else
         {
             if (update.ActiveTasks is not null)
+            {
                 _activeTasks = MapTaskSets(update.ActiveTasks);
+            }
             if (update.StandbyTasks is not null)
+            {
                 _standbyTasks = MapTaskSets(update.StandbyTasks);
+            }
             if (update.WarmupTasks is not null)
+            {
                 _warmupTasks = MapTaskSets(update.WarmupTasks);
+            }
         }
         if (update.ProcessId is not null)
+        {
             _processId = update.ProcessId;
+        }
         if (update.UserEndpoint is not null)
+        {
             _userEndpoint = MapEndpoint(update.UserEndpoint);
+        }
         if (update.ClientTags is not null)
+        {
             _clientTags = MapKeyValues(update.ClientTags);
+        }
         if (update.TaskOffsets is not null)
+        {
             _taskOffsets = MapTaskOffsets(update.TaskOffsets);
+        }
         if (update.TaskEndOffsets is not null)
+        {
             _taskEndOffsets = MapTaskOffsets(update.TaskEndOffsets);
+        }
         _steadyRequestCache.Invalidate();
     }
 
@@ -1585,14 +1690,20 @@ internal sealed partial class StreamsGroupMember : IStreamsGroupMember, IStreams
     {
         if (Volatile.Read(ref _closeRequested) != 0 ||
             Volatile.Read(ref _heartbeatsSuspendedForTesting) != 0)
+        {
             return false;
+        }
         if (_commands.Writer.TryWrite(MemberCommand.Heartbeat))
+        {
             return true;
+        }
 
         try
         {
             if (Volatile.Read(ref _closeRequested) == 0)
+            {
                 ScheduleHeartbeat();
+            }
         }
         catch (ObjectDisposedException) when (Volatile.Read(ref _disposed) != 0)
         {
@@ -1605,13 +1716,17 @@ internal sealed partial class StreamsGroupMember : IStreamsGroupMember, IStreams
     private void ScheduleHeartbeat()
     {
         if (Volatile.Read(ref _heartbeatsSuspendedForTesting) == 0)
+        {
             _heartbeatTimer.Change(Math.Max(_heartbeatIntervalMs, 1), Timeout.Infinite);
+        }
     }
 
     private void ThrowIfClosed()
     {
         if (Volatile.Read(ref _closeRequested) != 0)
+        {
             throw new ObjectDisposedException(nameof(StreamsGroupMember));
+        }
     }
 
     private void ThrowIfNotInitialized()
@@ -1653,7 +1768,9 @@ internal sealed partial class StreamsGroupMember : IStreamsGroupMember, IStreams
             var item = source.Subtopologies[i];
             var nodes = new StreamsTopologyDescriptionNodeData[item.Nodes.Count];
             for (var j = 0; j < nodes.Length; j++)
+            {
                 nodes[j] = MapTopologyNode(item.Nodes[j]);
+            }
             subtopologies[i] = new StreamsTopologyDescriptionSubtopologyData
             {
                 SubtopologyId = item.SubtopologyId,
@@ -1838,10 +1955,14 @@ internal sealed partial class StreamsGroupMember : IStreamsGroupMember, IStreams
     private static T[] Copy<T>(IReadOnlyList<T> source)
     {
         if (source.Count == 0)
+        {
             return [];
+        }
         var result = new T[source.Count];
         for (var i = 0; i < result.Length; i++)
+        {
             result[i] = source[i];
+        }
         return result;
     }
 
@@ -1882,12 +2003,30 @@ internal sealed partial class StreamsGroupMember : IStreamsGroupMember, IStreams
             Kind = kind;
         }
 
-        internal MemberCommandKind Kind { get; }
-        internal StreamsGroupMemberUpdate? Update { get; init; }
-        internal StreamsGroupTaskOffsetReport? OffsetReport { get; init; }
-        internal StreamsGroupCloseOptions? CloseOptions { get; init; }
-        internal CancellationToken CancellationToken { get; set; }
-        internal TaskCompletionSource<StreamsGroupHeartbeatResult?> Completion { get; } = new(
+        internal MemberCommandKind Kind
+        {
+            get;
+        }
+        internal StreamsGroupMemberUpdate? Update
+        {
+            get; init;
+        }
+        internal StreamsGroupTaskOffsetReport? OffsetReport
+        {
+            get; init;
+        }
+        internal StreamsGroupCloseOptions? CloseOptions
+        {
+            get; init;
+        }
+        internal CancellationToken CancellationToken
+        {
+            get; set;
+        }
+        internal TaskCompletionSource<StreamsGroupHeartbeatResult?> Completion
+        {
+            get;
+        } = new(
             TaskCreationOptions.RunContinuationsAsynchronously);
 
         internal static MemberCommand Join(StreamsGroupMemberUpdate update) => new(MemberCommandKind.Join)

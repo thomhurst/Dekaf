@@ -21,25 +21,37 @@ public class ConsumerBatchResumeBenchmarks
     private Record[][] _records = null!;
 
     [Params(2, 16)]
-    public int FetchCount { get; set; }
+    public int FetchCount
+    {
+        get; set;
+    }
 
     [Params(false, true)]
-    public bool Raw { get; set; }
+    public bool Raw
+    {
+        get; set;
+    }
 
     [GlobalSetup]
     public async Task Setup()
     {
         _records = [new Record[RecordsPerFetch]];
         for (var i = 0; i < RecordsPerFetch; i++)
+        {
             _records[0][i] = new Record { OffsetDelta = i, IsKeyNull = true, Value = new byte[16] };
+        }
         _consumer = new KafkaConsumer<Ignore, ReadOnlyMemory<byte>>(new ConsumerOptions
         {
-            BootstrapServers = ["localhost:9092"], OffsetCommitMode = OffsetCommitMode.Manual,
-            QueuedMinMessages = 1, MaxPollRecords = RecordsPerFetch
+            BootstrapServers = ["localhost:9092"],
+            OffsetCommitMode = OffsetCommitMode.Manual,
+            QueuedMinMessages = 1,
+            MaxPollRecords = RecordsPerFetch
         }, Serializers.Ignore, Serializers.RawBytes);
         BufferedConsumerHarness.InitializeForBufferedFastPath(_consumer, Topic, 0);
         if (await Resume() != (long)FetchCount * RecordsPerFetch)
+        {
             throw new InvalidOperationException("Every queued fetch must be delivered once, in order.");
+        }
     }
 
     [Benchmark]
@@ -64,11 +76,15 @@ public class ConsumerBatchResumeBenchmarks
             foreach (var record in batch)
             {
                 if (record.Offset != next)
+                {
                     throw new InvalidOperationException("Records must be delivered in order without gaps.");
+                }
                 next++;
             }
             if (next == (long)FetchCount * RecordsPerFetch)
+            {
                 break;
+            }
         }
         return next;
     }
@@ -82,11 +98,15 @@ public class ConsumerBatchResumeBenchmarks
             foreach (var record in batch)
             {
                 if (record.Offset != next)
+                {
                     throw new InvalidOperationException("Records must be delivered in order without gaps.");
+                }
                 next++;
             }
             if (next == (long)FetchCount * RecordsPerFetch)
+            {
                 break;
+            }
         }
         return next;
     }

@@ -13,12 +13,16 @@ public sealed partial class AdminClient
     {
         ArgumentNullException.ThrowIfNull(options);
         if (options.NodeId is { } requestedNodeId)
+        {
             ArgumentOutOfRangeException.ThrowIfNegative(requestedNodeId, nameof(options));
+        }
         var timeoutMs = options.TimeoutMs ?? _options.RequestTimeoutMs;
         ArgumentOutOfRangeException.ThrowIfNegative(timeoutMs, nameof(options));
         cancellationToken.ThrowIfCancellationRequested();
         if (timeoutMs == 0)
+        {
             throw new TimeoutException("DescribeFeatures timed out before node discovery.");
+        }
 
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         timeout.CancelAfter(timeoutMs);
@@ -26,7 +30,9 @@ public sealed partial class AdminClient
         try
         {
             if (options.NodeId is not { } nodeId)
+            {
                 return await DescribeFeaturesCoreAsync(Timeout.Infinite, operationToken).ConfigureAwait(false);
+            }
 
             return await WithRetryAsync(async attemptToken =>
             {
@@ -48,8 +54,7 @@ public sealed partial class AdminClient
                 : $"DescribeFeatures timed out (default) after {timeoutMs} ms.";
             throw new TimeoutException(message, ex);
         }
-        catch (OperationCanceledException ex) when (
-            cancellationToken.IsCancellationRequested && ex.CancellationToken != cancellationToken)
+        catch (OperationCanceledException ex) when (cancellationToken.IsCancellationRequested && ex.CancellationToken != cancellationToken)
         {
             throw CallerCancellation(ex, cancellationToken);
         }
@@ -58,11 +63,15 @@ public sealed partial class AdminClient
     private ValueTask<KafkaConnectionLease> LeaseFeatureNodeAsync(int nodeId, CancellationToken cancellationToken)
     {
         if (_controllerMetadataManager is { } controllers)
+        {
             return controllers.LeaseControllerAsync(nodeId, ApiKey.ApiVersions, cancellationToken);
+        }
 
         if (_metadataManager.Metadata.GetBroker(nodeId) is null)
+        {
             throw new KafkaException(ErrorCode.BrokerNotAvailable,
                 $"Node {nodeId} is not a known broker in the configured broker bootstrap endpoints.");
+        }
 
         return _connectionPool.LeaseConnectionAsync(nodeId, cancellationToken);
     }

@@ -49,18 +49,27 @@ public sealed class OutboxTracePropagationTests(KafkaTestContainer kafka) : Kafk
                 relay = activity;
                 // Deterministic listener loss after publisher extraction, before producer sampling.
                 if (removeListener)
+                {
                     listener.Dispose();
+                }
             }
             else if (activity.Kind == ActivityKind.Producer)
+            {
                 send = activity;
+            }
         };
         ActivitySource.AddActivityListener(listener);
         var callerHeaders = new Headers().Add("traceparent", StoredTraceparent)
             .Add("tracestate", "vendor=value").Add("tenant", "a");
         var row = new OutboxMessage
         {
-            Id = 1, MessageId = Guid.NewGuid(), Bucket = 0, Topic = topic,
-            Key = [1], Value = [2], Headers = OutboxHeaderCodec.Encode(callerHeaders),
+            Id = 1,
+            MessageId = Guid.NewGuid(),
+            Bucket = 0,
+            Topic = topic,
+            Key = [1],
+            Value = [2],
+            Headers = OutboxHeaderCodec.Encode(callerHeaders),
             CreatedAtUtc = DateTimeOffset.UtcNow
         };
         var originalBlob = row.Headers!.ToArray();

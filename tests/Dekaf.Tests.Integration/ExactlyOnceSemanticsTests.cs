@@ -80,7 +80,10 @@ public sealed class ExactlyOnceSemanticsTests(KafkaTestContainer kafka) : Transa
             await txn.CommitAsync();
 
             processedCount++;
-            if (processedCount >= messageCount) break;
+            if (processedCount >= messageCount)
+            {
+                break;
+            }
         }
 
         // Assert: Verify output topic has all transformed messages
@@ -99,7 +102,10 @@ public sealed class ExactlyOnceSemanticsTests(KafkaTestContainer kafka) : Transa
         await foreach (var msg in outputConsumer.ConsumeAsync(cts2.Token))
         {
             outputMessages.Add(msg);
-            if (outputMessages.Count >= messageCount) break;
+            if (outputMessages.Count >= messageCount)
+            {
+                break;
+            }
         }
 
         await Assert.That(outputMessages).Count().IsEqualTo(messageCount);
@@ -294,7 +300,10 @@ public sealed class ExactlyOnceSemanticsTests(KafkaTestContainer kafka) : Transa
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))
         {
             messages.Add(msg);
-            if (messages.Count >= expectedCommittedCount) break;
+            if (messages.Count >= expectedCommittedCount)
+            {
+                break;
+            }
         }
 
         // Assert: Should see exactly 7 committed messages (5 from batch 1 + 2 from batch 3)
@@ -407,7 +416,10 @@ public sealed class ExactlyOnceSemanticsTests(KafkaTestContainer kafka) : Transa
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))
         {
             messages.Add(msg);
-            if (messages.Count >= expectedCommittedCount) break;
+            if (messages.Count >= expectedCommittedCount)
+            {
+                break;
+            }
         }
 
         // Should see 3 from producer1 commit + 2 from producer2 second commit = 5 total
@@ -524,7 +536,10 @@ public sealed class ExactlyOnceSemanticsTests(KafkaTestContainer kafka) : Transa
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))
         {
             messages.Add(msg);
-            if (messages.Count >= 3) break;
+            if (messages.Count >= 3)
+            {
+                break;
+            }
         }
 
         await Assert.That(messages).Count().IsEqualTo(3);
@@ -608,7 +623,10 @@ public sealed class ExactlyOnceSemanticsTests(KafkaTestContainer kafka) : Transa
             await txn.CommitAsync();
 
             processedCount++;
-            if (processedCount >= messageCount) break;
+            if (processedCount >= messageCount)
+            {
+                break;
+            }
         }
 
         // Assert: Verify output topic has exactly the right number of unique transformed messages
@@ -627,7 +645,10 @@ public sealed class ExactlyOnceSemanticsTests(KafkaTestContainer kafka) : Transa
         await foreach (var msg in outputConsumer.ConsumeAsync(cts2.Token))
         {
             outputMessages.Add(msg);
-            if (outputMessages.Count >= messageCount) break;
+            if (outputMessages.Count >= messageCount)
+            {
+                break;
+            }
         }
 
         // Exactly messageCount messages -- no duplicates, no missing

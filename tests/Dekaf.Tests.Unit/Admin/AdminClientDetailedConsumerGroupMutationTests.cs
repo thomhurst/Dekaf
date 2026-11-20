@@ -23,7 +23,9 @@ public sealed class AdminClientDetailedConsumerGroupMutationTests
             {
                 var request = call.Arg<FindCoordinatorRequest>();
                 if (request.Key == "denied")
+                {
                     throw new KafkaException(ErrorCode.GroupAuthorizationFailed, "discovery denied");
+                }
                 return ValueTask.FromResult(Coordinator(request, 1));
             });
         Setup(connection, "groups", groups =>
@@ -81,7 +83,8 @@ public sealed class AdminClientDetailedConsumerGroupMutationTests
         var (admin, connection) = CreateAdmin(OffsetCommitRequest.TopicIdVersion, metadata =>
             metadata.Metadata.Update(new MetadataResponse
             {
-                Brokers = [new() { NodeId = 1, Host = "localhost", Port = 9092 }], ControllerId = 1,
+                Brokers = [new() { NodeId = 1, Host = "localhost", Port = 9092 }],
+                ControllerId = 1,
                 Topics = allMissing ? [] : [new() { Name = "good", TopicId = goodId, ErrorCode = ErrorCode.None, Partitions = [] }]
             }));
         await using var owned = admin;
@@ -92,8 +95,13 @@ public sealed class AdminClientDetailedConsumerGroupMutationTests
                 sends++;
                 var request = call.Arg<OffsetCommitRequest>();
                 if (request.Topics.Count != 1 || request.Topics[0].TopicId != goodId)
+                {
                     throw new InvalidOperationException("The request must contain only the mapped topic.");
-                if (loseResponse) throw new IOException("response lost");
+                }
+                if (loseResponse)
+                {
+                    throw new IOException("response lost");
+                }
                 return ValueTask.FromResult(new OffsetCommitResponse
                 {
                     Topics = [new() { TopicId = goodId, Partitions = [new() { PartitionIndex = 0, ErrorCode = ErrorCode.None }] }]
@@ -160,13 +168,22 @@ public sealed class AdminClientDetailedConsumerGroupMutationTests
             {
                 var request = call.Arg<FindCoordinatorRequest>();
                 if (request.Key == "bad" && ++badDiscoveries > 1 && discoveryFailure)
+                {
                     throw new KafkaException(ErrorCode.GroupAuthorizationFailed, "discovery denied");
+                }
                 return ValueTask.FromResult(Coordinator(request, request.Key == "good" ? 1 : 2));
             });
         Setup(connection, "groups", groups =>
         {
-            if (groups[0] == "good") { goodSends++; return [("good", ErrorCode.None)]; }
-            if (++badSends == 1) return [("bad", ErrorCode.NotCoordinator)];
+            if (groups[0] == "good")
+            {
+                goodSends++;
+                return [("good", ErrorCode.None)];
+            }
+            if (++badSends == 1)
+            {
+                return [("bad", ErrorCode.NotCoordinator)];
+            }
             throw new IOException("lost response on retry");
         });
         var results = await Invoke(admin, "groups");
@@ -187,7 +204,10 @@ public sealed class AdminClientDetailedConsumerGroupMutationTests
         Setup(connection, "groups", groups =>
         {
             sends++;
-            if (groups.Length != 2) throw new InvalidOperationException("Expected one coordinator batch.");
+            if (groups.Length != 2)
+            {
+                throw new InvalidOperationException("Expected one coordinator batch.");
+            }
             cancellation.Cancel();
             throw new OperationCanceledException(cancellation.Token);
         });
@@ -234,7 +254,11 @@ public sealed class AdminClientDetailedConsumerGroupMutationTests
             });
         Setup(connection, operation, names => names.Select(name =>
         {
-            if (name == "good") { goodCalls++; return (name, ErrorCode.None); }
+            if (name == "good")
+            {
+                goodCalls++;
+                return (name, ErrorCode.None);
+            }
             return (name, ++badCalls == 1 ? error : ErrorCode.None);
         }).ToArray());
         var results = await Invoke(admin, operation);
@@ -259,7 +283,10 @@ public sealed class AdminClientDetailedConsumerGroupMutationTests
         Setup(connection, operation, names =>
         {
             entitiesSent += names.Length;
-            if (!brokerTimeout) throw new IOException("lost response");
+            if (!brokerTimeout)
+            {
+                throw new IOException("lost response");
+            }
             return names.Select(static name => (name, ErrorCode.RequestTimedOut)).ToArray();
         });
         var results = await Invoke(admin, operation);
@@ -296,7 +323,10 @@ public sealed class AdminClientDetailedConsumerGroupMutationTests
         using var cancellation = new CancellationTokenSource();
         Setup(connection, operation, names =>
         {
-            if (names.Contains("bad")) cancellation.Cancel();
+            if (names.Contains("bad"))
+            {
+                cancellation.Cancel();
+            }
             return names.Select(name => (name, name == "good" ? ErrorCode.None : ErrorCode.NotCoordinator)).ToArray();
         });
         var results = await Invoke(admin, operation, cancellationToken: cancellation.Token);
@@ -331,8 +361,15 @@ public sealed class AdminClientDetailedConsumerGroupMutationTests
         var (admin, connection) = CreateAdmin();
         await using var owned = admin;
         using var cancellation = new CancellationTokenSource();
-        if (operation == "groups") UseSeparateGroupCoordinators(connection);
-        Setup(connection, operation, _ => { cancellation.Cancel(); throw new OperationCanceledException(cancellation.Token); });
+        if (operation == "groups")
+        {
+            UseSeparateGroupCoordinators(connection);
+        }
+        Setup(connection, operation, _ =>
+        {
+            cancellation.Cancel();
+            throw new OperationCanceledException(cancellation.Token);
+        });
         var results = await Invoke(admin, operation, cancellationToken: cancellation.Token);
         await Assert.That(results["good"].Outcome).IsEqualTo(AdminMutationOutcome.Unknown);
         await Assert.That(results["bad"].Outcome).IsEqualTo(operation == "groups" ? AdminMutationOutcome.NotAttempted : AdminMutationOutcome.Unknown);
@@ -360,9 +397,19 @@ public sealed class AdminClientDetailedConsumerGroupMutationTests
             {
                 var request = call.Arg<OffsetCommitRequest>();
                 requests.Add(request);
-                return ValueTask.FromResult(new OffsetCommitResponse { Topics = [new() { Name = "topic", Partitions = request.Topics[0].Partitions
-                    .Select(partition => new OffsetCommitResponsePartition { PartitionIndex = partition.PartitionIndex,
-                        ErrorCode = requests.Count == 1 && partition.PartitionIndex == 1 ? ErrorCode.NotCoordinator : ErrorCode.None }).ToArray() }] });
+                return ValueTask.FromResult(new OffsetCommitResponse
+                {
+                    Topics = [new()
+                    {
+                        Name = "topic",
+                        Partitions = request.Topics[0].Partitions
+                    .Select(partition => new OffsetCommitResponsePartition
+                    {
+                        PartitionIndex = partition.PartitionIndex,
+                        ErrorCode = requests.Count == 1 && partition.PartitionIndex == 1 ? ErrorCode.NotCoordinator : ErrorCode.None
+                    }).ToArray()
+                    }]
+                });
             });
         var results = await admin.AlterConsumerGroupOffsetsDetailedAsync("group", [new("topic", 0, 12), new("topic", 1, 24) { LeaderEpoch = 7, Metadata = "retained" }]);
         await Assert.That(results.Values.All(static result => result.IsSuccess)).IsTrue();
@@ -411,12 +458,15 @@ public sealed class AdminClientDetailedConsumerGroupMutationTests
         var goodId = Guid.NewGuid();
         var badId = Guid.NewGuid();
         MetadataManager? manager = null;
+
         MetadataResponse Metadata(Guid currentGoodId) => new()
         {
-            Brokers = [new() { NodeId = 1, Host = "localhost", Port = 9092 }], ControllerId = 1,
+            Brokers = [new() { NodeId = 1, Host = "localhost", Port = 9092 }],
+            ControllerId = 1,
             Topics = [new() { Name = "good", TopicId = currentGoodId, ErrorCode = ErrorCode.None, Partitions = [] },
                 new() { Name = "bad", TopicId = badId, ErrorCode = ErrorCode.None, Partitions = [] }]
         };
+
         var (admin, connection) = CreateAdmin(OffsetCommitRequest.TopicIdVersion, metadata =>
         {
             manager = metadata;
@@ -428,15 +478,23 @@ public sealed class AdminClientDetailedConsumerGroupMutationTests
             {
                 var request = call.Arg<OffsetCommitRequest>();
                 if (call.Arg<short>() != OffsetCommitRequest.TopicIdVersion || request.Topics[0].TopicId != goodId || request.Topics[1].TopicId != badId)
+                {
                     throw new InvalidOperationException("Request did not capture the requested topic IDs.");
-                if (stale) manager!.Metadata.Update(Metadata(Guid.NewGuid()));
+                }
+                if (stale)
+                {
+                    manager!.Metadata.Update(Metadata(Guid.NewGuid()));
+                }
                 var topics = new List<OffsetCommitResponseTopic>
                 {
                     new() { TopicId = badId, Partitions = [new() { PartitionIndex = 0, ErrorCode = ErrorCode.None }] },
                     new() { TopicId = goodId, Partitions = [new() { PartitionIndex = 0, ErrorCode = ErrorCode.None }] },
                     new() { TopicId = Guid.NewGuid(), Partitions = [new() { PartitionIndex = 0, ErrorCode = ErrorCode.None }] }
                 };
-                if (duplicate) topics.Add(topics[1]);
+                if (duplicate)
+                {
+                    topics.Add(topics[1]);
+                }
                 return ValueTask.FromResult(new OffsetCommitResponse { Topics = topics });
             });
         var results = await Invoke(admin, "alter");
@@ -454,7 +512,8 @@ public sealed class AdminClientDetailedConsumerGroupMutationTests
         var (admin, connection) = CreateAdmin(OffsetCommitRequest.TopicIdVersion, metadata =>
             metadata.Metadata.Update(new MetadataResponse
             {
-                Brokers = [new() { NodeId = 1, Host = "localhost", Port = 9092 }], ControllerId = 1,
+                Brokers = [new() { NodeId = 1, Host = "localhost", Port = 9092 }],
+                ControllerId = 1,
                 Topics = [new() { Name = "first", TopicId = duplicateId, ErrorCode = ErrorCode.None, Partitions = [] },
                     new() { Name = "second", TopicId = duplicateId, ErrorCode = ErrorCode.None, Partitions = [] },
                     new() { Name = "third", TopicId = duplicateId, ErrorCode = ErrorCode.None, Partitions = [] },
@@ -472,14 +531,19 @@ public sealed class AdminClientDetailedConsumerGroupMutationTests
                 });
             });
         var offsets = new List<TopicPartitionOffset> { new("first", 0, 10), new("first", 1, 20) };
-        if (!onlyAmbiguous) offsets.Add(new("healthy", 0, 30));
+        if (!onlyAmbiguous)
+        {
+            offsets.Add(new("healthy", 0, 30));
+        }
         offsets.Add(new("second", 0, 40));
         offsets.Add(new("third", 0, 50));
         var results = await admin.AlterConsumerGroupOffsetsDetailedAsync("group", offsets);
         await Assert.That(results.Count).IsEqualTo(offsets.Count);
         foreach (var offset in offsets)
+        {
             await Assert.That(results[new(offset.Topic, offset.Partition)].Outcome).IsEqualTo(
                 offset.Topic == "healthy" ? AdminMutationOutcome.Succeeded : AdminMutationOutcome.NotAttempted);
+        }
         await Assert.That(requests.Count).IsEqualTo(onlyAmbiguous ? 0 : 1);
         if (!onlyAmbiguous)
         {
@@ -498,7 +562,8 @@ public sealed class AdminClientDetailedConsumerGroupMutationTests
         var (admin, connection) = CreateAdmin(OffsetCommitRequest.TopicIdVersion, metadata =>
             metadata.Metadata.Update(new MetadataResponse
             {
-                Brokers = [new() { NodeId = 1, Host = "localhost", Port = 9092 }], ControllerId = 1,
+                Brokers = [new() { NodeId = 1, Host = "localhost", Port = 9092 }],
+                ControllerId = 1,
                 Topics = [new() { Name = "duplicate", TopicId = duplicateId, ErrorCode = ErrorCode.None, Partitions = [] },
                     new() { Name = "healthy", TopicId = healthyId, ErrorCode = ErrorCode.None, Partitions = [] }]
             }));
@@ -521,7 +586,9 @@ public sealed class AdminClientDetailedConsumerGroupMutationTests
         await Assert.That(results.Count).IsEqualTo(4);
         await Assert.That(results[new("healthy", 0)].IsSuccess).IsTrue();
         for (var partition = 0; partition < 3; partition++)
+        {
             await Assert.That(results[new("duplicate", partition)].Outcome).IsEqualTo(AdminMutationOutcome.Unknown);
+        }
         await Assert.That(sends).IsEqualTo(1);
     }
 
@@ -634,14 +701,20 @@ public sealed class AdminClientDetailedConsumerGroupMutationTests
         var manager = new MetadataManager(pool, ["localhost:9092"]);
         manager.Metadata.Update(metadata);
         foreach (var key in new[] { ApiKey.Metadata, ApiKey.FindCoordinator, ApiKey.DeleteGroups, ApiKey.OffsetCommit, ApiKey.OffsetDelete })
+        {
             manager.SetApiVersion(key, 0, key == ApiKey.OffsetCommit ? offsetCommitVersion : (short)99);
+        }
         configure?.Invoke(manager);
         var result = (Admin: new AdminClient(new() { BootstrapServers = ["localhost:9092"], RetryBackoffMs = 1, RetryBackoffMaxMs = 1 }, pool, manager), Connection: connection);
         connection.SendAsync<MetadataRequest, MetadataResponse>(Arg.Any<MetadataRequest>(), Arg.Any<short>(), Arg.Any<CancellationToken>())
             .Returns(ValueTask.FromResult(metadata));
         result.Connection.SendAsync<ApiVersionsRequest, ApiVersionsResponse>(Arg.Any<ApiVersionsRequest>(), Arg.Any<short>(), Arg.Any<CancellationToken>())
-            .Returns(ValueTask.FromResult(new ApiVersionsResponse { ErrorCode = ErrorCode.None, ApiKeys = new[] { ApiKey.Metadata, ApiKey.FindCoordinator, ApiKey.DeleteGroups, ApiKey.OffsetCommit, ApiKey.OffsetDelete }
-                .Select(key => new ApiVersion(key, 0, key == ApiKey.OffsetCommit ? offsetCommitVersion : (short)99)).ToArray() }));
+            .Returns(ValueTask.FromResult(new ApiVersionsResponse
+            {
+                ErrorCode = ErrorCode.None,
+                ApiKeys = new[] { ApiKey.Metadata, ApiKey.FindCoordinator, ApiKey.DeleteGroups, ApiKey.OffsetCommit, ApiKey.OffsetDelete }
+                .Select(key => new ApiVersion(key, 0, key == ApiKey.OffsetCommit ? offsetCommitVersion : (short)99)).ToArray()
+            }));
         result.Connection.SendAsync<FindCoordinatorRequest, FindCoordinatorResponse>(Arg.Any<FindCoordinatorRequest>(), Arg.Any<short>(), Arg.Any<CancellationToken>())
             .Returns(call => ValueTask.FromResult(Coordinator(call.Arg<FindCoordinatorRequest>(), 1)));
         return result;
@@ -658,9 +731,13 @@ public sealed class AdminClientDetailedConsumerGroupMutationTests
         public string Host => "localhost";
         public int Port => 9092;
         public bool IsConnected => true;
-        public KafkaConnectionCapabilities Capabilities { get; } = KafkaConnectionCapabilities.Create(new ApiVersionsResponse
+        public KafkaConnectionCapabilities Capabilities
         {
-            ErrorCode = ErrorCode.None, ApiKeys = [new(ApiKey.DeleteGroups, 100, 100)]
+            get;
+        } = KafkaConnectionCapabilities.Create(new ApiVersionsResponse
+        {
+            ErrorCode = ErrorCode.None,
+            ApiKeys = [new(ApiKey.DeleteGroups, 100, 100)]
         });
         public ValueTask ConnectAsync(CancellationToken cancellationToken = default) => ValueTask.CompletedTask;
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
@@ -679,7 +756,10 @@ public sealed class AdminClientDetailedConsumerGroupMutationTests
     private static async ValueTask<IReadOnlyDictionary<string, AdminMutationResult>> Invoke(AdminClient admin, string operation,
         int timeoutMs = 30000, CancellationToken cancellationToken = default)
     {
-        if (operation == "groups") return await admin.DeleteConsumerGroupsDetailedAsync(["good", "bad"], new() { TimeoutMs = timeoutMs }, cancellationToken);
+        if (operation == "groups")
+        {
+            return await admin.DeleteConsumerGroupsDetailedAsync(["good", "bad"], new() { TimeoutMs = timeoutMs }, cancellationToken);
+        }
         var results = operation == "alter"
             ? await admin.AlterConsumerGroupOffsetsDetailedAsync("group", [new("good", 0, 12), new("bad", 0, 24)], new() { TimeoutMs = timeoutMs }, cancellationToken)
             : await admin.DeleteConsumerGroupOffsetsDetailedAsync("group", [new("good", 0), new("bad", 0)], new() { TimeoutMs = timeoutMs }, cancellationToken);
@@ -689,16 +769,31 @@ public sealed class AdminClientDetailedConsumerGroupMutationTests
     private static void Setup(IKafkaConnection connection, string operation, Func<string[], (string Name, ErrorCode Code)[]> respond)
     {
         if (operation == "groups")
+        {
             connection.SendAsync<DeleteGroupsRequest, DeleteGroupsResponse>(Arg.Any<DeleteGroupsRequest>(), Arg.Any<short>(), Arg.Any<CancellationToken>())
-                .Returns(call => ValueTask.FromResult(new DeleteGroupsResponse { Results = respond(call.Arg<DeleteGroupsRequest>().GroupsNames.ToArray())
-                    .Select(static item => new DeleteGroupsResponseResult { GroupId = item.Name, ErrorCode = item.Code }).ToArray() }));
+                .Returns(call => ValueTask.FromResult(new DeleteGroupsResponse
+                {
+                    Results = respond(call.Arg<DeleteGroupsRequest>().GroupsNames.ToArray())
+                    .Select(static item => new DeleteGroupsResponseResult { GroupId = item.Name, ErrorCode = item.Code }).ToArray()
+                }));
+        }
         else if (operation == "alter")
+        {
             connection.SendAsync<OffsetCommitRequest, OffsetCommitResponse>(Arg.Any<OffsetCommitRequest>(), Arg.Any<short>(), Arg.Any<CancellationToken>())
-                .Returns(call => ValueTask.FromResult(new OffsetCommitResponse { Topics = respond(call.Arg<OffsetCommitRequest>().Topics.Select(static topic => topic.Name).ToArray())
-                    .Select(static item => new OffsetCommitResponseTopic { Name = item.Name, Partitions = [new() { PartitionIndex = 0, ErrorCode = item.Code }] }).ToArray() }));
+                .Returns(call => ValueTask.FromResult(new OffsetCommitResponse
+                {
+                    Topics = respond(call.Arg<OffsetCommitRequest>().Topics.Select(static topic => topic.Name).ToArray())
+                    .Select(static item => new OffsetCommitResponseTopic { Name = item.Name, Partitions = [new() { PartitionIndex = 0, ErrorCode = item.Code }] }).ToArray()
+                }));
+        }
         else
+        {
             connection.SendAsync<OffsetDeleteRequest, OffsetDeleteResponse>(Arg.Any<OffsetDeleteRequest>(), Arg.Any<short>(), Arg.Any<CancellationToken>())
-                .Returns(call => ValueTask.FromResult(new OffsetDeleteResponse { Topics = respond(call.Arg<OffsetDeleteRequest>().Topics.Select(static topic => topic.Name).ToArray())
-                    .Select(static item => new OffsetDeleteResponseTopic { Name = item.Name, Partitions = [new() { PartitionIndex = 0, ErrorCode = item.Code }] }).ToArray() }));
+                .Returns(call => ValueTask.FromResult(new OffsetDeleteResponse
+                {
+                    Topics = respond(call.Arg<OffsetDeleteRequest>().Topics.Select(static topic => topic.Name).ToArray())
+                    .Select(static item => new OffsetDeleteResponseTopic { Name = item.Name, Partitions = [new() { PartitionIndex = 0, ErrorCode = item.Code }] }).ToArray()
+                }));
+        }
     }
 }

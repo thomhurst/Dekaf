@@ -35,7 +35,9 @@ public class SparseReadyBatchCompletionBenchmarks
         {
             var batch = new PartitionBatch(_topicPartition, _options);
             for (var recordIndex = 0; recordIndex < RecordsPerBatch - 1; recordIndex++)
+            {
                 Append(batch, recordIndex, completionSource: null);
+            }
 
             var source = _sourcePool.Rent();
             _tasks[batchIndex] = source.Task;
@@ -109,7 +111,9 @@ public class DenseDeliveryIndexTrackingBenchmarks
     public void PrepareBatches()
     {
         for (var i = 0; i < _batches.Length; i++)
+        {
             _batches[i] = new PartitionBatch(_topicPartition, _options);
+        }
     }
 
     [Benchmark(OperationsPerInvoke = BatchCount * RecordsPerBatch)]

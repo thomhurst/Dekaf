@@ -143,8 +143,7 @@ public sealed class InMemoryStreamsGroupAssignorTests
             Subtopologies =
             [
                 Subtopology("sub-0", sourceTopics: ["input", "wide"]),
-                Subtopology("sub-1", sourceTopics: [], repartitionSourceTopics:
-                [
+                Subtopology("sub-1", sourceTopics: [], repartitionSourceTopics: [
                     new StreamsGroupTopicInfo { Name = "absent-repartition", Partitions = 3, TopicConfigs = [] }
                 ])
             ]
@@ -339,7 +338,9 @@ public sealed class InMemoryStreamsGroupAssignorTests
         foreach (var taskSet in member.Snapshot.Assignment.ActiveTasks)
         {
             foreach (var partition in taskSet.Partitions)
+            {
                 tasks.Add($"{taskSet.SubtopologyId}:{partition}");
+            }
         }
 
         return tasks.ToArray();
@@ -355,13 +356,13 @@ public sealed class InMemoryStreamsGroupAssignorTests
         string id,
         string[] sourceTopics,
         StreamsGroupTopicInfo[]? repartitionSourceTopics = null) => new()
-    {
-        SubtopologyId = id,
-        SourceTopics = sourceTopics,
-        SourceTopicRegex = [],
-        StateChangelogTopics = [],
-        RepartitionSinkTopics = [],
-        RepartitionSourceTopics = repartitionSourceTopics ?? [],
-        CopartitionGroups = []
-    };
+        {
+            SubtopologyId = id,
+            SourceTopics = sourceTopics,
+            SourceTopicRegex = [],
+            StateChangelogTopics = [],
+            RepartitionSinkTopics = [],
+            RepartitionSourceTopics = repartitionSourceTopics ?? [],
+            CopartitionGroups = []
+        };
 }

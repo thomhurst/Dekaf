@@ -11,7 +11,10 @@ namespace Dekaf.Protocol.Messages;
 /// </summary>
 public sealed class ProduceRequest : IKafkaRequest<ProduceResponse>, IKafkaRequestBodySizeHint, Telemetry.IClientTelemetrySource
 {
-    internal Telemetry.ClientTelemetryMetricCollector? TelemetryMetricCollector { get; set; }
+    internal Telemetry.ClientTelemetryMetricCollector? TelemetryMetricCollector
+    {
+        get; set;
+    }
     Telemetry.ClientTelemetryMetricCollector? Telemetry.IClientTelemetrySource.TelemetryMetricCollector
         => TelemetryMetricCollector;
 
@@ -27,7 +30,10 @@ public sealed class ProduceRequest : IKafkaRequest<ProduceResponse>, IKafkaReque
     /// <summary>
     /// Transactional ID for exactly-once semantics (v3+).
     /// </summary>
-    public string? TransactionalId { get; internal set; }
+    public string? TransactionalId
+    {
+        get; internal set;
+    }
 
     /// <summary>
     /// Required acknowledgments.
@@ -35,22 +41,34 @@ public sealed class ProduceRequest : IKafkaRequest<ProduceResponse>, IKafkaReque
     ///  0 = no acknowledgments (fire and forget)
     ///  1 = leader only
     /// </summary>
-    public short Acks { get; internal set; }
+    public short Acks
+    {
+        get; internal set;
+    }
 
     /// <summary>
     /// Timeout in milliseconds.
     /// </summary>
-    public int TimeoutMs { get; internal set; }
+    public int TimeoutMs
+    {
+        get; internal set;
+    }
 
     /// <summary>
     /// Topic data to produce.
     /// </summary>
-    public IReadOnlyList<ProduceRequestTopicData> TopicData { get; internal set; } = [];
+    public IReadOnlyList<ProduceRequestTopicData> TopicData
+    {
+        get; internal set;
+    } = [];
 
     private ProduceRequestTopicData[]? _topicDataScratch;
     private int _topicDataScratchCount;
 
-    internal int RequestBodySizeHint { get; set; }
+    internal int RequestBodySizeHint
+    {
+        get; set;
+    }
 
     int IKafkaRequestBodySizeHint.RequestBodySizeHint => RequestBodySizeHint;
 
@@ -78,20 +96,26 @@ public sealed class ProduceRequest : IKafkaRequest<ProduceResponse>, IKafkaReque
         if (_topicDataScratch is { } topicDataScratch)
         {
             if (_topicDataScratchCount != 1)
+            {
                 return false;
+            }
 
             topic = topicDataScratch[0];
         }
         else
         {
             if (TopicData.Count != 1)
+            {
                 return false;
+            }
 
             topic = TopicData[0];
         }
 
         if (!topic.TryGetSinglePartition(out partition) || partition.Records.Count != 1)
+        {
             return false;
+        }
 
         batch = partition.Records[0];
         return true;
@@ -111,9 +135,13 @@ public sealed class ProduceRequest : IKafkaRequest<ProduceResponse>, IKafkaReque
     public void Write(ref KafkaProtocolWriter writer, short version)
     {
         if (IsFlexibleVersion(version))
+        {
             writer.WriteCompactNullableString(TransactionalId);
+        }
         else
+        {
             writer.WriteString(TransactionalId);
+        }
         writer.WriteInt16(Acks);
         writer.WriteInt32(TimeoutMs);
 
@@ -130,7 +158,9 @@ public sealed class ProduceRequest : IKafkaRequest<ProduceResponse>, IKafkaReque
             {
                 writer.WriteInt32(_topicDataScratchCount);
                 for (var i = 0; i < _topicDataScratchCount; i++)
+                {
                     topicDataScratch[i].Write(ref writer, version);
+                }
             }
         }
         else
@@ -152,7 +182,9 @@ public sealed class ProduceRequest : IKafkaRequest<ProduceResponse>, IKafkaReque
         }
 
         if (IsFlexibleVersion(version))
+        {
             writer.WriteEmptyTaggedFields();
+        }
     }
 }
 
@@ -164,17 +196,26 @@ public sealed class ProduceRequestTopicData
     /// <summary>
     /// Topic name.
     /// </summary>
-    public string Name { get; internal set; } = string.Empty;
+    public string Name
+    {
+        get; internal set;
+    } = string.Empty;
 
     /// <summary>
     /// Topic ID used instead of <see cref="Name"/> in Produce v13+.
     /// </summary>
-    public Guid TopicId { get; internal set; }
+    public Guid TopicId
+    {
+        get; internal set;
+    }
 
     /// <summary>
     /// Partition data.
     /// </summary>
-    public IReadOnlyList<ProduceRequestPartitionData> PartitionData { get; internal set; } = [];
+    public IReadOnlyList<ProduceRequestPartitionData> PartitionData
+    {
+        get; internal set;
+    } = [];
 
     private ProduceRequestPartitionData[]? _partitionDataScratch;
     private int _partitionDataScratchStart;
@@ -213,14 +254,18 @@ public sealed class ProduceRequestTopicData
         if (_partitionDataScratch is { } partitionDataScratch)
         {
             if (_partitionDataScratchCount != 1)
+            {
                 return false;
+            }
 
             partition = partitionDataScratch[_partitionDataScratchStart];
             return true;
         }
 
         if (PartitionData.Count != 1)
+        {
             return false;
+        }
 
         partition = PartitionData[0];
         return true;
@@ -229,46 +274,62 @@ public sealed class ProduceRequestTopicData
     public void Write(ref KafkaProtocolWriter writer, short version)
     {
         if (version >= ProduceRequest.TopicIdVersion)
+        {
             writer.WriteUuid(TopicId);
+        }
         else
         {
             if (ProduceRequest.IsFlexibleVersion(version))
+            {
                 writer.WriteCompactString(Name);
+            }
             else
+            {
                 writer.WriteString(Name);
+            }
         }
 
         if (_partitionDataScratch is { } partitionDataScratch)
         {
             if (ProduceRequest.IsFlexibleVersion(version))
+            {
                 writer.WriteCompactArray(
                     partitionDataScratch.AsSpan(_partitionDataScratchStart, _partitionDataScratchCount),
                     static (ref KafkaProtocolWriter w, ProduceRequestPartitionData p, short v) => p.Write(ref w, v),
                     version);
+            }
             else
             {
                 writer.WriteInt32(_partitionDataScratchCount);
                 var end = _partitionDataScratchStart + _partitionDataScratchCount;
                 for (var i = _partitionDataScratchStart; i < end; i++)
+                {
                     partitionDataScratch[i].Write(ref writer, version);
+                }
             }
         }
         else
         {
             if (ProduceRequest.IsFlexibleVersion(version))
+            {
                 writer.WriteCompactArray(
                     PartitionData,
                     static (ref KafkaProtocolWriter w, ProduceRequestPartitionData p, short v) => p.Write(ref w, v),
                     version);
+            }
             else
+            {
                 writer.WriteArray(
                     PartitionData,
                     static (ref KafkaProtocolWriter w, ProduceRequestPartitionData p, short v) => p.Write(ref w, v),
                     version);
+            }
         }
 
         if (ProduceRequest.IsFlexibleVersion(version))
+        {
             writer.WriteEmptyTaggedFields();
+        }
     }
 }
 
@@ -280,23 +341,35 @@ public sealed class ProduceRequestPartitionData
     /// <summary>
     /// Partition index.
     /// </summary>
-    public int Index { get; internal set; }
+    public int Index
+    {
+        get; internal set;
+    }
 
     /// <summary>
     /// Record batches to produce.
     /// </summary>
-    public IReadOnlyList<RecordBatch> Records { get; internal set; } = [];
+    public IReadOnlyList<RecordBatch> Records
+    {
+        get; internal set;
+    } = [];
 
     /// <summary>
     /// Compression type to apply to record batches.
     /// </summary>
-    public CompressionType Compression { get; internal set; } = CompressionType.None;
+    public CompressionType Compression
+    {
+        get; internal set;
+    } = CompressionType.None;
 
     /// <summary>
     /// Compression codec registry to use for compression.
     /// When null, the default registry is used.
     /// </summary>
-    public CompressionCodecRegistry? CompressionCodecs { get; internal set; }
+    public CompressionCodecRegistry? CompressionCodecs
+    {
+        get; internal set;
+    }
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {
@@ -325,9 +398,13 @@ public sealed class ProduceRequestPartitionData
             }
 
             if (ProduceRequest.IsFlexibleVersion(version))
+            {
                 writer.WriteUnsignedVarInt(checked(recordsLength + 1));
+            }
             else
+            {
                 writer.WriteInt32(recordsLength);
+            }
             var output = writer.BufferWriter;
             var actualRecordsLength = 0;
             for (var i = 0; i < Records.Count; i++)
@@ -366,6 +443,8 @@ public sealed class ProduceRequestPartitionData
         }
 
         if (ProduceRequest.IsFlexibleVersion(version))
+        {
             writer.WriteEmptyTaggedFields();
+        }
     }
 }

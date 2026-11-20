@@ -5,9 +5,15 @@ namespace Dekaf.Networking;
 /// </summary>
 internal interface IRetirableKafkaConnection
 {
-    int LeaseCount { get; }
+    int LeaseCount
+    {
+        get;
+    }
 
-    int ActiveOperationCount { get; }
+    int ActiveOperationCount
+    {
+        get;
+    }
 
     bool TryAcquireLease();
 

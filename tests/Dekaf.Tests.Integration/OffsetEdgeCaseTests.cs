@@ -148,7 +148,10 @@ public sealed class OffsetEdgeCaseTests(KafkaTestContainer kafka) : KafkaIntegra
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))
         {
             messages.Add(msg);
-            if (messages.Count >= 5) break;
+            if (messages.Count >= 5)
+            {
+                break;
+            }
         }
 
         var targetTimestamp = messages[2].Timestamp;
@@ -271,7 +274,10 @@ public sealed class OffsetEdgeCaseTests(KafkaTestContainer kafka) : KafkaIntegra
             await foreach (var msg in consumer1.ConsumeAsync(cts1.Token))
             {
                 messages.Add(msg);
-                if (messages.Count >= 5) break;
+                if (messages.Count >= 5)
+                {
+                    break;
+                }
             }
 
             // Commit offset 3

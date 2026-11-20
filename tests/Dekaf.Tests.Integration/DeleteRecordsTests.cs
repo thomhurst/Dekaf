@@ -214,7 +214,10 @@ public class DeleteRecordsTests(KafkaTestContainer kafka) : KafkaIntegrationTest
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))
         {
             messages.Add(msg);
-            if (messages.Count >= 5) break; // Expect 5 remaining messages (offsets 5-9)
+            if (messages.Count >= 5)
+            {
+                break; // Expect 5 remaining messages (offsets 5-9)
+            }
         }
 
         // Assert - first message should be at offset 5 (new low watermark)
@@ -285,7 +288,10 @@ public class DeleteRecordsTests(KafkaTestContainer kafka) : KafkaIntegrationTest
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))
         {
             messages.Add(msg);
-            if (messages.Count >= 5) break; // Expect 5 remaining messages (offsets 5-9)
+            if (messages.Count >= 5)
+            {
+                break; // Expect 5 remaining messages (offsets 5-9)
+            }
         }
 
         // Assert - consumer should have recovered via OffsetOutOfRange reset

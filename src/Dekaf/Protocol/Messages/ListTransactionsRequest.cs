@@ -10,10 +10,22 @@ public sealed class ListTransactionsRequest : IKafkaRequest<ListTransactionsResp
     public static short LowestSupportedVersion => 0;
     public static short HighestSupportedVersion => 2;
 
-    public IReadOnlyList<string>? StateFilters { get; init; }
-    public IReadOnlyList<long>? ProducerIdFilters { get; init; }
-    public long DurationFilterMs { get; init; } = -1;
-    public string? TransactionalIdPattern { get; init; }
+    public IReadOnlyList<string>? StateFilters
+    {
+        get; init;
+    }
+    public IReadOnlyList<long>? ProducerIdFilters
+    {
+        get; init;
+    }
+    public long DurationFilterMs
+    {
+        get; init;
+    } = -1;
+    public string? TransactionalIdPattern
+    {
+        get; init;
+    }
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {

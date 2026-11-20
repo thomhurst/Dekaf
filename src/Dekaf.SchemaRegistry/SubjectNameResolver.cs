@@ -17,7 +17,9 @@ internal static class SubjectNameResolver
     internal static string GetTopicSubjectName(string topic, bool isKey)
     {
         if (TopicSubjectsByIdentity.TryGetValue(topic, out var subjects))
+        {
             return isKey ? subjects.Key : subjects.Value;
+        }
 
         return GetTopicSubjectNameSlow(topic, isKey);
     }
@@ -38,12 +40,16 @@ internal static class SubjectNameResolver
     private static TopicSubjects GetOrAddTopicSubjects(string topic)
     {
         if (TopicSubjectNames.TryGetValue(topic, out var subjects))
+        {
             return subjects;
+        }
 
         lock (TopicSubjectNamesLock)
         {
             if (TopicSubjectNames.TryGetValue(topic, out subjects))
+            {
                 return subjects;
+            }
 
             if (TopicSubjectOrder.Count >= MaxCachedTopicCount)
             {
@@ -84,14 +90,18 @@ internal static class SubjectNameResolver
     internal static string GetRecordName(Schema schema, string fallback)
     {
         if (schema.SchemaType is not (SchemaType.Avro or SchemaType.Json))
+        {
             return fallback;
+        }
 
         try
         {
             using var document = JsonDocument.Parse(schema.SchemaString);
             var root = document.RootElement;
             if (root.ValueKind != JsonValueKind.Object)
+            {
                 return fallback;
+            }
 
             if (schema.SchemaType == SchemaType.Json &&
                 root.TryGetProperty("title", out var title) &&
@@ -108,7 +118,9 @@ internal static class SubjectNameResolver
             {
                 var recordName = name.GetString()!;
                 if (recordName.Contains('.'))
+                {
                     return recordName;
+                }
 
                 if (root.TryGetProperty("namespace", out var @namespace) &&
                     @namespace.ValueKind == JsonValueKind.String &&
@@ -131,7 +143,9 @@ internal static class SubjectNameResolver
     private static string RequireRecordName(string? recordName, SubjectNameStrategy strategy)
     {
         if (!string.IsNullOrEmpty(recordName))
+        {
             return recordName;
+        }
 
         throw new InvalidOperationException($"{strategy} requires a fully-qualified record name.");
     }
@@ -140,14 +154,22 @@ internal static class SubjectNameResolver
     {
         private string? _candidateIdentity;
 
-        public string Key { get; } = topic + "-key";
-        public string Value { get; } = topic + "-value";
+        public string Key
+        {
+            get;
+        } = topic + "-key";
+        public string Value
+        {
+            get;
+        } = topic + "-value";
 
         internal bool ShouldPromoteIdentity(string topic)
         {
             var candidate = Volatile.Read(ref _candidateIdentity);
             if (ReferenceEquals(candidate, topic))
+            {
                 return true;
+            }
 
             // One-shot equal strings stay in the bounded value cache. Repeated identities
             // earn the faster weak identity entry on their second observation.

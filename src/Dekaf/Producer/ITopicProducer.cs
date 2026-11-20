@@ -21,7 +21,10 @@ public interface ITopicProducer<TKey, TValue> : IAsyncDisposable
     /// <summary>
     /// Gets the topic this producer is bound to.
     /// </summary>
-    string Topic { get; }
+    string Topic
+    {
+        get;
+    }
 
     /// <summary>
     /// Initializes the underlying producer by fetching cluster metadata and setting up idempotent producer state.

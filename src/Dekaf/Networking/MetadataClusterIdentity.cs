@@ -18,7 +18,9 @@ internal sealed class MetadataClusterIdentity
         {
             _enabled = enabled;
             if (enabled)
+            {
                 return;
+            }
 
             _clusterId = null;
             _rebootstrapRequested = false;
@@ -32,7 +34,9 @@ internal sealed class MetadataClusterIdentity
         lock (_gate)
         {
             if (!_enabled)
+            {
                 return;
+            }
 
             _clusterId = clusterId;
         }
@@ -43,7 +47,9 @@ internal sealed class MetadataClusterIdentity
         lock (_gate)
         {
             if (brokerId < 0 || !_enabled || _clusterId is null)
+            {
                 return null;
+            }
 
             return new ExpectedBrokerIdentity(_clusterId, brokerId);
         }
@@ -62,11 +68,15 @@ internal sealed class MetadataClusterIdentity
         lock (_gate)
         {
             if (!_enabled)
+            {
                 return;
+            }
 
             _lastReportedApiVersionsMaxVersion = maxVersion;
             if (brokerId >= 0)
+            {
                 (_apiVersionsMaxVersions ??= [])[brokerId] = maxVersion;
+            }
         }
     }
 
@@ -104,7 +114,9 @@ internal sealed class MetadataClusterIdentity
         lock (_gate)
         {
             if (!_enabled || _lastReportedApiVersionsMaxVersion >= 0)
+            {
                 return;
+            }
 
             _lastReportedApiVersionsMaxVersion = maxVersion;
         }
@@ -115,7 +127,9 @@ internal sealed class MetadataClusterIdentity
         lock (_gate)
         {
             if (!_enabled)
+            {
                 return;
+            }
 
             _rebootstrapRequested = true;
         }

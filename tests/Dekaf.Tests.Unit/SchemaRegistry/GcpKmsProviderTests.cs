@@ -1,9 +1,9 @@
-using Google.Cloud.Kms.V1;
-using Google.Protobuf;
-using Grpc.Core;
 using Dekaf.Protocol.Records;
 using Dekaf.SchemaRegistry;
 using Dekaf.SchemaRegistry.Kms.Gcp;
+using Google.Cloud.Kms.V1;
+using Google.Protobuf;
+using Grpc.Core;
 using NSubstitute;
 
 namespace Dekaf.Tests.Unit.SchemaRegistry;
@@ -273,7 +273,9 @@ public class GcpKmsProviderTests
         var results = await Task.WhenAll(operations);
 
         for (var index = 0; index < results.Length; index++)
+        {
             await Assert.That(results[index]).IsEquivalentTo(new byte[] { (byte)(index + 1) });
+        }
         await client.Received(32).EncryptAsync(
             Arg.Any<EncryptRequest>(),
             Arg.Any<CancellationToken>());

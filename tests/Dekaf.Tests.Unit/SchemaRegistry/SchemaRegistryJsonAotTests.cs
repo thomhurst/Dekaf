@@ -257,9 +257,13 @@ public sealed class SchemaRegistryJsonAotTests
             if (prepared)
             {
                 if (index % 2 == 0)
+                {
                     compactPrepared.SerializePrepared(payload, ref buffer, context, in compactAdmission);
+                }
                 else
+                {
                     indentedPrepared.SerializePrepared(payload, ref buffer, context, in indentedAdmission);
+                }
             }
             else
             {

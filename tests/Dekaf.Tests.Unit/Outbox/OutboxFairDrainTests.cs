@@ -87,18 +87,38 @@ public sealed class OutboxFairDrainTests
             [new OutboxMessage { Id = 1, Bucket = 0, Topic = "test", MessageId = Guid.NewGuid(), CreatedAtUtc = DateTimeOffset.UnixEpoch }],
             [new OutboxMessage { Id = 2, Bucket = 1, Topic = "test", MessageId = Guid.NewGuid(), CreatedAtUtc = DateTimeOffset.UnixEpoch }]
         ];
-        public bool OnlyFirstInitially { get; set; }
-        public bool SingleOwner { get; init; }
-        public int Acquisitions { get; private set; }
-        public int Probes { get; private set; }
-        public TaskCompletionSource Renewed { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        public TaskCompletionSource Rebalanced { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public bool OnlyFirstInitially
+        {
+            get; set;
+        }
+        public bool SingleOwner
+        {
+            get; init;
+        }
+        public int Acquisitions
+        {
+            get; private set;
+        }
+        public int Probes
+        {
+            get; private set;
+        }
+        public TaskCompletionSource Renewed
+        {
+            get;
+        } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource Rebalanced
+        {
+            get;
+        } = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         public ValueTask<IReadOnlyList<int>> AcquireBucketLeasesAsync(OutboxLeaseRequest request,
             CancellationToken cancellationToken = default)
         {
             if (++Acquisitions > 1)
+            {
                 Rebalanced.TrySetResult();
+            }
             return new(Acquisitions == 1 ? (SingleOwner ? _first : _both) : _second);
         }
 
@@ -127,7 +147,10 @@ public sealed class OutboxFairDrainTests
 
     private sealed class Publisher : IOutboxPublisher
     {
-        public Channel<Call> Calls { get; } = Channel.CreateUnbounded<Call>();
+        public Channel<Call> Calls
+        {
+            get;
+        } = Channel.CreateUnbounded<Call>();
         public ValueTask InitializeAsync(CancellationToken cancellationToken = default) => ValueTask.CompletedTask;
         public async ValueTask<OutboxPublishResult> PublishAsync(IReadOnlyList<OutboxMessage> messages,
             string messageIdHeaderName, CancellationToken cancellationToken = default)

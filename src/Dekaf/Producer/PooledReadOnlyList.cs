@@ -20,7 +20,10 @@ internal ref struct PooledReadOnlyList<T>
         Count = count;
     }
 
-    public int Count { get; }
+    public int Count
+    {
+        get;
+    }
 
     public T this[int index] => _rentedArray is not null ? _rentedArray[index] : _firstItem!;
 
@@ -42,7 +45,9 @@ internal ref struct PooledReadOnlyList<T>
     private static PooledReadOnlyList<T> RentQueue(Queue<T> queue)
     {
         if (queue.Count == 0)
+        {
             return new PooledReadOnlyList<T>(default, null, 0);
+        }
 
         // Keep the concrete CopyTo call: dispatch through ICollection<T> measured 40 B/op.
         var count = queue.Count;
@@ -62,7 +67,9 @@ internal ref struct PooledReadOnlyList<T>
     private static PooledReadOnlyList<T> RentStack(Stack<T> stack)
     {
         if (stack.Count == 0)
+        {
             return new PooledReadOnlyList<T>(default, null, 0);
+        }
 
         // Keep the concrete CopyTo call: dispatch through IEnumerable<T> boxes Stack<T>.Enumerator.
         var count = stack.Count;
@@ -82,7 +89,9 @@ internal ref struct PooledReadOnlyList<T>
     private static PooledReadOnlyList<T> RentLinkedList(LinkedList<T> linkedList)
     {
         if (linkedList.Count == 0)
+        {
             return new PooledReadOnlyList<T>(default, null, 0);
+        }
 
         var count = linkedList.Count;
         var rentedArray = ArrayPool<T>.Shared.Rent(count);
@@ -101,7 +110,9 @@ internal ref struct PooledReadOnlyList<T>
     private static PooledReadOnlyList<T> RentHashSet(HashSet<T> hashSet)
     {
         if (hashSet.Count == 0)
+        {
             return new PooledReadOnlyList<T>(default, null, 0);
+        }
 
         var count = hashSet.Count;
         var rentedArray = ArrayPool<T>.Shared.Rent(count);
@@ -120,7 +131,9 @@ internal ref struct PooledReadOnlyList<T>
     private static PooledReadOnlyList<T> RentSortedSet(SortedSet<T> sortedSet)
     {
         if (sortedSet.Count == 0)
+        {
             return new PooledReadOnlyList<T>(default, null, 0);
+        }
 
         var count = sortedSet.Count;
         var rentedArray = ArrayPool<T>.Shared.Rent(count);
@@ -195,7 +208,9 @@ internal ref struct PooledReadOnlyList<T>
         catch
         {
             if (rentedArray is not null)
+            {
                 Return(rentedArray, count);
+            }
             throw;
         }
 
@@ -207,7 +222,9 @@ internal ref struct PooledReadOnlyList<T>
         var buffer = _rentedArray;
         _firstItem = default;
         if (buffer is null)
+        {
             return;
+        }
 
         _rentedArray = null;
         Return(buffer, Count);

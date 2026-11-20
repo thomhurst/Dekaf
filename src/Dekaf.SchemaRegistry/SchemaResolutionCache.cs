@@ -49,7 +49,9 @@ internal sealed class SchemaResolutionCache<TValue>
     internal bool TryRemove(string subject, Schema schema, TValue value)
     {
         if (!_cacheCompletedResolutions)
+        {
             return false;
+        }
 
         var entry = new KeyValuePair<SchemaResolutionKey, TValue>(
             new SchemaResolutionKey(subject, schema, default),
@@ -57,7 +59,9 @@ internal sealed class SchemaResolutionCache<TValue>
         lock (_mutationLock)
         {
             if (!((ICollection<KeyValuePair<SchemaResolutionKey, TValue>>)_cache).Remove(entry))
+            {
                 return false;
+            }
 
             RemoveEvictionEntry(entry.Key);
             Volatile.Write(ref _cacheCount, _cacheCount - 1);
@@ -83,7 +87,9 @@ internal sealed class SchemaResolutionCache<TValue>
     {
         var key = new SchemaResolutionKey(subject, schema, scope);
         if (_cache.TryGetValue(key, out var cached))
+        {
             return new ValueTask<TValue>(cached);
+        }
 
         cancellationToken.ThrowIfCancellationRequested();
 
@@ -96,7 +102,9 @@ internal sealed class SchemaResolutionCache<TValue>
 
         var task = entry.Resolution.Value;
         if (task.IsCompletedSuccessfully)
+        {
             return new ValueTask<TValue>(task.Result);
+        }
 
         return new ValueTask<TValue>(task.WaitAsync(cancellationToken));
     }
@@ -119,7 +127,9 @@ internal sealed class SchemaResolutionCache<TValue>
     {
         var key = new SchemaResolutionKey(subject, schema, scope);
         if (_cache.TryGetValue(key, out var cached))
+        {
             return cached;
+        }
 
         var entry = GetOrAddInFlight(key, state, resolve);
         if (_cache.TryGetValue(key, out cached))
@@ -172,12 +182,16 @@ internal sealed class SchemaResolutionCache<TValue>
     private void CacheSuccessfulResolution(SchemaResolutionKey key, TValue value)
     {
         if (!_cacheCompletedResolutions)
+        {
             return;
+        }
 
         lock (_mutationLock)
         {
             if (!_cache.TryAdd(key, value))
+            {
                 return;
+            }
 
             if (_cacheCount == _maxCachedEntries)
             {
@@ -210,9 +224,13 @@ internal sealed class SchemaResolutionCache<TValue>
 
             _evictionNodes[index] = new EvictionNode { Key = key, Previous = _newestEntry, Next = -1 };
             if (_newestEntry >= 0)
+            {
                 _evictionNodes[_newestEntry].Next = index;
+            }
             else
+            {
                 _oldestEntry = index;
+            }
             _newestEntry = index;
             _evictionEntries.Add(key, index);
         }
@@ -224,13 +242,21 @@ internal sealed class SchemaResolutionCache<TValue>
         System.Diagnostics.Debug.Assert(removed);
         ref var node = ref _evictionNodes[index];
         if (node.Previous >= 0)
+        {
             _evictionNodes[node.Previous].Next = node.Next;
+        }
         else
+        {
             _oldestEntry = node.Next;
+        }
         if (node.Next >= 0)
+        {
             _evictionNodes[node.Next].Previous = node.Previous;
+        }
         else
+        {
             _newestEntry = node.Previous;
+        }
         // Reuse bounded bookkeeping storage without retaining invalidated schemas or subjects.
         node = default;
         node.Next = _freeEntry;
@@ -262,12 +288,17 @@ internal sealed class SchemaResolutionCache<TValue>
             return entry;
         }
 
-        internal Lazy<Task<TValue>> Resolution { get; private set; } = null!;
+        internal Lazy<Task<TValue>> Resolution
+        {
+            get; private set;
+        } = null!;
 
         private static Task<TValue> ObserveFault(Task<TValue> task)
         {
             if (task.IsCompletedSuccessfully)
+            {
                 return task;
+            }
 
             _ = task.ContinueWith(
                 static completed => _ = completed.Exception,
@@ -324,11 +355,15 @@ internal sealed class SchemaResolutionCache<TValue>
             IReadOnlyList<SchemaReference>? right)
         {
             if (ReferenceEquals(left, right))
+            {
                 return true;
+            }
 
             var count = left?.Count ?? 0;
             if (count != (right?.Count ?? 0))
+            {
                 return false;
+            }
 
             for (var index = 0; index < count; index++)
             {
@@ -348,9 +383,13 @@ internal sealed class SchemaResolutionCache<TValue>
         private static bool MetadataEquals(SchemaMetadata? left, SchemaMetadata? right)
         {
             if (ReferenceEquals(left, right))
+            {
                 return true;
+            }
             if (left is null || right is null)
+            {
                 return false;
+            }
 
             return TagsEqual(left.Tags, right.Tags) &&
                    StringDictionaryEquals(left.Properties, right.Properties) &&
@@ -360,9 +399,13 @@ internal sealed class SchemaResolutionCache<TValue>
         private static bool RuleSetEquals(SchemaRuleSet? left, SchemaRuleSet? right)
         {
             if (ReferenceEquals(left, right))
+            {
                 return true;
+            }
             if (left is null || right is null)
+            {
                 return false;
+            }
 
             return string.Equals(left.EnableAt, right.EnableAt, StringComparison.Ordinal) &&
                    RulesEqual(left.MigrationRules, right.MigrationRules) &&
@@ -375,11 +418,15 @@ internal sealed class SchemaResolutionCache<TValue>
             IReadOnlyList<SchemaRule>? right)
         {
             if (ReferenceEquals(left, right))
+            {
                 return true;
+            }
 
             var count = left?.Count ?? 0;
             if (count != (right?.Count ?? 0))
+            {
                 return false;
+            }
 
             for (var index = 0; index < count; index++)
             {
@@ -409,13 +456,19 @@ internal sealed class SchemaResolutionCache<TValue>
             IReadOnlyDictionary<string, IReadOnlySet<string>>? right)
         {
             if (ReferenceEquals(left, right))
+            {
                 return true;
+            }
 
             var count = left?.Count ?? 0;
             if (count != (right?.Count ?? 0))
+            {
                 return false;
+            }
             if (count == 0)
+            {
                 return true;
+            }
 
             if (left is not Dictionary<string, IReadOnlySet<string>> leftDictionary ||
                 right is not Dictionary<string, IReadOnlySet<string>> rightDictionary ||
@@ -441,13 +494,19 @@ internal sealed class SchemaResolutionCache<TValue>
             IReadOnlyDictionary<string, string>? right)
         {
             if (ReferenceEquals(left, right))
+            {
                 return true;
+            }
 
             var count = left?.Count ?? 0;
             if (count != (right?.Count ?? 0))
+            {
                 return false;
+            }
             if (count == 0)
+            {
                 return true;
+            }
 
             if (left is not Dictionary<string, string> leftDictionary ||
                 right is not Dictionary<string, string> rightDictionary ||
@@ -473,13 +532,19 @@ internal sealed class SchemaResolutionCache<TValue>
             IReadOnlySet<string>? right)
         {
             if (ReferenceEquals(left, right))
+            {
                 return true;
+            }
 
             var count = left?.Count ?? 0;
             if (count != (right?.Count ?? 0))
+            {
                 return false;
+            }
             if (count == 0)
+            {
                 return true;
+            }
 
             if (left is not HashSet<string> leftSet ||
                 right is not HashSet<string> rightSet ||
@@ -491,7 +556,9 @@ internal sealed class SchemaResolutionCache<TValue>
             foreach (var value in leftSet)
             {
                 if (!rightSet.Contains(value))
+                {
                     return false;
+                }
             }
 
             return true;
@@ -504,7 +571,9 @@ internal static class SchemaFingerprintCache
     internal static int GetHashCode(Schema schema)
     {
         if (schema.TryGetCachedFingerprint(out var cached))
+        {
             return cached;
+        }
 
         var fingerprint = ComputeHashCode(schema);
         schema.CacheFingerprint(fingerprint);
@@ -537,7 +606,9 @@ internal static class SchemaDataContractFingerprintCache
     internal static int GetHashCode(Schema schema)
     {
         if (schema.TryGetCachedFingerprint(out var cached))
+        {
             return cached;
+        }
 
         return ComputeAndCacheHashCode(schema);
     }
@@ -578,7 +649,9 @@ internal static class SchemaDataContractFingerprintCache
     {
         hash.Add(metadata is not null);
         if (metadata is null)
+        {
             return;
+        }
 
         hash.Add(GetTagsHashCode(metadata.Tags));
         hash.Add(GetStringDictionaryHashCode(metadata.Properties));
@@ -589,7 +662,9 @@ internal static class SchemaDataContractFingerprintCache
     {
         hash.Add(ruleSet is not null);
         if (ruleSet is null)
+        {
             return;
+        }
 
         hash.Add(ruleSet.EnableAt, StringComparer.Ordinal);
         AddRules(ref hash, ruleSet.MigrationRules);
@@ -622,9 +697,13 @@ internal static class SchemaDataContractFingerprintCache
     {
         var count = tags?.Count ?? 0;
         if (count == 0)
+        {
             return 0;
+        }
         if (tags is not Dictionary<string, IReadOnlySet<string>> dictionary)
+        {
             return RuntimeHelpers.GetHashCode(tags!);
+        }
 
         var sum = 0;
         var xor = 0;
@@ -643,9 +722,13 @@ internal static class SchemaDataContractFingerprintCache
     {
         var count = values?.Count ?? 0;
         if (count == 0)
+        {
             return 0;
+        }
         if (values is not Dictionary<string, string> dictionary)
+        {
             return RuntimeHelpers.GetHashCode(values!);
+        }
 
         var sum = 0;
         var xor = 0;
@@ -664,9 +747,13 @@ internal static class SchemaDataContractFingerprintCache
     {
         var count = values?.Count ?? 0;
         if (count == 0)
+        {
             return 0;
+        }
         if (values is not HashSet<string> set)
+        {
             return RuntimeHelpers.GetHashCode(values!);
+        }
 
         var sum = 0;
         var xor = 0;

@@ -38,7 +38,9 @@ public sealed class VaultStaticTokenProvider : IVaultTokenProvider
     public VaultStaticTokenProvider(string token)
     {
         if (string.IsNullOrWhiteSpace(token) || ContainsNewLine(token))
+        {
             throw new ArgumentException("Vault token is invalid.", nameof(token));
+        }
 
         _token = token;
     }
@@ -95,9 +97,13 @@ public sealed class VaultAppRoleTokenProvider : IVaultTokenProvider
         ArgumentNullException.ThrowIfNull(httpClient);
         ArgumentNullException.ThrowIfNull(timeProvider);
         if (string.IsNullOrWhiteSpace(roleId))
+        {
             throw new ArgumentException("Vault AppRole role ID cannot be null or whitespace.", nameof(roleId));
+        }
         if (string.IsNullOrWhiteSpace(secretId))
+        {
             throw new ArgumentException("Vault AppRole secret ID cannot be null or whitespace.", nameof(secretId));
+        }
 
         _httpClient = httpClient;
         _roleId = roleId;
@@ -133,7 +139,9 @@ public sealed class VaultAppRoleTokenProvider : IVaultTokenProvider
         try
         {
             if (state.TryGetToken(_timeProvider.GetUtcNow(), out var cachedToken))
+            {
                 return cachedToken;
+            }
 
             var requestBytes = JsonSerializer.SerializeToUtf8Bytes(
                 new AppRoleLoginRequest(_roleId, _secretId),
@@ -207,7 +215,10 @@ public sealed class VaultAppRoleTokenProvider : IVaultTokenProvider
         private string? _token;
         private long _expiresAtUtcTicks;
 
-        internal SemaphoreSlim RefreshGate { get; } = new(1, 1);
+        internal SemaphoreSlim RefreshGate
+        {
+            get;
+        } = new(1, 1);
 
         internal bool TryGetToken(DateTimeOffset now, out string token)
         {
@@ -268,7 +279,9 @@ public sealed class VaultTransitHttpClient : IVaultTransitClient
         CancellationToken cancellationToken = default)
     {
         if (plaintext.IsEmpty)
+        {
             throw new ArgumentException("Vault plaintext cannot be empty.", nameof(plaintext));
+        }
 
         var payload = RentBase64Payload(plaintext.Span, out var payloadLength);
         try
@@ -302,7 +315,9 @@ public sealed class VaultTransitHttpClient : IVaultTransitClient
         CancellationToken cancellationToken = default)
     {
         if (ciphertext.IsEmpty)
+        {
             throw new ArgumentException("Vault ciphertext cannot be empty.", nameof(ciphertext));
+        }
 
         var payload = RentCiphertextPayload(ciphertext.Span, out var payloadLength);
         try
@@ -329,14 +344,18 @@ public sealed class VaultTransitHttpClient : IVaultTransitClient
     internal static string NormalizeMountPoint(string mountPoint)
     {
         if (string.IsNullOrWhiteSpace(mountPoint))
+        {
             throw new ArgumentException("Vault mount point cannot be null or whitespace.", nameof(mountPoint));
+        }
 
         var normalized = mountPoint.Trim('/');
         var segments = normalized.Split('/');
         foreach (var segment in segments)
         {
             if (segment.Length == 0 || segment is "." or "..")
+            {
                 throw new ArgumentException("Vault mount point is invalid.", nameof(mountPoint));
+            }
         }
 
         return normalized;
@@ -345,7 +364,9 @@ public sealed class VaultTransitHttpClient : IVaultTransitClient
     internal static string? NormalizeNamespace(string? vaultNamespace)
     {
         if (vaultNamespace is null)
+        {
             return null;
+        }
 
         var normalized = vaultNamespace.Trim('/');
         if (normalized.Length == 0
@@ -383,7 +404,9 @@ public sealed class VaultTransitHttpClient : IVaultTransitClient
         for (var index = 0; index < segments.Length; index++)
         {
             if (index != 0)
+            {
                 builder.Append('/');
+            }
             builder.Append(Uri.EscapeDataString(segments[index]));
         }
 
@@ -398,7 +421,9 @@ public sealed class VaultTransitHttpClient : IVaultTransitClient
     internal static void AddNamespaceHeader(HttpRequestMessage request, string? vaultNamespace)
     {
         if (NormalizeNamespace(vaultNamespace) is { } normalizedNamespace)
+        {
             request.Headers.TryAddWithoutValidation("X-Vault-Namespace", normalizedNamespace);
+        }
     }
 
     internal static void EnsureSuccess(HttpResponseMessage response)
@@ -423,7 +448,9 @@ public sealed class VaultTransitHttpClient : IVaultTransitClient
         CancellationToken cancellationToken)
     {
         if (content.Headers.ContentLength is > MaximumResponseBytes)
+        {
             throw new InvalidOperationException("Vault response exceeded the maximum allowed size.");
+        }
 
         var stream = await content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
         await using var configuredStream = stream.ConfigureAwait(false);
@@ -475,7 +502,9 @@ public sealed class VaultTransitHttpClient : IVaultTransitClient
                     .ReadAsync(responseBuffer.AsMemory(written, available), cancellationToken)
                     .ConfigureAwait(false);
                 if (read == 0)
+                {
                     return responseBuffer.AsSpan(0, written).ToArray();
+                }
 
                 written += read;
             }
@@ -505,13 +534,17 @@ public sealed class VaultTransitHttpClient : IVaultTransitClient
         if (string.IsNullOrWhiteSpace(keyName)
             || keyName.Contains('/')
             || keyName is "." or "..")
+        {
             throw new ArgumentException("Vault Transit key name is invalid.", nameof(keyName));
+        }
 
         var token = await _tokenProvider
             .GetTokenAsync(vaultAddress, vaultNamespace, cancellationToken)
             .ConfigureAwait(false);
         if (string.IsNullOrWhiteSpace(token) || token.Contains('\r') || token.Contains('\n'))
+        {
             throw new InvalidOperationException("Vault token provider returned an invalid token.");
+        }
 
         var path = $"v1/{EncodeMountPoint(normalizedMountPoint)}/{operation}/{Uri.EscapeDataString(keyName)}";
         using var request = new HttpRequestMessage(HttpMethod.Post, BuildUri(vaultAddress, path));
@@ -535,7 +568,9 @@ public sealed class VaultTransitHttpClient : IVaultTransitClient
             }
 
             if (responseIsBase64)
+            {
                 return material.GetBytesFromBase64();
+            }
 
             return material.GetString() is { Length: > 0 } ciphertext
                 ? Encoding.UTF8.GetBytes(ciphertext)
@@ -571,7 +606,9 @@ public sealed class VaultTransitHttpClient : IVaultTransitClient
         foreach (var value in ciphertext)
         {
             if (value is < 0x20 or > 0x7e or (byte)'"' or (byte)'\\')
+            {
                 throw new FormatException("Vault ciphertext is not valid ASCII Transit ciphertext.");
+            }
         }
 
         var buffer = ArrayPool<byte>.Shared.Rent(

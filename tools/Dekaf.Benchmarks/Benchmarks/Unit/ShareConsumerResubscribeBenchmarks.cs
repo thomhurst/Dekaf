@@ -13,24 +13,38 @@ public class ShareConsumerResubscribeBenchmarks
     private ShareConsumerPollBufferBenchmarks _poll = null!;
 
     [Params(1, 64)]
-    public int PartitionCount { get; set; }
+    public int PartitionCount
+    {
+        get; set;
+    }
 
     [Params(false, true)]
-    public bool Overflow { get; set; }
+    public bool Overflow
+    {
+        get; set;
+    }
 
     [Params(false, true)]
-    public bool CommitCallback { get; set; }
+    public bool CommitCallback
+    {
+        get; set;
+    }
 
     [Params(false, true)]
-    public bool SerializeRequests { get; set; }
+    public bool SerializeRequests
+    {
+        get; set;
+    }
 
     [GlobalSetup]
     public async Task Setup()
     {
         _poll = new ShareConsumerPollBufferBenchmarks
         {
-            PartitionCount = PartitionCount, Overflow = Overflow,
-            CommitCallback = CommitCallback, SerializeRequests = SerializeRequests
+            PartitionCount = PartitionCount,
+            Overflow = Overflow,
+            CommitCallback = CommitCallback,
+            SerializeRequests = SerializeRequests
         };
         await _poll.Setup();
     }

@@ -1,12 +1,12 @@
 using System.Buffers;
-using Dekaf.Protocol.Records;
 using System.Reflection;
+using Dekaf.Consumer;
 using Dekaf.Protocol;
 using Dekaf.Protocol.Messages;
+using Dekaf.Protocol.Records;
+using Dekaf.Serialization;
 using Dekaf.ShareConsumer;
 using Dekaf.Telemetry;
-using Dekaf.Consumer;
-using Dekaf.Serialization;
 
 namespace Dekaf.Tests.Unit.ShareConsumer;
 
@@ -88,13 +88,21 @@ public sealed partial class ShareConsumerRenewalTests
 
     private class TelemetryFailingDeserializer : IDeserializer<string>
     {
-        public int Calls { get; private set; }
-        public bool Fail { get; set; } = true;
+        public int Calls
+        {
+            get; private set;
+        }
+        public bool Fail
+        {
+            get; set;
+        } = true;
 
         public string Deserialize(ReadOnlyMemory<byte> data, SerializationContext context)
         {
             if (++Calls == 2 && Fail)
+            {
                 throw new InvalidOperationException("Second record failed.");
+            }
             return Serializers.String.Deserialize(data, context);
         }
     }
@@ -127,7 +135,8 @@ public sealed partial class ShareConsumerRenewalTests
             ShareAcknowledgeResponse = new ShareAcknowledgeResponse
             {
                 ErrorCode = failed ? ErrorCode.InvalidRequest : ErrorCode.None,
-                Responses = [], NodeEndpoints = []
+                Responses = [],
+                NodeEndpoints = []
             }
         };
         await using var fixture = CreateFixture(connection);
@@ -199,8 +208,10 @@ public sealed partial class ShareConsumerRenewalTests
         {
             ShareFetchResponse = new ShareFetchResponse
             {
-                ErrorCode = ErrorCode.None, AcquisitionLockTimeoutMs = 30000,
-                Responses = [], NodeEndpoints = []
+                ErrorCode = ErrorCode.None,
+                AcquisitionLockTimeoutMs = 30000,
+                Responses = [],
+                NodeEndpoints = []
             }
         };
         await using var fixture = CreateFixture(connection);
@@ -225,24 +236,31 @@ public sealed partial class ShareConsumerRenewalTests
         var bytes = new ArrayBufferWriter<byte>();
         using (var batch = new RecordBatch
         {
-            BaseOffset = 42, LastOffsetDelta = 5,
+            BaseOffset = 42,
+            LastOffsetDelta = 5,
             Records = [
                 new Record { OffsetDelta = 0, IsKeyNull = true, Value = "v"u8.ToArray() },
                 new Record { OffsetDelta = 2, IsKeyNull = true, Value = "v"u8.ToArray() },
                 new Record { OffsetDelta = 5, IsKeyNull = true, Value = "v"u8.ToArray() }
             ]
-        }) batch.Write(bytes);
+        })
+        {
+            batch.Write(bytes);
+        }
         var connection = new CapturingConnection(ApiKey.ShareFetch, 2)
         {
             ShareFetchResponse = new ShareFetchResponse
             {
-                ErrorCode = ErrorCode.None, NodeEndpoints = [],
+                ErrorCode = ErrorCode.None,
+                NodeEndpoints = [],
                 Responses = [new ShareFetchResponseTopic
                 {
                     TopicId = TopicId,
                     Partitions = [new ShareFetchResponsePartition
                     {
-                        PartitionIndex = 0, CurrentLeader = new ShareFetchLeaderIdAndEpoch(), RecordBytes = bytes.WrittenMemory,
+                        PartitionIndex = 0,
+                        CurrentLeader = new ShareFetchLeaderIdAndEpoch(),
+                        RecordBytes = bytes.WrittenMemory,
                         AcquiredRecords = [new ShareFetchAcquiredRecords { FirstOffset = 42, LastOffset = 45, DeliveryCount = 1 }]
                     }]
                 }]

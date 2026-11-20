@@ -44,7 +44,9 @@ public sealed class OutboxDynamoDbLeaseTests(DynamoDbLocalContainer dynamoDb)
         await Assert.That(Join(fleet.Owned("relay-b"))).IsEqualTo("4,5,6,7");
 
         for (var round = 0; round < 3; round++)
+        {
             await fleet.RoundAsync("relay-b", "relay-a");
+        }
         await Assert.That(Join(fleet.Owned("relay-a"))).IsEqualTo("0,1,2,3");
         await Assert.That(Join(fleet.Owned("relay-b"))).IsEqualTo("4,5,6,7");
         await Assert.That(fleet.RefusedWrites).IsEqualTo(0);
@@ -57,7 +59,9 @@ public sealed class OutboxDynamoDbLeaseTests(DynamoDbLocalContainer dynamoDb)
         await fleet.RoundAsync("relay-m");
 
         for (var round = 0; round < 3; round++)
+        {
             await fleet.RoundAsync("relay-m", "relay-b");
+        }
 
         // Ranges follow relay-id rank. The incumbent keeps the half it is now assigned, so
         // what it hands back is exactly what the joiner is assigned.
@@ -190,7 +194,9 @@ public sealed class OutboxDynamoDbLeaseTests(DynamoDbLocalContainer dynamoDb)
         fleet.BeforeStoreCall = async request =>
         {
             if (request is Amazon.DynamoDBv2.Model.QueryRequest && ++reads == 2)
+            {
                 landed = await fleet.LandStragglingClaimAsync("relay-b", bucket, cancelledRoundStartedAt);
+            }
         };
         await fleet.ReleaseAsync("relay-b");
         fleet.BeforeStoreCall = null;
@@ -237,7 +243,9 @@ public sealed class OutboxDynamoDbLeaseTests(DynamoDbLocalContainer dynamoDb)
         await AssertBalancedAsync(fleet, "relay-a", "relay-b", "relay-c");
         var settled = fleet.Describe("relay-a", "relay-b", "relay-c");
         for (var round = 0; round < 6; round++)
+        {
             await fleet.RoundAsync(round % 2 == 0 ? ["relay-c", "relay-b", "relay-a"] : ["relay-a", "relay-c", "relay-b"]);
+        }
         // A fast clock must not take a live peer's lease for an expired one.
         await Assert.That(fleet.Describe("relay-a", "relay-b", "relay-c")).IsEqualTo(settled);
 
@@ -298,7 +306,9 @@ public sealed class OutboxDynamoDbLeaseTests(DynamoDbLocalContainer dynamoDb)
         // of every rolling update in the partition that every relay reads each round.
         fleet.Clock.Advance(OutboxDynamoDbFleet.LeaseDuration * 2);
         for (var round = 0; round < 10; round++)
+        {
             await fleet.RoundAsync("relay-a");
+        }
 
         await Assert.That(await CountHeartbeatsAsync(fleet)).IsEqualTo(1);
         await Assert.That(fleet.RefusedWrites).IsEqualTo(0);
@@ -436,7 +446,9 @@ public sealed class OutboxDynamoDbLeaseTests(DynamoDbLocalContainer dynamoDb)
             var owners = fleet.Describe([.. live]);
             live.Add($"rs-a-{index}");
             for (var round = 0; round < 3; round++)
+            {
                 await fleet.RoundAsync([.. live]);
+            }
             await Assert.That(fleet.Describe([.. live.SkipLast(1)])).IsEqualTo(owners);
 
             var stopped = $"rs-z-{index}";
@@ -491,7 +503,9 @@ public sealed class OutboxDynamoDbLeaseTests(DynamoDbLocalContainer dynamoDb)
         // And once everybody ahead of it is gone, the distant standby moves up and takes over.
         await fleet.ReleaseAsync("relay-b");
         for (var round = 0; round < 3 && fleet.Owned("relay-c").Count == 0; round++)
+        {
             await fleet.RoundAsync("relay-c");
+        }
         await Assert.That(Join(fleet.Owned("relay-c"))).IsEqualTo("0");
         await Assert.That(fleet.RefusedWrites).IsEqualTo(0);
     }
@@ -506,10 +520,13 @@ public sealed class OutboxDynamoDbLeaseTests(DynamoDbLocalContainer dynamoDb)
         var random = new Random(seed);
         var live = new List<string>();
         var nextPod = 0;
+
         string NewPod() => $"pod-{random.Next(100):D2}-{nextPod++}";
 
         for (var index = 0; index < 9; index++)
+        {
             live.Add(NewPod());
+        }
         await SettleAsync(fleet, live);
 
         for (var step = 0; step < 16; step++)
@@ -534,7 +551,9 @@ public sealed class OutboxDynamoDbLeaseTests(DynamoDbLocalContainer dynamoDb)
                     fleet.Forget(victim);
                     live.Remove(victim);
                     for (var round = 0; round < 3; round++)
+                    {
                         await fleet.RoundAsync([.. live]);
+                    }
                     break;
                 default:
                     await fleet.ConcurrentRoundAsync([.. live]);
@@ -563,7 +582,9 @@ public sealed class OutboxDynamoDbLeaseTests(DynamoDbLocalContainer dynamoDb)
         }
 
         if (quiet < 3)
+        {
             Assert.Fail($"Ownership did not settle: {fleet.Describe([.. live])}");
+        }
     }
 
     [Test]
@@ -575,7 +596,9 @@ public sealed class OutboxDynamoDbLeaseTests(DynamoDbLocalContainer dynamoDb)
 
         // relay-b freezes (a long pause, a suspended VM) while relay-a keeps its cadence.
         for (var round = 0; round < 3; round++)
+        {
             await fleet.RoundAsync("relay-a");
+        }
         await Assert.That(Join(fleet.Owned("relay-a"))).IsEqualTo("0,1,2,3,4,5,6,7");
         await Assert.That(fleet.RefusedWrites).IsEqualTo(0);
 
@@ -647,7 +670,9 @@ public sealed class OutboxDynamoDbLeaseTests(DynamoDbLocalContainer dynamoDb)
         var before = fleet.Describe(relays);
 
         for (var round = 0; round < 5; round++)
+        {
             await fleet.ConcurrentRoundAsync(relays);
+        }
 
         await Assert.That(fleet.Describe(relays)).IsEqualTo(before);
         await Assert.That(fleet.RefusedWrites).IsEqualTo(0);
@@ -687,7 +712,9 @@ public sealed class OutboxDynamoDbLeaseTests(DynamoDbLocalContainer dynamoDb)
         // Once membership is agreed the noise stops for good.
         var settled = fleet.RefusedWrites;
         for (var round = 0; round < 3; round++)
+        {
             await fleet.ConcurrentRoundAsync(relays);
+        }
         await Assert.That(fleet.RefusedWrites).IsEqualTo(settled);
     }
 
@@ -739,7 +766,9 @@ public sealed class OutboxDynamoDbLeaseTests(DynamoDbLocalContainer dynamoDb)
         await ConvergeAsync(fleet, "relay-a", "relay-b");
         var settled = fleet.RefusedWrites;
         for (var round = 0; round < 10; round++)
+        {
             await fleet.ConcurrentRoundAsync("relay-a", "relay-b");
+        }
 
         await Assert.That(await CountHeartbeatsAsync(fleet)).IsEqualTo(2);
         await Assert.That(fleet.RefusedWrites).IsEqualTo(settled);
@@ -755,10 +784,13 @@ public sealed class OutboxDynamoDbLeaseTests(DynamoDbLocalContainer dynamoDb)
         var random = new Random(seed);
         var live = new List<string>();
         var nextPod = 0;
+
         string NewPod() => $"pod-{random.Next(100):D2}-{nextPod++}";
 
         for (var index = 0; index < 5; index++)
+        {
             live.Add(NewPod());
+        }
         await ConvergeAsync(fleet, [.. live]);
 
         for (var step = 0; step < 24; step++)
@@ -780,14 +812,18 @@ public sealed class OutboxDynamoDbLeaseTests(DynamoDbLocalContainer dynamoDb)
                     fleet.Forget(victim);
                     live.Remove(victim);
                     for (var round = 0; round < 3; round++)
+                    {
                         await fleet.RoundAsync([.. live]);
+                    }
                     break;
                 case 4 when live.Count > 2:
                     // Frozen for longer than its lease while its peers keep their cadence.
                     // It wakes up in the rounds below, still believing in its old buckets.
                     var awake = live.Where(pod => pod != victim).ToArray();
                     for (var round = 0; round < 4; round++)
+                    {
                         await fleet.RoundAsync(awake);
+                    }
                     break;
                 default:
                     // Every pod's round lands at the same moment.
@@ -814,7 +850,9 @@ public sealed class OutboxDynamoDbLeaseTests(DynamoDbLocalContainer dynamoDb)
             var before = fleet.Describe(relayIds);
             await fleet.RoundAsync(relayIds);
             if (round > 0 && fleet.Describe(relayIds) == before)
+            {
                 return;
+            }
         }
 
         Assert.Fail($"Ownership did not settle: {fleet.Describe(relayIds)}");

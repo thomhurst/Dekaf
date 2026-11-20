@@ -50,7 +50,9 @@ public sealed class DekafConsumerHealthCheck<TKey, TValue> : IHealthCheck
 
             var livenessResult = CheckGroupLiveness(assignment.Count, failureStatus);
             if (livenessResult is { } result)
+            {
                 return result;
+            }
 
             if (assignment.Count == 0)
             {
@@ -162,7 +164,9 @@ public sealed class DekafConsumerHealthCheck<TKey, TValue> : IHealthCheck
     private HealthCheckResult? CheckGroupLiveness(int assignedPartitionCount, HealthStatus failureStatus)
     {
         if (_consumer is not IConsumerGroupLiveness livenessSource)
+        {
             return null;
+        }
 
         var liveness = livenessSource.GroupLiveness;
 
@@ -205,7 +209,9 @@ public sealed class DekafConsumerHealthCheck<TKey, TValue> : IHealthCheck
         }
 
         if (assignedPartitionCount == 0 && liveness.HasConsumerGroup)
+        {
             return CreateStandbyResult(CreateLivenessData("Standby", assignedPartitionCount, liveness));
+        }
 
         return null;
     }
@@ -218,7 +224,9 @@ public sealed class DekafConsumerHealthCheck<TKey, TValue> : IHealthCheck
     private static TimeSpan GetHeartbeatStaleThreshold(TimeSpan heartbeatInterval)
     {
         if (heartbeatInterval <= TimeSpan.Zero)
+        {
             return TimeSpan.Zero;
+        }
 
         return heartbeatInterval.Ticks > TimeSpan.MaxValue.Ticks / HeartbeatStaleIntervalMultiplier
             ? TimeSpan.MaxValue
@@ -245,9 +253,13 @@ public sealed class DekafConsumerHealthCheck<TKey, TValue> : IHealthCheck
             data["HeartbeatStaleThresholdMilliseconds"] =
                 GetHeartbeatStaleThreshold(snapshot.HeartbeatInterval).TotalMilliseconds;
             if (snapshot.TimeSinceLastHeartbeat is { } heartbeatAge)
+            {
                 data["HeartbeatAgeMilliseconds"] = heartbeatAge.TotalMilliseconds;
+            }
             if (snapshot.LastHeartbeatFailure is { } failure)
+            {
                 data["LastHeartbeatFailure"] = failure;
+            }
         }
 
         return data;

@@ -32,6 +32,9 @@ public sealed class ConsumerCloseOptions
     /// <summary>
     /// Gets how closing affects consumer-group membership.
     /// </summary>
-    public ConsumerGroupMembershipOperation GroupMembershipOperation { get; init; } =
+    public ConsumerGroupMembershipOperation GroupMembershipOperation
+    {
+        get; init;
+    } =
         ConsumerGroupMembershipOperation.Default;
 }

@@ -6,10 +6,16 @@ namespace Dekaf.Streams;
 public interface IReadOnlyKeyValueStore<TKey, TValue>
 {
     /// <summary>Gets the store name.</summary>
-    string Name { get; }
+    string Name
+    {
+        get;
+    }
 
     /// <summary>Gets the number of keys in the store.</summary>
-    long Count { get; }
+    long Count
+    {
+        get;
+    }
 
     /// <summary>Reads the value of <paramref name="key"/>.</summary>
     bool TryGet(TKey key, [MaybeNullWhen(false)] out TValue value);
@@ -59,7 +65,10 @@ public interface IStateStoreEngine
 public interface IKeyValueBytesStore : IDisposable
 {
     /// <summary>Gets the number of keys in the store.</summary>
-    long Count { get; }
+    long Count
+    {
+        get;
+    }
 
     /// <summary>Reads a value. The returned memory is valid until the next write to the store.</summary>
     bool TryGet(ReadOnlySpan<byte> key, out ReadOnlyMemory<byte> value);
@@ -76,7 +85,10 @@ public interface IKeyValueBytesStore : IDisposable
 public interface IWindowBytesStore : IDisposable
 {
     /// <summary>Gets the number of entries in the store.</summary>
-    long Count { get; }
+    long Count
+    {
+        get;
+    }
 
     /// <summary>Reads a value. The returned memory is valid until the next write to the store.</summary>
     bool TryGet(ReadOnlySpan<byte> key, long windowStart, out ReadOnlyMemory<byte> value);

@@ -154,7 +154,9 @@ public class CompressionBenchmarks
         {
             var estimator = new CompressionRatioEstimator();
             for (var i = 0; i < 200; i++)
+            {
                 estimator.Update("benchmark", compression, ratio);
+            }
             var compress = estimatedMethod.CreateDelegate<Action<CompressionType, CompressionCodecRegistry, double>>(batch);
             return () => compress(compression, registry, estimator.Get("benchmark", compression));
         }
@@ -171,7 +173,9 @@ public class CompressionBenchmarks
         var random = new Random(3827);
         // Independent random quarters mixed with repeated bytes model a roughly 25% ratio.
         for (var offset = 0; offset < data.Length; offset += 4096)
+        {
             random.NextBytes(data.AsSpan(offset, Math.Min(1024, data.Length - offset)));
+        }
         return data;
     }
 

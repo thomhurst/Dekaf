@@ -79,7 +79,9 @@ public class ExponentialBackoffBoundaryTests
     {
         var policy = new ExponentialBackoffRetryPolicy
         {
-            BaseDelay = TimeSpan.Zero, MaxDelay = TimeSpan.Zero, MaxAttempts = 0
+            BaseDelay = TimeSpan.Zero,
+            MaxDelay = TimeSpan.Zero,
+            MaxAttempts = 0
         };
 
         await Assert.That(() => policy.GetNextDelay(attempt, Failure)).Throws<ArgumentOutOfRangeException>();
@@ -106,7 +108,9 @@ public class ExponentialBackoffBoundaryTests
     {
         var policy = new ExponentialBackoffRetryPolicy
         {
-            BaseDelay = TimeSpan.Zero, MaxDelay = TimeSpan.Zero, MaxAttempts = 0
+            BaseDelay = TimeSpan.Zero,
+            MaxDelay = TimeSpan.Zero,
+            MaxAttempts = 0
         };
 
         await Assert.That(policy.GetNextDelay(1, Failure)).IsNull();

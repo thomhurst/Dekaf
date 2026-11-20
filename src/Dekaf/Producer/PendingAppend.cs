@@ -110,7 +110,10 @@ internal sealed class PendingAppend : IValueTaskSource<bool>
     /// The transactional append generation the produce was admitted in, validated at the append
     /// commit point; <see cref="RecordAccumulator.NoTransactionalGeneration"/> skips the check.
     /// </summary>
-    internal int TransactionalGeneration { get; set; } = RecordAccumulator.NoTransactionalGeneration;
+    internal int TransactionalGeneration
+    {
+        get; set;
+    } = RecordAccumulator.NoTransactionalGeneration;
 
     /// <summary>Monotonic milliseconds when the originating append started blocking; the
     /// drain uses this to report the admission wait actually paid.</summary>
@@ -213,7 +216,9 @@ internal sealed class PendingAppend : IValueTaskSource<bool>
     public bool TryClaim(int generation)
     {
         if (!TryComplete(generation))
+        {
             return false;
+        }
 
         DisarmTimerAndCancellation();
         return true;
@@ -291,7 +296,9 @@ internal sealed class PendingAppend : IValueTaskSource<bool>
     internal bool TryFail(Exception exception, int generation)
     {
         if (!TryComplete(generation))
+        {
             return false;
+        }
 
         ReleasePendingCount();
         DisarmTimerAndCancellation();
@@ -318,7 +325,9 @@ internal sealed class PendingAppend : IValueTaskSource<bool>
         // Capture the rental first so a callback that outlives it can never fail a later one.
         var generation = Volatile.Read(ref _state);
         if ((generation & 1) != 0)
+        {
             return;
+        }
 
         var now = Dekaf.MonotonicClock.GetMilliseconds();
         var deadlineTickCount = Volatile.Read(ref _deadlineTickCount);
@@ -330,7 +339,9 @@ internal sealed class PendingAppend : IValueTaskSource<bool>
 
         var accumulator = _accumulator;
         if (accumulator is null)
+        {
             return;
+        }
 
         var configured = TimeSpan.FromMilliseconds(accumulator.MaxBlockMsOption);
         var elapsed = TimeSpan.FromMilliseconds(now - _startTicks);
@@ -342,7 +353,9 @@ internal sealed class PendingAppend : IValueTaskSource<bool>
             accumulator.BuildBufferTimeoutMessage(_recordSize));
 
         if (TryFail(exception, generation))
+        {
             accumulator.DrainPendingAppendsIfHead(this);
+        }
     }
 
     private void OnCancellation()
@@ -354,15 +367,21 @@ internal sealed class PendingAppend : IValueTaskSource<bool>
         // the observed generation; a newer token only means the CAS below fails.
         var generation = Volatile.Read(ref _state);
         if ((generation & 1) != 0)
+        {
             return;
+        }
 
         var cancellationToken = _cancellationToken;
         if (!cancellationToken.IsCancellationRequested)
+        {
             return;
+        }
 
         var accumulator = _accumulator;
         if (TryFail(new OperationCanceledException(cancellationToken), generation))
+        {
             accumulator?.DrainPendingAppendsIfHead(this);
+        }
     }
 
     /// <summary>
@@ -401,7 +420,9 @@ internal sealed class PendingAppend : IValueTaskSource<bool>
     private void ReleasePendingCount()
     {
         if (Interlocked.Exchange(ref _pendingCounted, 0) != 0)
+        {
             _accumulator.DecrementSlowPathAppendCount(_topic, _partition);
+        }
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]

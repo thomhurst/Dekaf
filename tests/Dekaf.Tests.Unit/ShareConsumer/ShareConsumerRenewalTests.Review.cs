@@ -55,8 +55,12 @@ public sealed partial class ShareConsumerRenewalTests
         await using var poll = fixture.Consumer.PollBatchesAsync().GetAsyncEnumerator();
         await Assert.That(await poll.MoveNextAsync()).IsTrue();
         foreach (var record in poll.Current)
+        {
             if (record.Offset != 101)
+            {
                 poll.Current.Acknowledge(record);
+            }
+        }
         await fixture.Consumer.CommitAsync();
         await Assert.That(offsets).IsEquivalentTo(new long[] { 100, 102 });
     }
@@ -84,10 +88,13 @@ public sealed partial class ShareConsumerRenewalTests
                     TopicId = TopicId,
                     Partitions = [new ShareFetchResponsePartition
                     {
-                        PartitionIndex = 0, CurrentLeader = new ShareFetchLeaderIdAndEpoch(),
-                        RecordBytes = bytes.ToArray(), AcquiredRecords = counted
+                        PartitionIndex = 0,
+                        CurrentLeader = new ShareFetchLeaderIdAndEpoch(),
+                        RecordBytes = bytes.ToArray(),
+                        AcquiredRecords = counted
                     }]
-                }], NodeEndpoints = []
+                }],
+                NodeEndpoints = []
             }
         };
         await using var fixture = CreateFixture(connection, valueDeserializer: Dekaf.Serialization.Serializers.String);
@@ -107,9 +114,19 @@ public sealed partial class ShareConsumerRenewalTests
 
     private sealed class CountedAcquisitionRanges(ShareFetchAcquiredRecords[] ranges) : IReadOnlyList<ShareFetchAcquiredRecords>
     {
-        internal int Reads { get; private set; }
+        internal int Reads
+        {
+            get; private set;
+        }
         public int Count => ranges.Length;
-        public ShareFetchAcquiredRecords this[int index] { get { Reads++; return ranges[index]; } }
+        public ShareFetchAcquiredRecords this[int index]
+        {
+            get
+            {
+                Reads++;
+                return ranges[index];
+            }
+        }
         public IEnumerator<ShareFetchAcquiredRecords> GetEnumerator() => ((IEnumerable<ShareFetchAcquiredRecords>)ranges).GetEnumerator();
         IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
     }

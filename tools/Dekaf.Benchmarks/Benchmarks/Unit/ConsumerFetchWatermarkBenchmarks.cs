@@ -20,7 +20,10 @@ public class ConsumerFetchWatermarkBenchmarks
     // ReadCommitted measures against the last stable offset, ReadUncommitted against the high
     // watermark; both resolve the visible end once per partition response.
     [Params(IsolationLevel.ReadUncommitted, IsolationLevel.ReadCommitted)]
-    public IsolationLevel IsolationLevel { get; set; }
+    public IsolationLevel IsolationLevel
+    {
+        get; set;
+    }
 
     [GlobalSetup]
     public void Setup()

@@ -70,7 +70,9 @@ public sealed class ConsumerFetchBufferMetricsTests
             foreach (var tag in tags)
             {
                 if (tag.Key == DekafDiagnostics.MessagingClientId)
+                {
                     clientId = tag.Value as string;
+                }
             }
 
             samples.Add(new Sample(instrument.Name, value, clientId));

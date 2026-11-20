@@ -7,5 +7,7 @@ internal sealed class PendingAppendPool(int maxPoolSize) : ObjectPool<PendingApp
 {
     protected override PendingAppend Create() => new();
 
-    protected override void Reset(PendingAppend item) { }
+    protected override void Reset(PendingAppend item)
+    {
+    }
 }

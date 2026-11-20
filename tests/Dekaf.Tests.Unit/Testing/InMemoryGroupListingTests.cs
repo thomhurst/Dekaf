@@ -33,7 +33,9 @@ public sealed class InMemoryGroupListingTests
         await admin.DeleteStreamsGroupOffsetsAsync("streams", [new TopicPartition("input", 0)]);
         var empty = await admin.ListGroupsAsync(new ListGroupsOptions
         {
-            States = ["empty"], Types = ["consumer", "streams"], ProtocolTypes = ["consumer", "streams"]
+            States = ["empty"],
+            Types = ["consumer", "streams"],
+            ProtocolTypes = ["consumer", "streams"]
         });
         await Assert.That(empty.Select(static group => group.GroupId)).IsEquivalentTo(["consumer", "streams"]);
         // Earlier results remain snapshots after membership changes.

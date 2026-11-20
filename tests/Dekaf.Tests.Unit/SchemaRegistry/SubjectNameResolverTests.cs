@@ -135,7 +135,9 @@ public sealed class SubjectNameResolverTests
         const string topic = "orders";
 
         for (var schemaId = 0; schemaId < schemaCount; schemaId++)
+        {
             cache.GetSubjectName(schemaId, schema, topic, isKey: false, "Fallback");
+        }
 
         cache.GetSubjectName(0, schema, topic, isKey: false, "Fallback");
 
@@ -144,7 +146,10 @@ public sealed class SubjectNameResolverTests
 
     private sealed class CountingRecordSubjectNameStrategy : ISubjectNameStrategy
     {
-        public int CallCount { get; private set; }
+        public int CallCount
+        {
+            get; private set;
+        }
 
         public string GetSubjectName(string topic, string? recordType, bool isKey)
         {

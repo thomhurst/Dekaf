@@ -24,10 +24,15 @@ public sealed class ConsumerDeferredPositionTests(KafkaTestContainer kafka) : Ka
             .WithBootstrapServers(KafkaContainer.BootstrapServers).BuildAsync(cancellationToken))
         {
             foreach (var (partition, value) in new[] { (0, "initial"), (0, "during-failure"), (1, "after-recovery") })
+            {
                 await producer.ProduceAsync(new ProducerMessage<string, string>
                 {
-                    Topic = topic, Partition = partition, Key = "key", Value = value
+                    Topic = topic,
+                    Partition = partition,
+                    Key = "key",
+                    Value = value
                 }, cancellationToken);
+            }
         }
 
         var clientId = $"deferred-position-{Guid.NewGuid():N}";
@@ -57,7 +62,9 @@ public sealed class ConsumerDeferredPositionTests(KafkaTestContainer kafka) : Ka
         {
             await consumer.EnsureAssignmentForPollAsync(lookupTimeout.Token);
             if (pool.FailedRequests > 0)
+            {
                 break;
+            }
             await Task.Delay(25, lookupTimeout.Token);
         }
         while (true);
@@ -133,7 +140,9 @@ public sealed class ConsumerDeferredPositionTests(KafkaTestContainer kafka) : Ka
                             Topics = apiVersion < 8 ? topics : null,
                             Groups = apiVersion < 8 ? null : [new OffsetFetchResponseGroup
                             {
-                                GroupId = fetch.GroupId!, Topics = topics, ErrorCode = ErrorCode.None
+                                GroupId = fetch.GroupId!,
+                                Topics = topics,
+                                ErrorCode = ErrorCode.None
                             }]
                         });
                     }
@@ -143,7 +152,9 @@ public sealed class ConsumerDeferredPositionTests(KafkaTestContainer kafka) : Ka
                         ErrorCode = apiVersion < 8 ? owner._failureCode : ErrorCode.None,
                         Groups = apiVersion < 8 ? null : [new OffsetFetchResponseGroup
                         {
-                            GroupId = fetch.GroupId!, Topics = [], ErrorCode = owner._failureCode
+                            GroupId = fetch.GroupId!,
+                            Topics = [],
+                            ErrorCode = owner._failureCode
                         }]
                     });
                 }

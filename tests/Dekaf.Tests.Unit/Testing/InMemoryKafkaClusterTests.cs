@@ -813,7 +813,9 @@ public sealed class InMemoryKafkaClusterTests
         {
             await producer.ProduceAsync(new ProducerMessage<string, string>
             {
-                Topic = "orders", Key = "key", Value = "order-1"
+                Topic = "orders",
+                Key = "key",
+                Value = "order-1"
             });
         }
 
@@ -1571,7 +1573,9 @@ public sealed class InMemoryKafkaClusterTests
         finally
         {
             if (gateHeld)
+            {
                 Monitor.Exit(gate);
+            }
         }
 
         await Assert.That(subscribeReachedGate).IsTrue();
@@ -1842,7 +1846,9 @@ public sealed class InMemoryKafkaClusterTests
         shareConsumer.Subscribe("shared");
         var records = new List<ShareConsumeResult<string, string>>();
         await foreach (var record in shareConsumer.PollAsync())
+        {
             records.Add(record);
+        }
 
         shareConsumer.Acknowledge(records[0], AcknowledgeType.Accept);
         shareConsumer.Acknowledge(records[1], AcknowledgeType.Release);
@@ -1911,7 +1917,9 @@ public sealed class InMemoryKafkaClusterTests
         var first = await firstConsumer.PollAsync().FirstAsync();
         var blocked = new List<ShareConsumeResult<string, string>>();
         await foreach (var record in secondConsumer.PollAsync())
+        {
             blocked.Add(record);
+        }
 
         firstConsumer.Acknowledge(first, AcknowledgeType.Release);
         await firstConsumer.CommitAsync();

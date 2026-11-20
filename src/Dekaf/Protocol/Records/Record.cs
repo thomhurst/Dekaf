@@ -20,39 +20,81 @@ public readonly record struct Record
     // 512 KiB of header metadata while bounding pooled-array amplification and parse work.
     internal const int MaxReasonableHeaderCount = 256 * 1024;
 
-    public int Length { get; init; }
-    public byte Attributes { get; init; }
-    public long TimestampDelta { get; init; }
-    public int OffsetDelta { get; init; }
-    public ReadOnlyMemory<byte> Key { get; init; }
-    public ReadOnlyMemory<byte> Value { get; init; }
-    public Header[]? Headers { get; init; }
+    public int Length
+    {
+        get; init;
+    }
+    public byte Attributes
+    {
+        get; init;
+    }
+    public long TimestampDelta
+    {
+        get; init;
+    }
+    public int OffsetDelta
+    {
+        get; init;
+    }
+    public ReadOnlyMemory<byte> Key
+    {
+        get; init;
+    }
+    public ReadOnlyMemory<byte> Value
+    {
+        get; init;
+    }
+    public Header[]? Headers
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The number of valid headers in the Headers array.
     /// Required because the array may be rented from ArrayPool and oversized.
     /// </summary>
-    public int HeaderCount { get; init; }
+    public int HeaderCount
+    {
+        get; init;
+    }
 
-    private int RoutedHeaderIndex0 { get; init; }
-    private int RoutedHeaderIndex1 { get; init; }
-    private int RoutedHeaderTailOffset { get; init; }
+    private int RoutedHeaderIndex0
+    {
+        get; init;
+    }
+    private int RoutedHeaderIndex1
+    {
+        get; init;
+    }
+    private int RoutedHeaderTailOffset
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Returns true if the key is null (empty memory with special flag).
     /// </summary>
-    public bool IsKeyNull { get; init; }
+    public bool IsKeyNull
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Returns true if the value is null (empty memory with special flag).
     /// </summary>
-    public bool IsValueNull { get; init; }
+    public bool IsValueNull
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Pre-computed body size to avoid redundant calculation during Write().
     /// Set at record creation time; 0 means not pre-computed (use CalculateBodySize()).
     /// </summary>
-    internal int CachedBodySize { get; init; }
+    internal int CachedBodySize
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Gets the effective header count, handling both exact-sized and pooled arrays.
@@ -134,7 +176,9 @@ public readonly record struct Record
     {
         var length = reader.ReadVarInt();
         if (length < 0)
+        {
             throw new MalformedProtocolDataException($"Invalid record length {length}");
+        }
 
         // The body is parsed in place with the caller's reader rather than through a
         // per-record sub-reader sliced to the declared length. Every variable-length field
@@ -289,14 +333,18 @@ public readonly record struct Record
     internal Record IndexHeaders(RecordHeaderRoutingPlan headerRoutingPlan)
     {
         if (Headers is null || HeaderCount == 0)
+        {
             return this;
+        }
 
         var firstIndex = 0;
         var secondIndex = 0;
         for (var index = 0; index < HeaderCount; index++)
         {
             if (!headerRoutingPlan.TryGetSlot(Headers[index].Key, out var slot))
+            {
                 continue;
+            }
 
             var encodedIndex = index + 1;
             switch (slot)
@@ -356,7 +404,9 @@ public readonly record struct Record
         {
             var header = headers[index];
             if (!headerRoutingPlan.TryGetSlot(header.Key, out var slot))
+            {
                 continue;
+            }
 
             var encodedIndex = index + 1;
             switch (slot)
@@ -396,7 +446,9 @@ public readonly record struct Record
     private static void ValidateBodyLength(int declaredLength, long consumedLength)
     {
         if (consumedLength != declaredLength)
+        {
             ThrowBodyLengthMismatch(declaredLength, consumedLength);
+        }
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
@@ -406,7 +458,9 @@ public readonly record struct Record
         // its declared end before the mismatch is observed. That is the same condition a
         // reader bounded to the declared length would have reported as exhausted.
         if (consumedLength > declaredLength)
+        {
             KafkaProtocolReader.ThrowInsufficientData();
+        }
 
         throw new RecordBodyLengthMismatchException(
             $"Record body length mismatch: declared {declaredLength}, consumed {consumedLength}");
@@ -418,16 +472,22 @@ public readonly record struct Record
     {
         var remainingInRecord = recordBodyLength - bodyBytesRead;
         if (remainingInRecord < 0)
+        {
             KafkaProtocolReader.ThrowInsufficientData();
+        }
         if (headerCount < 0 || headerCount > MaxReasonableHeaderCount)
+        {
             throw new MalformedProtocolDataException($"Invalid record header count {headerCount}");
+        }
 
         // A header needs at least one byte for key length and one byte for value length.
         // Bound the declared record body by the actual readable bytes so corrupt frames
         // cannot force a giant ArrayPool rent before the first header read fails.
         var readableRecordBytes = Math.Min(remainingInRecord, readerRemaining);
         if (headerCount > readableRecordBytes / 2)
+        {
             throw new MalformedProtocolDataException($"Invalid record header count {headerCount}");
+        }
     }
 
     /// <summary>
@@ -437,7 +497,9 @@ public readonly record struct Record
     internal static IReadOnlyList<Header>? CopyHeaders(Header[]? headers, int headerCount)
     {
         if (headers is null || headerCount == 0)
+        {
             return null;
+        }
 
         var result = new Header[headerCount];
         headers.AsSpan(0, headerCount).CopyTo(result);
@@ -542,7 +604,9 @@ public readonly record struct Record
         }
 
         if (offset != destination.Length)
+        {
             ThrowEncodedSizeMismatch(offset, destination.Length);
+        }
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]

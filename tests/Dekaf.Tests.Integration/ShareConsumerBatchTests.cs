@@ -31,7 +31,10 @@ public class ShareConsumerBatchTests(KafkaTestContainer kafka) : KafkaIntegratio
                 value.AsSpan().Fill((byte)index);
                 await producer.ProduceAsync(new ProducerMessage<int, byte[]>
                 {
-                    Topic = topic, Partition = 0, Key = index, Value = value
+                    Topic = topic,
+                    Partition = 0,
+                    Key = index,
+                    Value = value
                 }, timeout.Token);
             }
         }
@@ -54,7 +57,9 @@ public class ShareConsumerBatchTests(KafkaTestContainer kafka) : KafkaIntegratio
             }
             await consumer.CommitAsync(timeout.Token);
             if (received.Count == messageCount)
+            {
                 break;
+            }
         }
         await Assert.That(received.Count).IsEqualTo(messageCount);
         await consumer.CloseAsync(timeout.Token);
@@ -75,15 +80,20 @@ public class ShareConsumerBatchTests(KafkaTestContainer kafka) : KafkaIntegratio
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithLinger(TimeSpan.FromMinutes(1)).WithBatchSize(1024 * 1024).BuildAsync();
         for (var index = 0; index < messageCount; index++)
+        {
             await producer.FireAsync(new ProducerMessage<int, int>
             {
-                Topic = topic, Partition = 0, Key = index, Value = index,
+                Topic = topic,
+                Partition = 0,
+                Key = index,
+                Value = index,
                 Headers = new Headers
                 {
                     { unrelatedName, "other"u8.ToArray() },
                     { name, "selected"u8.ToArray() }
                 }
             });
+        }
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
         await producer.FlushAsync(timeout.Token);
         var preparer = new MidBatchPreparer();
@@ -121,7 +131,9 @@ public class ShareConsumerBatchTests(KafkaTestContainer kafka) : KafkaIntegratio
             }
             await consumer.CommitAsync(timeout.Token);
             if (received == messageCount)
+            {
                 break;
+            }
         }
         await Assert.That(received).IsEqualTo(messageCount);
         await Assert.That(preparer.Preparations).IsEqualTo(1);
@@ -141,11 +153,16 @@ public class ShareConsumerBatchTests(KafkaTestContainer kafka) : KafkaIntegratio
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithLinger(TimeSpan.FromMinutes(1)).WithBatchSize(1024 * 1024).BuildAsync();
         for (var index = 0; index < messageCount; index++)
+        {
             await producer.FireAsync(new ProducerMessage<int, int>
             {
-                Topic = topic, Partition = 0, Key = index, Value = index,
+                Topic = topic,
+                Partition = 0,
+                Key = index,
+                Value = index,
                 Headers = Headers.Create("identity", new byte[] { (byte)index })
             });
+        }
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
         await producer.FlushAsync(timeout.Token);
 
@@ -171,7 +188,9 @@ public class ShareConsumerBatchTests(KafkaTestContainer kafka) : KafkaIntegratio
                 {
                     // The producer may also propagate the test runner's trace context.
                     if (!header.KeyUtf8.Span.SequenceEqual("identity"u8))
+                    {
                         continue;
+                    }
                     await Assert.That(header.Value.Length).IsEqualTo(1);
                     await Assert.That(header.Value.Span[0]).IsEqualTo((byte)received);
                     identityHeaders++;
@@ -182,7 +201,9 @@ public class ShareConsumerBatchTests(KafkaTestContainer kafka) : KafkaIntegratio
             }
             await consumer.CommitAsync(timeout.Token);
             if (received == messageCount)
+            {
                 break;
+            }
         }
         await Assert.That(received).IsEqualTo(messageCount);
         await Assert.That(largestBatch).IsEqualTo(messageCount);
@@ -224,7 +245,10 @@ public class ShareConsumerBatchTests(KafkaTestContainer kafka) : KafkaIntegratio
         {
             values.Add(record.Value);
             second.Acknowledge(record);
-            if (values.Count == 3) break;
+            if (values.Count == 3)
+            {
+                break;
+            }
         }
         string?[] expected = ["value-0", "value-1", "value-2"];
         await Assert.That(values).IsEquivalentTo(expected);
@@ -289,7 +313,10 @@ public class ShareConsumerBatchTests(KafkaTestContainer kafka) : KafkaIntegratio
         {
             values.Add(record.Value);
             second.Acknowledge(record);
-            if (values.Count == 2) break;
+            if (values.Count == 2)
+            {
+                break;
+            }
         }
         // One partition redelivers in offset order, so a released first record would come first.
         string?[] produced = ["value-0", "value-1", "value-2"];
@@ -313,7 +340,10 @@ public class ShareConsumerBatchTests(KafkaTestContainer kafka) : KafkaIntegratio
             values[index] = new string((char)('a' + index), 128 * 1024);
             await producer.ProduceAsync(new Dekaf.Producer.ProducerMessage<string, string>
             {
-                Topic = topic, Partition = 0, Key = index.ToString(), Value = values[index]
+                Topic = topic,
+                Partition = 0,
+                Key = index.ToString(),
+                Value = values[index]
             });
         }
         await producer.FlushAsync();
@@ -334,7 +364,10 @@ public class ShareConsumerBatchTests(KafkaTestContainer kafka) : KafkaIntegratio
                 batch.Acknowledge(record);
             }
             await consumer.CommitAsync(timeout.Token);
-            if (received.Count == messageCount) break;
+            if (received.Count == messageCount)
+            {
+                break;
+            }
         }
         await Assert.That(received.Count).IsEqualTo(messageCount);
         await consumer.CloseAsync(timeout.Token);
@@ -384,7 +417,10 @@ public class ShareConsumerBatchTests(KafkaTestContainer kafka) : KafkaIntegratio
         var payload = new string('x', payloadBytes);
         await producer.ProduceAsync(new Dekaf.Producer.ProducerMessage<string, string>
         {
-            Topic = topic, Partition = 0, Key = "key-0", Value = payload,
+            Topic = topic,
+            Partition = 0,
+            Key = "key-0",
+            Value = payload,
             Headers = new Dekaf.Serialization.Headers { { "batch-identity", "retained"u8.ToArray() } }
         });
         await producer.FlushAsync();
@@ -418,7 +454,9 @@ public class ShareConsumerBatchTests(KafkaTestContainer kafka) : KafkaIntegratio
         foreach (var header in replays.Current.Headers)
         {
             if (!header.KeyUtf8.Span.SequenceEqual("batch-identity"u8))
+            {
                 continue;
+            }
             foundHeader = true;
             await Assert.That(header.Value.Span.SequenceEqual("retained"u8)).IsTrue();
         }
@@ -461,7 +499,9 @@ public class ShareConsumerBatchTests(KafkaTestContainer kafka) : KafkaIntegratio
                     firstValue = record.Value;
                     await Assert.That(record.DeliveryCount).IsGreaterThanOrEqualTo(1);
                     if (explicitAcknowledgement)
+                    {
                         batch.Acknowledge(record, type);
+                    }
                     break;
                 }
                 break;
@@ -481,7 +521,9 @@ public class ShareConsumerBatchTests(KafkaTestContainer kafka) : KafkaIntegratio
             values.Add(record.Value);
             second.Acknowledge(record);
             if (values.Count == expectedCount)
+            {
                 break;
+            }
         }
         string?[] producedValues = ["value-0", "value-1", "value-2"];
         var expected = terminal ? producedValues.Where(value => value != firstValue) : producedValues;

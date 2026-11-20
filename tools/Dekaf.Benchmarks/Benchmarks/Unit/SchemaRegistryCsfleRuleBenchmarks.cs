@@ -292,7 +292,9 @@ public class SchemaRegistryCsfleRuleBenchmarks
     {
         ReadOnlyMemory<byte> result = default;
         for (var i = 0; i < contexts.Length; i++)
+        {
             result = _executor.TransformSerializedPayload(Payload, contexts[i]);
+        }
         return result;
     }
 
@@ -301,7 +303,9 @@ public class SchemaRegistryCsfleRuleBenchmarks
         var schema = CreateSchema(CreateRule(algorithm: algorithm));
         var contexts = new SchemaRegistryRuleContext[RotatingDekCount];
         for (var i = 0; i < contexts.Length; i++)
+        {
             contexts[i] = CreateContext(schema, subject: $"{subjectPrefix}-{i}-value");
+        }
         return contexts;
     }
 
@@ -403,7 +407,9 @@ public class SchemaRegistryCsfleRuleBenchmarks
                 ? RotatingSivDeks
                 : RotatingGcmDeks;
             if (rotatingDeks.TryGetValue(subject, out var rotatingDek))
+            {
                 return Task.FromResult(rotatingDek);
+            }
 
             return Task.FromResult(
                 algorithm == DekAlgorithm.Aes256Siv ? BenchmarkSivDek : BenchmarkGcmDek);

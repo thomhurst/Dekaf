@@ -16,11 +16,20 @@ namespace Dekaf.Benchmarks.Benchmarks.Unit;
 public class OutboxDrainBenchmarks
 {
     [Params(1, 8)]
-    public int Buckets { get; set; }
+    public int Buckets
+    {
+        get; set;
+    }
     [Params(1, 64)]
-    public int RowsPerBucket { get; set; }
+    public int RowsPerBucket
+    {
+        get; set;
+    }
     [Params(false, true)]
-    public bool Poisoned { get; set; }
+    public bool Poisoned
+    {
+        get; set;
+    }
 
     private Store _store = null!;
     private OutboxRelayService _relay = null!;
@@ -42,7 +51,10 @@ public class OutboxDrainBenchmarks
     private static Func<ValueTask> BindCycle<T>(OutboxRelayService relay, MethodInfo method)
     {
         var cycle = method.CreateDelegate<Func<CancellationToken, ValueTask<T>>>(relay);
-        return async () => { await cycle(CancellationToken.None); };
+        return async () =>
+        {
+            await cycle(CancellationToken.None);
+        };
     }
 
     [Benchmark]
@@ -51,7 +63,9 @@ public class OutboxDrainBenchmarks
         _store.Reset(RowsPerBucket);
         // This is one complete drain workload, not a loop repeating benchmark operations.
         while (_store.Remaining > 0)
+        {
             await _cycle();
+        }
         return Buckets * RowsPerBucket;
     }
 
@@ -65,7 +79,10 @@ public class OutboxDrainBenchmarks
         private readonly OutboxMessage[][] _full;
         private readonly OutboxMessage[][] _short;
         private readonly int _poisonBucket;
-        public int Remaining { get; private set; }
+        public int Remaining
+        {
+            get; private set;
+        }
 
         public Store(int buckets, int poisonBucket)
         {
@@ -79,11 +96,16 @@ public class OutboxDrainBenchmarks
                 _buckets[bucket] = bucket;
                 _full[bucket] = new OutboxMessage[32];
                 for (var index = 0; index < 32; index++)
+                {
                     _full[bucket][index] = new OutboxMessage
                     {
-                        Id = index + 1, MessageId = Guid.Empty, Bucket = bucket,
-                        Topic = "benchmark", CreatedAtUtc = DateTimeOffset.UnixEpoch
+                        Id = index + 1,
+                        MessageId = Guid.Empty,
+                        Bucket = bucket,
+                        Topic = "benchmark",
+                        CreatedAtUtc = DateTimeOffset.UnixEpoch
                     };
+                }
                 _short[bucket] = [_full[bucket][0]];
             }
         }
@@ -115,6 +137,7 @@ public class OutboxDrainBenchmarks
             return ValueTask.CompletedTask;
         }
     }
+
     private sealed class Publisher(int poisonBucket) : IOutboxPublisher
     {
         private static readonly InvalidOperationException Rejected = new("Simulated MESSAGE_TOO_LARGE.");

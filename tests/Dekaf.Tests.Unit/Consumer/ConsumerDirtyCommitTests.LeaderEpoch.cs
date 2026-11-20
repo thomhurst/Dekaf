@@ -34,7 +34,9 @@ public sealed partial class ConsumerDirtyCommitTests
             onOffsetCommitAsync: async token =>
             {
                 if (Interlocked.Increment(ref commitAttempt) != 1)
+                {
                     return;
+                }
 
                 commitStarted.SetResult();
                 await completeCommit.Task.WaitAsync(token);
@@ -70,7 +72,9 @@ public sealed partial class ConsumerDirtyCommitTests
 
         await Assert.That(requests.Count).IsEqualTo(changed ? 2 : 1);
         if (changed)
+        {
             await Assert.That(GetCommittedOffsets(requests[1])).IsEquivalentTo([stored]);
+        }
         await Assert.That(GetDirtyStoredOffsets(consumer)).IsEmpty();
     }
 }

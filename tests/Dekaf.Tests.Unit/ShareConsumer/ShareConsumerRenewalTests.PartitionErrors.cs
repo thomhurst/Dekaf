@@ -85,7 +85,11 @@ public sealed partial class ShareConsumerRenewalTests
         finally
         {
             await stop.CancelAsync();
-            try { await pending; } catch (OperationCanceledException) { }
+            try
+            {
+                await pending;
+            }
+            catch (OperationCanceledException) { }
         }
     }
 
@@ -250,7 +254,9 @@ public sealed partial class ShareConsumerRenewalTests
             acknowledgementCommitCallback: results =>
             {
                 foreach (var result in results)
+                {
                     outcomes.Add((result.Offsets[0], result.Offsets.Length, result.Exception));
+                }
             });
         PrepareForPoll(fixture.Consumer);
         fixture.Consumer.Subscribe("topic");
@@ -512,8 +518,11 @@ public sealed partial class ShareConsumerRenewalTests
                 [
                     new PartitionMetadata
                     {
-                        ErrorCode = ErrorCode.None, PartitionIndex = 0, LeaderId = 1,
-                        ReplicaNodes = [1], IsrNodes = [1]
+                        ErrorCode = ErrorCode.None,
+                        PartitionIndex = 0,
+                        LeaderId = 1,
+                        ReplicaNodes = [1],
+                        IsrNodes = [1]
                     }
                 ]
             }

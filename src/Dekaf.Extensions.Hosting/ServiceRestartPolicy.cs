@@ -33,7 +33,9 @@ internal static class ServiceRestartPolicy
         foreach (var inner in aggregate.InnerExceptions)
         {
             if (!CanRestartAfter(inner))
+            {
                 return false;
+            }
         }
 
         return true;

@@ -257,7 +257,9 @@ public class AvroSerializerIntegrationTests(KafkaWithSchemaRegistryContainer tes
         {
             consumedRecords.Add(msg.Value!);
             if (consumedRecords.Count >= messageCount)
+            {
                 break;
+            }
         }
 
         // Assert
@@ -299,7 +301,9 @@ public class AvroSerializerIntegrationTests(KafkaWithSchemaRegistryContainer tes
                 record.Add("id", i);
                 record.Add("name", $"record-{i}");
                 if (!useSimpleSchema)
+                {
                     record.Add("nickname", $"nickname-{i}");
+                }
 
                 await producer.ProduceAsync(new ProducerMessage<string, GenericRecord>
                 {
@@ -347,11 +351,15 @@ public class AvroSerializerIntegrationTests(KafkaWithSchemaRegistryContainer tes
             await Assert.That(message.Key).EndsWith($"-{decodedId}");
             await Assert.That((string)decoded["name"]!).IsEqualTo($"record-{decodedId}");
             if (!expectedSimpleSchema)
+            {
                 await Assert.That((string)decoded["nickname"]!).IsEqualTo($"nickname-{decodedId}");
+            }
 
             consumedCount++;
             if (consumedCount == messageCount)
+            {
                 break;
+            }
         }
 
         await Assert.That(consumedCount).IsEqualTo(messageCount);

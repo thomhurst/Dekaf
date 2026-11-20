@@ -16,23 +16,68 @@ internal sealed class StreamsGroupHeartbeatResponse : IKafkaResponse
     public static short LowestSupportedVersion => 0;
     public static short HighestSupportedVersion => 1;
 
-    public int ThrottleTimeMs { get; init; }
-    public required ErrorCode ErrorCode { get; init; }
-    public string? ErrorMessage { get; init; }
-    public required string MemberId { get; init; }
-    public int MemberEpoch { get; init; }
-    public int HeartbeatIntervalMs { get; init; }
-    public long AcceptableRecoveryLag { get; init; } = -1;
-    public int TaskOffsetIntervalMs { get; init; }
-    public IReadOnlyList<StreamsGroupHeartbeatStatus>? Status { get; init; }
-    public IReadOnlyList<StreamsGroupHeartbeatTaskIds>? ActiveTasks { get; init; }
-    public IReadOnlyList<StreamsGroupHeartbeatTaskIds>? StandbyTasks { get; init; }
-    public IReadOnlyList<StreamsGroupHeartbeatTaskIds>? WarmupTasks { get; init; }
+    public int ThrottleTimeMs
+    {
+        get; init;
+    }
+    public required ErrorCode ErrorCode
+    {
+        get; init;
+    }
+    public string? ErrorMessage
+    {
+        get; init;
+    }
+    public required string MemberId
+    {
+        get; init;
+    }
+    public int MemberEpoch
+    {
+        get; init;
+    }
+    public int HeartbeatIntervalMs
+    {
+        get; init;
+    }
+    public long AcceptableRecoveryLag
+    {
+        get; init;
+    } = -1;
+    public int TaskOffsetIntervalMs
+    {
+        get; init;
+    }
+    public IReadOnlyList<StreamsGroupHeartbeatStatus>? Status
+    {
+        get; init;
+    }
+    public IReadOnlyList<StreamsGroupHeartbeatTaskIds>? ActiveTasks
+    {
+        get; init;
+    }
+    public IReadOnlyList<StreamsGroupHeartbeatTaskIds>? StandbyTasks
+    {
+        get; init;
+    }
+    public IReadOnlyList<StreamsGroupHeartbeatTaskIds>? WarmupTasks
+    {
+        get; init;
+    }
 
     // KIP-1331: decoded from v1 and preserved, but not acted on yet.
-    public bool TopologyDescriptionRequired { get; init; }
-    public int EndpointInformationEpoch { get; init; }
-    public IReadOnlyList<StreamsGroupHeartbeatEndpointPartitions>? PartitionsByUserEndpoint { get; init; }
+    public bool TopologyDescriptionRequired
+    {
+        get; init;
+    }
+    public int EndpointInformationEpoch
+    {
+        get; init;
+    }
+    public IReadOnlyList<StreamsGroupHeartbeatEndpointPartitions>? PartitionsByUserEndpoint
+    {
+        get; init;
+    }
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {
@@ -43,10 +88,14 @@ internal sealed class StreamsGroupHeartbeatResponse : IKafkaResponse
         writer.WriteInt32(MemberEpoch);
         writer.WriteInt32(HeartbeatIntervalMs);
         if (version == 0)
+        {
             writer.WriteInt32((int)Math.Min(AcceptableRecoveryLag, int.MaxValue));
+        }
         writer.WriteInt32(TaskOffsetIntervalMs);
         if (version >= 1)
+        {
             writer.WriteInt64(AcceptableRecoveryLag);
+        }
         writer.WriteCompactNullableArray(
             Status,
             static (ref KafkaProtocolWriter w, StreamsGroupHeartbeatStatus item) => item.Write(ref w));
@@ -54,7 +103,9 @@ internal sealed class StreamsGroupHeartbeatResponse : IKafkaResponse
         WriteNullableTasks(ref writer, StandbyTasks);
         WriteNullableTasks(ref writer, WarmupTasks);
         if (version >= 1)
+        {
             writer.WriteBoolean(TopologyDescriptionRequired);
+        }
         writer.WriteInt32(EndpointInformationEpoch);
         writer.WriteCompactNullableArray(
             PartitionsByUserEndpoint,
@@ -142,8 +193,14 @@ internal sealed class StreamsGroupHeartbeatResponse : IKafkaResponse
 
 internal sealed class StreamsGroupHeartbeatStatus
 {
-    public sbyte StatusCode { get; init; }
-    public required string StatusDetail { get; init; }
+    public sbyte StatusCode
+    {
+        get; init;
+    }
+    public required string StatusDetail
+    {
+        get; init;
+    }
 
     public void Write(ref KafkaProtocolWriter writer)
     {
@@ -166,9 +223,18 @@ internal sealed class StreamsGroupHeartbeatStatus
 
 internal sealed class StreamsGroupHeartbeatEndpointPartitions
 {
-    public required StreamsGroupHeartbeatEndpoint UserEndpoint { get; init; }
-    public required IReadOnlyList<StreamsGroupHeartbeatTopicPartitions> ActivePartitions { get; init; }
-    public required IReadOnlyList<StreamsGroupHeartbeatTopicPartitions> StandbyPartitions { get; init; }
+    public required StreamsGroupHeartbeatEndpoint UserEndpoint
+    {
+        get; init;
+    }
+    public required IReadOnlyList<StreamsGroupHeartbeatTopicPartitions> ActivePartitions
+    {
+        get; init;
+    }
+    public required IReadOnlyList<StreamsGroupHeartbeatTopicPartitions> StandbyPartitions
+    {
+        get; init;
+    }
 
     public void Write(ref KafkaProtocolWriter writer)
     {
@@ -206,8 +272,14 @@ internal sealed class StreamsGroupHeartbeatEndpointPartitions
 
 internal sealed class StreamsGroupHeartbeatTopicPartitions
 {
-    public required string Topic { get; init; }
-    public required IReadOnlyList<int> Partitions { get; init; }
+    public required string Topic
+    {
+        get; init;
+    }
+    public required IReadOnlyList<int> Partitions
+    {
+        get; init;
+    }
 
     public void Write(ref KafkaProtocolWriter writer)
     {

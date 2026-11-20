@@ -20,7 +20,9 @@ public sealed partial class OutboxRelayService
     private void UpdateMetricsLease()
     {
         if (!_options.CollectMetricsOnBucketZeroOwnerOnly)
+        {
             return;
+        }
         lock (_metricsLeaseLock)
         {
             if (OwnsBucket(0))
@@ -50,7 +52,9 @@ public sealed partial class OutboxRelayService
     private void ClearMetricsLease()
     {
         if (!_options.CollectMetricsOnBucketZeroOwnerOnly)
+        {
             return;
+        }
         lock (_metricsLeaseLock)
         {
             Volatile.Write(ref _metricsLease, null);
@@ -81,7 +85,9 @@ public sealed partial class OutboxRelayService
             {
                 samplingCancellation.Cancel();
                 if (sampling is not null)
+                {
                     await sampling.ConfigureAwait(false);
+                }
             }
             finally
             {
@@ -118,14 +124,18 @@ public sealed partial class OutboxRelayService
                         var snapshot = await store.GetPendingMetricsAsync(queryCancellation.Token).ConfigureAwait(false);
                         queryCancellation.Token.ThrowIfCancellationRequested();
                         if (!_options.CollectMetricsOnBucketZeroOwnerOnly)
+                        {
                             Volatile.Write(ref _metrics.Pending, snapshot);
+                        }
                         else
                         {
                             // Serialize cache publication with ownership loss so an old
                             // in-flight sample cannot restore a cleared observation.
                             lock (_metricsLeaseLock)
+                            {
                                 Volatile.Write(ref _metrics.Pending,
                                     CanSample(lease) && ReferenceEquals(lease, _metricsLease) ? snapshot : null);
+                            }
                         }
                     }
                     catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
@@ -147,9 +157,13 @@ public sealed partial class OutboxRelayService
                 // Only a wait that followed no query ends early, so the interval still
                 // separates every two queries of this relay.
                 if (leaseGained is null)
+                {
                     await Task.Delay(_options.MetricsCollectionInterval, _timeProvider, stoppingToken).ConfigureAwait(false);
+                }
                 else
+                {
                     await WaitForMetricsLeaseAsync(leaseGained.Task, stoppingToken).ConfigureAwait(false);
+                }
             }
         }
         catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
@@ -192,7 +206,9 @@ public sealed partial class OutboxRelayService
                 _observedPublishFinished = _timeProvider.GetTimestamp();
             }
             if (measurePublish)
+            {
                 RecordPublishResult(result, cancellationToken);
+            }
             return result;
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -202,13 +218,17 @@ public sealed partial class OutboxRelayService
         catch
         {
             if (measurePublish)
+            {
                 OutboxMetrics.Record(OutboxMetrics.Failures, _metrics, 1);
+            }
             throw;
         }
         finally
         {
             if (measureDuration)
+            {
                 OutboxMetrics.RecordDuration(OutboxMetrics.PublishDuration, _metrics, started, _observedPublishFinished);
+            }
         }
     }
 
@@ -219,7 +239,9 @@ public sealed partial class OutboxRelayService
         OutboxMetrics.Record(OutboxMetrics.Acknowledged, _metrics, result.AckedCount);
         if (result.FirstError is not null &&
             !(result.FirstError is OperationCanceledException && cancellationToken.IsCancellationRequested))
+        {
             OutboxMetrics.Record(OutboxMetrics.Failures, _metrics, 1);
+        }
     }
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Outbox metrics collection failed; pending observations are unavailable until the next successful sample")]

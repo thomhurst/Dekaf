@@ -34,7 +34,9 @@ internal sealed class GlobalTestSetup
         // Enable Debug.WriteLine output on Linux (where no default trace listener writes to console).
         // This makes [BatchTrack] diagnostic output from BrokerSender visible in CI logs.
         if (!Trace.Listeners.OfType<ConsoleTraceListener>().Any())
+        {
             Trace.Listeners.Add(new ConsoleTraceListener());
+        }
 #endif
     }
 

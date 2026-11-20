@@ -13,17 +13,26 @@ public sealed class AlterPartitionReassignmentsRequest : IKafkaRequest<AlterPart
     /// <summary>
     /// Timeout in milliseconds.
     /// </summary>
-    public int TimeoutMs { get; init; } = 60000;
+    public int TimeoutMs
+    {
+        get; init;
+    } = 60000;
 
     /// <summary>
     /// Whether changing replication factor is allowed (v1+).
     /// </summary>
-    public bool AllowReplicationFactorChange { get; init; } = true;
+    public bool AllowReplicationFactorChange
+    {
+        get; init;
+    } = true;
 
     /// <summary>
     /// Topics to reassign.
     /// </summary>
-    public required IReadOnlyList<AlterPartitionReassignmentsRequestTopic> Topics { get; init; }
+    public required IReadOnlyList<AlterPartitionReassignmentsRequestTopic> Topics
+    {
+        get; init;
+    }
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {
@@ -51,12 +60,18 @@ public sealed class AlterPartitionReassignmentsRequestTopic
     /// <summary>
     /// Topic name.
     /// </summary>
-    public required string Name { get; init; }
+    public required string Name
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Partitions to reassign.
     /// </summary>
-    public required IReadOnlyList<AlterPartitionReassignmentsRequestPartition> Partitions { get; init; }
+    public required IReadOnlyList<AlterPartitionReassignmentsRequestPartition> Partitions
+    {
+        get; init;
+    }
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {
@@ -77,12 +92,18 @@ public sealed class AlterPartitionReassignmentsRequestPartition
     /// <summary>
     /// Partition index.
     /// </summary>
-    public int PartitionIndex { get; init; }
+    public int PartitionIndex
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Target replicas, or null to cancel an in-progress reassignment.
     /// </summary>
-    public IReadOnlyList<int>? Replicas { get; init; }
+    public IReadOnlyList<int>? Replicas
+    {
+        get; init;
+    }
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {

@@ -51,7 +51,10 @@ public class ConsumerGroupTests(KafkaTestContainer kafka) : KafkaIntegrationTest
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))
         {
             messages.Add(msg);
-            if (messages.Count >= 3) break;
+            if (messages.Count >= 3)
+            {
+                break;
+            }
         }
 
         // Assert - single consumer should get all partitions
@@ -157,7 +160,10 @@ public class ConsumerGroupTests(KafkaTestContainer kafka) : KafkaIntegrationTest
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))
         {
             messages.Add(msg);
-            if (messages.Count >= 5) break;
+            if (messages.Count >= 5)
+            {
+                break;
+            }
         }
 
         // Assert - should get all messages starting from beginning
@@ -207,7 +213,10 @@ public class ConsumerGroupTests(KafkaTestContainer kafka) : KafkaIntegrationTest
             await foreach (var msg in consumer1.ConsumeAsync(cts.Token))
             {
                 messages.Add(msg);
-                if (messages.Count >= 3) break;
+                if (messages.Count >= 3)
+                {
+                    break;
+                }
             }
 
             // Commit offset 3 (next message to read)
@@ -282,7 +291,10 @@ public class ConsumerGroupTests(KafkaTestContainer kafka) : KafkaIntegrationTest
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))
         {
             messages.Add(msg);
-            if (messages.Count >= 2) break;
+            if (messages.Count >= 2)
+            {
+                break;
+            }
         }
 
         // Assert - should get messages from both topics
@@ -541,7 +553,10 @@ public class ConsumerGroupTests(KafkaTestContainer kafka) : KafkaIntegrationTest
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))
         {
             messages.Add(msg);
-            if (messages.Count >= 3) break;
+            if (messages.Count >= 3)
+            {
+                break;
+            }
         }
 
         // Commit offset 3
@@ -654,7 +669,10 @@ public class ConsumerGroupTests(KafkaTestContainer kafka) : KafkaIntegrationTest
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))
         {
             count++;
-            if (count >= 3) break;
+            if (count >= 3)
+            {
+                break;
+            }
         }
 
         // Act - get current position
@@ -706,7 +724,10 @@ public class ConsumerGroupTests(KafkaTestContainer kafka) : KafkaIntegrationTest
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))
         {
             messages.Add(msg);
-            if (messages.Count >= 3) break;
+            if (messages.Count >= 3)
+            {
+                break;
+            }
         }
 
         // Seek back to beginning

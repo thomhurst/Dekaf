@@ -325,7 +325,9 @@ public sealed class ConsumerSnapshotIntegrationTests(KafkaTestContainer kafka)
         }
 
         while (await snapshot.MoveNextAsync())
+        {
             offsets.Add(snapshot.Current.Offset);
+        }
 
         await Assert.That(offsets).IsEquivalentTo([0L, 5L, 6L, 7L, 8L, 9L]);
         await Assert.That(consumer.Positions.GetPosition(partition)).IsEqualTo(10L);
@@ -381,7 +383,9 @@ public sealed class ConsumerSnapshotIntegrationTests(KafkaTestContainer kafka)
             .WithIsolationLevel(isolationLevel)
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory());
         if (maxPartitionFetchBytes.HasValue)
+        {
             builder.WithMaxPartitionFetchBytes(maxPartitionFetchBytes.Value);
+        }
 
         return await builder.BuildAsync().ConfigureAwait(false);
     }
@@ -416,7 +420,9 @@ public sealed class ConsumerSnapshotIntegrationTests(KafkaTestContainer kafka)
     {
         var records = new List<ConsumeResult<string, string>>();
         await foreach (var record in source.ConfigureAwait(false))
+        {
             records.Add(record);
+        }
         return records;
     }
 

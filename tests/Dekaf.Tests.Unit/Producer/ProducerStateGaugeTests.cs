@@ -30,7 +30,9 @@ public sealed class ProducerStateGaugeTests
             foreach (var tag in tags)
             {
                 if (tag.Key == DekafDiagnostics.MessagingClientId)
+                {
                     clientId = tag.Value as string;
+                }
             }
             samples.Add(new GaugeSample(measurement, clientId));
         });

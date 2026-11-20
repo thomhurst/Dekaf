@@ -10,7 +10,9 @@ internal static class DeadLetterHeaderFormatting
     {
         Span<byte> buffer = stackalloc byte[11];
         if (Utf8Formatter.TryFormat(value, buffer, out var bytesWritten))
+        {
             return Encoding.UTF8.GetString(buffer[..bytesWritten]);
+        }
 
         return value.ToString(CultureInfo.InvariantCulture);
     }
@@ -19,7 +21,9 @@ internal static class DeadLetterHeaderFormatting
     {
         Span<byte> buffer = stackalloc byte[20];
         if (Utf8Formatter.TryFormat(value, buffer, out var bytesWritten))
+        {
             return Encoding.UTF8.GetString(buffer[..bytesWritten]);
+        }
 
         return value.ToString(CultureInfo.InvariantCulture);
     }

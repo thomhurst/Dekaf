@@ -6,21 +6,63 @@ namespace Dekaf.Tests.Unit.Producer;
 
 internal sealed class FastPathProducerSpy<TKey, TValue> : IKafkaProducer<TKey, TValue>, IProducerFastPath<TKey, TValue>
 {
-    public int FastPathCalls { get; private set; }
-    public int BatchFastPathCalls { get; private set; }
-    public int MessageCalls { get; private set; }
-    public int FireFastPathCalls { get; private set; }
-    public Action<RecordMetadata, Exception?>? CapturedDeliveryHandler { get; private set; }
-    public string? CapturedTopic { get; private set; }
-    public TKey? CapturedKey { get; private set; }
-    public TValue? CapturedValue { get; private set; }
-    public Headers? CapturedHeaders { get; private set; }
-    public int? CapturedPartition { get; private set; }
-    public DateTimeOffset? CapturedTimestamp { get; private set; }
-    public CancellationToken CapturedCancellationToken { get; private set; }
-    public List<TKey?> CapturedBatchKeys { get; } = [];
+    public int FastPathCalls
+    {
+        get; private set;
+    }
+    public int BatchFastPathCalls
+    {
+        get; private set;
+    }
+    public int MessageCalls
+    {
+        get; private set;
+    }
+    public int FireFastPathCalls
+    {
+        get; private set;
+    }
+    public Action<RecordMetadata, Exception?>? CapturedDeliveryHandler
+    {
+        get; private set;
+    }
+    public string? CapturedTopic
+    {
+        get; private set;
+    }
+    public TKey? CapturedKey
+    {
+        get; private set;
+    }
+    public TValue? CapturedValue
+    {
+        get; private set;
+    }
+    public Headers? CapturedHeaders
+    {
+        get; private set;
+    }
+    public int? CapturedPartition
+    {
+        get; private set;
+    }
+    public DateTimeOffset? CapturedTimestamp
+    {
+        get; private set;
+    }
+    public CancellationToken CapturedCancellationToken
+    {
+        get; private set;
+    }
+    public List<TKey?> CapturedBatchKeys
+    {
+        get;
+    } = [];
 
-    public RecordMetadata Result { get; set; } = new()
+    public RecordMetadata Result
+    {
+        get; set;
+    } = new()
     {
         Topic = "my-topic",
         Partition = 0,

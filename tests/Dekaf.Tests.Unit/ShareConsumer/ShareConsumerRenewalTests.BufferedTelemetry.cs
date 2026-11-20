@@ -84,8 +84,14 @@ public sealed partial class ShareConsumerRenewalTests
     {
         private readonly TaskCompletionSource _release = new(TaskCreationOptions.RunContinuationsAsynchronously);
         private int _calls;
-        internal TaskCompletionSource Entered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        internal bool Block { get; set; } = true;
+        internal TaskCompletionSource Entered
+        {
+            get;
+        } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        internal bool Block
+        {
+            get; set;
+        } = true;
 
         public string Deserialize(ReadOnlyMemory<byte> data, SerializationContext context)
         {

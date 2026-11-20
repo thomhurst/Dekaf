@@ -51,7 +51,9 @@ public sealed class ConsumeBatchSkipTests(KafkaTestContainer kafka) : KafkaInteg
             }
 
             if (partition1Offsets.Count >= 6)
+            {
                 break;
+            }
         }
 
         await Assert.That(partition1Offsets).IsEquivalentTo([0L, 1L, 2L, 3L, 4L, 5L]);
@@ -84,11 +86,15 @@ public sealed class ConsumeBatchSkipTests(KafkaTestContainer kafka) : KafkaInteg
             // Skip the first window, process the next one, then skip one more mid-stream.
             yields++;
             if (yields == 1 || yields == 3)
+            {
                 continue;
+            }
 
             offsets.AddRange(batch.Offsets());
             if (offsets.Count >= 6)
+            {
                 break;
+            }
         }
 
         await Assert.That(offsets).IsEquivalentTo([0L, 1L, 2L, 3L, 4L, 5L]);
@@ -124,11 +130,15 @@ public sealed class ConsumeBatchSkipTests(KafkaTestContainer kafka) : KafkaInteg
                     lock (skippedPartitions)
                     {
                         if (skippedPartitions.Add(batch.Partition) && skippedPartitions.Count == 2)
+                        {
                             bothSkipped.TrySetResult();
+                        }
                     }
 
                     if (skipper.Assignment.Count == 1)
+                    {
                         rebalanced.TrySetResult();
+                    }
                 }
             }
             catch (OperationCanceledException) when (skipperStop.IsCancellationRequested)
@@ -162,7 +172,10 @@ public sealed class ConsumeBatchSkipTests(KafkaTestContainer kafka) : KafkaInteg
 
     private sealed class BatchView(int partition, Func<long[]> offsets)
     {
-        public int Partition { get; } = partition;
+        public int Partition
+        {
+            get;
+        } = partition;
 
         // Enumerates the batch on demand. A skipped batch is never enumerated.
         public long[] Offsets() => offsets();
@@ -176,12 +189,16 @@ public sealed class ConsumeBatchSkipTests(KafkaTestContainer kafka) : KafkaInteg
         if (raw)
         {
             await foreach (var batch in consumer.ConsumeRawBatchAsync(cancellationToken))
+            {
                 yield return new BatchView(batch.Partition, () => batch.Select(static r => r.Offset).ToArray());
+            }
         }
         else
         {
             await foreach (var batch in consumer.ConsumeBatchAsync(cancellationToken))
+            {
                 yield return new BatchView(batch.Partition, () => batch.Select(static r => r.Offset).ToArray());
+            }
         }
     }
 

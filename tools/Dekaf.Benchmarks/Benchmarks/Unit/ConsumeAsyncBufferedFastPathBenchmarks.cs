@@ -45,7 +45,10 @@ public class ConsumeAsyncBufferedFastPathBenchmarks
     private CancellationTokenSource _iterationCancellation = null!;
 
     [Params(100, 1000)]
-    public int MessageSize { get; set; }
+    public int MessageSize
+    {
+        get; set;
+    }
 
     [GlobalSetup]
     public void Setup()
@@ -127,7 +130,9 @@ public class ConsumeAsyncBufferedFastPathBenchmarks
             await foreach (var _ in _consumer.ConsumeAsync(_iterationCancellation.Token).ConfigureAwait(false))
             {
                 if (++count == MessageCount)
+                {
                     _iterationCancellation.Cancel();
+                }
             }
         }
         catch (OperationCanceledException) when (_iterationCancellation.IsCancellationRequested)
@@ -148,7 +153,9 @@ public class ConsumeAsyncBufferedFastPathBenchmarks
             await foreach (var _ in _consumer.ConsumeAsync(_iterationCancellation.Token).ConfigureAwait(false))
             {
                 if (++count == MessageCount)
+                {
                     _iterationCancellation.Cancel();
+                }
             }
         }
         catch (OperationCanceledException) when (_iterationCancellation.IsCancellationRequested)

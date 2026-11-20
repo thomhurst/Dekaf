@@ -119,7 +119,10 @@ public class ConsumeResultTests
 
     private sealed class ObservingIgnoreDeserializer : IDeserializer<Ignore>
     {
-        public int Calls { get; private set; }
+        public int Calls
+        {
+            get; private set;
+        }
         public Ignore Deserialize(ReadOnlyMemory<byte> data, SerializationContext context)
         {
             Calls++;
@@ -129,9 +132,18 @@ public class ConsumeResultTests
 
     private sealed class ObservingRawDeserializer : IDeserializer<ReadOnlyMemory<byte>>
     {
-        public int Calls { get; private set; }
-        public string? Topic { get; private set; }
-        public ReadOnlyMemory<byte> Key { get; private set; }
+        public int Calls
+        {
+            get; private set;
+        }
+        public string? Topic
+        {
+            get; private set;
+        }
+        public ReadOnlyMemory<byte> Key
+        {
+            get; private set;
+        }
         public ReadOnlyMemory<byte> Deserialize(ReadOnlyMemory<byte> data, SerializationContext context)
         {
             Calls++;
@@ -223,9 +235,11 @@ public class ConsumeResultTests
     public async Task WithBrokerIdentityFrom_PreservesOriginalEpochAndReplacementProcessingIndex(int? epoch)
     {
         var original = new ConsumeResult<string, string>("original", 1, 42,
-            "key", "value", null, 0, TimestampType.CreateTime, epoch) { ProcessingIndex = 17 };
+            "key", "value", null, 0, TimestampType.CreateTime, epoch)
+        { ProcessingIndex = 17 };
         var replacement = new ConsumeResult<string, string>("replacement", 2, 99,
-            "key", "replacement", null, 0, TimestampType.CreateTime, 8) { ProcessingIndex = 255 };
+            "key", "replacement", null, 0, TimestampType.CreateTime, 8)
+        { ProcessingIndex = 255 };
 
         var result = replacement.WithBrokerIdentityFrom(in original);
 
@@ -535,7 +549,9 @@ public class ConsumeResultTests
             await Assert.That(result.Headers.Count).IsEqualTo(1);
             await Assert.That(result.Headers[0].Key).IsEqualTo("trace-id");
             if (!deferSnapshot)
+            {
                 await Assert.That(result.Headers).IsSameReferenceAs(replacementHeaders);
+            }
         }
         finally
         {

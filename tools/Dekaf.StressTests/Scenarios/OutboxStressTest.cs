@@ -24,9 +24,13 @@ internal sealed class OutboxStressTest : IStressTestScenario
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(options.MessageSizeBytes, 24);
         if (options.BrokerCount != 1 || options.ConnectionsPerBroker != 1 || options.Compression != "none" || options.AdaptiveConnections)
+        {
             throw new ArgumentException("The outbox workload requires one broker, one connection and no compression.", nameof(options));
+        }
         if (!options.EnableProducerDeliveryDiagnostics)
+        {
             throw new ArgumentException("The outbox workload requires --producer-delivery-diagnostics.", nameof(options));
+        }
         var directory = Path.GetFullPath(options.OutputDirectory);
         Directory.CreateDirectory(directory);
         var database = Path.Combine(directory, $"outbox-{Guid.NewGuid():N}.db");
@@ -43,10 +47,14 @@ internal sealed class OutboxStressTest : IStressTestScenario
             {
                 // Only this invocation's database files; pooled connections are disabled.
                 foreach (var suffix in new[] { "", "-wal", "-shm" })
+                {
                     File.Delete(database + suffix);
+                }
             }
             else
+            {
                 Console.Error.WriteLine($"Outbox failure database retained at {database}.");
+            }
         }
     }
 
@@ -104,7 +112,9 @@ internal sealed class OutboxStressTest : IStressTestScenario
             await consumer.InitializeAsync(cancellationToken).ConfigureAwait(false);
             var assignments = new TopicPartitionOffset[options.Partitions];
             for (var p = 0; p < assignments.Length; p++)
+            {
                 assignments[p] = new TopicPartitionOffset(options.Topic, p, 0);
+            }
             consumer.IncrementalAssign(assignments);
             using var readerLifetime = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             var reader = ReadAsync(consumer, state, readerLifetime.Token);
@@ -112,7 +122,9 @@ internal sealed class OutboxStressTest : IStressTestScenario
             {
                 var keys = new string[OutboxRelayOptions.DefaultBucketCount];
                 for (var i = 0; i < keys.Length; i++)
+                {
                     keys[i] = $"outbox-key-{i}";
+                }
                 var measured = new ThroughputTracker();
                 Console.WriteLine($"  Warming up Dekaf outbox: {options.ProducerWarmupSeconds}s of committed writes and complete drain.");
                 measured.Warmup = await ProducerWarmup.RunAsync(options.ProducerWarmupSeconds,
@@ -126,11 +138,18 @@ internal sealed class OutboxStressTest : IStressTestScenario
                 state.ThrowIfFailed();
                 return new StressTestResult
                 {
-                    Scenario = Name, Client = Client, DurationMinutes = options.DurationMinutes,
-                    MessageSizeBytes = options.MessageSizeBytes, BrokerCount = options.BrokerCount,
-                    StartedAtUtc = started, CompletedAtUtc = DateTime.UtcNow,
-                    Throughput = run.Throughput, GcStats = run.Gc, Latency = state.Latency.GetSnapshot(),
-                    CpuTimeSeconds = measured.CpuTimeSeconds, ConsumedMessages = state.Completed - completedStart,
+                    Scenario = Name,
+                    Client = Client,
+                    DurationMinutes = options.DurationMinutes,
+                    MessageSizeBytes = options.MessageSizeBytes,
+                    BrokerCount = options.BrokerCount,
+                    StartedAtUtc = started,
+                    CompletedAtUtc = DateTime.UtcNow,
+                    Throughput = run.Throughput,
+                    GcStats = run.Gc,
+                    Latency = state.Latency.GetSnapshot(),
+                    CpuTimeSeconds = measured.CpuTimeSeconds,
+                    ConsumedMessages = state.Completed - completedStart,
                     Idempotent = true,
                     ProducerDeliveryDiagnostics = StressTestHelpers.CaptureProducerDeliveryDiagnostics(producer, options)
                         ?? throw new InvalidOperationException("The outbox workload requires producer delivery diagnostics."),
@@ -192,7 +211,9 @@ internal sealed class OutboxStressTest : IStressTestScenario
                             await Task.Delay(1, drain.Token).ConfigureAwait(false);
                         }
                         if (ends.Sum() != state.Completed + state.Duplicates)
+                        {
                             throw new InvalidOperationException("Kafka offsets do not match unique and duplicate outbox deliveries.");
+                        }
                         state.ThrowIfFailed();
                     }
                     finally
@@ -219,7 +240,9 @@ internal sealed class OutboxStressTest : IStressTestScenario
             using var shutdown = new CancellationTokenSource(StressTestHelpers.OperationTimeout);
             await relay.StopAsync(shutdown.Token).ConfigureAwait(false);
             if (relay.ExecuteTask is { } execution)
+            {
                 await execution.WaitAsync(shutdown.Token).ConfigureAwait(false);
+            }
             state.ThrowIfFailed();
         }
     }
@@ -229,7 +252,9 @@ internal sealed class OutboxStressTest : IStressTestScenario
         try
         {
             await foreach (var record in consumer.ConsumeAsync(token).ConfigureAwait(false))
+            {
                 state.Process(record.Value, record.Partition, record.Offset);
+            }
         }
         catch (OperationCanceledException) when (token.IsCancellationRequested) { }
         catch (Exception error) { state.RecordFailure(error); }
@@ -246,7 +271,9 @@ internal sealed class OutboxStressTest : IStressTestScenario
             await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
         }
         if (await PendingCountAsync(factory, cancellationToken).ConfigureAwait(false) != 0)
+        {
             throw new InvalidOperationException("The rolled-back outbox row remains in the database.");
+        }
     }
 
     private static async Task<long> PendingCountAsync(IDbContextFactory<OutboxContext> factory, CancellationToken token)

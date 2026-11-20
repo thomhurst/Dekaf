@@ -43,67 +43,106 @@ public sealed class AliCloudKmsClientConfiguration
     /// <summary>
     /// Alibaba Cloud region parsed from the key URI.
     /// </summary>
-    public required string RegionId { get; init; }
+    public required string RegionId
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Optional KMS endpoint override.
     /// </summary>
-    public string? Endpoint { get; init; }
+    public string? Endpoint
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Optional PEM certificate-authority content.
     /// </summary>
-    public string? CertificateAuthority { get; init; }
+    public string? CertificateAuthority
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Resolved credential type: default, access_key, sts, or ram_role_arn.
     /// </summary>
-    public required string CredentialType { get; init; }
+    public required string CredentialType
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Optional explicit access-key identifier.
     /// </summary>
-    public string? AccessKeyId { get; init; }
+    public string? AccessKeyId
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Optional explicit access-key secret.
     /// </summary>
-    public string? AccessKeySecret { get; init; }
+    public string? AccessKeySecret
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Optional temporary-credential security token.
     /// </summary>
-    public string? SecurityToken { get; init; }
+    public string? SecurityToken
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Optional RAM role ARN to assume.
     /// </summary>
-    public string? RoleArn { get; init; }
+    public string? RoleArn
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Optional RAM role session name.
     /// </summary>
-    public string? RoleSessionName { get; init; }
+    public string? RoleSessionName
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Optional RAM role session duration in seconds.
     /// </summary>
-    public int? RoleSessionExpiration { get; init; }
+    public int? RoleSessionExpiration
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Optional RAM role policy.
     /// </summary>
-    public string? Policy { get; init; }
+    public string? Policy
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Optional Security Token Service endpoint override.
     /// </summary>
-    public string? StsEndpoint { get; init; }
+    public string? StsEndpoint
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Optional external identifier for RAM role assumption.
     /// </summary>
-    public string? RoleExternalId { get; init; }
+    public string? RoleExternalId
+    {
+        get; init;
+    }
 }
 
 /// <summary>
@@ -112,40 +151,76 @@ public sealed class AliCloudKmsClientConfiguration
 public sealed class AliCloudKmsProviderOptions
 {
     /// <summary>Optional KMS endpoint override.</summary>
-    public string? Endpoint { get; init; }
+    public string? Endpoint
+    {
+        get; init;
+    }
 
     /// <summary>Optional path to a PEM certificate-authority file.</summary>
-    public string? CaFile { get; init; }
+    public string? CaFile
+    {
+        get; init;
+    }
 
     /// <summary>Optional credential type: default, access_key, sts, or ram_role_arn.</summary>
-    public string? CredentialType { get; init; }
+    public string? CredentialType
+    {
+        get; init;
+    }
 
     /// <summary>Optional explicit access-key identifier.</summary>
-    public string? AccessKeyId { get; init; }
+    public string? AccessKeyId
+    {
+        get; init;
+    }
 
     /// <summary>Optional explicit access-key secret.</summary>
-    public string? AccessKeySecret { get; init; }
+    public string? AccessKeySecret
+    {
+        get; init;
+    }
 
     /// <summary>Optional temporary-credential security token.</summary>
-    public string? SecurityToken { get; init; }
+    public string? SecurityToken
+    {
+        get; init;
+    }
 
     /// <summary>Optional RAM role ARN to assume.</summary>
-    public string? RoleArn { get; init; }
+    public string? RoleArn
+    {
+        get; init;
+    }
 
     /// <summary>Optional RAM role session name.</summary>
-    public string? RoleSessionName { get; init; }
+    public string? RoleSessionName
+    {
+        get; init;
+    }
 
     /// <summary>Optional RAM role session duration in seconds.</summary>
-    public int? RoleSessionExpiration { get; init; }
+    public int? RoleSessionExpiration
+    {
+        get; init;
+    }
 
     /// <summary>Optional RAM role policy.</summary>
-    public string? Policy { get; init; }
+    public string? Policy
+    {
+        get; init;
+    }
 
     /// <summary>Optional Security Token Service endpoint override.</summary>
-    public string? StsEndpoint { get; init; }
+    public string? StsEndpoint
+    {
+        get; init;
+    }
 
     /// <summary>Optional external identifier for RAM role assumption.</summary>
-    public string? RoleExternalId { get; init; }
+    public string? RoleExternalId
+    {
+        get; init;
+    }
 }
 
 /// <summary>
@@ -246,7 +321,9 @@ public sealed class AliCloudKmsProvider : ISchemaRegistryKmsProvider
         ArgumentNullException.ThrowIfNull(clientFactory);
         ArgumentNullException.ThrowIfNull(environmentVariableReader);
         if (string.IsNullOrWhiteSpace(type))
+        {
             throw new ArgumentException("KMS provider type cannot be null or whitespace.", nameof(type));
+        }
 
         _options = options ?? new AliCloudKmsProviderOptions();
         _environmentVariableReader = environmentVariableReader;
@@ -255,7 +332,10 @@ public sealed class AliCloudKmsProvider : ISchemaRegistryKmsProvider
     }
 
     /// <inheritdoc />
-    public string Type { get; }
+    public string Type
+    {
+        get;
+    }
 
     /// <inheritdoc />
     public async ValueTask<byte[]> WrapKeyAsync(
@@ -265,7 +345,9 @@ public sealed class AliCloudKmsProvider : ISchemaRegistryKmsProvider
     {
         cancellationToken.ThrowIfCancellationRequested();
         if (keyMaterial.IsEmpty)
+        {
             throw new SchemaRegistryKmsException("Alibaba Cloud KMS wrap failed. Key material cannot be empty.");
+        }
 
         var operation = ResolveOperation(keyReference);
         var client = _clients.GetOrAdd(operation.ClientConfiguration);
@@ -280,9 +362,13 @@ public sealed class AliCloudKmsProvider : ISchemaRegistryKmsProvider
         {
             _clients.Remove(operation.ClientConfiguration, client);
             if (ex is OperationCanceledException && cancellationToken.IsCancellationRequested)
+            {
                 throw;
+            }
             if (IsAliCloudFailure(ex))
+            {
                 throw new SchemaRegistryKmsException("Alibaba Cloud KMS wrap failed.", ex);
+            }
             throw;
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -325,9 +411,13 @@ public sealed class AliCloudKmsProvider : ISchemaRegistryKmsProvider
         {
             _clients.Remove(operation.ClientConfiguration, client);
             if (ex is OperationCanceledException && cancellationToken.IsCancellationRequested)
+            {
                 throw;
+            }
             if (IsAliCloudFailure(ex))
+            {
                 throw new SchemaRegistryKmsException("Alibaba Cloud KMS unwrap failed.", ex);
+            }
             throw;
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -513,7 +603,9 @@ public sealed class AliCloudKmsProvider : ISchemaRegistryKmsProvider
                 RoleSessionExpirationProperty,
                 LegacyRoleSessionExpirationProperty,
                 out var value))
+        {
             return ParseRoleSessionExpiration(value);
+        }
 
         if (_options.RoleSessionExpiration is < 900)
         {
@@ -564,9 +656,13 @@ public sealed class AliCloudKmsProvider : ISchemaRegistryKmsProvider
         if (configured is null)
         {
             if (roleArn is not null)
+            {
                 return CredentialKind.RamRoleArn;
+            }
             if (securityToken is not null)
+            {
                 return CredentialKind.Sts;
+            }
             return accessKeyId is not null || accessKeySecret is not null
                 ? CredentialKind.AccessKey
                 : CredentialKind.Default;
@@ -651,13 +747,17 @@ public sealed class AliCloudKmsProvider : ISchemaRegistryKmsProvider
     private static string? ReadCertificateAuthority(string? file)
     {
         if (file is null)
+        {
             return null;
+        }
 
         try
         {
             var content = File.ReadAllText(file);
             if (string.IsNullOrWhiteSpace(content))
+            {
                 throw new SchemaRegistryKmsException("Alibaba Cloud KMS CA file cannot be empty.");
+            }
             return content;
         }
         catch (Exception ex) when (ex is
@@ -678,7 +778,9 @@ public sealed class AliCloudKmsProvider : ISchemaRegistryKmsProvider
         foreach (var character in keyId)
         {
             if (char.IsWhiteSpace(character) || char.IsControl(character))
+            {
                 return true;
+            }
         }
 
         return false;
@@ -774,17 +876,23 @@ public sealed class AliCloudKmsProvider : ISchemaRegistryKmsProvider
         internal Lazy<IAliCloudKmsClient> GetOrAdd(ClientCacheKey configuration)
         {
             if (_entries.TryGetValue(configuration, out var client))
+            {
                 return client;
+            }
 
             lock (_missLock)
             {
                 if (_entries.TryGetValue(configuration, out client))
+                {
                     return client;
+                }
 
                 var slot = GetInsertionSlot();
                 var evicted = _slots[slot];
                 if (evicted is not null)
+                {
                     _entries.TryRemove(KeyValuePair.Create(evicted.Configuration, evicted.Client));
+                }
 
                 client = new Lazy<IAliCloudKmsClient>(
                     () => clientFactory.CreateClient(configuration.ToConfiguration()),
@@ -802,7 +910,9 @@ public sealed class AliCloudKmsProvider : ISchemaRegistryKmsProvider
             lock (_missLock)
             {
                 if (!_entries.TryRemove(KeyValuePair.Create(configuration, client)))
+                {
                     return;
+                }
 
                 for (var slot = 0; slot < capacity; slot++)
                 {
@@ -823,7 +933,9 @@ public sealed class AliCloudKmsProvider : ISchemaRegistryKmsProvider
             {
                 var slot = (_nextSlot + offset) % capacity;
                 if (_slots[slot] is null)
+                {
                     return slot;
+                }
             }
 
             return _nextSlot;

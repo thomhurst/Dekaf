@@ -9,7 +9,10 @@ public sealed class KafkaConsumerServiceOptions
     /// Maximum time to wait for in-flight work to complete during shutdown.
     /// Default: 30 seconds.
     /// </summary>
-    public TimeSpan ShutdownTimeout { get; init; } = TimeSpan.FromSeconds(30);
+    public TimeSpan ShutdownTimeout
+    {
+        get; init;
+    } = TimeSpan.FromSeconds(30);
 
     /// <summary>
     /// Whether to continue processing remaining buffered messages before stopping.
@@ -17,7 +20,10 @@ public sealed class KafkaConsumerServiceOptions
     /// until the buffer is empty or <see cref="ShutdownTimeout"/> is reached.
     /// Default: true.
     /// </summary>
-    public bool DrainOnShutdown { get; init; } = true;
+    public bool DrainOnShutdown
+    {
+        get; init;
+    } = true;
 
     /// <summary>
     /// Delay before the first restart after consumer initialization, subscription, or polling fails
@@ -32,11 +38,17 @@ public sealed class KafkaConsumerServiceOptions
     /// such as misconfiguration, authentication errors, non-retriable Kafka errors, and
     /// deserialization errors, fault the service.
     /// </remarks>
-    public TimeSpan PollRetryBackoff { get; init; } = TimeSpan.FromSeconds(1);
+    public TimeSpan PollRetryBackoff
+    {
+        get; init;
+    } = TimeSpan.FromSeconds(1);
 
     /// <summary>
     /// Maximum delay between consecutive restarts governed by <see cref="PollRetryBackoff"/>.
     /// Must be at least <see cref="PollRetryBackoff"/>. Default: 30 seconds.
     /// </summary>
-    public TimeSpan MaxPollRetryBackoff { get; init; } = TimeSpan.FromSeconds(30);
+    public TimeSpan MaxPollRetryBackoff
+    {
+        get; init;
+    } = TimeSpan.FromSeconds(30);
 }

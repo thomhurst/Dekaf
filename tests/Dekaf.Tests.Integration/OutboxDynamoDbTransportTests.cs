@@ -49,9 +49,13 @@ public sealed class OutboxDynamoDbTransportTests
         using var client = new FaultingClient(DynamoDbLocalContainer.CreateConfig(endpoint.ServiceUrl), transport);
 
         if (httpRequestException)
+        {
             await Assert.That(async () => await ReadAsync(client, cancellationToken)).Throws<HttpRequestException>();
+        }
         else
+        {
             await Assert.That(async () => await ReadAsync(client, cancellationToken)).Throws<IOException>();
+        }
 
         await Assert.That(transport.Attempts).IsEqualTo(3);
         await Assert.That(endpoint.RequestCount).IsEqualTo(0);
@@ -83,9 +87,13 @@ public sealed class OutboxDynamoDbTransportTests
         using var client = new FaultingClient(DynamoDbLocalContainer.CreateConfig(endpoint.ServiceUrl), transport);
 
         if (httpRequestException)
+        {
             await Assert.That(async () => await ReadAsync(client, cancelled.Token)).Throws<HttpRequestException>();
+        }
         else
+        {
             await Assert.That(async () => await ReadAsync(client, cancelled.Token)).Throws<IOException>();
+        }
 
         await Assert.That(cancelled.IsCancellationRequested).IsTrue();
         await Assert.That(transport.Attempts).IsEqualTo(1);
@@ -128,11 +136,15 @@ public sealed class OutboxDynamoDbTransportTests
             new BasicAWSCredentials("dekaf", "dekaf"), DynamoDbLocalContainer.CreateConfig(endpoint.ServiceUrl));
 
         if (error == nameof(ConditionalCheckFailedException))
+        {
             await Assert.That(async () => await WriteAsync(client, cancellationToken))
                 .Throws<ConditionalCheckFailedException>();
+        }
         else
+        {
             await Assert.That(async () => await ReadAsync(client, cancellationToken))
                 .Throws<ProvisionedThroughputExceededException>();
+        }
 
         await Assert.That(endpoint.RequestCount).IsEqualTo(1);
     }
@@ -152,11 +164,15 @@ public sealed class OutboxDynamoDbTransportTests
             });
 
         if (appliedThenLost)
+        {
             await Assert.That(async () => await WriteAsync(client, cancellationToken))
                 .Throws<AmazonServiceException>();
+        }
         else
+        {
             await Assert.That(async () => await WriteAsync(client, cancellationToken))
                 .Throws<ProvisionedThroughputExceededException>();
+        }
 
         await Assert.That(calls).IsEqualTo(1);
         await Assert.That(endpoint.RequestCount).IsEqualTo(appliedThenLost ? 1 : 0);
@@ -203,20 +219,25 @@ public sealed class OutboxDynamoDbTransportTests
             nameof(PutItemRequest) => WriteAsync(client, cancellationToken),
             nameof(UpdateItemRequest) => client.UpdateItemAsync(new UpdateItemRequest
             {
-                TableName = "outbox", Key = new() { ["id"] = new() { S = "one" } },
+                TableName = "outbox",
+                Key = new() { ["id"] = new() { S = "one" } },
                 UpdateExpression = "ADD counter :one",
                 ExpressionAttributeValues = new() { [":one"] = new() { N = "1" } }
             }, cancellationToken),
             nameof(DeleteItemRequest) => client.DeleteItemAsync(new DeleteItemRequest
             {
-                TableName = "outbox", Key = new() { ["id"] = new() { S = "one" } }
+                TableName = "outbox",
+                Key = new() { ["id"] = new() { S = "one" } }
             }, cancellationToken),
             nameof(BatchWriteItemRequest) => client.BatchWriteItemAsync(new BatchWriteItemRequest
             {
-                RequestItems = new() { ["outbox"] = [new WriteRequest
+                RequestItems = new()
+                {
+                    ["outbox"] = [new WriteRequest
                 {
                     DeleteRequest = new() { Key = new() { ["id"] = new() { S = "one" } } }
-                }] }
+                }]
+                }
             }, cancellationToken),
             nameof(TransactWriteItemsRequest) => client.TransactWriteItemsAsync(new TransactWriteItemsRequest
             {
@@ -240,14 +261,18 @@ public sealed class OutboxDynamoDbTransportTests
             }, cancellationToken),
             nameof(GetItemRequest) => client.GetItemAsync(new GetItemRequest
             {
-                TableName = "outbox", Key = new() { ["id"] = new() { S = "one" } }
+                TableName = "outbox",
+                Key = new() { ["id"] = new() { S = "one" } }
             }, cancellationToken),
             nameof(BatchGetItemRequest) => client.BatchGetItemAsync(new BatchGetItemRequest
             {
-                RequestItems = new() { ["outbox"] = new KeysAndAttributes
+                RequestItems = new()
                 {
-                    Keys = [new() { ["id"] = new() { S = "one" } }]
-                } }
+                    ["outbox"] = new KeysAndAttributes
+                    {
+                        Keys = [new() { ["id"] = new() { S = "one" } }]
+                    }
+                }
             }, cancellationToken),
             nameof(ScanRequest) => client.ScanAsync(new ScanRequest { TableName = "outbox" }, cancellationToken),
             nameof(DescribeTableRequest) => client.DescribeTableAsync("outbox", cancellationToken),
@@ -283,7 +308,10 @@ public sealed class OutboxDynamoDbTransportTests
     private sealed class FailingTransport(
         Exception error, int failures, CancellationTokenSource? cancelBeforeFailure = null) : PipelineHandler
     {
-        public int Attempts { get; private set; }
+        public int Attempts
+        {
+            get; private set;
+        }
 
         public override Task<T> InvokeAsync<T>(IExecutionContext executionContext)
         {
@@ -318,7 +346,10 @@ public sealed class OutboxDynamoDbTransportTests
             _serving = ServeAsync();
         }
 
-        public string ServiceUrl { get; }
+        public string ServiceUrl
+        {
+            get;
+        }
         public int RequestCount => Volatile.Read(ref _requestCount);
 
         private async Task ServeAsync()
@@ -336,17 +367,25 @@ public sealed class OutboxDynamoDbTransportTests
                         while (await reader.ReadLineAsync(_stopping.Token) is { Length: > 0 } line)
                         {
                             if (line.StartsWith("Content-Length:", StringComparison.OrdinalIgnoreCase))
+                            {
                                 contentLength = int.Parse(line.AsSpan("Content-Length:".Length), CultureInfo.InvariantCulture);
+                            }
                         }
                         var body = new char[contentLength];
                         if (await reader.ReadBlockAsync(body, _stopping.Token) != body.Length)
+                        {
                             throw new EndOfStreamException("Incomplete DynamoDB request.");
+                        }
                         var requestCount = Interlocked.Increment(ref _requestCount);
                         if (_dropFirstResponse && requestCount == 1)
+                        {
                             break;
+                        }
                         await stream.WriteAsync(_response, _stopping.Token);
                         if (_truncateResponse)
+                        {
                             break;
+                        }
                     }
                 }
             }

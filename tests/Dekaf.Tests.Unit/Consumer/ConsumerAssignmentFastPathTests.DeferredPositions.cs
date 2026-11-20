@@ -142,7 +142,9 @@ public sealed partial class ConsumerAssignmentFastPathTests
             {
                 Interlocked.Increment(ref requests);
                 if (failing && transportFailure)
+                {
                     return ValueTask.FromException<OffsetFetchResponse>(new IOException("Connection reset during offset fetch"));
+                }
                 return ValueTask.FromResult(failing
                     ? new OffsetFetchResponse { ErrorCode = errorCode }
                     : CreateOffsetFetchResponseWithUnstablePartition1());
@@ -213,7 +215,8 @@ public sealed partial class ConsumerAssignmentFastPathTests
                 {
                     Groups = [new OffsetFetchResponseGroup
                     {
-                        GroupId = "group-a", ErrorCode = ErrorCode.None,
+                        GroupId = "group-a",
+                        ErrorCode = ErrorCode.None,
                         Topics = [new OffsetFetchResponseTopic
                         {
                             TopicId = requestedTopicId,
@@ -263,7 +266,8 @@ public sealed partial class ConsumerAssignmentFastPathTests
                     {
                         Groups = [new OffsetFetchResponseGroup
                         {
-                            GroupId = "group-a", ErrorCode = ErrorCode.None,
+                            GroupId = "group-a",
+                            ErrorCode = ErrorCode.None,
                             Topics = [new OffsetFetchResponseTopic
                             {
                                 TopicId = requestedTopicId,
@@ -350,7 +354,10 @@ public sealed partial class ConsumerAssignmentFastPathTests
                 {
                     Coordinators = [new Coordinator
                     {
-                        Key = "group-a", NodeId = 0, Host = "localhost", Port = 9092,
+                        Key = "group-a",
+                        NodeId = 0,
+                        Host = "localhost",
+                        Port = 9092,
                         ErrorCode = ErrorCode.CoordinatorLoadInProgress
                     }]
                 });

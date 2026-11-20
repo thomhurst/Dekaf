@@ -77,7 +77,9 @@ public static class OutboxFairShare
         ArgumentNullException.ThrowIfNull(activeRelayIds);
         ArgumentNullException.ThrowIfNull(heldBucketCounts);
         if (activeRelayIds.Count == 0)
+        {
             throw new ArgumentException("At least one relay is required.", nameof(activeRelayIds));
+        }
 
         activeRelayIds.Sort(StringComparer.Ordinal);
         return Shares(bucketCount, activeRelayIds, heldBucketCounts);
@@ -127,11 +129,15 @@ public static class OutboxFairShare
 
         var start = 0;
         for (var lower = 0; lower < rank; lower++)
+        {
             start += shares[lower];
+        }
 
         var assigned = new int[shares[rank]];
         for (var index = 0; index < assigned.Length; index++)
+        {
             assigned[index] = start + index;
+        }
         return assigned;
     }
 
@@ -156,13 +162,17 @@ public static class OutboxFairShare
         var rank = Rank(bucketCount, activeRelayIds, relayId);
         var shares = Shares(bucketCount, activeRelayIds, heldBucketCounts);
         if (shares[rank] > 0)
+        {
             return -1;
+        }
 
         var standbysBefore = 0;
         for (var lower = 0; lower < rank; lower++)
         {
             if (shares[lower] == 0)
+            {
                 standbysBefore++;
+            }
         }
 
         return standbysBefore;
@@ -175,7 +185,9 @@ public static class OutboxFairShare
         ArgumentException.ThrowIfNullOrEmpty(relayId);
 
         if (!activeRelayIds.Contains(relayId))
+        {
             activeRelayIds.Add(relayId);
+        }
         activeRelayIds.Sort(StringComparer.Ordinal);
         return activeRelayIds.IndexOf(relayId);
     }

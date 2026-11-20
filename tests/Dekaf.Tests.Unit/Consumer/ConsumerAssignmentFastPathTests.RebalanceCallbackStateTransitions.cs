@@ -105,7 +105,9 @@ public sealed partial class ConsumerAssignmentFastPathTests
             listener.OnAssigned = partitions =>
             {
                 if (acted || !partitions.Contains(Partition1))
+                {
                     return;
+                }
 
                 acted = true;
                 consumer.Pause(Partition1);
@@ -118,7 +120,9 @@ public sealed partial class ConsumerAssignmentFastPathTests
         }
 
         for (var i = 0; i < heartbeats; i++)
+        {
             await harness.HeartbeatAsync();
+        }
 
         var sync = true;
         switch (transition)
@@ -178,12 +182,18 @@ public sealed partial class ConsumerAssignmentFastPathTests
                 consumer.BeforeAssignmentSyncAcknowledgedForTest = () =>
                 {
                     if (superseded)
+                    {
                         return;
+                    }
                     superseded = true;
                     if (transition == CallbackTransition.SupersededByClassificationBeforeAck)
+                    {
                         coordinator.MarkNewlyExpandedForTest(Partition1);
+                    }
                     else
+                    {
                         coordinator.RevokeAndReassignForTest(Partition1);
+                    }
                 };
                 await consumer.EnsureAssignmentAsync(CancellationToken.None);
                 await Assert.That(superseded).IsTrue();
@@ -191,17 +201,27 @@ public sealed partial class ConsumerAssignmentFastPathTests
         }
 
         if (sync)
+        {
             await consumer.EnsureAssignmentAsync(CancellationToken.None);
+        }
         if (transition == CallbackTransition.ResumedAfterSync)
+        {
             consumer.Resume(Partition1);
+        }
 
         if (transition != CallbackTransition.PreviousOwnershipPauseReassigned)
+        {
             await Assert.That(acted).IsTrue();
+        }
         await Assert.That(consumer.Paused.Contains(Partition1)).IsEqualTo(expectPaused);
         if (expectPosition is not null)
+        {
             await Assert.That(consumer.GetPosition(Partition1)).IsEqualTo(expectPosition);
+        }
         else if (sync)
+        {
             await Assert.That(consumer.Assignment).DoesNotContain(Partition1);
+        }
         await Assert.That(consumer.PendingRebalanceSeekCountForTest).IsEqualTo(0);
         await Assert.That(consumer.UnacknowledgedAppliedRebalanceSeekCountForTest).IsEqualTo(0);
     }
@@ -245,7 +265,9 @@ public sealed partial class ConsumerAssignmentFastPathTests
         listener.OnAssigned = partitions =>
         {
             if (!partitions.Contains(Partition1) || stagingAfterAbandon is not null)
+            {
                 return;
+            }
 
             switch (abandon)
             {
@@ -325,13 +347,19 @@ public sealed partial class ConsumerAssignmentFastPathTests
         listener.OnAssigned = partitions =>
         {
             if (!partitions.Contains(Partition1))
+            {
                 return;
+            }
 
             acted = true;
             if (pause)
+            {
                 consumer.Pause(Partition1);
+            }
             if (seek)
+            {
                 consumer.Seek(new TopicPartitionOffset(Partition1.Topic, Partition1.Partition, 42));
+            }
         };
 
         await harness.HeartbeatAsync();
@@ -339,9 +367,13 @@ public sealed partial class ConsumerAssignmentFastPathTests
         await Assert.That(consumer.Assignment).IsEmpty();
 
         if (disposeWithoutClose)
+        {
             await consumer.DisposeAsync();
+        }
         else
+        {
             await consumer.CloseAsync(testTimeout);
+        }
 
         await Assert.That(consumer.Paused).DoesNotContain(Partition1);
         await Assert.That(consumer.PendingRebalanceSeekCountForTest).IsEqualTo(0);
@@ -389,7 +421,9 @@ public sealed partial class ConsumerAssignmentFastPathTests
         listener.OnAssigned = partitions =>
         {
             if (acted || !partitions.Contains(Partition1))
+            {
                 return;
+            }
 
             acted = true;
             coordinator.RevokeAndReassignForTest(Partition1);
@@ -462,7 +496,9 @@ public sealed partial class ConsumerAssignmentFastPathTests
         listener.OnAssignedAsync = async partitions =>
         {
             if (acted || !partitions.Contains(Partition1))
+            {
                 return;
+            }
 
             acted = true;
             coordinator.RevokeAndReassignForTest(Partition1);
@@ -472,7 +508,9 @@ public sealed partial class ConsumerAssignmentFastPathTests
                 // The new ownership is paused by the application, outside any callback.
                 Task pause;
                 using (ExecutionContext.SuppressFlow())
+                {
                     pause = Task.Run(() => consumer.Pause(Partition1), testTimeout);
+                }
                 await pause;
             }
 
@@ -534,7 +572,9 @@ public sealed partial class ConsumerAssignmentFastPathTests
         listener.OnAssigned = partitions =>
         {
             if (!partitions.Contains(Partition1))
+            {
                 return;
+            }
 
             consumer.Pause(Partition1);
             consumer.Seek(new TopicPartitionOffset(Partition1.Topic, Partition1.Partition, 42));
@@ -584,7 +624,9 @@ public sealed partial class ConsumerAssignmentFastPathTests
         listener.OnAssignedConsumer = (view, partitions) =>
         {
             if (acted || !partitions.Contains(Partition1))
+            {
                 return;
+            }
 
             acted = true;
             consumer.Assign(new TopicPartition("test-topic", 0), Partition1);
@@ -634,7 +676,9 @@ public sealed partial class ConsumerAssignmentFastPathTests
         listener.OnAssigned = partitions =>
         {
             if (!partitions.Contains(Partition1))
+            {
                 return;
+            }
 
             staging = coordinator.TryGetAssignedCallbackRevocationSequence(Partition1, out _);
             consumer.Seek(new TopicPartitionOffset(Partition1.Topic, Partition1.Partition, 42));
@@ -643,9 +687,13 @@ public sealed partial class ConsumerAssignmentFastPathTests
 
         coordinator.QueueAssignedCallbacksForTest([Partition1]);
         if (abandon == AbandonBeforeCallbackStart.Assign)
+        {
             consumer.Assign(new TopicPartition("test-topic", 0), Partition1);
+        }
         else
+        {
             consumer.Unsubscribe();
+        }
         await coordinator.DeliverQueuedCallbacksForTestAsync();
 
         await Assert.That(staging).IsNotNull();
@@ -679,7 +727,9 @@ public sealed partial class ConsumerAssignmentFastPathTests
         consumer.AfterAssignmentSyncAcknowledgedForTest = () =>
         {
             if (revoked)
+            {
                 return;
+            }
             revoked = true;
             coordinator.RevokeAndReassignForTest(Partition1);
         };
@@ -699,7 +749,9 @@ public sealed partial class ConsumerAssignmentFastPathTests
         listener.OnAssigned = partitions =>
         {
             if (partitions.Contains(Partition1))
+            {
                 consumer.Pause(Partition1);
+            }
         };
         await coordinator.DeliverAssignedCallbacksForTestAsync([Partition1]);
         consumer.Assign(new TopicPartition("test-topic", 0), Partition1);
@@ -729,7 +781,9 @@ public sealed partial class ConsumerAssignmentFastPathTests
         listener.OnAssigned = partitions =>
         {
             if (partitions.Contains(Partition1))
+            {
                 consumer.Pause(Partition1);
+            }
         };
 
         await harness.HeartbeatAsync();
@@ -739,12 +793,18 @@ public sealed partial class ConsumerAssignmentFastPathTests
         consumer.BeforeAssignmentSyncAcknowledgedForTest = () =>
         {
             if (superseded)
+            {
                 return;
+            }
             superseded = true;
             if (reclassify)
+            {
                 coordinator.MarkNewlyExpandedForTest(Partition1);
+            }
             else
+            {
                 coordinator.BumpAssignmentVersionForTest();
+            }
         };
         try
         {
@@ -761,7 +821,9 @@ public sealed partial class ConsumerAssignmentFastPathTests
         await Assert.That(consumer.IsRevokedSinceAcknowledgedForTest(Partition1)).IsFalse();
 
         if (reclassify)
+        {
             return; // A new-partition reset policy rules out manual assignment.
+        }
 
         consumer.Assign(new TopicPartition("test-topic", 0), Partition1);
 
@@ -796,7 +858,9 @@ public sealed partial class ConsumerAssignmentFastPathTests
         listener.OnAssigned = partitions =>
         {
             if (!partitions.Contains(Partition1))
+            {
                 return;
+            }
 
             staging = coordinator.TryGetAssignedCallbackRevocationSequence(Partition1, out _);
             consumer.Seek(new TopicPartitionOffset(Partition1.Topic, Partition1.Partition, 42));
@@ -807,12 +871,18 @@ public sealed partial class ConsumerAssignmentFastPathTests
         coordinator.AfterAssignmentPublishedForTest = () =>
         {
             if (abandoned)
+            {
                 return;
+            }
             abandoned = true;
             if (abandon == AbandonAfterPublish.Assign)
+            {
                 consumer.Assign(new TopicPartition("test-topic", 0), Partition1);
+            }
             else
+            {
                 consumer.Unsubscribe();
+            }
         };
         try
         {
@@ -849,7 +919,9 @@ public sealed partial class ConsumerAssignmentFastPathTests
         for (var start = 0; start < churned; start += perSync)
         {
             for (var partition = start; partition < start + perSync; partition++)
+            {
                 coordinator.RevokeAndReassignForTest(new TopicPartition("churn-topic", partition));
+            }
             await consumer.EnsureAssignmentAsync(testTimeout);
         }
 
@@ -861,13 +933,17 @@ public sealed partial class ConsumerAssignmentFastPathTests
         for (var cycle = 0; cycle < 20; cycle++)
         {
             for (var partition = 0; partition < perSync; partition++)
+            {
                 coordinator.RevokeAndReassignForTest(new TopicPartition("abandon-topic", (cycle * perSync) + partition));
+            }
 
             var superseded = false;
             consumer.BeforeAssignmentSyncAcknowledgedForTest = () =>
             {
                 if (superseded)
+                {
                     return;
+                }
                 superseded = true;
                 coordinator.BumpAssignmentVersionForTest();
             };
@@ -893,13 +969,17 @@ public sealed partial class ConsumerAssignmentFastPathTests
         for (var cycle = 0; cycle < 20; cycle++)
         {
             for (var partition = 0; partition < perSync; partition++)
+            {
                 coordinator.RevokeAndReassignForTest(new TopicPartition("queued-topic", (cycle * perSync) + partition));
+            }
 
             consumer.Assign(new TopicPartition("test-topic", 0));
             await Assert.That(coordinator.RevocationSequenceTrackingCountForTest).IsEqualTo(0);
 
             for (var partition = 0; partition < perSync; partition++)
+            {
                 coordinator.RevokeAndReassignForTest(new TopicPartition("manual-topic", (cycle * perSync) + partition));
+            }
             await Assert.That(coordinator.RevocationSequenceTrackingCountForTest).IsEqualTo(0);
 
             consumer.Subscribe("test-topic");
@@ -971,7 +1051,9 @@ public sealed partial class ConsumerAssignmentFastPathTests
         {
             // Only a delivery after the abandon (and any resubscription's own join) is the stale one.
             if (!Volatile.Read(ref abandoned) || !partitions.Contains(Partition1))
+            {
                 return;
+            }
 
             var staging = coordinator.TryGetAssignedCallbackRevocationSequence(Partition1, out _);
             consumer.Seek(new TopicPartitionOffset(Partition1.Topic, Partition1.Partition, 42));
@@ -983,9 +1065,13 @@ public sealed partial class ConsumerAssignmentFastPathTests
 
         await heartbeatInFlight.Task.WaitAsync(testTimeout);
         if (abandon == AbandonAfterPublish.Assign)
+        {
             consumer.Assign(new TopicPartition("test-topic", 0));
+        }
         else
+        {
             consumer.Unsubscribe();
+        }
         if (resubscribeBeforeResponse)
         {
             // The new subscription is synchronized while the previous subscription's heartbeat is
@@ -1034,19 +1120,27 @@ public sealed partial class ConsumerAssignmentFastPathTests
         listener.OnAssigned = partitions =>
         {
             if (partitions.Contains(Partition1))
+            {
                 staging = coordinator.TryGetAssignedCallbackRevocationSequence(Partition1, out _);
+            }
         };
 
         var abandoned = false;
         consumer.BeforeEnsureActiveGroupForTest = () =>
         {
             if (abandoned)
+            {
                 return;
+            }
             abandoned = true;
             if (abandon == AbandonAfterPublish.Assign)
+            {
                 consumer.Assign(new TopicPartition("test-topic", 0));
+            }
             else
+            {
                 consumer.Unsubscribe();
+            }
         };
         try
         {
@@ -1132,7 +1226,9 @@ public sealed partial class ConsumerAssignmentFastPathTests
         first.OnAssignedConsumer = (view, partitions) =>
         {
             if (!partitions.Contains(Partition1))
+            {
                 return;
+            }
 
             lateWork = Task.Run(
                 async () =>
@@ -1147,7 +1243,9 @@ public sealed partial class ConsumerAssignmentFastPathTests
         second.OnAssigned = partitions =>
         {
             if (!partitions.Contains(Partition1))
+            {
                 return;
+            }
 
             secondRunning.TrySetResult();
             lateWork!.Wait(testTimeout);
@@ -1183,19 +1281,27 @@ public sealed partial class ConsumerAssignmentFastPathTests
         consumer.BeforeStageRebalanceSeekLockForTest = () =>
         {
             if (abandoned)
+            {
                 return;
+            }
             abandoned = true;
             consumer.Assign(new TopicPartition("test-topic", 0), Partition1);
         };
         listener.OnAssigned = partitions =>
         {
             if (!partitions.Contains(Partition1))
+            {
                 return;
+            }
 
             if (seekToBeginning)
+            {
                 consumer.SeekToBeginning(Partition1);
+            }
             else
+            {
                 consumer.Seek(new TopicPartitionOffset(Partition1.Topic, Partition1.Partition, 42));
+            }
         };
 
         try
@@ -1252,7 +1358,9 @@ public sealed partial class ConsumerAssignmentFastPathTests
         listener.OnAssigned = partitions =>
         {
             if (!partitions.Contains(otherPartition))
+            {
                 return;
+            }
 
             staging = coordinator.TryGetAssignedCallbackRevocationSequence(otherPartition, out _);
             consumer.Seek(new TopicPartitionOffset(otherPartition.Topic, otherPartition.Partition, 42));
@@ -1318,7 +1426,9 @@ public sealed partial class ConsumerAssignmentFastPathTests
         listener.OnAssigned = partitions =>
         {
             if (partitions.Contains(Partition1))
+            {
                 staging = coordinator.TryGetAssignedCallbackRevocationSequence(Partition1, out _);
+            }
         };
 
         consumer.Unsubscribe();
@@ -1347,7 +1457,9 @@ public sealed partial class ConsumerAssignmentFastPathTests
         listener.OnAssigned = partitions =>
         {
             if (partitions.Contains(Partition1))
+            {
                 harness.Consumer.Seek(new TopicPartitionOffset(Partition1.Topic, Partition1.Partition, 42));
+            }
         };
 
         await harness.HeartbeatAsync();
@@ -1381,7 +1493,9 @@ public sealed partial class ConsumerAssignmentFastPathTests
             {
                 maxTracked = Math.Max(maxTracked, harness.Consumer.UnacknowledgedAppliedRebalanceSeekCountForTest);
                 if (Interlocked.Increment(ref calls) <= passes)
+                {
                     coordinator.BumpAssignmentVersionForTest();
+                }
                 return ValueTask.FromResult(CreateSuccessfulOffsetFetchResponse());
             });
         return () => Math.Max(maxTracked, harness.Consumer.UnacknowledgedAppliedRebalanceSeekCountForTest);

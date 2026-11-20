@@ -13,7 +13,10 @@ public sealed class SaslAuthenticateRequest : IKafkaRequest<SaslAuthenticateResp
     /// <summary>
     /// The SASL authentication bytes from the client.
     /// </summary>
-    public required byte[] AuthBytes { get; init; }
+    public required byte[] AuthBytes
+    {
+        get; init;
+    }
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {

@@ -265,8 +265,14 @@ public sealed class SchemaRegistryHttpPipelineTests
 
     private sealed class TrackingHandler : HttpMessageHandler
     {
-        internal HttpRequestMessage? LastRequest { get; private set; }
-        internal bool IsDisposed { get; private set; }
+        internal HttpRequestMessage? LastRequest
+        {
+            get; private set;
+        }
+        internal bool IsDisposed
+        {
+            get; private set;
+        }
 
         protected override Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request,

@@ -16,17 +16,26 @@ public sealed class ElectLeadersResponse : IKafkaResponse
     /// <summary>
     /// Throttle time in milliseconds.
     /// </summary>
-    public int ThrottleTimeMs { get; init; }
+    public int ThrottleTimeMs
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Top-level error code.
     /// </summary>
-    public ErrorCode ErrorCode { get; init; }
+    public ErrorCode ErrorCode
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Results for each topic.
     /// </summary>
-    public required IReadOnlyList<ElectLeadersResponseTopic> ReplicaElectionResults { get; init; }
+    public required IReadOnlyList<ElectLeadersResponseTopic> ReplicaElectionResults
+    {
+        get; init;
+    }
 
     public static IKafkaResponse Read(ref KafkaProtocolReader reader, short version)
     {
@@ -59,12 +68,18 @@ public sealed class ElectLeadersResponseTopic
     /// <summary>
     /// The topic name.
     /// </summary>
-    public required string Topic { get; init; }
+    public required string Topic
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Results for each partition.
     /// </summary>
-    public required IReadOnlyList<ElectLeadersResponsePartition> PartitionResult { get; init; }
+    public required IReadOnlyList<ElectLeadersResponsePartition> PartitionResult
+    {
+        get; init;
+    }
 
     public static ElectLeadersResponseTopic Read(ref KafkaProtocolReader reader, short version)
     {
@@ -93,17 +108,26 @@ public sealed class ElectLeadersResponsePartition
     /// <summary>
     /// The partition index.
     /// </summary>
-    public int PartitionId { get; init; }
+    public int PartitionId
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Error code for this partition.
     /// </summary>
-    public ErrorCode ErrorCode { get; init; }
+    public ErrorCode ErrorCode
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Error message (v1+).
     /// </summary>
-    public string? ErrorMessage { get; init; }
+    public string? ErrorMessage
+    {
+        get; init;
+    }
 
     public static ElectLeadersResponsePartition Read(ref KafkaProtocolReader reader, short version)
     {

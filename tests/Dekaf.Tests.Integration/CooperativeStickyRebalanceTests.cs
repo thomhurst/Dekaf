@@ -55,7 +55,10 @@ public sealed class CooperativeStickyRebalanceTests(KafkaTestContainer kafka) : 
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))
         {
             messages.Add(msg);
-            if (messages.Count >= 4) break;
+            if (messages.Count >= 4)
+            {
+                break;
+            }
         }
 
         await Assert.That(messages).Count().IsEqualTo(4);
@@ -111,7 +114,10 @@ public sealed class CooperativeStickyRebalanceTests(KafkaTestContainer kafka) : 
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))
         {
             messages.Add(msg);
-            if (messages.Count >= 2) break;
+            if (messages.Count >= 2)
+            {
+                break;
+            }
         }
 
         await Assert.That(messages).Count().IsEqualTo(2);
@@ -162,9 +168,13 @@ public sealed class CooperativeStickyRebalanceTests(KafkaTestContainer kafka) : 
         await Assert.That(() =>
             {
                 if (incremental)
+                {
                     consumer.Partitions.IncrementalUnassign([new TopicPartition(topic, 1)]);
+                }
                 else
+                {
                     consumer.Partitions.Unassign();
+                }
             })
             .Throws<InvalidOperationException>();
         await Assert.That(consumer.Subscription).Contains(topic);
@@ -276,7 +286,10 @@ public sealed class CooperativeStickyRebalanceTests(KafkaTestContainer kafka) : 
         // Clean up background tasks
         await cts1.CancelAsync();
         await cts2.CancelAsync();
-        try { await Task.WhenAll(consumer1Task, consumer2Task); }
+        try
+        {
+            await Task.WhenAll(consumer1Task, consumer2Task);
+        }
         catch (OperationCanceledException) { }
     }
 
@@ -325,7 +338,9 @@ public sealed class CooperativeStickyRebalanceTests(KafkaTestContainer kafka) : 
                 await foreach (var message in consumer1.ConsumeAsync(cts1.Token))
                 {
                     if (Volatile.Read(ref collectAfterRebalance) != 0)
+                    {
                         afterRebalanceMessages.Enqueue(message);
+                    }
 
                     await Task.Delay(10, cts1.Token);
                 }
@@ -402,7 +417,10 @@ public sealed class CooperativeStickyRebalanceTests(KafkaTestContainer kafka) : 
         {
             await cts1.CancelAsync();
             await cts2.CancelAsync();
-            try { await Task.WhenAll(consumer1Task, consumer2Task); }
+            try
+            {
+                await Task.WhenAll(consumer1Task, consumer2Task);
+            }
             catch (OperationCanceledException) { }
         }
     }

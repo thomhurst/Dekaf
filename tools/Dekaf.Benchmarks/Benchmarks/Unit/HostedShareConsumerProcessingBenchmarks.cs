@@ -21,10 +21,16 @@ public class HostedShareConsumerProcessingBenchmarks
     private readonly PendingHandler _handler = new();
 
     [Params(false, true)]
-    public bool RoutingConfigured { get; set; }
+    public bool RoutingConfigured
+    {
+        get; set;
+    }
 
     [Params(false, true)]
-    public bool HandlerSuspends { get; set; }
+    public bool HandlerSuspends
+    {
+        get; set;
+    }
 
     [GlobalSetup]
     public async Task Setup()
@@ -55,12 +61,16 @@ public class HostedShareConsumerProcessingBenchmarks
             for (var index = 0; index < count; index++)
             {
                 if (!await _handler.Entered.WaitAsync(30_000))
+                {
                     throw new TimeoutException("The hosted handler did not start.");
+                }
                 _handler.Complete();
             }
         }
         if (!await _consumer.Completed.WaitAsync(30_000) || _consumer.Accepted - before != count)
+        {
             throw new InvalidOperationException("Every supplied record must be processed and accepted.");
+        }
         return _consumer.Accepted;
     }
 
@@ -116,8 +126,14 @@ public class HostedShareConsumerProcessingBenchmarks
         internal long Accepted;
         internal int RecordsToSupply;
         public ShareAcknowledgementMode AcknowledgementMode => ShareAcknowledgementMode.Explicit;
-        public IReadOnlySet<string> Subscription { get; } = new HashSet<string> { "orders" };
-        public IReadOnlySet<TopicPartition> Assignment { get; } = new HashSet<TopicPartition>();
+        public IReadOnlySet<string> Subscription
+        {
+            get;
+        } = new HashSet<string> { "orders" };
+        public IReadOnlySet<TopicPartition> Assignment
+        {
+            get;
+        } = new HashSet<TopicPartition>();
         public string? MemberId => "benchmark";
         public int? AcquisitionLockTimeoutMs => 30_000;
         public ValueTask InitializeAsync(CancellationToken cancellationToken = default) => ValueTask.CompletedTask;
@@ -131,26 +147,46 @@ public class HostedShareConsumerProcessingBenchmarks
             {
                 await Available.WaitAsync(Timeout.Infinite);
                 for (var index = 0; index < RecordsToSupply; index++)
+                {
                     yield return _record;
+                }
                 Completed.Signal();
             }
         }
         public void Acknowledge(ShareConsumeResult<string, string> record, AcknowledgeType type = AcknowledgeType.Accept)
         {
-            if (type != AcknowledgeType.Accept) throw new InvalidOperationException("The success fixture must only accept records.");
+            if (type != AcknowledgeType.Accept)
+            {
+                throw new InvalidOperationException("The success fixture must only accept records.");
+            }
             Accepted++;
         }
         public ValueTask CommitAsync(CancellationToken cancellationToken = default) => ValueTask.CompletedTask;
         public ValueTask CloseAsync(CancellationToken cancellationToken = default) => ValueTask.CompletedTask;
-        public ValueTask DisposeAsync() { Available.Dispose(); Completed.Dispose(); return ValueTask.CompletedTask; }
+        public ValueTask DisposeAsync()
+        {
+            Available.Dispose();
+            Completed.Dispose();
+            return ValueTask.CompletedTask;
+        }
         public long AcquisitionStartedTimestamp => System.Diagnostics.Stopwatch.GetTimestamp();
-        public void ObserveAcknowledgements(ShareAcknowledgementCommitCallback observer) { }
-        public void ObserveAcknowledgements(ShareAcknowledgementCommitCallback observer, CancellationToken requestCancellationToken) { }
+        public void ObserveAcknowledgements(ShareAcknowledgementCommitCallback observer)
+        {
+        }
+        public void ObserveAcknowledgements(ShareAcknowledgementCommitCallback observer, CancellationToken requestCancellationToken)
+        {
+        }
         // Public rather than an interface-only member, so the fixture also compiles against the baseline.
         public void AbandonAcquisition(string topic, int partition, long offset)
             => throw new InvalidOperationException("The success fixture never lets an acquisition lapse.");
-        public void EnableRawRecordTracking() { }
+        public void EnableRawRecordTracking()
+        {
+        }
         public bool TryGetRawRecord(TopicPartitionOffset record, out byte[]? key, out byte[]? value)
-        { key = null; value = null; return false; }
+        {
+            key = null;
+            value = null;
+            return false;
+        }
     }
 }

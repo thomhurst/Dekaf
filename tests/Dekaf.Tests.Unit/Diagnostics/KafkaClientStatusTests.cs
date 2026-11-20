@@ -63,7 +63,9 @@ public sealed class KafkaClientStatusTests
             admin
         };
         foreach (var identity in identities)
+        {
             await Assert.That(identity.ClientInstanceId).IsNull();
+        }
     }
 
     [Test]
@@ -181,7 +183,9 @@ public sealed class KafkaClientStatusTests
             (IKafkaClientIdentity)admin
         };
         foreach (var identity in identities)
+        {
             await Assert.That(identity.ClusterId).IsEqualTo("cluster-status");
+        }
 
         var readers = Enumerable.Range(0, Environment.ProcessorCount)
             .Select(_ => Task.Run(() =>
@@ -199,7 +203,9 @@ public sealed class KafkaClientStatusTests
         var writer = Task.Run(() =>
         {
             for (var i = 0; i < 1_000; i++)
+            {
                 metadataManager.Metadata.Update(CreateMetadata("cluster-status"));
+            }
         });
 
         await Task.WhenAll(readers.Append(writer));

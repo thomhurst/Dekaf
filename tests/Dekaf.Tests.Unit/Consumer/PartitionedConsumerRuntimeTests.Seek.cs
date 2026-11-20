@@ -24,7 +24,9 @@ public sealed partial class PartitionedConsumerRuntimeTests
             {
                 received.Enqueue(message.Offset);
                 if (message.Offset == 4 && !firstPass.TrySetResult())
+                {
                     replayed.TrySetResult();
+                }
                 return ValueTask.CompletedTask;
             },
             new PartitionedProcessingOptions { Control = control, CommitPolicy = PartitionCommitPolicy.UserManaged },
@@ -67,7 +69,9 @@ public sealed partial class PartitionedConsumerRuntimeTests
 
                 completed.Enqueue(message.Offset);
                 if (message.Offset == 9)
+                {
                     replayed.TrySetResult();
+                }
             },
             new PartitionedProcessingOptions
             {
@@ -110,10 +114,14 @@ public sealed partial class PartitionedConsumerRuntimeTests
             {
                 received.Enqueue(message.Offset);
                 if (message.Offset == 0 && firstRecordStarted.TrySetResult())
+                {
                     await releaseFirstRecord.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
+                }
 
                 if (message.Offset == 9 && received.Count > 1)
+                {
                     replayed.TrySetResult();
+                }
             },
             new PartitionedProcessingOptions
             {
@@ -170,7 +178,9 @@ public sealed partial class PartitionedConsumerRuntimeTests
                 }
 
                 if (message.Offset == 9)
+                {
                     replayed.TrySetResult();
+                }
             },
             new PartitionedProcessingOptions
             {
@@ -216,7 +226,9 @@ public sealed partial class PartitionedConsumerRuntimeTests
                 }
 
                 if (message.Offset == 9)
+                {
                     replayed.TrySetResult();
+                }
             },
             new PartitionedProcessingOptions
             {
@@ -252,7 +264,9 @@ public sealed partial class PartitionedConsumerRuntimeTests
             (_, message, _) =>
             {
                 if (message.Offset == 4)
+                {
                     firstPass.TrySetResult();
+                }
                 return ValueTask.CompletedTask;
             },
             new PartitionedProcessingOptions { Control = control, CommitPolicy = PartitionCommitPolicy.CommitCompletedOnRevoke },
@@ -283,7 +297,9 @@ public sealed partial class PartitionedConsumerRuntimeTests
             (_, message, _) =>
             {
                 if (message.Offset == 4)
+                {
                     firstPass.TrySetResult();
+                }
                 return ValueTask.CompletedTask;
             },
             new PartitionedProcessingOptions { Control = control, CommitPolicy = PartitionCommitPolicy.CommitCompletedOnRevoke },
@@ -319,7 +335,9 @@ public sealed partial class PartitionedConsumerRuntimeTests
             async (_, message, cancellationToken) =>
             {
                 if (message.Offset != 0)
+                {
                     return;
+                }
 
                 // Seeking cancels the only record the lane received, so nothing completes.
                 firstRecordStarted.TrySetResult();
@@ -350,13 +368,17 @@ public sealed partial class PartitionedConsumerRuntimeTests
         Exception? failure = null;
         var lane = new PartitionLane<string, string>(
             new TopicPartition("topic-a", 0), 16,
-            static (_, _) => default, static _ => { }, (_, exception) => failure = exception);
+            static (_, _) => default, static _ =>
+            {
+            }, (_, exception) => failure = exception);
         var discarding = NewCompletionSource();
         lane.Start(async (context, cancellationToken) =>
         {
             await discarding.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
             if (!context.IsDiscardingQueuedRecords)
+            {
                 throw new InvalidOperationException("The discard flag was not published.");
+            }
         });
 
         lane.DiscardQueuedRecords();
@@ -398,7 +420,9 @@ public sealed partial class PartitionedConsumerRuntimeTests
                 }
 
                 if (message.Offset == 2)
+                {
                     replayed.TrySetResult();
+                }
                 return ValueTask.CompletedTask;
             },
             new PartitionedProcessingOptions
@@ -446,7 +470,9 @@ public sealed partial class PartitionedConsumerRuntimeTests
                 }
 
                 if (message.Offset == 9)
+                {
                     replayed.TrySetResult();
+                }
             },
             new PartitionedProcessingOptions
             {
@@ -491,7 +517,9 @@ public sealed partial class PartitionedConsumerRuntimeTests
             (_, message, _) =>
             {
                 if (message.Offset == 4)
+                {
                     firstPass.TrySetResult();
+                }
                 return ValueTask.CompletedTask;
             },
             new PartitionedProcessingOptions { Control = control, CommitPolicy = PartitionCommitPolicy.UserManaged },

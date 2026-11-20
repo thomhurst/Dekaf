@@ -25,7 +25,6 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-strict-ordering")
             .WithAcks(Acks.All)
-
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
@@ -55,7 +54,10 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))
         {
             messages.Add(msg);
-            if (messages.Count >= messageCount) break;
+            if (messages.Count >= messageCount)
+            {
+                break;
+            }
         }
 
         await Assert.That(messages).Count().IsEqualTo(messageCount);
@@ -86,7 +88,6 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-high-throughput-ordering")
             .WithAcks(Acks.All)
-
             .WithLinger(TimeSpan.FromMilliseconds(2))
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
@@ -119,7 +120,10 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))
         {
             messages.Add(msg);
-            if (messages.Count >= messageCount) break;
+            if (messages.Count >= messageCount)
+            {
+                break;
+            }
         }
 
         await Assert.That(messages).Count().IsEqualTo(messageCount);
@@ -145,7 +149,6 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-single-partition-ordering")
             .WithAcks(Acks.All)
-
             .WithBatchSize(512) // Very small to force many batches in flight
             .WithLinger(TimeSpan.FromMilliseconds(2))
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
@@ -179,7 +182,10 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))
         {
             messages.Add(msg);
-            if (messages.Count >= messageCount) break;
+            if (messages.Count >= messageCount)
+            {
+                break;
+            }
         }
 
         await Assert.That(messages).Count().IsEqualTo(messageCount);
@@ -203,7 +209,6 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-multi-partition-ordering")
             .WithAcks(Acks.All)
-
             .WithLinger(TimeSpan.FromMilliseconds(2))
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
@@ -236,7 +241,10 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
         consumer.Assign(Enumerable.Range(0, 4).Select(p => new TopicPartition(topic, p)).ToArray());
 
         var messagesByPartition = new Dictionary<int, List<ConsumeResult<string, string>>>();
-        for (var p = 0; p < 4; p++) messagesByPartition[p] = [];
+        for (var p = 0; p < 4; p++)
+        {
+            messagesByPartition[p] = [];
+        }
 
         var totalExpected = 4 * messagesPerPartition + 4; // +4 for warmup (one per partition)
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(60));
@@ -245,7 +253,10 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
         {
             messagesByPartition[msg.Partition].Add(msg);
             var total = messagesByPartition.Values.Sum(l => l.Count);
-            if (total >= totalExpected) break;
+            if (total >= totalExpected)
+            {
+                break;
+            }
         }
 
         // Verify per-partition ordering
@@ -287,7 +298,6 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
                 .WithBootstrapServers(KafkaContainer.BootstrapServers)
                 .WithClientId($"test-concurrent-flush-{producerId}")
                 .WithAcks(Acks.All)
-
                 .BuildAsync();
 
             await producer.WarmUpAllPartitionsAsync(topic, 3);
@@ -336,7 +346,10 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
             }
 
             var total = messagesByKey.Values.Sum(l => l.Count);
-            if (total >= totalExpected) break;
+            if (total >= totalExpected)
+            {
+                break;
+            }
         }
 
         // Verify per-producer ordering: each producer's messages must appear in sequence
@@ -403,7 +416,10 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
         consumer.Assign(Enumerable.Range(0, partitionCount).Select(p => new TopicPartition(topic, p)).ToArray());
 
         var messagesByPartition = new Dictionary<int, List<ConsumeResult<string, string>>>();
-        for (var p = 0; p < partitionCount; p++) messagesByPartition[p] = [];
+        for (var p = 0; p < partitionCount; p++)
+        {
+            messagesByPartition[p] = [];
+        }
 
         var totalExpected = partitionCount * (messagesPerPartition + 1); // +1 per partition for warmup
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(120));
@@ -412,7 +428,10 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))
         {
             messagesByPartition[msg.Partition].Add(msg);
-            if (++totalConsumed >= totalExpected) break;
+            if (++totalConsumed >= totalExpected)
+            {
+                break;
+            }
         }
 
         // Verify per-partition ordering
@@ -452,7 +471,6 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-deferred-chain")
             .WithAcks(Acks.All)
-
             .WithBatchSize(256) // Tiny: ~10 messages per batch → ~100 batches for 1000 messages
             .WithLinger(TimeSpan.FromMilliseconds(2))
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
@@ -485,7 +503,10 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))
         {
             messages.Add(msg);
-            if (messages.Count >= messageCount) break;
+            if (messages.Count >= messageCount)
+            {
+                break;
+            }
         }
 
         await Assert.That(messages).Count().IsEqualTo(messageCount);
@@ -556,7 +577,6 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-multi-drain")
             .WithAcks(Acks.All)
-
             .WithBatchSize(512) // Small to create many batches per wave
             .WithLinger(TimeSpan.FromMilliseconds(2))
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
@@ -591,7 +611,10 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
         consumer.Assign(Enumerable.Range(0, 4).Select(p => new TopicPartition(topic, p)).ToArray());
 
         var messagesByPartition = new Dictionary<int, List<ConsumeResult<string, string>>>();
-        for (var p = 0; p < 4; p++) messagesByPartition[p] = [];
+        for (var p = 0; p < 4; p++)
+        {
+            messagesByPartition[p] = [];
+        }
 
         var totalExpected = wavesCount * messagesPerWave + 4; // +4 for warmup (one per partition)
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(120));
@@ -600,7 +623,10 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
         {
             messagesByPartition[msg.Partition].Add(msg);
             var total = messagesByPartition.Values.Sum(l => l.Count);
-            if (total >= totalExpected) break;
+            if (total >= totalExpected)
+            {
+                break;
+            }
         }
 
         // Verify per-partition ordering: offsets must be strictly monotonically increasing
@@ -639,7 +665,6 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-rapid-fire-forget")
             .WithAcks(Acks.All)
-
             .WithBatchSize(512)
             .WithLinger(TimeSpan.FromMilliseconds(2))
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
@@ -680,7 +705,10 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
         {
             messagesByPartition[msg.Partition].Add(msg);
             var total = messagesByPartition.Values.Sum(l => l.Count);
-            if (total >= messageCount + 2) break; // +2 for warmup (one per partition)
+            if (total >= messageCount + 2)
+            {
+                break; // +2 for warmup (one per partition)
+            }
         }
 
         // Each partition should have exactly half the messages, in order
@@ -712,7 +740,6 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-interleaved-deferred")
             .WithAcks(Acks.All)
-
             .WithBatchSize(256) // Tiny: forces many batches
             .WithLinger(TimeSpan.FromMilliseconds(2))
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
@@ -763,7 +790,10 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
         {
             messagesByPartition[msg.Partition].Add(msg);
             var total = messagesByPartition.Values.Sum(l => l.Count);
-            if (total >= totalExpected) break;
+            if (total >= totalExpected)
+            {
+                break;
+            }
         }
 
         for (var p = 0; p < 2; p++)
@@ -793,7 +823,6 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-high-partition-count")
             .WithAcks(Acks.All)
-
             .WithBatchSize(512)
             .WithLinger(TimeSpan.FromMilliseconds(2))
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
@@ -825,7 +854,10 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
         consumer.Assign(Enumerable.Range(0, 16).Select(p => new TopicPartition(topic, p)).ToArray());
 
         var messagesByPartition = new Dictionary<int, List<ConsumeResult<string, string>>>();
-        for (var p = 0; p < 16; p++) messagesByPartition[p] = [];
+        for (var p = 0; p < 16; p++)
+        {
+            messagesByPartition[p] = [];
+        }
 
         var totalExpected = 16 * messagesPerPartition + 16; // +16 for warmup (one per partition)
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(120));
@@ -834,7 +866,10 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
         {
             messagesByPartition[msg.Partition].Add(msg);
             var total = messagesByPartition.Values.Sum(l => l.Count);
-            if (total >= totalExpected) break;
+            if (total >= totalExpected)
+            {
+                break;
+            }
         }
 
         for (var p = 0; p < 16; p++)
@@ -869,7 +904,6 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-mixed-produce-send")
             .WithAcks(Acks.All)
-
             .WithBatchSize(512)
             .WithLinger(TimeSpan.FromMilliseconds(2))
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
@@ -901,7 +935,10 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))
         {
             messages.Add(msg);
-            if (messages.Count >= messageCount) break;
+            if (messages.Count >= messageCount)
+            {
+                break;
+            }
         }
 
         await Assert.That(messages).Count().IsEqualTo(messageCount);
@@ -938,7 +975,10 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
         // Warm metadata so the next ProduceAsync takes the synchronous path and hands off.
         await producer.ProduceAsync(new ProducerMessage<string, string>
         {
-            Topic = topic, Key = "order-key", Value = "warmup", Partition = 0
+            Topic = topic,
+            Key = "order-key",
+            Value = "warmup",
+            Partition = 0
         }, CancellationToken.None);
 
         var accumulator = producer.RecordAccumulator;
@@ -958,19 +998,31 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
             // No BufferMemory left: the record goes to the append worker, which holds it.
             var first = producer.ProduceAsync(new ProducerMessage<string, string>
             {
-                Topic = topic, Key = "order-key", Value = "first", Partition = 0
+                Topic = topic,
+                Key = "order-key",
+                Value = "first",
+                Partition = 0
             }, CancellationToken.None);
             await workerEntered.Task.WaitAsync(TimeSpan.FromSeconds(30));
 
             var secondMessage = new ProducerMessage<string, string>
             {
-                Topic = topic, Key = "order-key", Value = "second", Partition = 0
+                Topic = topic,
+                Key = "order-key",
+                Value = "second",
+                Partition = 0
             };
             var second = useCallback
                 ? producer.FireAsync(secondMessage, (_, ex) =>
                 {
-                    if (ex is null) callbackDone.TrySetResult();
-                    else callbackDone.TrySetException(ex);
+                    if (ex is null)
+                    {
+                        callbackDone.TrySetResult();
+                    }
+                    else
+                    {
+                        callbackDone.TrySetException(ex);
+                    }
                 })
                 : producer.FireAsync(secondMessage);
 
@@ -984,14 +1036,18 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
             await first.AsTask().WaitAsync(TimeSpan.FromSeconds(30));
             await producer.FlushWithTimeoutAsync();
             if (useCallback)
+            {
                 await callbackDone.Task.WaitAsync(TimeSpan.FromSeconds(30));
+            }
         }
         finally
         {
             releaseWorker.Set();
             accumulator.BeforeAppendWorkerAppendForTest = null;
             if (reservationHeld)
+            {
                 accumulator.ReleaseMemory(bufferMemory);
+            }
         }
 
         await using var consumer = await Kafka.CreateConsumer<string, string>()
@@ -1006,7 +1062,10 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))
         {
             values.Add(msg.Value);
-            if (values.Count >= 3) break;
+            if (values.Count >= 3)
+            {
+                break;
+            }
         }
 
         await Assert.That(values).Count().IsEqualTo(3);
@@ -1031,7 +1090,6 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-sustained")
             .WithAcks(Acks.All)
-
             .WithBatchSize(512)
             .WithLinger(TimeSpan.FromMilliseconds(2))
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
@@ -1072,7 +1130,10 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
         consumer.Assign(Enumerable.Range(0, 4).Select(p => new TopicPartition(topic, p)).ToArray());
 
         var messagesByPartition = new Dictionary<int, List<ConsumeResult<string, string>>>();
-        for (var p = 0; p < 4; p++) messagesByPartition[p] = [];
+        for (var p = 0; p < 4; p++)
+        {
+            messagesByPartition[p] = [];
+        }
 
         var totalExpected = waves * messagesPerWave + 4; // +4 for warmup (one per partition)
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(60));
@@ -1081,7 +1142,10 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
         {
             messagesByPartition[msg.Partition].Add(msg);
             var total = messagesByPartition.Values.Sum(l => l.Count);
-            if (total >= totalExpected) break;
+            if (total >= totalExpected)
+            {
+                break;
+            }
         }
 
         for (var p = 0; p < 4; p++)
@@ -1126,7 +1190,6 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-pool-recycling")
             .WithAcks(Acks.All)
-
             .WithBatchSize(256) // Tiny: forces very frequent batch rotation
             .WithLinger(TimeSpan.FromMilliseconds(1)) // Aggressive linger timer
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
@@ -1154,7 +1217,9 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
             // Small delay between waves to give the linger timer a chance to fire
             // and complete batches on a different thread — this is the race window
             if (wave % 5 == 4)
+            {
                 await Task.Delay(5);
+            }
         }
 
         await producer.FlushWithTimeoutAsync();
@@ -1167,7 +1232,10 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
         consumer.Assign(Enumerable.Range(0, 8).Select(p => new TopicPartition(topic, p)).ToArray());
 
         var messagesByPartition = new Dictionary<int, List<ConsumeResult<string, string>>>();
-        for (var p = 0; p < 8; p++) messagesByPartition[p] = [];
+        for (var p = 0; p < 8; p++)
+        {
+            messagesByPartition[p] = [];
+        }
 
         var totalExpected = waves * messagesPerWave + 8; // +8 for warmup (one per partition)
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(120));
@@ -1176,7 +1244,10 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
         {
             messagesByPartition[msg.Partition].Add(msg);
             var total = messagesByPartition.Values.Sum(l => l.Count);
-            if (total >= totalExpected) break;
+            if (total >= totalExpected)
+            {
+                break;
+            }
         }
 
         for (var p = 0; p < 8; p++)
@@ -1212,7 +1283,6 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-linger-recycling")
             .WithAcks(Acks.All)
-
             .WithBatchSize(65536) // Large: batches never fill up from size alone
             .WithLinger(TimeSpan.FromMilliseconds(1)) // Very short: linger timer always fires first
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
@@ -1252,7 +1322,10 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
         consumer.Assign(Enumerable.Range(0, 4).Select(p => new TopicPartition(topic, p)).ToArray());
 
         var messagesByPartition = new Dictionary<int, List<ConsumeResult<string, string>>>();
-        for (var p = 0; p < 4; p++) messagesByPartition[p] = [];
+        for (var p = 0; p < 4; p++)
+        {
+            messagesByPartition[p] = [];
+        }
 
         var totalExpected = 4 * messagesPerPartition + 4; // +4 for warmup (one per partition)
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(60));
@@ -1261,7 +1334,10 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
         {
             messagesByPartition[msg.Partition].Add(msg);
             var total = messagesByPartition.Values.Sum(l => l.Count);
-            if (total >= totalExpected) break;
+            if (total >= totalExpected)
+            {
+                break;
+            }
         }
 
         for (var p = 0; p < 4; p++)
@@ -1293,7 +1369,6 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-many-partitions-rotation")
             .WithAcks(Acks.All)
-
             .WithBatchSize(256)
             .WithLinger(TimeSpan.FromMilliseconds(1))
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
@@ -1316,7 +1391,9 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
 
             // Periodic small delay to trigger linger timer between batches
             if (i % 20 == 19)
+            {
                 await Task.Delay(3);
+            }
         }
 
         await producer.FlushWithTimeoutAsync();
@@ -1329,7 +1406,10 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
         consumer.Assign(Enumerable.Range(0, 16).Select(p => new TopicPartition(topic, p)).ToArray());
 
         var messagesByPartition = new Dictionary<int, List<ConsumeResult<string, string>>>();
-        for (var p = 0; p < 16; p++) messagesByPartition[p] = [];
+        for (var p = 0; p < 16; p++)
+        {
+            messagesByPartition[p] = [];
+        }
 
         var totalExpected = 16 * messagesPerPartition + 16; // +16 for warmup (one per partition)
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(120));
@@ -1338,7 +1418,10 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
         {
             messagesByPartition[msg.Partition].Add(msg);
             var total = messagesByPartition.Values.Sum(l => l.Count);
-            if (total >= totalExpected) break;
+            if (total >= totalExpected)
+            {
+                break;
+            }
         }
 
         for (var p = 0; p < 16; p++)

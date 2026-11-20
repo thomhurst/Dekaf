@@ -60,7 +60,9 @@ public class RecordAccumulatorConcurrencyTests
                         completion);
 
                     if (result)
+                    {
                         Interlocked.Increment(ref successCount);
+                    }
                 }
             }).ToArray();
 
@@ -113,7 +115,9 @@ public class RecordAccumulatorConcurrencyTests
                         completion);
 
                     if (result)
+                    {
                         Interlocked.Increment(ref successCount);
+                    }
                 }
             }).ToArray();
 
@@ -162,7 +166,9 @@ public class RecordAccumulatorConcurrencyTests
                         completion);
 
                     if (appended)
+                    {
                         Interlocked.Increment(ref successCount);
+                    }
                 }
             })).ToArray();
 
@@ -400,7 +406,9 @@ public class RecordAccumulatorConcurrencyTests
                         completion);
 
                     if (result)
+                    {
                         Interlocked.Increment(ref successCount);
+                    }
                 }
             }).ToArray();
 
@@ -463,9 +471,13 @@ public class RecordAccumulatorConcurrencyTests
                             completion);
 
                         if (result)
+                        {
                             Interlocked.Increment(ref successCount);
+                        }
                         else
+                        {
                             Interlocked.Increment(ref failedCount);
+                        }
                     }
                     catch (ObjectDisposedException)
                     {

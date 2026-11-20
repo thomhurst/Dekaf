@@ -72,9 +72,13 @@ public sealed class OutboxOrderingIntegrationTests(KafkaTestContainer kafka) : K
             await Assert.That(record.Key.SequenceEqual(new byte[] { 1 })).IsTrue();
             observed.Add(rowId);
             if (seen.Add(messageId))
+            {
                 deduplicated.Add(rowId);
+            }
             if (record.Offset + 1 == endOffset)
+            {
                 break;
+            }
         }
 
         // This is the documented batched publisher contract: prefix accounting preserves

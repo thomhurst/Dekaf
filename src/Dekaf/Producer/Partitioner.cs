@@ -64,7 +64,9 @@ internal sealed class StickyPartitionTracker
         string? clientRack = null)
     {
         if (availabilityTimeoutMs < 0)
+        {
             throw new ArgumentOutOfRangeException(nameof(availabilityTimeoutMs), "Availability timeout cannot be negative");
+        }
 
         _adaptivePartitioning = adaptivePartitioning;
         _availabilityTimeoutMs = availabilityTimeoutMs;
@@ -96,12 +98,16 @@ internal sealed class StickyPartitionTracker
             var packedState = Volatile.Read(ref state.PackedState);
             var partition = UnpackPartition(packedState);
             if (partition >= 0 && partition < partitionCount)
+            {
                 return partition;
+            }
 
             var nextPartition = NextPartition(topic, partitionCount, currentPartition: null);
             var nextState = PackState(nextPartition, producedBytes: 0);
             if (Interlocked.CompareExchange(ref state.PackedState, nextState, packedState) == packedState)
+            {
                 return nextPartition;
+            }
         }
     }
 
@@ -116,28 +122,36 @@ internal sealed class StickyPartitionTracker
             var nextPartition = NextPartition(topic, partitionCount, partition);
             var nextState = PackState(nextPartition, producedBytes: 0);
             if (Interlocked.CompareExchange(ref state.PackedState, nextState, packedState) == packedState)
+            {
                 return;
+            }
         }
     }
 
     public void OnRecordAppended(string topic, int partition, int bytes, int partitionCount, int stickyBatchSize)
     {
         if (bytes <= 0 || partitionCount <= 1)
+        {
             return;
+        }
 
         var state = GetOrCreateStateWithPartition(topic, partition);
         while (true)
         {
             var packedState = Volatile.Read(ref state.PackedState);
             if (UnpackPartition(packedState) != partition)
+            {
                 return;
+            }
 
             var producedBytes = SaturatingAdd(UnpackProducedBytes(packedState), bytes);
             if (producedBytes < stickyBatchSize)
             {
                 var updatedState = PackState(partition, producedBytes);
                 if (Interlocked.CompareExchange(ref state.PackedState, updatedState, packedState) == packedState)
+                {
                     return;
+                }
 
                 continue;
             }
@@ -145,7 +159,9 @@ internal sealed class StickyPartitionTracker
             var nextPartition = NextPartition(topic, partitionCount, partition);
             var nextState = PackState(nextPartition, producedBytes: 0);
             if (Interlocked.CompareExchange(ref state.PackedState, nextState, packedState) == packedState)
+            {
                 return;
+            }
         }
     }
 
@@ -179,7 +195,9 @@ internal sealed class StickyPartitionTracker
         // Candidate lists avoid the current partition themselves, so a single candidate stays selected.
         var candidates = useLocalSequential ? localPartitions : availablePartitions;
         if (candidates.Length > 0)
+        {
             return NextLocalSequentialPartition(candidates, currentPartition);
+        }
 
         var nextPartition = adaptivePartition ?? NextSequentialPartition(partitionCount);
         return partitionCount > 1 && currentPartition == nextPartition
@@ -198,7 +216,9 @@ internal sealed class StickyPartitionTracker
         useLocalSequential = localPartitions.Length > 0;
         var partitionQueueBytes = _partitionQueueBytes;
         if (!_adaptivePartitioning || partitionQueueBytes is null || partitionCount < 2)
+        {
             return null;
+        }
 
         if (partitionCount <= 64)
         {
@@ -331,23 +351,31 @@ internal sealed class StickyPartitionTracker
             ? localPartitions.Length
             : availablePartitions.Length > 0 ? availablePartitions.Length : partitionCount;
         if (allEqual && eligibleCount == candidateCount)
+        {
             return null;
+        }
 
         var maxWeightSource = maxQueueSize == long.MaxValue ? long.MaxValue : maxQueueSize + 1;
         var totalWeight = 0L;
         if (useLocalSequential)
         {
             for (var i = 0; i < localPartitions.Length; i++)
+            {
                 AddAdaptiveWeight(localPartitions[i], queueSizes, maxWeightSource, ref totalWeight);
+            }
         }
         else
         {
             for (var partition = 0; partition < partitionCount; partition++)
+            {
                 AddAdaptiveWeight(partition, queueSizes, maxWeightSource, ref totalWeight);
+            }
         }
 
         if (totalWeight <= 0)
+        {
             return null;
+        }
 
         var target = PositiveRandomLong(totalWeight);
         var cumulative = 0L;
@@ -358,7 +386,9 @@ internal sealed class StickyPartitionTracker
                 var selected = TrySelectAdaptivePartition(
                     localPartitions[i], queueSizes, maxWeightSource, target, ref cumulative);
                 if (selected is not null)
+                {
                     return selected;
+                }
             }
         }
         else
@@ -368,7 +398,9 @@ internal sealed class StickyPartitionTracker
                 var selected = TrySelectAdaptivePartition(
                     partition, queueSizes, maxWeightSource, target, ref cumulative);
                 if (selected is not null)
+                {
                     return selected;
+                }
             }
         }
 
@@ -424,9 +456,13 @@ internal sealed class StickyPartitionTracker
         eligibleCount++;
         firstQueueSize ??= queueSize;
         if (queueSize != firstQueueSize.Value)
+        {
             allEqual = false;
+        }
         if (queueSize > maxQueueSize)
+        {
             maxQueueSize = queueSize;
+        }
     }
 
     private static void AddAdaptiveWeight(
@@ -437,7 +473,9 @@ internal sealed class StickyPartitionTracker
     {
         var queueSize = queueSizes[partition];
         if (queueSize < 0)
+        {
             return;
+        }
 
         var weight = Math.Max(1L, maxWeightSource - queueSize);
         totalWeight = SaturatingAdd(totalWeight, weight);
@@ -452,7 +490,9 @@ internal sealed class StickyPartitionTracker
     {
         var queueSize = queueSizes[partition];
         if (queueSize < 0)
+        {
             return null;
+        }
 
         var weight = Math.Max(1L, maxWeightSource - queueSize);
         cumulative = SaturatingAdd(cumulative, weight);
@@ -488,9 +528,13 @@ internal sealed class StickyPartitionTracker
         eligibleCount++;
         firstQueueSize ??= queueSize;
         if (queueSize != firstQueueSize.Value)
+        {
             allEqual = false;
+        }
         if (queueSize > maxQueueSize)
+        {
             maxQueueSize = queueSize;
+        }
     }
 
     private int NextLocalSequentialPartition(int[] localPartitions, int? currentPartition)
@@ -520,7 +564,9 @@ internal sealed class StickyPartitionTracker
     private StickyPartitionState GetOrCreateAssignedState(string topic, int partitionCount)
     {
         if (TryGetCachedState(topic) is { } cached)
+        {
             return cached;
+        }
 
         if (_partitions.TryGetValue(topic, out var state))
         {
@@ -537,7 +583,9 @@ internal sealed class StickyPartitionTracker
     private StickyPartitionState GetOrCreateStateWithPartition(string topic, int initialPartition)
     {
         if (TryGetCachedState(topic) is { } cached)
+        {
             return cached;
+        }
 
         if (_partitions.TryGetValue(topic, out var state))
         {
@@ -572,7 +620,9 @@ internal sealed class StickyPartitionTracker
     private bool IsUnavailable(string topic, int partition, long queueSize)
     {
         if (_availabilityTimeoutMs <= 0)
+        {
             return false;
+        }
 
         var key = (topic, partition);
         if (queueSize <= 0)
@@ -648,7 +698,9 @@ public sealed class DefaultPartitioner : IPartitioner, IBatchCompletionAwarePart
         string? clientRack = null)
     {
         if (stickyBatchSize < 1)
+        {
             throw new ArgumentOutOfRangeException(nameof(stickyBatchSize), "Sticky batch size must be at least 1 byte");
+        }
 
         _stickyBatchSize = stickyBatchSize;
         _ignoreKeys = ignoreKeys;
@@ -662,7 +714,9 @@ public sealed class DefaultPartitioner : IPartitioner, IBatchCompletionAwarePart
     public int Partition(string topic, ReadOnlySpan<byte> key, bool keyIsNull, int partitionCount)
     {
         if (partitionCount == 1)
+        {
             return 0;
+        }
 
         if (UsesStickyPartition(key, keyIsNull))
         {
@@ -735,7 +789,9 @@ public sealed class StickyPartitioner : IPartitioner, IBatchCompletionAwareParti
         string? clientRack = null)
     {
         if (stickyBatchSize < 1)
+        {
             throw new ArgumentOutOfRangeException(nameof(stickyBatchSize), "Sticky batch size must be at least 1 byte");
+        }
 
         _stickyBatchSize = stickyBatchSize;
         _ignoreKeys = ignoreKeys;
@@ -749,7 +805,9 @@ public sealed class StickyPartitioner : IPartitioner, IBatchCompletionAwareParti
     public int Partition(string topic, ReadOnlySpan<byte> key, bool keyIsNull, int partitionCount)
     {
         if (partitionCount == 1)
+        {
             return 0;
+        }
 
         if (UsesStickyPartition(key, keyIsNull))
         {
@@ -806,7 +864,9 @@ public sealed class RoundRobinPartitioner : IPartitioner
     public int Partition(string topic, ReadOnlySpan<byte> key, bool keyIsNull, int partitionCount)
     {
         if (partitionCount == 1)
+        {
             return 0;
+        }
 
         return (int)(++_counter % (uint)partitionCount);
     }
@@ -834,7 +894,9 @@ public sealed class ConsistentPartitioner : IPartitioner
     public int Partition(string topic, ReadOnlySpan<byte> key, bool keyIsNull, int partitionCount)
     {
         if (partitionCount == 1)
+        {
             return 0;
+        }
 
         return LibrdkafkaCrc32.Partition(key, partitionCount);
     }
@@ -850,7 +912,9 @@ public sealed class ConsistentRandomPartitioner : IPartitioner
     public int Partition(string topic, ReadOnlySpan<byte> key, bool keyIsNull, int partitionCount)
     {
         if (partitionCount == 1)
+        {
             return 0;
+        }
 
         return key.Length == 0
             ? _randomPartitionSelector.NextPartition(partitionCount)
@@ -867,7 +931,9 @@ public sealed class Murmur2Partitioner : IPartitioner
     public int Partition(string topic, ReadOnlySpan<byte> key, bool keyIsNull, int partitionCount)
     {
         if (partitionCount == 1)
+        {
             return 0;
+        }
 
         return Murmur2.Partition(key, partitionCount);
     }
@@ -883,7 +949,9 @@ public sealed class Murmur2RandomPartitioner : IPartitioner
     public int Partition(string topic, ReadOnlySpan<byte> key, bool keyIsNull, int partitionCount)
     {
         if (partitionCount == 1)
+        {
             return 0;
+        }
 
         return keyIsNull
             ? _randomPartitionSelector.NextPartition(partitionCount)
@@ -900,7 +968,9 @@ public sealed class Fnv1APartitioner : IPartitioner
     public int Partition(string topic, ReadOnlySpan<byte> key, bool keyIsNull, int partitionCount)
     {
         if (partitionCount == 1)
+        {
             return 0;
+        }
 
         return Fnv1A.Partition(key, partitionCount);
     }
@@ -916,7 +986,9 @@ public sealed class Fnv1ARandomPartitioner : IPartitioner
     public int Partition(string topic, ReadOnlySpan<byte> key, bool keyIsNull, int partitionCount)
     {
         if (partitionCount == 1)
+        {
             return 0;
+        }
 
         return keyIsNull
             ? _randomPartitionSelector.NextPartition(partitionCount)
@@ -940,7 +1012,9 @@ internal sealed class RandomPartitionSelector
     public int NextPartition(int partitionCount)
     {
         if (partitionCount == 1)
+        {
             return 0;
+        }
 
         var value = unchecked((uint)Interlocked.Add(ref _state, GoldenRatioIncrement));
         value ^= value >> 16;

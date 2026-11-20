@@ -1,11 +1,15 @@
+using System.Diagnostics.CodeAnalysis;
+using System.Globalization;
+using System.Net.Security;
+using System.Xml;
 using Dekaf.Admin;
 using Dekaf.Consumer;
 using Dekaf.Consumer.DeadLetter;
 using Dekaf.Metadata;
 using Dekaf.Networking;
+using Dekaf.Producer;
 using Dekaf.Protocol.Messages;
 using Dekaf.Protocol.Records;
-using Dekaf.Producer;
 using Dekaf.Security;
 using Dekaf.Security.Sasl;
 using Dekaf.ShareConsumer;
@@ -15,10 +19,6 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
-using System.Diagnostics.CodeAnalysis;
-using System.Globalization;
-using System.Net.Security;
-using System.Xml;
 
 namespace Dekaf.Extensions.DependencyInjection;
 
@@ -801,9 +801,13 @@ public sealed class DekafBuilder
         }
 
         if (serviceKey is null)
+        {
             _services.AddSingleton<IAdminClient>(Create);
+        }
         else
+        {
             _services.AddKeyedSingleton<IAdminClient>(serviceKey, (serviceProvider, _) => Create(serviceProvider));
+        }
 
         return this;
     }
@@ -1094,14 +1098,18 @@ internal static partial class DekafOptionsBinding
     {
         builder.WithBootstrapServers(options.BootstrapServers.ToArray());
         if (options.ClientId is not null)
+        {
             builder.WithClientId(options.ClientId);
+        }
         builder.WithAcks(options.Acks);
         builder.WithLinger(TimeSpan.FromMilliseconds(options.LingerMs));
         builder.WithBatchSize(options.BatchSize);
         builder.WithBufferMemory(options.BufferMemory);
         builder.WithBufferMemoryAllocationStrategy(options.BufferMemoryAllocationStrategy);
         if (options.EnableIdempotence || options.IsMaxInFlightRequestsPerConnectionConfigured)
+        {
             builder.WithMaxInFlightRequestsPerConnection(options.MaxInFlightRequestsPerConnection);
+        }
         builder.WithRetries(options.Retries);
         builder.WithRetryBackoff(TimeSpan.FromMilliseconds(options.RetryBackoffMs));
         builder.WithRetryBackoffMax(TimeSpan.FromMilliseconds(options.RetryBackoffMaxMs));
@@ -1110,9 +1118,13 @@ internal static partial class DekafOptionsBinding
         builder.WithDeliveryTimeout(TimeSpan.FromMilliseconds(options.DeliveryTimeoutMs));
         builder.WithRequestTimeout(TimeSpan.FromMilliseconds(options.RequestTimeoutMs));
         if (options.IsReconnectBackoffMsConfigured)
+        {
             builder.WithReconnectBackoff(TimeSpan.FromMilliseconds(options.ReconnectBackoffMs));
+        }
         if (options.IsReconnectBackoffMaxMsConfigured)
+        {
             builder.WithReconnectBackoffMax(TimeSpan.FromMilliseconds(options.ReconnectBackoffMaxMs));
+        }
         builder.WithConnectionsMaxIdle(ToTimeout(options.ConnectionsMaxIdleMs));
         ApplySocketConnectionOptions(
             options.ConnectionTimeout,
@@ -1124,23 +1136,35 @@ internal static partial class DekafOptionsBinding
             enabled => builder.WithTcpKeepAlive(enabled),
             (time, interval, retryCount) => builder.WithTcpKeepAlive(time, interval, retryCount));
         if (options.IsConnectionTimeoutMaxConfigured)
+        {
             builder.WithConnectionTimeoutMax(options.ConnectionTimeoutMax);
+        }
         builder.WithIdempotence(options.EnableIdempotence);
         builder.WithConnectionsPerBroker(options.ConnectionsPerBroker);
         if (options.TransactionalId is not null)
+        {
             builder.WithTransactionalId(options.TransactionalId);
+        }
         builder.WithTransactionTimeout(TimeSpan.FromMilliseconds(options.TransactionTimeoutMs));
         builder.WithCloseTimeout(TimeSpan.FromMilliseconds(options.CloseTimeoutMs));
         builder.WithMaxRequestSize(options.MaxRequestSize);
         builder.UseCompression(options.CompressionType);
         if (options.CompressionLevel is { } compressionLevel)
+        {
             builder.WithCompressionLevel(compressionLevel);
+        }
         if (options.CustomPartitioner is not null)
+        {
             builder.WithCustomPartitioner(options.CustomPartitioner);
+        }
         else
+        {
             builder.WithPartitioner(options.Partitioner);
+        }
         if (options.ClientRack is not null)
+        {
             builder.WithClientRack(options.ClientRack);
+        }
         builder.WithRackAwarePartitioning(options.EnableRackAwarePartitioning);
         ApplyTls(options.UseTls, options.TlsConfig, () => builder.UseTls(), tlsConfig => builder.UseTls(tlsConfig));
         ApplyRemoteCertificateValidationCallback(
@@ -1171,13 +1195,21 @@ internal static partial class DekafOptionsBinding
         builder.WithClientDnsLookup(options.ClientDnsLookup);
         builder.WithBootstrapResolveTimeout(TimeSpan.FromMilliseconds(options.BootstrapResolveTimeoutMs));
         if (options.EnableAdaptiveConnections)
+        {
             builder.WithAdaptiveConnections(options.MaxConnectionsPerBroker);
+        }
         else
+        {
             builder.WithoutAdaptiveConnections();
+        }
         if (options.RetryPolicy is not null)
+        {
             builder.WithRetryPolicy(options.RetryPolicy);
+        }
         foreach (var metric in options.ApplicationMetrics)
+        {
             builder.RegisterMetricForSubscription(metric);
+        }
         // Internal snapshots can carry interceptors when rebinding options produced by a builder.
         AddProducerInterceptors(options.Interceptors, builder);
     }
@@ -1188,23 +1220,37 @@ internal static partial class DekafOptionsBinding
     {
         builder.WithBootstrapServers(options.BootstrapServers.ToArray());
         if (options.ClientId is not null)
+        {
             builder.WithClientId(options.ClientId);
+        }
         if (options.GroupId is not null)
+        {
             builder.WithGroupId(options.GroupId);
+        }
         if (options.GroupInstanceId is not null)
+        {
             builder.WithGroupInstanceId(options.GroupInstanceId);
+        }
         if (options.GroupRemoteAssignor is not null)
+        {
             builder.WithGroupRemoteAssignor(options.GroupRemoteAssignor);
+        }
         if (options.ClientRack is not null)
+        {
             builder.WithClientRack(options.ClientRack);
+        }
         builder.WithOffsetCommitMode(options.OffsetCommitMode);
         builder.WithAutoCommitInterval(TimeSpan.FromMilliseconds(options.AutoCommitIntervalMs));
         builder.WithAutoOffsetStore(options.EnableAutoOffsetStore);
         builder.WithOffsetStoreTiming(options.OffsetStoreTiming);
         if (options.AutoOffsetReset == AutoOffsetReset.ByDuration)
+        {
             builder.WithAutoOffsetResetByDuration(options.AutoOffsetResetDuration ?? TimeSpan.Zero);
+        }
         else
+        {
             builder.WithAutoOffsetReset(options.AutoOffsetReset);
+        }
         if (options.AutoOffsetResetNewPartitions == AutoOffsetReset.ByDuration)
         {
             var duration = options.AutoOffsetResetNewPartitionsDuration
@@ -1214,7 +1260,9 @@ internal static partial class DekafOptionsBinding
             builder.WithAutoOffsetResetNewPartitionsByDuration(duration);
         }
         else if (options.AutoOffsetResetNewPartitions is { } newPartitionPolicy)
+        {
             builder.WithAutoOffsetResetNewPartitions(newPartitionPolicy);
+        }
         builder.WithFetchMinBytes(options.FetchMinBytes);
         builder.WithFetchMaxBytes(options.FetchMaxBytes);
         builder.WithMaxPartitionFetchBytes(options.MaxPartitionFetchBytes);
@@ -1230,9 +1278,13 @@ internal static partial class DekafOptionsBinding
         builder.WithRetryBackoff(TimeSpan.FromMilliseconds(options.RetryBackoffMs));
         builder.WithRetryBackoffMax(TimeSpan.FromMilliseconds(options.RetryBackoffMaxMs));
         if (options.IsReconnectBackoffMsConfigured)
+        {
             builder.WithReconnectBackoff(TimeSpan.FromMilliseconds(options.ReconnectBackoffMs));
+        }
         if (options.IsReconnectBackoffMaxMsConfigured)
+        {
             builder.WithReconnectBackoffMax(TimeSpan.FromMilliseconds(options.ReconnectBackoffMaxMs));
+        }
         builder.WithConnectionsMaxIdle(ToTimeout(options.ConnectionsMaxIdleMs));
         ApplySocketConnectionOptions(
             options.ConnectionTimeout,
@@ -1244,7 +1296,9 @@ internal static partial class DekafOptionsBinding
             enabled => builder.WithTcpKeepAlive(enabled),
             (time, interval, retryCount) => builder.WithTcpKeepAlive(time, interval, retryCount));
         if (options.IsConnectionTimeoutMaxConfigured)
+        {
             builder.WithConnectionTimeoutMax(options.ConnectionTimeoutMax);
+        }
         builder.WithCheckCrcs(options.CheckCrcs);
         ApplyTls(options.UseTls, options.TlsConfig, () => builder.UseTls(), tlsConfig => builder.UseTls(tlsConfig));
         ApplyRemoteCertificateValidationCallback(
@@ -1264,9 +1318,13 @@ internal static partial class DekafOptionsBinding
             builder.WithOAuthBearer);
         builder.WithSaslScramMaxIterations(options.SaslScramMaxIterations);
         if (options.ConsumerAwareRebalanceListener is not null)
+        {
             builder.WithRebalanceListener(options.ConsumerAwareRebalanceListener);
+        }
         else if (options.RebalanceListener is not null)
+        {
             builder.WithRebalanceListener(options.RebalanceListener);
+        }
         builder.WithPartitionEof(options.EnablePartitionEof);
         builder.WithSocketSendBufferBytes(options.SocketSendBufferBytes);
         builder.WithSocketReceiveBufferBytes(options.SocketReceiveBufferBytes);
@@ -1282,15 +1340,25 @@ internal static partial class DekafOptionsBinding
         builder.WithPrefetchPipelineDepth(options.PrefetchPipelineDepth);
         builder.WithConnectionsPerBroker(options.ConnectionsPerBroker);
         if (options.EnableAdaptiveConnections)
+        {
             builder.WithAdaptiveConnections(options.MaxConnectionsPerBroker);
+        }
         else
+        {
             builder.WithoutAdaptiveConnections();
+        }
         if (options.EnableAdaptiveFetchSizing)
+        {
             builder.WithAdaptiveFetchSizing(options.AdaptiveFetchSizingOptions);
+        }
         if (options.RetryPolicy is not null)
+        {
             builder.WithRetryPolicy(options.RetryPolicy);
+        }
         foreach (var metric in options.ApplicationMetrics)
+        {
             builder.RegisterMetricForSubscription(metric);
+        }
         // Internal snapshots can carry interceptors when rebinding options produced by a builder.
         AddConsumerInterceptors(options.Interceptors, builder);
     }
@@ -1299,18 +1367,28 @@ internal static partial class DekafOptionsBinding
     {
         // Servers and controllers are mutually exclusive; only apply the lists that are set.
         if (options.BootstrapServers.Count > 0 || options.BootstrapControllers.Count == 0)
+        {
             builder.WithBootstrapServers(options.BootstrapServers.ToArray());
+        }
         if (options.BootstrapControllers.Count > 0)
+        {
             builder.WithBootstrapControllers(options.BootstrapControllers.ToArray());
+        }
         if (options.ClientId is not null)
+        {
             builder.WithClientId(options.ClientId);
+        }
         builder.WithRequestTimeout(TimeSpan.FromMilliseconds(options.RequestTimeoutMs));
         builder.WithRetryBackoff(TimeSpan.FromMilliseconds(options.RetryBackoffMs));
         builder.WithRetryBackoffMax(TimeSpan.FromMilliseconds(options.RetryBackoffMaxMs));
         if (options.IsReconnectBackoffMsConfigured)
+        {
             builder.WithReconnectBackoff(TimeSpan.FromMilliseconds(options.ReconnectBackoffMs));
+        }
         if (options.IsReconnectBackoffMaxMsConfigured)
+        {
             builder.WithReconnectBackoffMax(TimeSpan.FromMilliseconds(options.ReconnectBackoffMaxMs));
+        }
         builder.WithConnectionsMaxIdle(ToTimeout(options.ConnectionsMaxIdleMs));
         ApplySocketConnectionOptions(
             options.ConnectionTimeout,
@@ -1322,7 +1400,9 @@ internal static partial class DekafOptionsBinding
             enabled => builder.WithTcpKeepAlive(enabled),
             (time, interval, retryCount) => builder.WithTcpKeepAlive(time, interval, retryCount));
         if (options.IsConnectionTimeoutMaxConfigured)
+        {
             builder.WithConnectionTimeoutMax(options.ConnectionTimeoutMax);
+        }
         ApplyTls(options.UseTls, options.TlsConfig, () => builder.UseTls(), tlsConfig => builder.UseTls(tlsConfig));
         ApplyRemoteCertificateValidationCallback(
             options.RemoteCertificateValidationCallback,
@@ -1355,7 +1435,9 @@ internal static partial class DekafOptionsBinding
         builder.WithClientDnsLookup(options.ClientDnsLookup);
         builder.WithBootstrapResolveTimeout(TimeSpan.FromMilliseconds(options.BootstrapResolveTimeoutMs));
         foreach (var metric in options.ApplicationMetrics)
+        {
             builder.RegisterMetricForSubscription(metric);
+        }
     }
 
     private static void ApplyTls<TBuilder>(
@@ -1389,9 +1471,13 @@ internal static partial class DekafOptionsBinding
         withConnectionTimeout(connectionTimeout);
 
         if (enableTcpKeepAlive)
+        {
             withTcpKeepAlive(tcpKeepAliveTime, tcpKeepAliveInterval, tcpKeepAliveRetryCount);
+        }
         else
+        {
             withTcpKeepAliveEnabled(false);
+        }
     }
 
     private static void ApplyRemoteCertificateValidationCallback<TBuilder>(
@@ -1399,7 +1485,9 @@ internal static partial class DekafOptionsBinding
         Func<RemoteCertificateValidationCallback, TBuilder> withRemoteCertificateValidationCallback)
     {
         if (remoteCertificateValidationCallback is not null)
+        {
             withRemoteCertificateValidationCallback(remoteCertificateValidationCallback);
+        }
     }
 
     private static TimeSpan ToTimeout(int milliseconds) =>
@@ -1497,95 +1585,179 @@ internal static class DekafConfigurationBinding
         ProducerBuilder<TKey, TValue> builder)
     {
         if (TryGetBootstrapServers(configuration, out var bootstrapServers))
+        {
             builder.WithBootstrapServers(bootstrapServers);
+        }
         if (TryGetValue<string>(configuration, nameof(ProducerOptions.ClientId), out var clientId))
+        {
             builder.WithClientId(clientId);
+        }
         if (TryGetValue<Acks>(configuration, nameof(ProducerOptions.Acks), out var acks))
+        {
             builder.WithAcks(acks);
+        }
         if (TryGetValue<int>(configuration, nameof(ProducerOptions.LingerMs), out var lingerMs))
+        {
             builder.WithLinger(TimeSpan.FromMilliseconds(lingerMs));
+        }
         if (TryGetValue<int>(configuration, nameof(ProducerOptions.BatchSize), out var batchSize))
+        {
             builder.WithBatchSize(batchSize);
+        }
         if (TryGetValue<ulong>(configuration, nameof(ProducerOptions.BufferMemory), out var bufferMemory))
+        {
             builder.WithBufferMemory(bufferMemory);
+        }
         if (TryGetValue<int>(configuration, nameof(ProducerOptions.MaxInFlightRequestsPerConnection), out var maxInFlight))
+        {
             builder.WithMaxInFlightRequestsPerConnection(maxInFlight);
+        }
         if (TryGetValue<int>(configuration, nameof(ProducerOptions.Retries), out var retries))
+        {
             builder.WithRetries(retries);
+        }
         if (TryGetValue<int>(configuration, nameof(ProducerOptions.RetryBackoffMs), out var retryBackoffMs))
+        {
             builder.WithRetryBackoff(TimeSpan.FromMilliseconds(retryBackoffMs));
+        }
         if (TryGetValue<int>(configuration, nameof(ProducerOptions.RetryBackoffMaxMs), out var retryBackoffMaxMs))
+        {
             builder.WithRetryBackoffMax(TimeSpan.FromMilliseconds(retryBackoffMaxMs));
+        }
         if (TryGetValue<int>(configuration, nameof(ProducerOptions.MaxBlockMs), out var maxBlockMs))
+        {
             builder.WithMaxBlock(TimeSpan.FromMilliseconds(maxBlockMs));
+        }
         if (TryGetValue<int>(configuration, nameof(ProducerOptions.DeliveryLatencyTargetMs), out var deliveryLatencyTargetMs))
+        {
             builder.WithDeliveryLatencyTarget(TimeSpan.FromMilliseconds(deliveryLatencyTargetMs));
+        }
         if (TryGetValue<int>(configuration, nameof(ProducerOptions.DeliveryTimeoutMs), out var deliveryTimeoutMs))
+        {
             builder.WithDeliveryTimeout(TimeSpan.FromMilliseconds(deliveryTimeoutMs));
+        }
         if (TryGetValue<int>(configuration, nameof(ProducerOptions.RequestTimeoutMs), out var requestTimeoutMs))
+        {
             builder.WithRequestTimeout(TimeSpan.FromMilliseconds(requestTimeoutMs));
+        }
         if (TryGetValue<int>(configuration, nameof(ProducerOptions.ReconnectBackoffMs), out var reconnectBackoffMs))
+        {
             builder.WithReconnectBackoff(TimeSpan.FromMilliseconds(reconnectBackoffMs));
+        }
         if (TryGetValue<int>(configuration, nameof(ProducerOptions.ReconnectBackoffMaxMs), out var reconnectBackoffMaxMs))
+        {
             builder.WithReconnectBackoffMax(TimeSpan.FromMilliseconds(reconnectBackoffMaxMs));
+        }
         ApplySocketConnectionOptions(
             configuration,
             builder.WithConnectionTimeout,
             enabled => builder.WithTcpKeepAlive(enabled),
             (time, interval, retryCount) => builder.WithTcpKeepAlive(time, interval, retryCount));
         if (TryGetValue<TimeSpan>(configuration, nameof(ProducerOptions.ConnectionTimeoutMax), out var connectionTimeoutMax))
+        {
             builder.WithConnectionTimeoutMax(connectionTimeoutMax);
+        }
         if (TryGetValue<bool>(configuration, nameof(ProducerOptions.EnableIdempotence), out var enableIdempotence))
+        {
             builder.WithIdempotence(enableIdempotence);
+        }
         if (TryGetValue<int>(configuration, nameof(ProducerOptions.ConnectionsPerBroker), out var connectionsPerBroker))
+        {
             builder.WithConnectionsPerBroker(connectionsPerBroker);
+        }
         if (TryGetValue<string>(configuration, nameof(ProducerOptions.TransactionalId), out var transactionalId))
+        {
             builder.WithTransactionalId(transactionalId);
+        }
         if (TryGetValue<int>(configuration, nameof(ProducerOptions.TransactionTimeoutMs), out var transactionTimeoutMs))
+        {
             builder.WithTransactionTimeout(TimeSpan.FromMilliseconds(transactionTimeoutMs));
+        }
         if (TryGetValue<int>(configuration, nameof(ProducerOptions.CloseTimeoutMs), out var closeTimeoutMs))
+        {
             builder.WithCloseTimeout(TimeSpan.FromMilliseconds(closeTimeoutMs));
+        }
         if (TryGetValue<int>(configuration, nameof(ProducerOptions.MaxRequestSize), out var maxRequestSize))
+        {
             builder.WithMaxRequestSize(maxRequestSize);
+        }
         if (TryGetValue<CompressionType>(configuration, nameof(ProducerOptions.CompressionType), out var compressionType))
+        {
             builder.UseCompression(compressionType);
+        }
         if (TryGetValue<int>(configuration, nameof(ProducerOptions.CompressionLevel), out var compressionLevel))
+        {
             builder.WithCompressionLevel(compressionLevel);
+        }
         if (TryGetValue<PartitionerType>(configuration, nameof(ProducerOptions.Partitioner), out var partitioner))
+        {
             builder.WithPartitioner(partitioner);
+        }
         if (TryGetValue<string>(configuration, nameof(ProducerOptions.ClientRack), out var clientRack))
+        {
             builder.WithClientRack(clientRack);
+        }
         if (TryGetValue<bool>(configuration, nameof(ProducerOptions.EnableRackAwarePartitioning), out var enableRackAwarePartitioning))
+        {
             builder.WithRackAwarePartitioning(enableRackAwarePartitioning);
+        }
         ApplyTls(configuration, () => builder.UseTls(), tlsConfig => builder.UseTls(tlsConfig));
         if (TryReadSasl(configuration, out var mechanism, out var username, out var password, out var gssapi, out var oauth, out var awsMskIam, out var saslScramTokenAuth))
+        {
             builder.WithSaslOptions(mechanism, username, password, gssapi, oauth, awsMskIam, saslScramTokenAuth: saslScramTokenAuth);
+        }
         if (TryGetValue<int>(configuration, nameof(ProducerOptions.SaslScramMaxIterations), out var maxScramIterations))
+        {
             builder.WithSaslScramMaxIterations(maxScramIterations);
+        }
         if (TryGetValue<int>(configuration, nameof(ProducerOptions.SocketSendBufferBytes), out var sendBuffer))
+        {
             builder.WithSocketSendBufferBytes(sendBuffer);
+        }
         if (TryGetValue<int>(configuration, nameof(ProducerOptions.SocketReceiveBufferBytes), out var receiveBuffer))
+        {
             builder.WithSocketReceiveBufferBytes(receiveBuffer);
+        }
         if (TryGetValue<int>(configuration, nameof(ProducerOptions.ValueTaskSourcePoolSize), out var poolSize))
+        {
             builder.WithValueTaskSourcePoolSize(poolSize);
+        }
         if (TryGetValue<int>(configuration, nameof(ProducerOptions.ArenaCapacity), out var arenaCapacity))
+        {
             builder.WithArenaCapacity(arenaCapacity);
+        }
         if (TryGetValue<int>(configuration, nameof(ProducerOptions.InitialBatchRecordCapacity), out var initialBatchRecordCapacity))
+        {
             builder.WithInitialBatchRecordCapacity(initialBatchRecordCapacity);
+        }
         if (TryGetValue<BufferMemoryAllocationStrategy>(configuration, nameof(ProducerOptions.BufferMemoryAllocationStrategy), out var allocationStrategy))
+        {
             builder.WithBufferMemoryAllocationStrategy(allocationStrategy);
+        }
         if (TryGetValue<MetadataRecoveryStrategy>(configuration, nameof(ProducerOptions.MetadataRecoveryStrategy), out var metadataRecoveryStrategy))
+        {
             builder.WithMetadataRecoveryStrategy(metadataRecoveryStrategy);
+        }
         if (TryGetValue<bool>(configuration, nameof(ProducerOptions.MetadataClusterCheckEnabled), out var metadataClusterCheckEnabled))
+        {
             builder.WithMetadataClusterCheck(metadataClusterCheckEnabled);
+        }
         if (TryGetValue<bool>(configuration, nameof(ProducerOptions.AllowAutoCreateTopics), out var allowAutoCreateTopics))
+        {
             builder.WithAllowAutoCreateTopics(allowAutoCreateTopics);
+        }
         if (TryGetValue<int>(configuration, nameof(ProducerOptions.MetadataRecoveryRebootstrapTriggerMs), out var rebootstrapMs))
+        {
             builder.WithMetadataRecoveryRebootstrapTrigger(TimeSpan.FromMilliseconds(rebootstrapMs));
+        }
         if (TryGetValue<ClientDnsLookup>(configuration, nameof(ProducerOptions.ClientDnsLookup), out var clientDnsLookup))
+        {
             builder.WithClientDnsLookup(clientDnsLookup);
+        }
         if (TryGetValue<int>(configuration, nameof(ProducerOptions.BootstrapResolveTimeoutMs), out var bootstrapResolveTimeoutMs))
+        {
             builder.WithBootstrapResolveTimeout(TimeSpan.FromMilliseconds(bootstrapResolveTimeoutMs));
+        }
         ApplyAdaptiveConnections(
             configuration,
             nameof(ProducerOptions.EnableAdaptiveConnections),
@@ -1599,23 +1771,41 @@ internal static class DekafConfigurationBinding
         ConsumerBuilder<TKey, TValue> builder)
     {
         if (TryGetBootstrapServers(configuration, out var bootstrapServers))
+        {
             builder.WithBootstrapServers(bootstrapServers);
+        }
         if (TryGetValue<string>(configuration, nameof(ConsumerOptions.ClientId), out var clientId))
+        {
             builder.WithClientId(clientId);
+        }
         if (TryGetValue<string>(configuration, nameof(ConsumerOptions.GroupId), out var groupId))
+        {
             builder.WithGroupId(groupId);
+        }
         if (TryGetValue<string>(configuration, nameof(ConsumerOptions.GroupInstanceId), out var groupInstanceId))
+        {
             builder.WithGroupInstanceId(groupInstanceId);
+        }
         if (TryGetValue<string>(configuration, nameof(ConsumerOptions.GroupRemoteAssignor), out var groupRemoteAssignor))
+        {
             builder.WithGroupRemoteAssignor(groupRemoteAssignor);
+        }
         if (TryGetValue<OffsetCommitMode>(configuration, nameof(ConsumerOptions.OffsetCommitMode), out var offsetCommitMode))
+        {
             builder.WithOffsetCommitMode(offsetCommitMode);
+        }
         if (TryGetValue<int>(configuration, nameof(ConsumerOptions.AutoCommitIntervalMs), out var autoCommitIntervalMs))
+        {
             builder.WithAutoCommitInterval(TimeSpan.FromMilliseconds(autoCommitIntervalMs));
+        }
         if (TryGetValue<bool>(configuration, nameof(ConsumerOptions.EnableAutoOffsetStore), out var enableAutoOffsetStore))
+        {
             builder.WithAutoOffsetStore(enableAutoOffsetStore);
+        }
         if (TryGetValue<OffsetStoreTiming>(configuration, nameof(ConsumerOptions.OffsetStoreTiming), out var offsetStoreTiming))
+        {
             builder.WithOffsetStoreTiming(offsetStoreTiming);
+        }
         if (TryGetAutoOffsetReset(
                 configuration,
                 nameof(ConsumerOptions.AutoOffsetReset),
@@ -1649,79 +1839,147 @@ internal static class DekafConfigurationBinding
             }
         }
         if (TryGetValue<int>(configuration, nameof(ConsumerOptions.FetchMinBytes), out var fetchMinBytes))
+        {
             builder.WithFetchMinBytes(fetchMinBytes);
+        }
         if (TryGetValue<int>(configuration, nameof(ConsumerOptions.FetchMaxBytes), out var fetchMaxBytes))
+        {
             builder.WithFetchMaxBytes(fetchMaxBytes);
+        }
         if (TryGetValue<int>(configuration, nameof(ConsumerOptions.MaxPartitionFetchBytes), out var maxPartitionFetchBytes))
+        {
             builder.WithMaxPartitionFetchBytes(maxPartitionFetchBytes);
+        }
         if (TryGetValue<int>(configuration, nameof(ConsumerOptions.FetchMaxWaitMs), out var fetchMaxWaitMs))
+        {
             builder.WithFetchMaxWait(TimeSpan.FromMilliseconds(fetchMaxWaitMs));
+        }
         if (TryGetValue<bool>(configuration, nameof(ConsumerOptions.EnableFetchSessions), out var enableFetchSessions))
+        {
             builder.WithFetchSessions(enableFetchSessions);
+        }
         if (TryGetValue<int>(configuration, nameof(ConsumerOptions.MaxPollRecords), out var maxPollRecords))
+        {
             builder.WithMaxPollRecords(maxPollRecords);
+        }
         if (TryGetValue<int>(configuration, nameof(ConsumerOptions.MaxPollIntervalMs), out var maxPollIntervalMs))
+        {
             builder.WithMaxPollInterval(TimeSpan.FromMilliseconds(maxPollIntervalMs));
+        }
         if (TryGetValue<int>(configuration, nameof(ConsumerOptions.SessionTimeoutMs), out var sessionTimeoutMs))
+        {
             builder.WithSessionTimeout(TimeSpan.FromMilliseconds(sessionTimeoutMs));
+        }
         if (TryGetValue<int>(configuration, nameof(ConsumerOptions.HeartbeatIntervalMs), out var heartbeatIntervalMs))
+        {
             builder.WithHeartbeatInterval(TimeSpan.FromMilliseconds(heartbeatIntervalMs));
+        }
         if (TryGetValue<int>(configuration, nameof(ConsumerOptions.RebalanceTimeoutMs), out var rebalanceTimeoutMs))
+        {
             builder.WithRebalanceTimeout(TimeSpan.FromMilliseconds(rebalanceTimeoutMs));
+        }
         if (TryGetValue<IsolationLevel>(configuration, nameof(ConsumerOptions.IsolationLevel), out var isolationLevel))
+        {
             builder.WithIsolationLevel(isolationLevel);
+        }
         if (TryGetValue<int>(configuration, nameof(ConsumerOptions.RequestTimeoutMs), out var requestTimeoutMs))
+        {
             builder.WithRequestTimeout(TimeSpan.FromMilliseconds(requestTimeoutMs));
+        }
         if (TryGetValue<int>(configuration, nameof(ConsumerOptions.DefaultApiTimeoutMs), out var defaultApiTimeoutMs))
+        {
             builder.WithDefaultApiTimeout(TimeSpan.FromMilliseconds(defaultApiTimeoutMs));
+        }
         if (TryGetValue<int>(configuration, nameof(ConsumerOptions.RetryBackoffMs), out var retryBackoffMs))
+        {
             builder.WithRetryBackoff(TimeSpan.FromMilliseconds(retryBackoffMs));
+        }
         if (TryGetValue<int>(configuration, nameof(ConsumerOptions.RetryBackoffMaxMs), out var retryBackoffMaxMs))
+        {
             builder.WithRetryBackoffMax(TimeSpan.FromMilliseconds(retryBackoffMaxMs));
+        }
         if (TryGetValue<int>(configuration, nameof(ConsumerOptions.ReconnectBackoffMs), out var reconnectBackoffMs))
+        {
             builder.WithReconnectBackoff(TimeSpan.FromMilliseconds(reconnectBackoffMs));
+        }
         if (TryGetValue<int>(configuration, nameof(ConsumerOptions.ReconnectBackoffMaxMs), out var reconnectBackoffMaxMs))
+        {
             builder.WithReconnectBackoffMax(TimeSpan.FromMilliseconds(reconnectBackoffMaxMs));
+        }
         ApplySocketConnectionOptions(
             configuration,
             builder.WithConnectionTimeout,
             enabled => builder.WithTcpKeepAlive(enabled),
             (time, interval, retryCount) => builder.WithTcpKeepAlive(time, interval, retryCount));
         if (TryGetValue<TimeSpan>(configuration, nameof(ConsumerOptions.ConnectionTimeoutMax), out var connectionTimeoutMax))
+        {
             builder.WithConnectionTimeoutMax(connectionTimeoutMax);
+        }
         if (TryGetValue<bool>(configuration, nameof(ConsumerOptions.CheckCrcs), out var checkCrcs))
+        {
             builder.WithCheckCrcs(checkCrcs);
+        }
         ApplyTls(configuration, () => builder.UseTls(), tlsConfig => builder.UseTls(tlsConfig));
         if (TryReadSasl(configuration, out var mechanism, out var username, out var password, out var gssapi, out var oauth, out var awsMskIam, out var saslScramTokenAuth))
+        {
             builder.WithSaslOptions(mechanism, username, password, gssapi, oauth, awsMskIam, saslScramTokenAuth: saslScramTokenAuth);
+        }
         if (TryGetValue<int>(configuration, nameof(ConsumerOptions.SaslScramMaxIterations), out var maxScramIterations))
+        {
             builder.WithSaslScramMaxIterations(maxScramIterations);
+        }
         if (TryGetValue<bool>(configuration, nameof(ConsumerOptions.EnablePartitionEof), out var enablePartitionEof))
+        {
             builder.WithPartitionEof(enablePartitionEof);
+        }
         if (TryGetValue<int>(configuration, nameof(ConsumerOptions.SocketSendBufferBytes), out var sendBuffer))
+        {
             builder.WithSocketSendBufferBytes(sendBuffer);
+        }
         if (TryGetValue<int>(configuration, nameof(ConsumerOptions.SocketReceiveBufferBytes), out var receiveBuffer))
+        {
             builder.WithSocketReceiveBufferBytes(receiveBuffer);
+        }
         if (TryGetValue<int>(configuration, nameof(ConsumerOptions.QueuedMinMessages), out var queuedMinMessages))
+        {
             builder.WithQueuedMinMessages(queuedMinMessages);
+        }
         if (TryGetValue<int>(configuration, nameof(ConsumerOptions.QueuedMaxMessagesKbytes), out var queuedMaxMessagesKbytes))
+        {
             builder.WithQueuedMaxMessagesKbytes(queuedMaxMessagesKbytes);
+        }
         if (TryGetValue<MetadataRecoveryStrategy>(configuration, nameof(ConsumerOptions.MetadataRecoveryStrategy), out var metadataRecoveryStrategy))
+        {
             builder.WithMetadataRecoveryStrategy(metadataRecoveryStrategy);
+        }
         if (TryGetValue<bool>(configuration, nameof(ConsumerOptions.MetadataClusterCheckEnabled), out var metadataClusterCheckEnabled))
+        {
             builder.WithMetadataClusterCheck(metadataClusterCheckEnabled);
+        }
         if (TryGetValue<bool>(configuration, nameof(ConsumerOptions.AllowAutoCreateTopics), out var allowAutoCreateTopics))
+        {
             builder.WithAllowAutoCreateTopics(allowAutoCreateTopics);
+        }
         if (TryGetValue<int>(configuration, nameof(ConsumerOptions.MetadataRecoveryRebootstrapTriggerMs), out var rebootstrapMs))
+        {
             builder.WithMetadataRecoveryRebootstrapTrigger(TimeSpan.FromMilliseconds(rebootstrapMs));
+        }
         if (TryGetValue<ClientDnsLookup>(configuration, nameof(ConsumerOptions.ClientDnsLookup), out var clientDnsLookup))
+        {
             builder.WithClientDnsLookup(clientDnsLookup);
+        }
         if (TryGetValue<int>(configuration, nameof(ConsumerOptions.BootstrapResolveTimeoutMs), out var bootstrapResolveTimeoutMs))
+        {
             builder.WithBootstrapResolveTimeout(TimeSpan.FromMilliseconds(bootstrapResolveTimeoutMs));
+        }
         if (TryGetValue<int>(configuration, nameof(ConsumerOptions.PrefetchPipelineDepth), out var prefetchPipelineDepth))
+        {
             builder.WithPrefetchPipelineDepth(prefetchPipelineDepth);
+        }
         if (TryGetValue<int>(configuration, nameof(ConsumerOptions.ConnectionsPerBroker), out var connectionsPerBroker))
+        {
             builder.WithConnectionsPerBroker(connectionsPerBroker);
+        }
         ApplyAdaptiveConnections(
             configuration,
             nameof(ConsumerOptions.EnableAdaptiveConnections),
@@ -1734,43 +1992,75 @@ internal static class DekafConfigurationBinding
     public static void ApplyAdmin(IConfiguration configuration, AdminClientBuilder builder)
     {
         if (TryGetBootstrapServers(configuration, out var bootstrapServers))
+        {
             builder.WithBootstrapServers(bootstrapServers);
+        }
         if (TryGetServerList(configuration, nameof(AdminClientOptions.BootstrapControllers), out var bootstrapControllers))
+        {
             builder.WithBootstrapControllers(bootstrapControllers);
+        }
         if (TryGetValue<string>(configuration, nameof(AdminClientOptions.ClientId), out var clientId))
+        {
             builder.WithClientId(clientId);
+        }
         if (TryGetValue<int>(configuration, nameof(AdminClientOptions.RequestTimeoutMs), out var requestTimeoutMs))
+        {
             builder.WithRequestTimeout(TimeSpan.FromMilliseconds(requestTimeoutMs));
+        }
         if (TryGetValue<int>(configuration, nameof(AdminClientOptions.RetryBackoffMs), out var retryBackoffMs))
+        {
             builder.WithRetryBackoff(TimeSpan.FromMilliseconds(retryBackoffMs));
+        }
         if (TryGetValue<int>(configuration, nameof(AdminClientOptions.RetryBackoffMaxMs), out var retryBackoffMaxMs))
+        {
             builder.WithRetryBackoffMax(TimeSpan.FromMilliseconds(retryBackoffMaxMs));
+        }
         if (TryGetValue<int>(configuration, nameof(AdminClientOptions.ReconnectBackoffMs), out var reconnectBackoffMs))
+        {
             builder.WithReconnectBackoff(TimeSpan.FromMilliseconds(reconnectBackoffMs));
+        }
         if (TryGetValue<int>(configuration, nameof(AdminClientOptions.ReconnectBackoffMaxMs), out var reconnectBackoffMaxMs))
+        {
             builder.WithReconnectBackoffMax(TimeSpan.FromMilliseconds(reconnectBackoffMaxMs));
+        }
         ApplySocketConnectionOptions(
             configuration,
             builder.WithConnectionTimeout,
             enabled => builder.WithTcpKeepAlive(enabled),
             (time, interval, retryCount) => builder.WithTcpKeepAlive(time, interval, retryCount));
         if (TryGetValue<TimeSpan>(configuration, nameof(AdminClientOptions.ConnectionTimeoutMax), out var connectionTimeoutMax))
+        {
             builder.WithConnectionTimeoutMax(connectionTimeoutMax);
+        }
         ApplyTls(configuration, () => builder.UseTls(), tlsConfig => builder.UseTls(tlsConfig));
         if (TryReadSasl(configuration, out var mechanism, out var username, out var password, out var gssapi, out var oauth, out var awsMskIam, out var saslScramTokenAuth))
+        {
             builder.WithSaslOptions(mechanism, username, password, gssapi, oauth, awsMskIam, saslScramTokenAuth: saslScramTokenAuth);
+        }
         if (TryGetValue<int>(configuration, nameof(AdminClientOptions.SaslScramMaxIterations), out var maxScramIterations))
+        {
             builder.WithSaslScramMaxIterations(maxScramIterations);
+        }
         if (TryGetValue<MetadataRecoveryStrategy>(configuration, nameof(AdminClientOptions.MetadataRecoveryStrategy), out var metadataRecoveryStrategy))
+        {
             builder.WithMetadataRecoveryStrategy(metadataRecoveryStrategy);
+        }
         if (TryGetValue<bool>(configuration, nameof(AdminClientOptions.MetadataClusterCheckEnabled), out var metadataClusterCheckEnabled))
+        {
             builder.WithMetadataClusterCheck(metadataClusterCheckEnabled);
+        }
         if (TryGetValue<int>(configuration, nameof(AdminClientOptions.MetadataRecoveryRebootstrapTriggerMs), out var rebootstrapMs))
+        {
             builder.WithMetadataRecoveryRebootstrapTrigger(TimeSpan.FromMilliseconds(rebootstrapMs));
+        }
         if (TryGetValue<ClientDnsLookup>(configuration, nameof(AdminClientOptions.ClientDnsLookup), out var clientDnsLookup))
+        {
             builder.WithClientDnsLookup(clientDnsLookup);
+        }
         if (TryGetValue<int>(configuration, nameof(AdminClientOptions.BootstrapResolveTimeoutMs), out var bootstrapResolveTimeoutMs))
+        {
             builder.WithBootstrapResolveTimeout(TimeSpan.FromMilliseconds(bootstrapResolveTimeoutMs));
+        }
     }
 
     public static void ApplyShareConsumer<TKey, TValue>(
@@ -1778,11 +2068,17 @@ internal static class DekafConfigurationBinding
         ShareConsumerBuilder<TKey, TValue> builder)
     {
         if (TryGetBootstrapServers(configuration, out var bootstrapServers))
+        {
             builder.WithBootstrapServers(bootstrapServers);
+        }
         if (TryGetValue<string>(configuration, nameof(ShareConsumerOptions.ClientId), out var clientId))
+        {
             builder.WithClientId(clientId);
+        }
         if (TryGetValue<string>(configuration, nameof(ShareConsumerOptions.GroupId), out var groupId))
+        {
             builder.WithGroupId(groupId);
+        }
         if (TryGetAutoOffsetReset(
                 configuration,
                 nameof(ShareConsumerOptions.AutoOffsetReset),
@@ -1791,9 +2087,13 @@ internal static class DekafConfigurationBinding
                 out var autoOffsetResetDuration))
         {
             if (autoOffsetReset == AutoOffsetReset.ByDuration)
+            {
                 builder.WithAutoOffsetResetByDuration(autoOffsetResetDuration!.Value);
+            }
             else
+            {
                 builder.WithAutoOffsetReset(autoOffsetReset);
+            }
         }
         if (autoOffsetReset != AutoOffsetReset.ByDuration &&
             configuration.GetSection(nameof(ShareConsumerOptions.AutoOffsetResetDuration)).Exists())
@@ -1809,61 +2109,111 @@ internal static class DekafConfigurationBinding
                 ? copyRecord
                 : null);
         if (TryGetValue<string>(configuration, nameof(ShareConsumerOptions.RackId), out var rackId))
+        {
             builder.WithRackId(rackId);
+        }
         if (TryGetValue<int>(configuration, nameof(ShareConsumerOptions.FetchMinBytes), out var fetchMinBytes))
+        {
             builder.WithFetchMinBytes(fetchMinBytes);
+        }
         if (TryGetValue<int>(configuration, nameof(ShareConsumerOptions.FetchMaxBytes), out var fetchMaxBytes))
+        {
             builder.WithFetchMaxBytes(fetchMaxBytes);
+        }
         if (TryGetValue<int>(configuration, nameof(ShareConsumerOptions.MaxPartitionFetchBytes), out var maxPartitionFetchBytes))
+        {
             builder.WithMaxPartitionFetchBytes(maxPartitionFetchBytes);
+        }
         if (TryGetValue<int>(configuration, nameof(ShareConsumerOptions.FetchMaxWaitMs), out var fetchMaxWaitMs))
+        {
             builder.WithFetchMaxWaitMs(fetchMaxWaitMs);
+        }
         if (TryGetValue<int>(configuration, nameof(ShareConsumerOptions.MaxPollRecords), out var maxPollRecords))
+        {
             builder.WithMaxPollRecords(maxPollRecords);
+        }
         if (TryGetValue<ShareAcknowledgementMode>(configuration, nameof(ShareConsumerOptions.AcknowledgementMode), out var acknowledgementMode))
+        {
             builder.WithAcknowledgementMode(acknowledgementMode);
+        }
         if (TryGetValue<ShareAcquireMode>(configuration, nameof(ShareConsumerOptions.ShareAcquireMode), out var shareAcquireMode))
+        {
             builder.WithShareAcquireMode(shareAcquireMode);
+        }
         if (TryGetValue<int>(configuration, nameof(ShareConsumerOptions.SessionTimeoutMs), out var sessionTimeoutMs))
+        {
             builder.WithSessionTimeoutMs(sessionTimeoutMs);
+        }
         if (TryGetValue<int>(configuration, nameof(ShareConsumerOptions.HeartbeatIntervalMs), out var heartbeatIntervalMs))
+        {
             builder.WithHeartbeatIntervalMs(heartbeatIntervalMs);
+        }
         if (TryGetValue<int>(configuration, nameof(ShareConsumerOptions.RequestTimeoutMs), out var requestTimeoutMs))
+        {
             builder.WithRequestTimeoutMs(requestTimeoutMs);
+        }
         if (TryGetValue<int>(configuration, nameof(ShareConsumerOptions.RetryBackoffMs), out var retryBackoffMs))
+        {
             builder.WithRetryBackoff(TimeSpan.FromMilliseconds(retryBackoffMs));
+        }
         if (TryGetValue<int>(configuration, nameof(ShareConsumerOptions.RetryBackoffMaxMs), out var retryBackoffMaxMs))
+        {
             builder.WithRetryBackoffMax(TimeSpan.FromMilliseconds(retryBackoffMaxMs));
+        }
         if (TryGetValue<int>(configuration, nameof(ShareConsumerOptions.ReconnectBackoffMs), out var reconnectBackoffMs))
+        {
             builder.WithReconnectBackoff(TimeSpan.FromMilliseconds(reconnectBackoffMs));
+        }
         if (TryGetValue<int>(configuration, nameof(ShareConsumerOptions.ReconnectBackoffMaxMs), out var reconnectBackoffMaxMs))
+        {
             builder.WithReconnectBackoffMax(TimeSpan.FromMilliseconds(reconnectBackoffMaxMs));
+        }
         if (TryGetValue<int>(configuration, nameof(ShareConsumerOptions.ConnectionsMaxIdleMs), out var connectionsMaxIdleMs))
+        {
             builder.WithConnectionsMaxIdle(connectionsMaxIdleMs < 0 ? Timeout.InfiniteTimeSpan : TimeSpan.FromMilliseconds(connectionsMaxIdleMs));
+        }
         ApplySocketConnectionOptions(
             configuration,
             builder.WithConnectionTimeout,
             enabled => builder.WithTcpKeepAlive(enabled),
             (time, interval, retryCount) => builder.WithTcpKeepAlive(time, interval, retryCount));
         if (TryGetValue<TimeSpan>(configuration, nameof(ShareConsumerOptions.ConnectionTimeoutMax), out var connectionTimeoutMax))
+        {
             builder.WithConnectionTimeoutMax(connectionTimeoutMax);
+        }
         ApplyTls(configuration, () => builder.WithTls(), tlsConfig => builder.WithTlsConfig(tlsConfig));
         if (TryReadSasl(configuration, out var mechanism, out var username, out var password, out var gssapi, out var oauth, out var awsMskIam, out var saslScramTokenAuth))
+        {
             builder.WithSaslOptions(mechanism, username, password, gssapi, oauth, awsMskIam, saslScramTokenAuth: saslScramTokenAuth);
+        }
         if (TryGetValue<int>(configuration, nameof(ShareConsumerOptions.SaslScramMaxIterations), out var maxScramIterations))
+        {
             builder.WithSaslScramMaxIterations(maxScramIterations);
+        }
         if (TryGetValue<int>(configuration, nameof(ShareConsumerOptions.SocketSendBufferBytes), out var sendBuffer))
+        {
             builder.WithSocketSendBufferBytes(sendBuffer);
+        }
         if (TryGetValue<int>(configuration, nameof(ShareConsumerOptions.SocketReceiveBufferBytes), out var receiveBuffer))
+        {
             builder.WithSocketReceiveBufferBytes(receiveBuffer);
+        }
         if (TryGetValue<int>(configuration, nameof(ShareConsumerOptions.ConnectionsPerBroker), out var connectionsPerBroker))
+        {
             builder.WithConnectionsPerBroker(connectionsPerBroker);
+        }
         if (TryGetValue<ClientDnsLookup>(configuration, nameof(ShareConsumerOptions.ClientDnsLookup), out var clientDnsLookup))
+        {
             builder.WithClientDnsLookup(clientDnsLookup);
+        }
         if (TryGetValue<bool>(configuration, nameof(ShareConsumerOptions.MetadataClusterCheckEnabled), out var metadataClusterCheckEnabled))
+        {
             builder.WithMetadataClusterCheck(metadataClusterCheckEnabled);
+        }
         if (TryGetValue<int>(configuration, nameof(ShareConsumerOptions.BootstrapResolveTimeoutMs), out var bootstrapResolveTimeoutMs))
+        {
             builder.WithBootstrapResolveTimeout(TimeSpan.FromMilliseconds(bootstrapResolveTimeoutMs));
+        }
     }
 
     private static void ApplyTls<TBuilder>(
@@ -1890,7 +2240,9 @@ internal static class DekafConfigurationBinding
         Func<TimeSpan, TimeSpan, int, TBuilder> withTcpKeepAlive)
     {
         if (TryGetValue<TimeSpan>(configuration, nameof(ProducerOptions.ConnectionTimeout), out var connectionTimeout))
+        {
             withConnectionTimeout(connectionTimeout);
+        }
 
         var hasEnableTcpKeepAlive = TryGetValue<bool>(
             configuration,
@@ -1987,15 +2339,25 @@ internal static class DekafConfigurationBinding
         if (!hasMechanism)
         {
             if (awsMskIamConfig is not null)
+            {
                 mechanism = SaslMechanism.AwsMskIam;
+            }
             else if (oauthConfig is not null)
+            {
                 mechanism = SaslMechanism.OAuthBearer;
+            }
             else if (gssapiConfig is not null)
+            {
                 mechanism = SaslMechanism.Gssapi;
+            }
             else if (hasUsername || hasPassword)
+            {
                 mechanism = SaslMechanism.Plain;
+            }
             else
+            {
                 mechanism = SaslMechanism.None;
+            }
         }
 
         if (saslScramTokenAuth && mechanism is not (SaslMechanism.ScramSha256 or SaslMechanism.ScramSha512))

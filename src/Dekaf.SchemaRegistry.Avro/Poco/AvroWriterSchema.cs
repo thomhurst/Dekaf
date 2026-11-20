@@ -48,26 +48,53 @@ internal sealed class AvroWriterSchema
         Props = props;
     }
 
-    internal AvroWriterSchemaTag Tag { get; }
+    internal AvroWriterSchemaTag Tag
+    {
+        get;
+    }
 
     /// <summary>Custom (non-reserved) properties in declaration order.</summary>
-    internal (string Name, JsonElement Value)[] Props { get; }
+    internal (string Name, JsonElement Value)[] Props
+    {
+        get;
+    }
 
     /// <summary>Full name of a record, enum, or fixed schema.</summary>
-    internal string? Fullname { get; private set; }
+    internal string? Fullname
+    {
+        get; private set;
+    }
 
-    internal AvroWriterField[] Fields { get; private set; } = [];
+    internal AvroWriterField[] Fields
+    {
+        get; private set;
+    } = [];
 
-    internal string[] Symbols { get; private set; } = [];
+    internal string[] Symbols
+    {
+        get; private set;
+    } = [];
 
-    internal int Size { get; private set; }
+    internal int Size
+    {
+        get; private set;
+    }
 
     /// <summary>Array items, map values, or the underlying schema of a logical type.</summary>
-    internal AvroWriterSchema? Child { get; private set; }
+    internal AvroWriterSchema? Child
+    {
+        get; private set;
+    }
 
-    internal AvroWriterSchema[] Branches { get; private set; } = [];
+    internal AvroWriterSchema[] Branches
+    {
+        get; private set;
+    } = [];
 
-    internal string? LogicalTypeName { get; private set; }
+    internal string? LogicalTypeName
+    {
+        get; private set;
+    }
 
     internal bool IsNamed => Tag is AvroWriterSchemaTag.Record or AvroWriterSchemaTag.Enumeration or AvroWriterSchemaTag.Fixed;
 
@@ -78,9 +105,13 @@ internal sealed class AvroWriterSchema
         names ??= new AvroWriterSchemaNames();
         var trimmed = json.Trim();
         if (TryGetPrimitive(trimmed, out var primitive))
+        {
             return new AvroWriterSchema(primitive, []);
+        }
         if (trimmed.Length > 0 && trimmed[0] is not ('{' or '[' or '"') && names.TryGet(trimmed, out var named))
+        {
             return named;
+        }
 
         JsonDocument document;
         try
@@ -93,7 +124,9 @@ internal sealed class AvroWriterSchema
         }
 
         using (document)
+        {
             return Parse(document.RootElement, names, null, "");
+        }
     }
 
     internal string? GetPropertyText(string name)
@@ -102,7 +135,9 @@ internal sealed class AvroWriterSchema
         for (var index = 0; index < props.Length; index++)
         {
             if (string.Equals(props[index].Name, name, StringComparison.Ordinal))
+            {
                 return props[index].Value.GetRawText();
+            }
         }
         return null;
     }
@@ -136,9 +171,13 @@ internal sealed class AvroWriterSchema
         string path)
     {
         if (TryGetPrimitive(name, out var primitive))
+        {
             return new AvroWriterSchema(primitive, []);
+        }
         if (names.TryGet(ResolveFullname(name, null, enclosingNamespace), out var named))
+        {
             return named;
+        }
         throw new SchemaParseException($"Undefined name: {name} at '{path}'");
     }
 
@@ -156,10 +195,14 @@ internal sealed class AvroWriterSchema
             var itemPath = path + "[" + index.ToString(CultureInfo.InvariantCulture) + "]";
             var branch = Parse(item, names, enclosingNamespace, itemPath);
             if (branch.Tag == AvroWriterSchemaTag.Union)
+            {
                 throw new SchemaParseException($"Unions may not immediately contain other unions at '{itemPath}'");
+            }
             var key = GetUnionBranchKey(branch);
             if (!seen.Add(key))
+            {
                 throw new SchemaParseException($"Duplicate type in union: {key} at '{itemPath}'");
+            }
             branches[index++] = branch;
         }
 
@@ -169,7 +212,9 @@ internal sealed class AvroWriterSchema
     private static string GetUnionBranchKey(AvroWriterSchema branch)
     {
         while (branch.Tag == AvroWriterSchemaTag.Logical)
+        {
             branch = branch.Child!;
+        }
         return branch.Fullname ?? GetTypeName(branch.Tag);
     }
 
@@ -180,7 +225,9 @@ internal sealed class AvroWriterSchema
         string path)
     {
         if (!element.TryGetProperty("type", out var typeElement))
+        {
             throw new SchemaParseException($"Property 'type' is missing from Avro schema at '{path}'");
+        }
         var hasLogicalType = element.TryGetProperty("logicalType", out var logicalTypeElement);
         if (typeElement.ValueKind != JsonValueKind.String)
         {
@@ -196,14 +243,18 @@ internal sealed class AvroWriterSchema
         {
             case "array":
                 if (!element.TryGetProperty("items", out var items))
+                {
                     throw new AvroTypeException($"Array does not have 'items' at '{path}'");
+                }
                 return new AvroWriterSchema(AvroWriterSchemaTag.Array, props)
                 {
                     Child = Parse(items, names, enclosingNamespace, path + ".items")
                 };
             case "map":
                 if (!element.TryGetProperty("values", out var values))
+                {
                     throw new AvroTypeException($"Map does not have 'values' at '{path}'");
+                }
                 return new AvroWriterSchema(AvroWriterSchemaTag.Map, props)
                 {
                     Child = Parse(values, names, enclosingNamespace, path + ".values")
@@ -219,9 +270,13 @@ internal sealed class AvroWriterSchema
         }
 
         if (TryGetPrimitive(type, out var primitive))
+        {
             return new AvroWriterSchema(primitive, props);
+        }
         if (IsNamedTypeKeyword(type))
+        {
             return ParseNamed(element, type, props, names, enclosingNamespace, path);
+        }
         return ParseNameReference(type, names, enclosingNamespace, path);
     }
 
@@ -232,7 +287,9 @@ internal sealed class AvroWriterSchema
         string path)
     {
         if (logicalTypeElement.ValueKind != JsonValueKind.String)
+        {
             throw new SchemaParseException($"Field logicalType is not a string at '{path}'");
+        }
         var logical = new AvroWriterSchema(AvroWriterSchemaTag.Logical, props)
         {
             Child = baseSchema,
@@ -263,7 +320,9 @@ internal sealed class AvroWriterSchema
         };
         var schema = new AvroWriterSchema(tag, props) { Fullname = fullname };
         if (!names.TryAdd(schema))
+        {
             throw new SchemaParseException($"Duplicate schema name {fullname} at '{path}'");
+        }
 
         switch (tag)
         {
@@ -275,11 +334,17 @@ internal sealed class AvroWriterSchema
                 break;
             default:
                 if (!element.TryGetProperty("size", out var size))
+                {
                     throw new SchemaParseException($"No \"size\" JSON field at '{path}'");
+                }
                 if (size.ValueKind != JsonValueKind.Number || !size.TryGetInt32(out var sizeValue))
+                {
                     throw new SchemaParseException($"Fixed size must be an integer at '{path}'");
+                }
                 if (sizeValue <= 0)
+                {
                     throw new SchemaParseException($"size must be greater than zero. at '{path}'");
+                }
                 schema.Size = sizeValue;
                 break;
         }
@@ -295,9 +360,13 @@ internal sealed class AvroWriterSchema
         string path)
     {
         if (!element.TryGetProperty("fields", out var fieldsElement) || fieldsElement.ValueKind == JsonValueKind.Null)
+        {
             throw new SchemaParseException($"'fields' cannot be null for record at '{path}'");
+        }
         if (fieldsElement.ValueKind != JsonValueKind.Array)
+        {
             throw new SchemaParseException($"'fields' must be an array for record {recordName} at '{path}'");
+        }
 
         var fields = new AvroWriterField[fieldsElement.GetArrayLength()];
         var fieldNames = new HashSet<string>(StringComparer.Ordinal);
@@ -306,13 +375,19 @@ internal sealed class AvroWriterSchema
         {
             var fieldPath = path + ".fields[" + index.ToString(CultureInfo.InvariantCulture) + "]";
             if (fieldElement.ValueKind != JsonValueKind.Object)
+            {
                 throw new SchemaParseException($"Field must be a JSON object at '{fieldPath}'");
+            }
             var name = GetRequiredString(fieldElement, "name", fieldPath);
             if (!fieldElement.TryGetProperty("type", out var typeElement))
+            {
                 throw new SchemaParseException($"'type' was not found for field: {name} at '{fieldPath}'");
+            }
             var aliases = GetAliases(fieldElement, fieldPath);
             if (!fieldNames.Add(name))
+            {
                 throw new SchemaParseException($"field or alias {name} is a duplicate name at '{fieldPath}'");
+            }
             for (var aliasIndex = 0; aliasIndex < aliases.Length; aliasIndex++)
             {
                 if (!fieldNames.Add(aliases[aliasIndex]))
@@ -324,7 +399,9 @@ internal sealed class AvroWriterSchema
 
             var order = GetOptionalString(fieldElement, "order", fieldPath);
             if (order is not (null or "ascending" or "descending" or "ignore"))
+            {
                 throw new SchemaParseException($"Invalid field order '{order}' at '{fieldPath}'");
+            }
             fields[index] = new AvroWriterField(
                 name,
                 Parse(typeElement, names, recordNamespace, fieldPath + ".type"),
@@ -352,16 +429,22 @@ internal sealed class AvroWriterSchema
         foreach (var symbol in symbolsElement.EnumerateArray())
         {
             if (symbol.ValueKind != JsonValueKind.String)
+            {
                 throw new SchemaParseException($"Enum symbols must be strings: {enumName} at '{path}'");
+            }
             var value = symbol.GetString()!;
             if (!seen.Add(value))
+            {
                 throw new SchemaParseException($"Duplicate symbol: {value} at '{path}'");
+            }
             symbols[index++] = value;
         }
 
         var defaultSymbol = GetOptionalString(element, "default", path);
         if (defaultSymbol is not null && !seen.Contains(defaultSymbol))
+        {
             throw new SchemaParseException($"Default symbol: {defaultSymbol} not found in symbols at '{path}'");
+        }
         return symbols;
     }
 
@@ -415,22 +498,42 @@ internal sealed class AvroWriterSchema
     private static void RequireBase(bool valid, string logicalTypeName, string baseType)
     {
         if (!valid)
+        {
             throw new AvroTypeException($"'{logicalTypeName}' can only be used with an underlying {baseType} type");
+        }
     }
 
     private static bool TryGetPrimitive(string name, out AvroWriterSchemaTag tag)
     {
         switch (name)
         {
-            case "null": tag = AvroWriterSchemaTag.Null; return true;
-            case "boolean": tag = AvroWriterSchemaTag.Boolean; return true;
-            case "int": tag = AvroWriterSchemaTag.Int; return true;
-            case "long": tag = AvroWriterSchemaTag.Long; return true;
-            case "float": tag = AvroWriterSchemaTag.Float; return true;
-            case "double": tag = AvroWriterSchemaTag.Double; return true;
-            case "bytes": tag = AvroWriterSchemaTag.Bytes; return true;
-            case "string": tag = AvroWriterSchemaTag.String; return true;
-            default: tag = default; return false;
+            case "null":
+                tag = AvroWriterSchemaTag.Null;
+                return true;
+            case "boolean":
+                tag = AvroWriterSchemaTag.Boolean;
+                return true;
+            case "int":
+                tag = AvroWriterSchemaTag.Int;
+                return true;
+            case "long":
+                tag = AvroWriterSchemaTag.Long;
+                return true;
+            case "float":
+                tag = AvroWriterSchemaTag.Float;
+                return true;
+            case "double":
+                tag = AvroWriterSchemaTag.Double;
+                return true;
+            case "bytes":
+                tag = AvroWriterSchemaTag.Bytes;
+                return true;
+            case "string":
+                tag = AvroWriterSchemaTag.String;
+                return true;
+            default:
+                tag = default;
+                return false;
         }
     }
 
@@ -455,7 +558,9 @@ internal sealed class AvroWriterSchema
     private static string ResolveFullname(string name, string? declaredNamespace, string? enclosingNamespace)
     {
         if (name.Contains('.', StringComparison.Ordinal))
+        {
             return name;
+        }
         // Apache.Avro treats an empty namespace as absent, so it inherits the enclosing namespace.
         var space = string.IsNullOrEmpty(declaredNamespace) ? enclosingNamespace : declaredNamespace;
         return string.IsNullOrEmpty(space) ? name : space + "." + name;
@@ -472,26 +577,38 @@ internal sealed class AvroWriterSchema
         var name = fullname[(fullname.LastIndexOf('.') + 1)..];
         var valid = name.Length > 0 && (char.IsAsciiLetter(name[0]) || name[0] == '_');
         for (var index = 1; valid && index < name.Length; index++)
+        {
             valid = char.IsAsciiLetterOrDigit(name[index]) || name[index] == '_';
+        }
         if (!valid)
+        {
             throw new SchemaParseException($"Invalid schema name: \"{name}\" at '{path}'");
+        }
     }
 
     private static string GetRequiredString(JsonElement element, string property, string path)
     {
         if (!element.TryGetProperty(property, out var value))
+        {
             throw new SchemaParseException($"No \"{property}\" JSON field at '{path}'");
+        }
         if (value.ValueKind != JsonValueKind.String)
+        {
             throw new SchemaParseException($"Field {property} is not a string at '{path}'");
+        }
         return value.GetString()!;
     }
 
     private static string? GetOptionalString(JsonElement element, string property, string path)
     {
         if (!element.TryGetProperty(property, out var value) || value.ValueKind == JsonValueKind.Null)
+        {
             return null;
+        }
         if (value.ValueKind != JsonValueKind.String)
+        {
             throw new SchemaParseException($"Field {property} is not a string at '{path}'");
+        }
         return value.GetString();
     }
 
@@ -503,14 +620,18 @@ internal sealed class AvroWriterSchema
             return [];
         }
         if (aliasesElement.ValueKind != JsonValueKind.Array)
+        {
             throw new SchemaParseException($"Aliases must be of format JSON array of strings at '{path}'");
+        }
 
         var aliases = new string[aliasesElement.GetArrayLength()];
         var index = 0;
         foreach (var alias in aliasesElement.EnumerateArray())
         {
             if (alias.ValueKind != JsonValueKind.String)
+            {
                 throw new SchemaParseException($"Aliases must be of format JSON array of strings at '{path}'");
+            }
             aliases[index++] = alias.GetString()!;
         }
         return aliases;
@@ -528,7 +649,9 @@ internal sealed class AvroWriterSchema
         foreach (var property in element.EnumerateObject())
         {
             if (!isReserved(property.Name))
+            {
                 (props ??= []).Add((property.Name, property.Value.Clone()));
+            }
         }
         return props?.ToArray() ?? [];
     }
@@ -549,17 +672,35 @@ internal sealed class AvroWriterField(
     string? order,
     (string Name, JsonElement Value)[] props)
 {
-    internal string Name { get; } = name;
+    internal string Name
+    {
+        get;
+    } = name;
 
-    internal AvroWriterSchema Schema { get; } = schema;
+    internal AvroWriterSchema Schema
+    {
+        get;
+    } = schema;
 
-    internal string? Doc { get; } = doc;
+    internal string? Doc
+    {
+        get;
+    } = doc;
 
-    internal JsonElement? DefaultValue { get; } = defaultValue;
+    internal JsonElement? DefaultValue
+    {
+        get;
+    } = defaultValue;
 
-    internal string? Order { get; } = order;
+    internal string? Order
+    {
+        get;
+    } = order;
 
-    internal (string Name, JsonElement Value)[] Props { get; } = props;
+    internal (string Name, JsonElement Value)[] Props
+    {
+        get;
+    } = props;
 }
 
 /// <summary>Named types known while parsing, including types defined by schema references.</summary>

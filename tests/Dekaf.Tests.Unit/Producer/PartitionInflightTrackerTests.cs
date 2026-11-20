@@ -351,8 +351,14 @@ public sealed class PartitionInflightTrackerTests
 
         // Warm the pool to capacity.
         var warmRented = new InflightEntry[capacity];
-        for (var i = 0; i < capacity; i++) warmRented[i] = pool.Rent();
-        for (var i = 0; i < capacity; i++) pool.Return(warmRented[i]);
+        for (var i = 0; i < capacity; i++)
+        {
+            warmRented[i] = pool.Rent();
+        }
+        for (var i = 0; i < capacity; i++)
+        {
+            pool.Return(warmRented[i]);
+        }
 
         var missesBefore = pool.Misses;
 
@@ -360,8 +366,14 @@ public sealed class PartitionInflightTrackerTests
         for (var iter = 0; iter < 100; iter++)
         {
             var batch = new InflightEntry[capacity];
-            for (var i = 0; i < capacity; i++) batch[i] = pool.Rent();
-            for (var i = 0; i < capacity; i++) pool.Return(batch[i]);
+            for (var i = 0; i < capacity; i++)
+            {
+                batch[i] = pool.Rent();
+            }
+            for (var i = 0; i < capacity; i++)
+            {
+                pool.Return(batch[i]);
+            }
         }
 
         // Zero misses after warm-up — nothing should fall through to `new InflightEntry()`.

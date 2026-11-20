@@ -212,7 +212,10 @@ public sealed class GracefulShutdownTests(KafkaTestContainer kafka) : KafkaInteg
                 processedMessages.Add(msg.Value);
                 await consumer1.CommitAsync();
 
-                if (processedMessages.Count >= 3) break;
+                if (processedMessages.Count >= 3)
+                {
+                    break;
+                }
             }
 
             // Graceful close so the second consumer can join immediately
@@ -235,7 +238,10 @@ public sealed class GracefulShutdownTests(KafkaTestContainer kafka) : KafkaInteg
         {
             processedMessages.Add(msg.Value);
             await consumer2.CommitAsync();
-            if (processedMessages.Count >= 10) break;
+            if (processedMessages.Count >= 10)
+            {
+                break;
+            }
         }
 
         // All 10 messages should have been processed across both instances
@@ -285,7 +291,10 @@ public sealed class GracefulShutdownTests(KafkaTestContainer kafka) : KafkaInteg
             {
                 count++;
                 // Intentionally NOT committing to simulate incomplete processing
-                if (count >= 3) break;
+                if (count >= 3)
+                {
+                    break;
+                }
             }
 
             // Still close gracefully so the group is freed for the next consumer
@@ -309,7 +318,10 @@ public sealed class GracefulShutdownTests(KafkaTestContainer kafka) : KafkaInteg
         await foreach (var msg in consumer2.ConsumeAsync(cts2.Token))
         {
             messages.Add(msg);
-            if (messages.Count >= 5) break;
+            if (messages.Count >= 5)
+            {
+                break;
+            }
         }
 
         // All messages redelivered from offset 0
@@ -357,7 +369,10 @@ public sealed class GracefulShutdownTests(KafkaTestContainer kafka) : KafkaInteg
             await foreach (var msg in consumer1.ConsumeAsync(cts.Token))
             {
                 count++;
-                if (count >= 5) break;
+                if (count >= 5)
+                {
+                    break;
+                }
             }
 
             // CloseAsync should trigger final auto-commit
@@ -431,7 +446,10 @@ public sealed class GracefulShutdownTests(KafkaTestContainer kafka) : KafkaInteg
                     new TopicPartitionOffset(msg.Topic, msg.Partition, msg.Offset + 1)
                 ]);
 
-                if (count >= 7) break;
+                if (count >= 7)
+                {
+                    break;
+                }
             }
 
             // Graceful close frees the group
@@ -494,7 +512,10 @@ public sealed class GracefulShutdownTests(KafkaTestContainer kafka) : KafkaInteg
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))
         {
             firstPass.Add(msg.Value);
-            if (firstPass.Count >= 5) break;
+            if (firstPass.Count >= 5)
+            {
+                break;
+            }
         }
 
         await Assert.That(firstPass).Count().IsEqualTo(5);
@@ -508,7 +529,10 @@ public sealed class GracefulShutdownTests(KafkaTestContainer kafka) : KafkaInteg
         await foreach (var msg in consumer.ConsumeAsync(cts2.Token))
         {
             secondPass.Add(msg.Value);
-            if (secondPass.Count >= 5) break;
+            if (secondPass.Count >= 5)
+            {
+                break;
+            }
         }
 
         await Assert.That(secondPass).Count().IsEqualTo(5);
@@ -517,7 +541,10 @@ public sealed class GracefulShutdownTests(KafkaTestContainer kafka) : KafkaInteg
 
     private sealed class StopTrackingRebalanceListener : IRebalanceListener, IPartitionStopListener
     {
-        public List<List<TopicPartition>> StoppedPartitions { get; } = [];
+        public List<List<TopicPartition>> StoppedPartitions
+        {
+            get;
+        } = [];
 
         public ValueTask OnPartitionsAssignedAsync(
             IEnumerable<TopicPartition> partitions,
@@ -542,13 +569,22 @@ public sealed class GracefulShutdownTests(KafkaTestContainer kafka) : KafkaInteg
 
     private sealed class BlockingStopRebalanceListener : IRebalanceListener, IPartitionStopListener
     {
-        public TaskCompletionSource CancellationObserved { get; } =
+        public TaskCompletionSource CancellationObserved
+        {
+            get;
+        } =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
 
-        public TaskCompletionSource Release { get; } =
+        public TaskCompletionSource Release
+        {
+            get;
+        } =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
 
-        public TaskCompletionSource Completed { get; } =
+        public TaskCompletionSource Completed
+        {
+            get;
+        } =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         public ValueTask OnPartitionsAssignedAsync(

@@ -919,7 +919,9 @@ public sealed class InMemoryProducerFaultTests
     {
         var barriers = new KafkaFaultBarrier[operationCount];
         for (var index = 0; index < barriers.Length; index++)
+        {
             barriers[index] = cluster.FaultPlan.PauseNext(scope);
+        }
         return barriers;
     }
 
@@ -940,13 +942,17 @@ public sealed class InMemoryProducerFaultTests
     private static async Task WaitUntilEnteredAsync(KafkaFaultBarrier[] barriers)
     {
         for (var index = 0; index < barriers.Length; index++)
+        {
             await barriers[index].WaitUntilEnteredAsync();
+        }
     }
 
     private static async Task ReleaseAsync(KafkaFaultBarrier[] barriers)
     {
         for (var index = 0; index < barriers.Length; index++)
+        {
             await Assert.That(barriers[index].Release()).IsTrue();
+        }
     }
 
     private static async Task AssertOffsetsCommittedAsync(

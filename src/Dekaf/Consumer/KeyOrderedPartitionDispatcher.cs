@@ -65,7 +65,9 @@ internal sealed partial class KeyOrderedPartitionDispatcher<TKey, TValue>
         var initialCapacity = Math.Min(maxBufferedRecords, 128);
         _records = new PendingRecord[initialCapacity];
         for (var index = 0; index < _records.Length; index++)
+        {
             _records[index].Next = index + 1;
+        }
         _records[_records.Length - 1].Next = -1;
         _maxWorkers = Math.Min(maxConcurrentHandlers, maxBufferedRecords);
         // A batch size is an upper bound. Divide reusable storage across workers so
@@ -105,7 +107,9 @@ internal sealed partial class KeyOrderedPartitionDispatcher<TKey, TValue>
         using var registration = _processingToken.UnsafeRegister(
             static state => ((AsyncAutoResetSignal)state!).Signal(), _signal);
         if (_automaticCompletion)
+        {
             _progress = _context.EnableAutomaticCompletion();
+        }
         _budget = _context.DeferBufferRelease();
         _slots = _context.HandlerSlots;
         // A seek can mark the lane while this loop waits for a handler slot with no pending read.
@@ -141,19 +145,25 @@ internal sealed partial class KeyOrderedPartitionDispatcher<TKey, TValue>
                     {
                         BeginInputWait();
                         if (!_inputPending)
+                        {
                             continue;
+                        }
                     }
                 }
 
                 DispatchReadyLanes();
                 _failure?.Throw();
                 if (_inputCompleted && _used == 0)
+                {
                     return;
+                }
 
                 // A seek stopped the lane: let in-flight handlers finish, dispatch nothing new.
                 // The finally block releases the records still buffered here.
                 if (_activeWorkers == 0 && !_inputPending && _context.IsDiscardingQueuedRecords)
+                {
                     return;
+                }
 
                 await _signal.WaitAsync(Timeout.Infinite).ConfigureAwait(false);
             }
@@ -169,12 +179,16 @@ internal sealed partial class KeyOrderedPartitionDispatcher<TKey, TValue>
             // for a handler that exits only on the cancellation below. The lane's StopAsync
             // awaits the same task within StopTimeout and observes a throwing callback.
             if (_failure is not null && _activeWorkers != 0)
+            {
                 _ = _context.RequestStopAsync();
+            }
 
             try
             {
                 if (_activeWorkers != 0 || _inputPending)
+                {
                     await stopping.CancelAsync().ConfigureAwait(false);
+                }
             }
             catch (Exception exception)
             {
@@ -195,7 +209,9 @@ internal sealed partial class KeyOrderedPartitionDispatcher<TKey, TValue>
                 }
 
                 if (_activeWorkers != 0 || _inputPending)
+                {
                     await _signal.WaitAsync(Timeout.Infinite).ConfigureAwait(false);
+                }
             }
 
             // Every worker has finished, so a record still owned here never reached a handler.
@@ -211,11 +227,15 @@ internal sealed partial class KeyOrderedPartitionDispatcher<TKey, TValue>
             }
             _budget?.Release(undispatched);
             if (_slotWaiter is not null && _slotWaiter.Cancel())
+            {
                 _slots!.Release();
+            }
 
             ReleaseLanes();
             if (_hasBinaryKeyComparer)
+            {
                 Unsafe.As<BinaryPartitionMessageKeyComparer<TKey>>(StandardLanes.Comparer).ReleaseCollisionState();
+            }
             if (_failure is not null)
             {
                 // Failed removal or rebuilding can displace lanes. Their retained
@@ -249,7 +269,9 @@ internal sealed partial class KeyOrderedPartitionDispatcher<TKey, TValue>
                 throw;
             }
             for (var slot = previousLength; slot < _records.Length; slot++)
+            {
                 _records[slot].Next = slot + 1;
+            }
             _records[_records.Length - 1].Next = -1;
             _freeRecord = previousLength;
         }
@@ -270,9 +292,13 @@ internal sealed partial class KeyOrderedPartitionDispatcher<TKey, TValue>
             PreviousRecords = _readRecords
         };
         if (_tail >= 0)
+        {
             _records[_tail].NextPending = index;
+        }
         else
+        {
             _head = index;
+        }
         _tail = index;
         if (!record.IsPartitionEof)
         {
@@ -294,9 +320,13 @@ internal sealed partial class KeyOrderedPartitionDispatcher<TKey, TValue>
             // An existing sampled lane already determines the key's membership.
             // Only unmatched keys need the full hash after collision promotion.
             if (binaryKeyComparer.TryGetSampledKey(key, out var sampledKey))
+            {
                 StandardLanes.TryGetValue(sampledKey, out lane);
+            }
             if (lane is null && key.HasValue)
+            {
                 key = key.WithBinaryHashCode(binaryKeyComparer.ComputeHashCode(key, out sampledHash));
+            }
         }
 #if NETSTANDARD2_0
         if (lane is null && !TryGetLane(key, out lane))
@@ -304,7 +334,10 @@ internal sealed partial class KeyOrderedPartitionDispatcher<TKey, TValue>
             lane = RentLane();
             lane.Key = key;
             lane.SampledHash = sampledHash;
-            if (sampledHash) binaryKeyComparer!.AddSampledLane();
+            if (sampledHash)
+            {
+                binaryKeyComparer!.AddSampledLane();
+            }
             lane.StorageOrNext = record.RetainStorage();
             try
             {
@@ -330,7 +363,10 @@ internal sealed partial class KeyOrderedPartitionDispatcher<TKey, TValue>
                 entry = lane;
                 lane.Key = key;
                 lane.SampledHash = sampledHash;
-                if (sampledHash) binaryKeyComparer!.AddSampledLane();
+                if (sampledHash)
+                {
+                    binaryKeyComparer!.AddSampledLane();
+                }
                 lane.StorageOrNext = record.RetainStorage();
                 Volatile.Write(ref _laneCount, StorageCount);
             }
@@ -338,9 +374,13 @@ internal sealed partial class KeyOrderedPartitionDispatcher<TKey, TValue>
 #endif
 
         if (lane.Head < 0)
+        {
             lane.Head = index;
+        }
         else
+        {
             _records[lane.Tail].Next = index;
+        }
         lane.Tail = index;
         if (!lane.Scheduled)
         {
@@ -348,7 +388,9 @@ internal sealed partial class KeyOrderedPartitionDispatcher<TKey, TValue>
             _readyLanes.Enqueue(lane);
         }
         if (binaryKeyComparer is { NeedsFullHashing: true })
+        {
             StrengthenBinaryHashing(binaryKeyComparer, lane);
+        }
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
@@ -364,9 +406,14 @@ internal sealed partial class KeyOrderedPartitionDispatcher<TKey, TValue>
             for (var index = 0; index < count; index++)
             {
                 if (dictionary.TryGetValue(keys[index], out var lane) && lane.SampledHash)
+                {
                     StrengthenLane(lane, comparer);
+                }
             }
-            if (triggeringLane.SampledHash) StrengthenLane(triggeringLane, comparer);
+            if (triggeringLane.SampledHash)
+            {
+                StrengthenLane(triggeringLane, comparer);
+            }
         }
         finally
         {
@@ -382,13 +429,18 @@ internal sealed partial class KeyOrderedPartitionDispatcher<TKey, TValue>
         var key = lane.Key.WithBinaryHashCode(comparer.ComputeHashCode(lane.Key));
 #if NETSTANDARD2_0
         if (!dictionary.TryGetValue(lane.Key, out var found) || !ReferenceEquals(found, lane) || !dictionary.Remove(lane.Key))
+        {
             throw new InvalidOperationException("A partition key changed its hash code or equality while being processed.");
+        }
 #else
         if (!dictionary.Remove(lane.Key, out var removed) || !ReferenceEquals(removed, lane))
         {
             // Mutation can displace another active lane. Retain its storage until
             // shutdown has observed every worker, just as completion removal does.
-            if (removed is not null) ReturnLane(removed);
+            if (removed is not null)
+            {
+                ReturnLane(removed);
+            }
             throw new InvalidOperationException("A partition key changed its hash code or equality while being processed.");
         }
 #endif
@@ -403,8 +455,10 @@ internal sealed partial class KeyOrderedPartitionDispatcher<TKey, TValue>
         {
             ReturnLane(lane);
             if (error is ArgumentException)
+            {
                 throw new InvalidOperationException(
                     "A partition key changed its hash code or equality while being processed.", error);
+            }
             throw;
         }
     }
@@ -418,7 +472,9 @@ internal sealed partial class KeyOrderedPartitionDispatcher<TKey, TValue>
         {
             _processingToken.ThrowIfCancellationRequested();
             if (_slots is not null && !TryTakeHandlerSlot(_slots))
+            {
                 return;
+            }
 
             var lane = _readyLanes.Dequeue();
             var worker = _freeWorkers.Count != 0
@@ -449,9 +505,13 @@ internal sealed partial class KeyOrderedPartitionDispatcher<TKey, TValue>
                 continue;
             }
             if (completed)
+            {
                 CompleteWorker(worker);
+            }
             else
+            {
                 worker.Register();
+            }
         }
     }
 
@@ -491,7 +551,9 @@ internal sealed partial class KeyOrderedPartitionDispatcher<TKey, TValue>
             pending.OwnsStorage = false;
             record.ReleaseStorage();
             if (!succeeded)
+            {
                 continue;
+            }
             if (!record.IsPartitionEof)
             {
                 _progress?.MarkProcessed(record.Offset);
@@ -502,16 +564,22 @@ internal sealed partial class KeyOrderedPartitionDispatcher<TKey, TValue>
             // record remembers its delivered predecessor, including compacted
             // offset gaps. Completed payloads never occupy the pending budget.
             if (pending.PreviousPending >= 0)
+            {
                 _records[pending.PreviousPending].NextPending = pending.NextPending;
+            }
             else
             {
                 _head = pending.NextPending;
                 frontierChanged = true;
             }
             if (pending.NextPending >= 0)
+            {
                 _records[pending.NextPending].PreviousPending = pending.PreviousPending;
+            }
             else
+            {
                 _tail = pending.PreviousPending;
+            }
 
             pending = new PendingRecord { Next = _freeRecord };
             _freeRecord = slot;
@@ -534,7 +602,9 @@ internal sealed partial class KeyOrderedPartitionDispatcher<TKey, TValue>
             // Keep the lane owned until shutdown instead of pooling an alias.
 #if NETSTANDARD2_0
             if (!TryGetLane(lane.Key, out var found) || !ReferenceEquals(found, lane) || !RemoveLane(lane.Key))
+            {
                 throw new InvalidOperationException("A partition key changed its hash code or equality while being processed.");
+            }
 #else
             if (!RemoveLane(lane.Key, out var removed) || !ReferenceEquals(removed, lane))
             {
@@ -543,15 +613,21 @@ internal sealed partial class KeyOrderedPartitionDispatcher<TKey, TValue>
                 if (removed is not null)
                 {
                     if (UseCompactKeys)
+                    {
                         worker.Lane = removed;
+                    }
                     else
+                    {
                         ReturnLane(removed);
+                    }
                 }
                 throw new InvalidOperationException("A partition key changed its hash code or equality while being processed.");
             }
 #endif
             if (lane.SampledHash)
+            {
                 Unsafe.As<BinaryPartitionMessageKeyComparer<TKey>>(StandardLanes.Comparer).RemoveSampledLane();
+            }
             lane.ReleaseKey();
             lane.Scheduled = false;
             lane.Tail = -1;
@@ -560,7 +636,9 @@ internal sealed partial class KeyOrderedPartitionDispatcher<TKey, TValue>
         }
 
         if (frontierChanged)
+        {
             PublishCommit();
+        }
     }
 
     /// <summary>
@@ -589,7 +667,9 @@ internal sealed partial class KeyOrderedPartitionDispatcher<TKey, TValue>
         var epoch = _head >= 0 ? _records[_head].PreviousEpoch : _lastReadEpoch;
         var completedRecords = _head >= 0 ? _records[_head].PreviousRecords : _readRecords;
         if (offset >= 0)
+        {
             _progress?.Publish(offset + 1, epoch, completedRecords);
+        }
     }
 
     private void BeginInputWait()
@@ -615,7 +695,9 @@ internal sealed partial class KeyOrderedPartitionDispatcher<TKey, TValue>
     private void FinishInputWait()
     {
         if (!_inputPending || Volatile.Read(ref _inputReady) == 0)
+        {
             return;
+        }
         _inputPending = false;
         try
         {
@@ -734,20 +816,26 @@ internal sealed partial class KeyOrderedPartitionDispatcher<TKey, TValue>
                 // already-published completion once; otherwise suppress late callbacks
                 // and release the worker whose awaiter could not be registered.
                 if (Interlocked.CompareExchange(ref NextCompleted, null, this) == this)
+                {
                     _dispatcher.ReleaseWorker(this, succeeded: false);
+                }
             }
         }
 
         private void Complete()
         {
             if (Interlocked.CompareExchange(ref NextCompleted, null, this) == this)
+            {
                 _dispatcher.PublishCompletion(this);
+            }
         }
 
         internal void Add(ConsumeResult<TKey, TValue> record, int index)
         {
             if (Batch.Count == Indices.Length)
+            {
                 Array.Resize(ref Indices, (int)Math.Min((long)Indices.Length * 2, _dispatcher._batchSize));
+            }
             Indices[Batch.Count] = index;
             Batch.Add(record);
         }

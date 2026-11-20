@@ -187,9 +187,13 @@ internal static class AccumulatorTestHelpers
         };
 
         if (onLong is not null)
+        {
             listener.SetMeasurementEventCallback(onLong);
+        }
         if (onDouble is not null)
+        {
             listener.SetMeasurementEventCallback(onDouble);
+        }
 
         listener.Start();
         return listener;
@@ -203,7 +207,9 @@ internal static class AccumulatorTestHelpers
         foreach (var tag in tags)
         {
             if (tag.Key == key)
+            {
                 return tag.Value?.ToString();
+            }
         }
 
         return null;

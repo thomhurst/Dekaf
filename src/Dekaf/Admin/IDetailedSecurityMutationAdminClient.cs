@@ -24,10 +24,16 @@ public interface IDetailedSecurityMutationAdminClient
 public sealed class AclCreationOutcome
 {
     /// <summary>The original immutable binding at this position in the input.</summary>
-    public required AclBinding Binding { get; init; }
+    public required AclBinding Binding
+    {
+        get; init;
+    }
 
     /// <summary>The outcome for this occurrence of the binding.</summary>
-    public required AdminMutationResult Result { get; init; }
+    public required AdminMutationResult Result
+    {
+        get; init;
+    }
 }
 
 /// <summary>Detailed security mutations for compatible <see cref="IAdminClient"/> implementations.</summary>

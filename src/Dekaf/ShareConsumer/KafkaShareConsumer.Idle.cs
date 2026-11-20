@@ -19,7 +19,9 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue>
         // Register first, then recheck every condition that can end this idle period.
         // Cancellation affects this wait only; a later poll can reuse the same signal.
         if (HasPollStateChanged(subscription, observedAssignment))
+        {
             return ValueTask.CompletedTask;
+        }
         return new ValueTask(changed.WaitAsync(cancellationToken));
     }
 
@@ -31,7 +33,9 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue>
         var subscription = _subscriptionSnapshot;
         var changed = _coordinator.GetAssignmentChangeTask();
         if (HasPollStateChanged(subscription, observedAssignment))
+        {
             return;
+        }
 
         using var retryCancellation = cancellationToken.CanBeCanceled
             ? CancellationTokenSource.CreateLinkedTokenSource(cancellationToken)
@@ -52,7 +56,9 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue>
         try
         {
             if (await Task.WhenAny(pending, changed).ConfigureAwait(false) != pending)
+            {
                 retryCancellation.Cancel();
+            }
         }
         finally
         {
@@ -63,8 +69,7 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue>
             {
                 await pending.ConfigureAwait(false);
             }
-            catch (OperationCanceledException) when (
-                retryCancellation.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+            catch (OperationCanceledException) when (retryCancellation.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
             {
             }
         }

@@ -19,7 +19,9 @@ public class BrokerPrefetchSchedulerBenchmarks
         _cancellation = new CancellationTokenSource();
 
         if (!_scheduler.TryStart((BrokerId: 1, ConnectionIndex: 0), () => _completion.Task))
+        {
             throw new InvalidOperationException("Could not register benchmark task.");
+        }
     }
 
     [IterationCleanup]
@@ -108,7 +110,9 @@ public class BrokerPrefetchSchedulerDrainBenchmarks
     {
         var drained = 0;
         for (var operation = 0; operation < OperationsPerInvoke; operation++)
+        {
             drained += await _schedulers[operation].DrainCompletedAsync().ConfigureAwait(false);
+        }
 
         return drained;
     }
@@ -120,7 +124,9 @@ public class BrokerPrefetchSchedulerDrainBenchmarks
         foreach (var entry in inFlight)
         {
             if (entry.Value.IsCompleted)
+            {
                 completed.Add(entry);
+            }
         }
 
         try
@@ -129,7 +135,9 @@ public class BrokerPrefetchSchedulerDrainBenchmarks
             {
                 var (key, task) = completed[i];
                 if (inFlight.Remove(key))
+                {
                     await task.ConfigureAwait(false);
+                }
             }
 
             return completed.Count;

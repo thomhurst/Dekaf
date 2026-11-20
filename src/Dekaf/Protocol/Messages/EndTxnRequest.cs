@@ -13,22 +13,34 @@ public sealed class EndTxnRequest : IKafkaRequest<EndTxnResponse>
     /// <summary>
     /// The transactional ID.
     /// </summary>
-    public required string TransactionalId { get; init; }
+    public required string TransactionalId
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The producer ID.
     /// </summary>
-    public long ProducerId { get; init; }
+    public long ProducerId
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The producer epoch.
     /// </summary>
-    public short ProducerEpoch { get; init; }
+    public short ProducerEpoch
+    {
+        get; init;
+    }
 
     /// <summary>
     /// True if the transaction should be committed, false to abort.
     /// </summary>
-    public bool Committed { get; init; }
+    public bool Committed
+    {
+        get; init;
+    }
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {

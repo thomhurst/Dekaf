@@ -79,7 +79,9 @@ internal sealed class AvroTaggedFieldTransformer : ISchemaRegistryTaggedFieldTra
     {
         var workspace = t_workspace ??= new Workspace();
         for (var depth = 1; depth < t_operationDepth; depth++)
+        {
             workspace = workspace.GetOrCreateNested();
+        }
         return workspace;
     }
 
@@ -98,7 +100,9 @@ internal sealed class AvroTaggedFieldTransformer : ISchemaRegistryTaggedFieldTra
     {
         var workspace = t_workspace;
         for (var depth = 1; workspace is not null && depth < t_operationDepth; depth++)
+        {
             workspace = workspace.Nested;
+        }
         return workspace;
     }
 
@@ -108,7 +112,9 @@ internal sealed class AvroTaggedFieldTransformer : ISchemaRegistryTaggedFieldTra
         public void Dispose()
         {
             if (t_operationDepth != depth)
+            {
                 throw new InvalidOperationException("Avro tagged-field workspace operations must be disposed in stack order.");
+            }
 
             GetCurrentWorkspace()?.ReleaseOversizedOutputs();
             t_operationDepth = depth - 1;
@@ -133,24 +139,32 @@ internal sealed class AvroTaggedFieldTransformer : ISchemaRegistryTaggedFieldTra
                 return;
             case AvroSchema.Type.Boolean:
                 if (target)
+                {
                     ThrowUnsupported(context, schema.Tag);
+                }
                 CopyFixed(ref reader, output, 1);
                 return;
             case AvroSchema.Type.Int:
             case AvroSchema.Type.Long:
             case AvroSchema.Type.Enumeration:
                 if (target)
+                {
                     ThrowUnsupported(context, schema.Tag);
+                }
                 CopyLong(ref reader, output);
                 return;
             case AvroSchema.Type.Float:
                 if (target)
+                {
                     ThrowUnsupported(context, schema.Tag);
+                }
                 CopyFixed(ref reader, output, sizeof(float));
                 return;
             case AvroSchema.Type.Double:
                 if (target)
+                {
                     ThrowUnsupported(context, schema.Tag);
+                }
                 CopyFixed(ref reader, output, sizeof(double));
                 return;
             case AvroSchema.Type.String:
@@ -161,13 +175,17 @@ internal sealed class AvroTaggedFieldTransformer : ISchemaRegistryTaggedFieldTra
                 return;
             case AvroSchema.Type.Fixed:
                 if (target)
+                {
                     ThrowUnsupported(context, schema.Tag);
+                }
                 CopyFixed(ref reader, output, ((global::Avro.FixedSchema)schema).Size);
                 return;
             case AvroSchema.Type.Record:
             case AvroSchema.Type.Error:
                 if (target)
+                {
                     ThrowUnsupported(context, schema.Tag);
+                }
                 TransformRecord(valuePlan, plan, ref reader, output, context, state, transform);
                 return;
             case AvroSchema.Type.Array:
@@ -260,10 +278,14 @@ internal sealed class AvroTaggedFieldTransformer : ISchemaRegistryTaggedFieldTra
             if (count < 0)
             {
                 if (count == long.MinValue)
+                {
                     ThrowInvalidBlock(context);
+                }
                 count = -count;
                 if (reader.ReadLength() > reader.Remaining)
+                {
                     ThrowInvalidBlock(context);
+                }
                 output.WriteLong(count);
             }
             else
@@ -278,15 +300,21 @@ internal sealed class AvroTaggedFieldTransformer : ISchemaRegistryTaggedFieldTra
                 var itemStart = reader.Position;
                 TransformValue(itemPlan, target, plan, ref reader, output, context, state, transform);
                 if (reader.Position != itemStart)
+                {
                     ThrowInvalidBlock(context);
+                }
                 continue;
             }
 
             if (count > reader.Remaining)
+            {
                 ThrowInvalidBlock(context);
+            }
 
             for (long i = 0; i < count; i++)
+            {
                 TransformValue(itemPlan, target, plan, ref reader, output, context, state, transform);
+            }
         }
     }
 
@@ -314,10 +342,14 @@ internal sealed class AvroTaggedFieldTransformer : ISchemaRegistryTaggedFieldTra
             if (count < 0)
             {
                 if (count == long.MinValue)
+                {
                     ThrowInvalidBlock(context);
+                }
                 count = -count;
                 if (reader.ReadLength() > reader.Remaining)
+                {
                     ThrowInvalidBlock(context);
+                }
                 output.WriteLong(count);
             }
             else
@@ -326,7 +358,9 @@ internal sealed class AvroTaggedFieldTransformer : ISchemaRegistryTaggedFieldTra
             }
 
             if (count > reader.Remaining)
+            {
                 ThrowInvalidBlock(context);
+            }
 
             for (long i = 0; i < count; i++)
             {
@@ -417,7 +451,9 @@ internal sealed class AvroTaggedFieldTransformer : ISchemaRegistryTaggedFieldTra
         public AvroTaggedFieldTransformer Get(RegistrySchema registrySchema, AvroSchema tagSchema)
         {
             if (_values.TryGetValue(registrySchema, out var transformer))
+            {
                 return transformer;
+            }
             return GetSlow(registrySchema, tagSchema);
         }
 
@@ -486,7 +522,9 @@ internal sealed class AvroTaggedFieldTransformer : ISchemaRegistryTaggedFieldTra
         {
             var state = Volatile.Read(ref _state);
             if (MetadataIsCurrent(state))
+            {
                 return state.Plan;
+            }
 
             lock (_gate)
             {
@@ -505,9 +543,13 @@ internal sealed class AvroTaggedFieldTransformer : ISchemaRegistryTaggedFieldTra
         {
             var tags = _registrySchema.Metadata?.Tags;
             if (tags is null)
+            {
                 return state.MetadataKind == MetadataTagsKind.None;
+            }
             if (tags.Count != state.MetadataCount)
+            {
                 return false;
+            }
 
             return state.MetadataKind switch
             {
@@ -528,7 +570,9 @@ internal sealed class AvroTaggedFieldTransformer : ISchemaRegistryTaggedFieldTra
             var plan = RulePlan.Create(_schema, _tagSchema, _registrySchema, _rule, mutableTags: true);
             var tags = _registrySchema.Metadata?.Tags;
             if (tags is null)
+            {
                 return new PlanState(plan, MetadataTagsKind.None, 0, 0, default);
+            }
 
             return tags switch
             {
@@ -561,7 +605,9 @@ internal sealed class AvroTaggedFieldTransformer : ISchemaRegistryTaggedFieldTra
         {
             var version = tags.GetEnumerator();
             while (version.MoveNext())
+            {
                 _ = version.Current;
+            }
             return new PlanState(plan, MetadataTagsKind.SortedDictionary, tags.Count, 0, version);
         }
 
@@ -585,11 +631,26 @@ internal sealed class AvroTaggedFieldTransformer : ISchemaRegistryTaggedFieldTra
             int metadataVersion,
             SortedDictionary<string, IReadOnlySet<string>>.Enumerator sortedMetadataVersion)
         {
-            public RulePlan Plan { get; } = plan;
-            public MetadataTagsKind MetadataKind { get; } = metadataKind;
-            public int MetadataCount { get; } = metadataCount;
-            public int MetadataVersion { get; } = metadataVersion;
-            public SortedDictionary<string, IReadOnlySet<string>>.Enumerator SortedMetadataVersion { get; } =
+            public RulePlan Plan
+            {
+                get;
+            } = plan;
+            public MetadataTagsKind MetadataKind
+            {
+                get;
+            } = metadataKind;
+            public int MetadataCount
+            {
+                get;
+            } = metadataCount;
+            public int MetadataVersion
+            {
+                get;
+            } = metadataVersion;
+            public SortedDictionary<string, IReadOnlySet<string>>.Enumerator SortedMetadataVersion
+            {
+                get;
+            } =
                 sortedMetadataVersion;
         }
     }
@@ -604,10 +665,22 @@ internal sealed class AvroTaggedFieldTransformer : ISchemaRegistryTaggedFieldTra
 
     private sealed class ValuePlan(AvroSchema schema)
     {
-        public AvroSchema Schema { get; } = schema;
-        public bool IsZeroWidth { get; set; } = schema.Tag == AvroSchema.Type.Null;
-        public RecordTargets? RecordTargets { get; set; }
-        public ValuePlan[]? Children { get; set; }
+        public AvroSchema Schema
+        {
+            get;
+        } = schema;
+        public bool IsZeroWidth
+        {
+            get; set;
+        } = schema.Tag == AvroSchema.Type.Null;
+        public RecordTargets? RecordTargets
+        {
+            get; set;
+        }
+        public ValuePlan[]? Children
+        {
+            get; set;
+        }
     }
 
     private sealed class RulePlan(
@@ -622,13 +695,18 @@ internal sealed class AvroTaggedFieldTransformer : ISchemaRegistryTaggedFieldTra
 
         public bool HasTargets => _targetCounter?.HasTargets ?? hasFixedTargets;
 
-        public ValuePlan Root { get; } = root;
+        public ValuePlan Root
+        {
+            get;
+        } = root;
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public void RefreshRuleTargets(SchemaRule rule)
         {
             if (mutableTargets is not null)
+            {
                 RefreshRuleTargetsSlow(rule);
+            }
         }
 
         [MethodImpl(MethodImplOptions.NoInlining)]
@@ -637,16 +715,22 @@ internal sealed class AvroTaggedFieldTransformer : ISchemaRegistryTaggedFieldTra
             var targets = mutableTargets!;
             var version = GetSetVersion(rule.Tags!);
             if (version == Volatile.Read(ref _ruleTagsVersion))
+            {
                 return;
+            }
 
             lock (_ruleTagsGate)
             {
                 version = GetSetVersion(rule.Tags!);
                 if (version == Volatile.Read(ref _ruleTagsVersion))
+                {
                     return;
+                }
 
                 for (var i = 0; i < targets.Length; i++)
+                {
                     targets[i].Refresh(rule);
+                }
                 Volatile.Write(ref _ruleTagsVersion, version);
             }
         }
@@ -654,14 +738,20 @@ internal sealed class AvroTaggedFieldTransformer : ISchemaRegistryTaggedFieldTra
         private static TargetCounter? CreateTargetCounter(MutableFieldTarget[]? targets)
         {
             if (targets is null)
+            {
                 return null;
+            }
 
             var count = 0;
             for (var i = 0; i < targets.Length; i++)
+            {
                 count += targets[i].IsTarget ? 1 : 0;
+            }
             var counter = new TargetCounter(count);
             for (var i = 0; i < targets.Length; i++)
+            {
                 targets[i].SetCounter(counter);
+            }
             return counter;
         }
 
@@ -698,16 +788,24 @@ internal sealed class AvroTaggedFieldTransformer : ISchemaRegistryTaggedFieldTra
             ref bool hasTargets)
         {
             if (schema is global::Avro.LogicalSchema logical)
+            {
                 schema = logical.BaseSchema;
+            }
             if (tagSchema is global::Avro.LogicalSchema tagLogical)
+            {
                 tagSchema = tagLogical.BaseSchema;
+            }
             if (tagSchema is global::Avro.UnionSchema ownerUnion &&
                 schema is not global::Avro.UnionSchema)
+            {
                 tagSchema = FindMatchingTagSchema(schema, ownerUnion);
+            }
 
             var visit = new SchemaVisit(schema, tagSchema);
             if (plans.TryGetValue(visit, out var cached))
+            {
                 return cached;
+            }
 
             var valuePlan = new ValuePlan(schema);
             plans.Add(visit, valuePlan);
@@ -763,7 +861,9 @@ internal sealed class AvroTaggedFieldTransformer : ISchemaRegistryTaggedFieldTra
                     }
                     var isZeroWidth = true;
                     for (var i = 0; i < fieldPlans.Length; i++)
+                    {
                         isZeroWidth &= fieldPlans[i].IsZeroWidth;
+                    }
                     valuePlan.IsZeroWidth = isZeroWidth;
                     break;
                 case global::Avro.ArraySchema array:
@@ -821,7 +921,9 @@ internal sealed class AvroTaggedFieldTransformer : ISchemaRegistryTaggedFieldTra
         {
             internal static readonly SchemaVisitReferenceComparer Instance = new();
 
-            private SchemaVisitReferenceComparer() { }
+            private SchemaVisitReferenceComparer()
+            {
+            }
 
             public bool Equals(SchemaVisit x, SchemaVisit y) =>
                 ReferenceEquals(x.Schema, y.Schema) && ReferenceEquals(x.TagSchema, y.TagSchema);
@@ -836,9 +938,13 @@ internal sealed class AvroTaggedFieldTransformer : ISchemaRegistryTaggedFieldTra
             string payloadFieldName)
         {
             if (record is null)
+            {
                 return null;
+            }
             if (record.TryGetField(payloadFieldName, out var field))
+            {
                 return field;
+            }
 
             var fields = record.Fields;
             for (var i = 0; i < fields.Count; i++)
@@ -846,11 +952,15 @@ internal sealed class AvroTaggedFieldTransformer : ISchemaRegistryTaggedFieldTra
                 var candidate = fields[i];
                 var aliases = candidate.Aliases;
                 if (aliases is null)
+                {
                     continue;
+                }
                 for (var aliasIndex = 0; aliasIndex < aliases.Count; aliasIndex++)
                 {
                     if (string.Equals(aliases[aliasIndex], payloadFieldName, StringComparison.Ordinal))
+                    {
                         return candidate;
+                    }
                 }
             }
 
@@ -867,7 +977,9 @@ internal sealed class AvroTaggedFieldTransformer : ISchemaRegistryTaggedFieldTra
                 {
                     var candidate = tagUnion[i];
                     if (SchemasMatch(branch, candidate))
+                    {
                         return candidate;
+                    }
                 }
 
                 return null;
@@ -887,15 +999,21 @@ internal sealed class AvroTaggedFieldTransformer : ISchemaRegistryTaggedFieldTra
             global::Avro.NamedSchema ruleOwnerBranch)
         {
             if (string.Equals(payloadBranch.Fullname, ruleOwnerBranch.Fullname, StringComparison.Ordinal))
+            {
                 return true;
+            }
 
             var aliases = AvroSchemaLogicalAccessors.GetAliases(ruleOwnerBranch);
             if (aliases is null)
+            {
                 return false;
+            }
             for (var i = 0; i < aliases.Count; i++)
             {
                 if (string.Equals(payloadBranch.Fullname, aliases[i].Fullname, StringComparison.Ordinal))
+                {
                     return true;
+                }
             }
 
             return false;
@@ -905,16 +1023,22 @@ internal sealed class AvroTaggedFieldTransformer : ISchemaRegistryTaggedFieldTra
         {
             var tagsJson = field?.GetProperty("confluent:tags");
             if (string.IsNullOrEmpty(tagsJson))
+            {
                 return false;
+            }
 
             using var document = JsonDocument.Parse(tagsJson);
             if (document.RootElement.ValueKind != JsonValueKind.Array)
+            {
                 return false;
+            }
 
             foreach (var tag in document.RootElement.EnumerateArray())
             {
                 if (tag.ValueKind == JsonValueKind.String && ruleTags.Contains(tag.GetString()!))
+                {
                     return true;
+                }
             }
 
             return false;
@@ -926,12 +1050,16 @@ internal sealed class AvroTaggedFieldTransformer : ISchemaRegistryTaggedFieldTra
             IReadOnlySet<string> ruleTags)
         {
             if (metadata is null)
+            {
                 return false;
+            }
 
             foreach (var (pattern, tags) in metadata)
             {
                 if (GlobMatches(pattern, fullName) && TagsOverlap(tags, ruleTags))
+                {
                     return true;
+                }
             }
 
             return false;
@@ -944,7 +1072,9 @@ internal sealed class AvroTaggedFieldTransformer : ISchemaRegistryTaggedFieldTra
             foreach (var tag in smaller)
             {
                 if (larger.Contains(tag))
+                {
                     return true;
+                }
             }
 
             return false;
@@ -970,7 +1100,9 @@ internal sealed class AvroTaggedFieldTransformer : ISchemaRegistryTaggedFieldTra
                 {
                     var crossesSegments = patternIndex + 1 < pattern.Length && pattern[patternIndex + 1] == '*';
                     if (crossesSegments)
+                    {
                         patternIndex++;
+                    }
                     current[0] = previous[0];
                     for (var valueIndex = 1; valueIndex < rowLength; valueIndex++)
                     {
@@ -1043,7 +1175,9 @@ internal sealed class AvroTaggedFieldTransformer : ISchemaRegistryTaggedFieldTra
                 foreach (var (pattern, tags) in metadata)
                 {
                     if (!RulePlan.GlobMatches(pattern, fullName))
+                    {
                         continue;
+                    }
                     if (tags is not (FrozenSet<string> or IImmutableSet<string>))
                     {
                         throw new SchemaRegistryRuleException(
@@ -1056,7 +1190,9 @@ internal sealed class AvroTaggedFieldTransformer : ISchemaRegistryTaggedFieldTra
             }
 
             if (inlineTags.Length == 0 && matchingMetadata is null)
+            {
                 return null;
+            }
 
             _ = GetSetVersion(rule.Tags!);
             return new MutableFieldTarget(inlineTags, matchingMetadata?.ToArray() ?? [], rule);
@@ -1072,24 +1208,32 @@ internal sealed class AvroTaggedFieldTransformer : ISchemaRegistryTaggedFieldTra
             var current = TagsOverlap(inlineTags, ruleTags) || MetadataTagsOverlap(metadataTags, ruleTags);
             Volatile.Write(ref _isTarget, current ? 1 : 0);
             if (current != previous)
+            {
                 _counter!.Add(current ? 1 : -1);
+            }
         }
 
         private static string[] ReadInlineTags(global::Avro.Field? field)
         {
             var tagsJson = field?.GetProperty("confluent:tags");
             if (string.IsNullOrEmpty(tagsJson))
+            {
                 return [];
+            }
 
             using var document = JsonDocument.Parse(tagsJson);
             if (document.RootElement.ValueKind != JsonValueKind.Array)
+            {
                 return [];
+            }
 
             var tags = new List<string>();
             foreach (var tag in document.RootElement.EnumerateArray())
             {
                 if (tag.ValueKind == JsonValueKind.String)
+                {
                     tags.Add(tag.GetString()!);
+                }
             }
 
             return tags.ToArray();
@@ -1102,7 +1246,9 @@ internal sealed class AvroTaggedFieldTransformer : ISchemaRegistryTaggedFieldTra
             for (var i = 0; i < metadataTags.Length; i++)
             {
                 if (RulePlan.TagsOverlap(metadataTags[i], ruleTags))
+                {
                     return true;
+                }
             }
 
             return false;
@@ -1113,7 +1259,9 @@ internal sealed class AvroTaggedFieldTransformer : ISchemaRegistryTaggedFieldTra
             for (var i = 0; i < tags.Length; i++)
             {
                 if (ruleTags.Contains(tags[i]))
+                {
                     return true;
+                }
             }
 
             return false;
@@ -1150,7 +1298,10 @@ internal sealed class AvroTaggedFieldTransformer : ISchemaRegistryTaggedFieldTra
         private int _length;
         private int _temporaryLength;
 
-        internal Workspace? Nested { get; private set; }
+        internal Workspace? Nested
+        {
+            get; private set;
+        }
 
         public ReadOnlyMemory<byte> WrittenMemory
         {
@@ -1167,16 +1318,22 @@ internal sealed class AvroTaggedFieldTransformer : ISchemaRegistryTaggedFieldTra
         public void Reset(ReadOnlySpan<byte> input, int minimumCapacity)
         {
             if (_oversizedOutputMask != 0)
+            {
                 ReleaseInactiveOversizedOutputs(input);
+            }
             var nextSlot = _outputSlot;
             if (_outputs[nextSlot] is not null && input.Overlaps(_outputs[nextSlot]))
+            {
                 nextSlot ^= 1;
+            }
             _outputSlot = nextSlot;
 
             var output = _outputs[_outputSlot];
             var outputLength = _outputLengths[_outputSlot];
             if (output is not null && outputLength > 0)
+            {
                 CryptographicOperations.ZeroMemory(output.AsSpan(0, outputLength));
+            }
             _outputLengths[_outputSlot] = 0;
             _length = 0;
             EnsureOutput(minimumCapacity);
@@ -1188,10 +1345,14 @@ internal sealed class AvroTaggedFieldTransformer : ISchemaRegistryTaggedFieldTra
             {
                 var slotMask = 1 << i;
                 if ((_oversizedOutputMask & slotMask) == 0)
+                {
                     continue;
+                }
                 var output = _outputs[i];
                 if (input.Overlaps(output))
+                {
                     continue;
+                }
 
                 _outputs[i] = null;
                 _outputLengths[i] = 0;
@@ -1241,7 +1402,9 @@ internal sealed class AvroTaggedFieldTransformer : ISchemaRegistryTaggedFieldTra
             var temporary = GetTemporary(Base64.GetMaxEncodedToUtf8Length(value.Length));
             var status = Base64.EncodeToUtf8(value, temporary, out var consumed, out var written);
             if (status != OperationStatus.Done || consumed != value.Length)
+            {
                 throw new InvalidOperationException("Could not encode the encrypted Avro string field as Base64.");
+            }
             _temporaryLength = written;
             return new ReadOnlyMemory<byte>(_temporary!, 0, written);
         }
@@ -1250,7 +1413,9 @@ internal sealed class AvroTaggedFieldTransformer : ISchemaRegistryTaggedFieldTra
         {
             var temporary = _temporary;
             if (temporary is null || temporary.Length <= MaxRetainedBufferSize)
+            {
                 return;
+            }
 
             _temporary = null;
             _temporaryLength = 0;
@@ -1261,7 +1426,9 @@ internal sealed class AvroTaggedFieldTransformer : ISchemaRegistryTaggedFieldTra
         public void ReleaseOversizedOutputs()
         {
             if (_oversizedOutputMask != 0)
+            {
                 ReleaseOversizedOutputsSlow();
+            }
         }
 
         [MethodImpl(MethodImplOptions.NoInlining)]
@@ -1271,7 +1438,9 @@ internal sealed class AvroTaggedFieldTransformer : ISchemaRegistryTaggedFieldTra
             {
                 var slotMask = 1 << i;
                 if ((_oversizedOutputMask & slotMask) == 0)
+                {
                     continue;
+                }
 
                 var output = _outputs[i]!;
                 _outputs[i] = null;
@@ -1285,12 +1454,16 @@ internal sealed class AvroTaggedFieldTransformer : ISchemaRegistryTaggedFieldTra
         private Span<byte> GetTemporary(int minimumLength)
         {
             if (_temporary is not null && _temporaryLength > 0)
+            {
                 CryptographicOperations.ZeroMemory(_temporary.AsSpan(0, _temporaryLength));
+            }
             _temporaryLength = 0;
             if (_temporary is null || _temporary.Length < minimumLength)
             {
                 if (_temporary is not null)
+                {
                     ArrayPool<byte>.Shared.Return(_temporary, clearArray: true);
+                }
                 _temporary = ArrayPool<byte>.Shared.Rent(minimumLength);
             }
 
@@ -1301,7 +1474,9 @@ internal sealed class AvroTaggedFieldTransformer : ISchemaRegistryTaggedFieldTra
         {
             var output = _outputs[_outputSlot];
             if (output is not null && output.Length >= minimumLength)
+            {
                 return;
+            }
             var replacement = ArrayPool<byte>.Shared.Rent(minimumLength);
             if (output is not null)
             {
@@ -1311,9 +1486,13 @@ internal sealed class AvroTaggedFieldTransformer : ISchemaRegistryTaggedFieldTra
             _outputs[_outputSlot] = replacement;
             var slotMask = 1 << _outputSlot;
             if (replacement.Length > MaxRetainedBufferSize)
+            {
                 _oversizedOutputMask |= slotMask;
+            }
             else
+            {
                 _oversizedOutputMask &= ~slotMask;
+            }
         }
     }
 
@@ -1321,7 +1500,10 @@ internal sealed class AvroTaggedFieldTransformer : ISchemaRegistryTaggedFieldTra
     {
         private readonly ReadOnlyMemory<byte> _payload = payload;
 
-        public int Position { get; private set; }
+        public int Position
+        {
+            get; private set;
+        }
 
         public bool End => Position == _payload.Length;
 
@@ -1330,7 +1512,9 @@ internal sealed class AvroTaggedFieldTransformer : ISchemaRegistryTaggedFieldTra
         public ReadOnlyMemory<byte> Read(int length)
         {
             if (length < 0 || length > _payload.Length - Position)
+            {
                 throw new SchemaRegistryRuleException("Avro payload ended before the tagged field transform completed.");
+            }
             var value = _payload.Slice(Position, length);
             Position += length;
             return value;
@@ -1340,7 +1524,9 @@ internal sealed class AvroTaggedFieldTransformer : ISchemaRegistryTaggedFieldTra
         {
             var length = ReadLong();
             if ((ulong)length > int.MaxValue)
+            {
                 throw new SchemaRegistryRuleException($"Invalid Avro length {length}.");
+            }
             return (int)length;
         }
 
@@ -1350,13 +1536,19 @@ internal sealed class AvroTaggedFieldTransformer : ISchemaRegistryTaggedFieldTra
             for (var shift = 0; shift < 70; shift += 7)
             {
                 if (Position >= _payload.Length)
+                {
                     throw new SchemaRegistryRuleException("Avro payload ended inside a variable-length integer.");
+                }
                 var current = _payload.Span[Position++];
                 if (shift == 63 && current > 1)
+                {
                     throw new SchemaRegistryRuleException("Avro payload contains an invalid variable-length integer.");
+                }
                 encoded |= (ulong)(current & 0x7F) << shift;
                 if ((current & 0x80) == 0)
+                {
                     return (long)(encoded >> 1) ^ -((long)encoded & 1);
+                }
             }
 
             throw new SchemaRegistryRuleException("Avro payload contains an invalid variable-length integer.");
@@ -1402,7 +1594,9 @@ internal sealed class AvroTaggedFieldTransformerProvider : ISchemaRegistryTagged
     private AvroSchema ResolveSchema(RegistrySchema schema)
     {
         if (_resolvedSchemas.TryGetValue(schema, out var resolved))
+        {
             return resolved;
+        }
         if (schema.References is { Count: > 0 })
         {
             throw new SchemaRegistryRuleException(
@@ -1519,7 +1713,10 @@ internal sealed class AvroTaggedFieldTransformerProvider : ISchemaRegistryTagged
             _create = Create;
         }
 
-        public RegistrySchema PayloadSchema { get; }
+        public RegistrySchema PayloadSchema
+        {
+            get;
+        }
 
         public AvroTaggedFieldTransformer Get(RegistrySchema owner)
         {
@@ -1547,9 +1744,15 @@ internal sealed class AvroTaggedFieldTransformerProvider : ISchemaRegistryTagged
         RegistrySchema schema,
         AvroTaggedFieldTransformer transformer)
     {
-        public RegistrySchema Schema { get; } = schema;
+        public RegistrySchema Schema
+        {
+            get;
+        } = schema;
 
-        public AvroTaggedFieldTransformer Transformer { get; } = transformer;
+        public AvroTaggedFieldTransformer Transformer
+        {
+            get;
+        } = transformer;
     }
 
     private sealed class SerializerTransformerEntry(
@@ -1557,10 +1760,19 @@ internal sealed class AvroTaggedFieldTransformerProvider : ISchemaRegistryTagged
         AvroSchema payloadSchema,
         AvroTaggedFieldTransformer transformer)
     {
-        public RegistrySchema Schema { get; } = schema;
+        public RegistrySchema Schema
+        {
+            get;
+        } = schema;
 
-        public AvroSchema PayloadSchema { get; } = payloadSchema;
+        public AvroSchema PayloadSchema
+        {
+            get;
+        } = payloadSchema;
 
-        public AvroTaggedFieldTransformer Transformer { get; } = transformer;
+        public AvroTaggedFieldTransformer Transformer
+        {
+            get;
+        } = transformer;
     }
 }

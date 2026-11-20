@@ -28,7 +28,9 @@ public class ShareConsumerPreparationReplayBenchmarks
 
         var buffer = new ArrayBufferWriter<byte>();
         using (var batch = new RecordBatch { Records = records })
+        {
             batch.Write(buffer);
+        }
 
         _recordBytes = buffer.WrittenSpan.ToArray();
         _ = LegacyReplayEveryColdRecord();
@@ -66,7 +68,9 @@ public class ShareConsumerPreparationReplayBenchmarks
             var checksum = 0;
             var records = batch.Records;
             for (var index = 0; index < records.Count; index++)
+            {
                 checksum += records[index].Value.Span[0];
+            }
             return checksum;
         }
         finally

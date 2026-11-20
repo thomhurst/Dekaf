@@ -2,7 +2,12 @@ using BenchmarkDotNet.Attributes;
 
 namespace Dekaf.Benchmarks.Benchmarks.Unit;
 
-public enum ShareRequestTelemetryMode { Unsubscribed, Subscribed, Disabled }
+public enum ShareRequestTelemetryMode
+{
+    Unsubscribed,
+    Subscribed,
+    Disabled
+}
 
 /// <summary>
 /// Steady-state write observation and telemetry for successful requests carrying 16 acknowledgement batches.
@@ -15,10 +20,16 @@ public class ShareConsumerTelemetryRequestBenchmarks
     private HostedShareRequestBenchmarks _requests = null!;
 
     [Params(false, true)]
-    public bool Hosted { get; set; }
+    public bool Hosted
+    {
+        get; set;
+    }
 
     [ParamsAllValues]
-    public ShareRequestTelemetryMode Telemetry { get; set; }
+    public ShareRequestTelemetryMode Telemetry
+    {
+        get; set;
+    }
 
     [GlobalSetup]
     public async Task Setup()

@@ -44,28 +44,58 @@ public sealed class DescribeClusterOptions
     /// Includes fenced but registered brokers. Requires DescribeCluster v2 on the destination.
     /// Not supported with controller bootstrap endpoints, which describe controller nodes instead.
     /// </summary>
-    public bool IncludeFencedBrokers { get; init; }
+    public bool IncludeFencedBrokers
+    {
+        get; init;
+    }
 }
 
 /// <summary>A live administrative cluster snapshot, independent of producer/consumer routing.</summary>
 public sealed class ClusterDescriptionSnapshot
 {
-    public required string ClusterId { get; init; }
-    public int ControllerId { get; init; }
+    public required string ClusterId
+    {
+        get; init;
+    }
+    public int ControllerId
+    {
+        get; init;
+    }
     /// <summary>Identifies whether Nodes describes brokers or controllers.</summary>
-    public DescribeClusterEndpointType EndpointType { get; init; }
-    public required IReadOnlyList<ClusterNodeDescription> Nodes { get; init; }
+    public DescribeClusterEndpointType EndpointType
+    {
+        get; init;
+    }
+    public required IReadOnlyList<ClusterNodeDescription> Nodes
+    {
+        get; init;
+    }
 }
 
 /// <summary>A node returned by live cluster discovery.</summary>
 public sealed class ClusterNodeDescription
 {
-    public int NodeId { get; init; }
-    public required string Host { get; init; }
-    public int Port { get; init; }
-    public string? Rack { get; init; }
+    public int NodeId
+    {
+        get; init;
+    }
+    public required string Host
+    {
+        get; init;
+    }
+    public int Port
+    {
+        get; init;
+    }
+    public string? Rack
+    {
+        get; init;
+    }
     /// <summary>
     /// Broker fencing status, or null for controller nodes and responses older than DescribeCluster v2.
     /// </summary>
-    public bool? IsFenced { get; init; }
+    public bool? IsFenced
+    {
+        get; init;
+    }
 }

@@ -194,7 +194,9 @@ public sealed partial class ShareConsumerRenewalTests
         };
         await using var fixture = CreateFixture(first, secondConnection: second);
         var hosted = (IHostedShareConsumer)fixture.Consumer;
-        hosted.ObserveAcknowledgements(static _ => { });
+        hosted.ObserveAcknowledgements(static _ =>
+        {
+        });
         PrepareForPoll(fixture.Consumer, new TopicPartition("topic", 0), new TopicPartition("topic", 1));
         fixture.Consumer.Subscribe("topic");
         if (bufferRecords)
@@ -214,9 +216,13 @@ public sealed partial class ShareConsumerRenewalTests
             await Assert.That(timestamp).IsGreaterThanOrEqualTo(responseBoundary);
             var lastResponseBoundary = Math.Max(received[0], received[1]);
             if (responseBoundary < lastResponseBoundary)
+            {
                 await Assert.That(timestamp).IsLessThan(lastResponseBoundary);
+            }
             if (timestamps.TryGetValue(poll.Current.Partition, out var earlierRecordTimestamp))
+            {
                 await Assert.That(timestamp).IsEqualTo(earlierRecordTimestamp);
+            }
             timestamps[poll.Current.Partition] = timestamp;
         }
         await Assert.That(timestamps.Count).IsEqualTo(2);
@@ -238,7 +244,9 @@ public sealed partial class ShareConsumerRenewalTests
         await using var fixture = CreateFixture(connection);
         var record = CreateRecord();
         var hosted = (IHostedShareConsumer)fixture.Consumer;
-        hosted.ObserveAcknowledgements(static _ => { });
+        hosted.ObserveAcknowledgements(static _ =>
+        {
+        });
         PrepareForPoll(fixture.Consumer);
         fixture.Consumer.Subscribe("topic");
         fixture.Consumer.Acknowledge(record, AcknowledgeType.Renew);
@@ -292,12 +300,16 @@ public sealed partial class ShareConsumerRenewalTests
             OnSend = () =>
             {
                 if (connection.ShareAcknowledgeRequests.Count > received.Count)
+                {
                     received.Add(System.Diagnostics.Stopwatch.GetTimestamp());
+                }
             }
         };
         await using var fixture = CreateFixture(connection);
         var hosted = (IHostedShareConsumer)fixture.Consumer;
-        hosted.ObserveAcknowledgements(static _ => { });
+        hosted.ObserveAcknowledgements(static _ =>
+        {
+        });
         PrepareForPoll(fixture.Consumer, new TopicPartition("topic", 0), new TopicPartition("topic", 1));
         fixture.Consumer.Subscribe("topic");
         fixture.Consumer.Acknowledge(CreateRecord(partition: 0, offset: 40), AcknowledgeType.Renew);
@@ -314,7 +326,9 @@ public sealed partial class ShareConsumerRenewalTests
             await Assert.That(hosted.AcquisitionStartedTimestamp).IsGreaterThanOrEqualTo(received[partition]);
             await Assert.That(hosted.AcquisitionStartedTimestamp).IsLessThanOrEqualTo(beforeReplay);
             if (partition == 0)
+            {
                 await Assert.That(hosted.AcquisitionStartedTimestamp).IsLessThan(received[1]);
+            }
         }
     }
 
@@ -323,7 +337,9 @@ public sealed partial class ShareConsumerRenewalTests
     {
         await using var fixture = CreateFixture(new CapturingConnection(ApiKey.ShareFetch, 2));
         var hosted = (IHostedShareConsumer)fixture.Consumer;
-        hosted.ObserveAcknowledgements(static _ => { });
+        hosted.ObserveAcknowledgements(static _ =>
+        {
+        });
         PrepareForPoll(fixture.Consumer);
         fixture.Consumer.Subscribe("topic");
         var first = CreateRecord(offset: 42);
@@ -893,9 +909,13 @@ public sealed partial class ShareConsumerRenewalTests
         fixture.Consumer.Subscribe("topic");
         EstablishSessions(fixture.Consumer, 1);
         if (acknowledgementMode == ShareAcknowledgementMode.Implicit)
+        {
             TrackDeliveredRecord(fixture.Consumer, new TopicPartition("topic", 0), 42);
+        }
         else
+        {
             fixture.Consumer.Acknowledge(CreateRecord());
+        }
 
         await using var poll = fixture.Consumer.PollAsync(cancellation.Token).GetAsyncEnumerator();
         await poll.MoveNextAsync();
@@ -1016,7 +1036,9 @@ public sealed partial class ShareConsumerRenewalTests
     {
         var connection = new CapturingConnection(ApiKey.ShareFetch, 2);
         await using var fixture = CreateFixture(connection);
-        ((IHostedShareConsumer)fixture.Consumer).ObserveAcknowledgements(static _ => { });
+        ((IHostedShareConsumer)fixture.Consumer).ObserveAcknowledgements(static _ =>
+        {
+        });
         var record = CreateRecord();
         var assignment = new HashSet<TopicPartition> { new("topic", 0) };
 
@@ -1099,9 +1121,13 @@ public sealed partial class ShareConsumerRenewalTests
         TrackDeliveredRecord(fixture.Consumer, new TopicPartition("topic", 0), 42);
 
         if (dispose)
+        {
             await fixture.Consumer.DisposeAsync();
+        }
         else
+        {
             await fixture.Consumer.CloseAsync();
+        }
 
         var acknowledgement = connection.ShareAcknowledgeRequest!.Topics[0].Partitions[0].AcknowledgementBatches[0];
         await Assert.That(acknowledgement.AcknowledgeTypes[0]).IsEqualTo((byte)AcknowledgeType.Release);
@@ -1191,7 +1217,13 @@ public sealed partial class ShareConsumerRenewalTests
         var connection = new CapturingConnection(ApiKey.ShareFetch, 2)
         {
             ShareFetchResponses = new Queue<ShareFetchResponse>([CreateFetchResponse(0, 42, recordCount: 5)]),
-            OnSend = () => { if (++sends == 3) stop.Cancel(); }
+            OnSend = () =>
+            {
+                if (++sends == 3)
+                {
+                    stop.Cancel();
+                }
+            }
         };
         var preparer = requiresPreparation ? new PausedDeserializerPreparer() : null;
         preparer?.Release.SetResult();
@@ -1204,7 +1236,10 @@ public sealed partial class ShareConsumerRenewalTests
             await foreach (var record in fixture.Consumer.PollAsync(stop.Token))
             {
                 offsets.Add(record.Offset);
-                if (offsets.Count == 5) break;
+                if (offsets.Count == 5)
+                {
+                    break;
+                }
             }
         }
         catch (OperationCanceledException) when (stop.IsCancellationRequested) { }
@@ -1225,7 +1260,13 @@ public sealed partial class ShareConsumerRenewalTests
         var connection = new CapturingConnection(ApiKey.ShareFetch, 2)
         {
             ShareFetchResponses = new Queue<ShareFetchResponse>([CreateFetchResponse(0, 42, recordCount)]),
-            OnSend = () => { if (++sends == 3) stop.Cancel(); }
+            OnSend = () =>
+            {
+                if (++sends == 3)
+                {
+                    stop.Cancel();
+                }
+            }
         };
         var preparer = requiresPreparation ? new PausedDeserializerPreparer() : null;
         preparer?.Release.SetResult();
@@ -1239,14 +1280,18 @@ public sealed partial class ShareConsumerRenewalTests
             {
                 await using var poll = fixture.Consumer.PollAsync(stop.Token).GetAsyncEnumerator();
                 if (await poll.MoveNextAsync())
+                {
                     offsets.Add(poll.Current.Offset);
+                }
             }
         }
         catch (OperationCanceledException) when (stop.IsCancellationRequested) { }
 
         await Assert.That(offsets.Count).IsEqualTo(recordCount);
         for (var index = 0; index < recordCount; index++)
+        {
             await Assert.That(offsets[index]).IsEqualTo(42 + index);
+        }
         await Assert.That(sends).IsEqualTo(1);
     }
 
@@ -1359,8 +1404,10 @@ public sealed partial class ShareConsumerRenewalTests
             .IsEquivalentTo([(byte)AcknowledgeType.Release]);
         await Assert.That(released.ContainsKey(new("topic", 0))).IsEqualTo(buffered);
         if (buffered)
+        {
             await Assert.That(released[new("topic", 0)][0].AcknowledgeTypes)
                 .IsEquivalentTo([(byte)AcknowledgeType.Release]);
+        }
         if (buffered)
         {
             await Assert.That(() => preparer.UndisclosedOwner!.Retain()).Throws<InvalidOperationException>();
@@ -1380,8 +1427,14 @@ public sealed partial class ShareConsumerRenewalTests
         : IDeserializer<string>, IAsyncDeserializerPreparer<string>
     {
         private int _calls;
-        internal Func<ShareRecordBatchOwner> CaptureOwner { get; set; } = null!;
-        internal ShareRecordBatchOwner? UndisclosedOwner { get; private set; }
+        internal Func<ShareRecordBatchOwner> CaptureOwner
+        {
+            get; set;
+        } = null!;
+        internal ShareRecordBatchOwner? UndisclosedOwner
+        {
+            get; private set;
+        }
 
         public string Deserialize(ReadOnlyMemory<byte> data, SerializationContext context) =>
             Serializers.String.Deserialize(data, context);
@@ -1395,7 +1448,9 @@ public sealed partial class ShareConsumerRenewalTests
             }
             UndisclosedOwner = CaptureOwner();
             if (!failDuringPreparation)
+            {
                 throw new InvalidOperationException("Deserializer failure");
+            }
             value = string.Empty;
             return false;
         }
@@ -1430,12 +1485,18 @@ public sealed partial class ShareConsumerRenewalTests
         var pool = Substitute.For<IConnectionPool>();
         pool.GetConnectionAsync(1, Arg.Any<CancellationToken>()).Returns(connection);
         if (leaseHandler is not null)
+        {
             pool.GetConnectionAsync(1, Arg.Any<CancellationToken>())
                 .Returns(call => leaseHandler(call.Arg<CancellationToken>()));
+        }
         if (secondConnection is not null)
+        {
             pool.GetConnectionAsync(2, Arg.Any<CancellationToken>()).Returns(secondConnection);
+        }
         if (connection.SupportsShareGroup)
+        {
             pool.GetConnectionByIndexAsync(1, Arg.Any<int>(), Arg.Any<CancellationToken>()).Returns(connection);
+        }
         var metadataManager = new MetadataManager(pool, options.BootstrapServers);
         metadataManager.Metadata.Update(new MetadataResponse
         {
@@ -1488,8 +1549,14 @@ public sealed partial class ShareConsumerRenewalTests
     private sealed class PausedDeserializerPreparer : IDeserializer<string>, IAsyncDeserializerPreparer<string>
     {
         private bool _prepared;
-        public TaskCompletionSource Entered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        public TaskCompletionSource Release { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource Entered
+        {
+            get;
+        } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource Release
+        {
+            get;
+        } = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         public string Deserialize(ReadOnlyMemory<byte> data, SerializationContext context) =>
             Serializers.String.Deserialize(data, context);
@@ -1521,7 +1588,9 @@ public sealed partial class ShareConsumerRenewalTests
                 LastOffsetDelta = batchCount - 1,
                 Records = Enumerable.Range(0, batchCount).Select(index => new Record
                 {
-                    OffsetDelta = index, IsKeyNull = true, Value = "new-value"u8.ToArray(),
+                    OffsetDelta = index,
+                    IsKeyNull = true,
+                    Value = "new-value"u8.ToArray(),
                     Headers = withHeaders ? [new Header("test", "header"u8.ToArray())] : null,
                     HeaderCount = withHeaders ? 1 : 0
                 }).ToList()
@@ -1657,13 +1726,13 @@ public sealed partial class ShareConsumerRenewalTests
         int partition = 0,
         long offset = 42,
         string topic = "topic") => new()
-    {
-        Topic = topic,
-        Partition = partition,
-        Offset = offset,
-        Value = "value",
-        DeliveryCount = 1
-    };
+        {
+            Topic = topic,
+            Partition = partition,
+            Offset = offset,
+            Value = "value",
+            DeliveryCount = 1
+        };
 
     private static Task InvokeShareFetchAsync(
         KafkaShareConsumer<string, string> consumer,
@@ -1748,7 +1817,9 @@ public sealed partial class ShareConsumerRenewalTests
         params int[] brokerIds)
     {
         foreach (var brokerId in brokerIds)
+        {
             SetSessionEpoch(consumer, brokerId, epoch: 1);
+        }
     }
 
     private static int GetSessionEpoch(
@@ -1792,7 +1863,9 @@ public sealed partial class ShareConsumerRenewalTests
             .GetField("_coordinator", BindingFlags.Instance | BindingFlags.NonPublic)!
             .GetValue(consumer)!;
         if (assignedPartitions.Length == 0)
+        {
             assignedPartitions = [new TopicPartition("topic", 0)];
+        }
         typeof(ShareConsumerCoordinator)
             .GetField("_assignedPartitions", BindingFlags.Instance | BindingFlags.NonPublic)!
             .SetValue(coordinator, assignedPartitions.ToHashSet());
@@ -1805,8 +1878,14 @@ public sealed partial class ShareConsumerRenewalTests
         KafkaShareConsumer<string, string> consumer,
         MetadataManager metadataManager) : IAsyncDisposable
     {
-        internal KafkaShareConsumer<string, string> Consumer { get; } = consumer;
-        internal MetadataManager MetadataManager { get; } = metadataManager;
+        internal KafkaShareConsumer<string, string> Consumer
+        {
+            get;
+        } = consumer;
+        internal MetadataManager MetadataManager
+        {
+            get;
+        } = metadataManager;
 
         public async ValueTask DisposeAsync()
         {
@@ -1831,7 +1910,10 @@ public sealed partial class ShareConsumerRenewalTests
         public string Host => "localhost";
         public int Port => 9092;
         public bool IsConnected => true;
-        public KafkaConnectionCapabilities Capabilities { get; } =
+        public KafkaConnectionCapabilities Capabilities
+        {
+            get;
+        } =
             KafkaConnectionCapabilities.Create(new ApiVersionsResponse
             {
                 ErrorCode = ErrorCode.None,
@@ -1856,26 +1938,86 @@ public sealed partial class ShareConsumerRenewalTests
                 ]
             });
         internal bool SupportsShareGroup => supportShareGroup;
-        internal List<ShareGroupHeartbeatRequest> ShareGroupHeartbeatRequests { get; } = [];
-        internal int SendCount { get; private set; }
-        internal short LastApiVersion { get; private set; }
-        internal ShareFetchRequest? ShareFetchRequest { get; private set; }
-        internal List<ShareFetchRequest> ShareFetchRequests { get; } = [];
-        internal ShareAcknowledgeRequest? ShareAcknowledgeRequest { get; private set; }
-        internal MetadataResponse? MetadataResponse { get; init; }
-        internal Func<CancellationToken, ValueTask<MetadataResponse>>? MetadataHandler { get; init; }
-        internal ShareFetchResponse? ShareFetchResponse { get; init; }
-        internal Queue<ShareFetchResponse>? ShareFetchResponses { get; init; }
-        internal Task? FirstShareFetchPause { get; init; }
-        internal ShareAcknowledgeResponse? ShareAcknowledgeResponse { get; init; }
-        internal Queue<ShareAcknowledgeResponse>? ShareAcknowledgeResponses { get; init; }
-        internal List<ShareAcknowledgeRequest> ShareAcknowledgeRequests { get; } = [];
-        internal Exception? ShareFetchException { get; init; }
-        internal Action? OnSend { get; init; }
-        internal TaskCompletionSource<ShareAcknowledgeResponse>? DelayedFinalAcknowledgement { get; init; }
-        internal Func<CancellationToken, ValueTask>? BeforeWrite { get; init; }
-        internal Func<ShareFetchRequest, CancellationToken, ValueTask<ShareFetchResponse>>? ShareFetchHandler { get; init; }
-        internal Func<ShareAcknowledgeRequest, CancellationToken, ValueTask<ShareAcknowledgeResponse>>? ShareAcknowledgeHandler { get; init; }
+        internal List<ShareGroupHeartbeatRequest> ShareGroupHeartbeatRequests
+        {
+            get;
+        } = [];
+        internal int SendCount
+        {
+            get; private set;
+        }
+        internal short LastApiVersion
+        {
+            get; private set;
+        }
+        internal ShareFetchRequest? ShareFetchRequest
+        {
+            get; private set;
+        }
+        internal List<ShareFetchRequest> ShareFetchRequests
+        {
+            get;
+        } = [];
+        internal ShareAcknowledgeRequest? ShareAcknowledgeRequest
+        {
+            get; private set;
+        }
+        internal MetadataResponse? MetadataResponse
+        {
+            get; init;
+        }
+        internal Func<CancellationToken, ValueTask<MetadataResponse>>? MetadataHandler
+        {
+            get; init;
+        }
+        internal ShareFetchResponse? ShareFetchResponse
+        {
+            get; init;
+        }
+        internal Queue<ShareFetchResponse>? ShareFetchResponses
+        {
+            get; init;
+        }
+        internal Task? FirstShareFetchPause
+        {
+            get; init;
+        }
+        internal ShareAcknowledgeResponse? ShareAcknowledgeResponse
+        {
+            get; init;
+        }
+        internal Queue<ShareAcknowledgeResponse>? ShareAcknowledgeResponses
+        {
+            get; init;
+        }
+        internal List<ShareAcknowledgeRequest> ShareAcknowledgeRequests
+        {
+            get;
+        } = [];
+        internal Exception? ShareFetchException
+        {
+            get; init;
+        }
+        internal Action? OnSend
+        {
+            get; init;
+        }
+        internal TaskCompletionSource<ShareAcknowledgeResponse>? DelayedFinalAcknowledgement
+        {
+            get; init;
+        }
+        internal Func<CancellationToken, ValueTask>? BeforeWrite
+        {
+            get; init;
+        }
+        internal Func<ShareFetchRequest, CancellationToken, ValueTask<ShareFetchResponse>>? ShareFetchHandler
+        {
+            get; init;
+        }
+        internal Func<ShareAcknowledgeRequest, CancellationToken, ValueTask<ShareAcknowledgeResponse>>? ShareAcknowledgeHandler
+        {
+            get; init;
+        }
 
         public async ValueTask<TResponse> SendWithResponseCancellationAsync<TRequest, TResponse>(
             TRequest request, short apiVersion, KafkaRequestWriteContext context,
@@ -1884,7 +2026,9 @@ public sealed partial class ShareConsumerRenewalTests
             where TResponse : IKafkaResponse
         {
             if (BeforeWrite is not null)
+            {
                 await BeforeWrite(cancellationToken);
+            }
             cancellationToken.ThrowIfCancellationRequested();
             context.MarkWriteStarted();
             return await SendCoreAsync<TRequest, TResponse>(request, apiVersion, context.ResponseCancellationToken);
@@ -1905,7 +2049,9 @@ public sealed partial class ShareConsumerRenewalTests
             where TResponse : IKafkaResponse
         {
             if (BeforeWrite is not null)
+            {
                 return SendAfterWriteWaitAsync<TRequest, TResponse>(request, apiVersion, requestWriteStarted, cancellationToken);
+            }
             cancellationToken.ThrowIfCancellationRequested();
             requestWriteStarted();
             return SendCoreAsync<TRequest, TResponse>(request, apiVersion, cancellationToken);
@@ -1964,21 +2110,21 @@ public sealed partial class ShareConsumerRenewalTests
                     ShareFetchResponses is { Count: > 0 }
                         ? ShareFetchResponses.Dequeue()
                         : ShareFetchResponse ?? new ShareFetchResponse
-                    {
-                        ErrorCode = ErrorCode.None,
-                        Responses = [],
-                        NodeEndpoints = []
-                    }),
+                        {
+                            ErrorCode = ErrorCode.None,
+                            Responses = [],
+                            NodeEndpoints = []
+                        }),
                 ShareAcknowledgeRequest acknowledge => Capture(
                     acknowledge,
                     ShareAcknowledgeResponses is { Count: > 0 }
                         ? ShareAcknowledgeResponses.Dequeue()
                         : ShareAcknowledgeResponse ?? new ShareAcknowledgeResponse
-                    {
-                        ErrorCode = ErrorCode.None,
-                        Responses = [],
-                        NodeEndpoints = []
-                    }),
+                        {
+                            ErrorCode = ErrorCode.None,
+                            Responses = [],
+                            NodeEndpoints = []
+                        }),
                 // The coordinator answers joins with partition 0 of "topic" and leaves with epoch -1.
                 FindCoordinatorRequest => new FindCoordinatorResponse
                 {
@@ -2021,13 +2167,19 @@ public sealed partial class ShareConsumerRenewalTests
             };
             OnSend?.Invoke();
             if (request is ShareFetchRequest && ShareFetchException is not null)
+            {
                 throw ShareFetchException;
+            }
             if (request is ShareAcknowledgeRequest { ShareSessionEpoch: ShareSessionManager.CloseEpoch }
                 && DelayedFinalAcknowledgement is { } delayed)
+            {
                 return new ValueTask<TResponse>(AwaitResponseAsync(delayed.Task));
+            }
 
             if (request is ShareFetchRequest && ShareFetchRequests.Count == 1 && FirstShareFetchPause is { } pause)
+            {
                 return new ValueTask<TResponse>(CompletePausedFetchAsync(pause, (TResponse)response, cancellationToken));
+            }
 
             return new ValueTask<TResponse>((TResponse)response);
 

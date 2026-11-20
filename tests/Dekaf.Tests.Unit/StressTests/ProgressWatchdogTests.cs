@@ -175,7 +175,9 @@ public sealed class ProgressWatchdogTests
             var capturesStopped = capturesCompleted.Wait(TimeSpan.FromSeconds(5));
             watchdog?.Dispose();
             if (capturesStopped)
+            {
                 Directory.Delete(outputDirectory, recursive: true);
+            }
         }
     }
 

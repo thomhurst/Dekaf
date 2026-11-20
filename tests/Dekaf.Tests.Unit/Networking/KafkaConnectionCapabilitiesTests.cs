@@ -1,6 +1,6 @@
-using Dekaf.Networking;
-using Dekaf.Metadata;
 using Dekaf.Errors;
+using Dekaf.Metadata;
+using Dekaf.Networking;
 using Dekaf.Protocol;
 using Dekaf.Protocol.Messages;
 using NSubstitute;
@@ -510,9 +510,18 @@ public class KafkaConnectionCapabilitiesTests
         public string Host => "unused";
         public int Port => 9092;
         public bool IsConnected => true;
-        public KafkaConnectionCapabilities Capabilities { get; } = capabilities;
-        public short ObservedApiVersion { get; private set; } = -1;
-        public int SendCount { get; private set; }
+        public KafkaConnectionCapabilities Capabilities
+        {
+            get;
+        } = capabilities;
+        public short ObservedApiVersion
+        {
+            get; private set;
+        } = -1;
+        public int SendCount
+        {
+            get; private set;
+        }
 
         public ValueTask ConnectAsync(CancellationToken cancellationToken = default) => ValueTask.CompletedTask;
 
@@ -525,7 +534,9 @@ public class KafkaConnectionCapabilitiesTests
         {
             SendCount++;
             if (request is not MetadataRequest)
+            {
                 throw new NotSupportedException();
+            }
 
             ObservedApiVersion = apiVersion;
             return ValueTask.FromResult((TResponse)(IKafkaResponse)new MetadataResponse
@@ -581,9 +592,15 @@ public class KafkaConnectionCapabilitiesTests
         public string Host => "unused";
         public int Port => 9092;
         public bool IsConnected => Volatile.Read(ref _connected) != 0;
-        public KafkaConnectionCapabilities Capabilities { get; } = capabilities;
+        public KafkaConnectionCapabilities Capabilities
+        {
+            get;
+        } = capabilities;
         public Task SendStarted => _sendStarted.Task;
-        public short ObservedApiVersion { get; private set; } = -1;
+        public short ObservedApiVersion
+        {
+            get; private set;
+        } = -1;
 
         public void Disconnect() => Volatile.Write(ref _connected, 0);
 

@@ -11,7 +11,10 @@ public sealed class SaslReauthenticationConfig
     /// Whether SASL re-authentication is enabled.
     /// Default is true - re-authentication will occur when the broker reports a session lifetime.
     /// </summary>
-    public bool Enabled { get; init; } = true;
+    public bool Enabled
+    {
+        get; init;
+    } = true;
 
     /// <summary>
     /// The fraction of the session lifetime at which re-authentication should be triggered.
@@ -19,7 +22,10 @@ public sealed class SaslReauthenticationConfig
     /// Must be between 0.0 (exclusive) and 1.0 (exclusive).
     /// Default is 0.9 (90% of session lifetime).
     /// </summary>
-    public double ReauthenticationThreshold { get; init; } = 0.9;
+    public double ReauthenticationThreshold
+    {
+        get; init;
+    } = 0.9;
 
     /// <summary>
     /// Minimum session lifetime in milliseconds below which re-authentication is not attempted.
@@ -27,7 +33,10 @@ public sealed class SaslReauthenticationConfig
     /// will not be scheduled to avoid excessive re-auth overhead.
     /// Default is 10000 (10 seconds).
     /// </summary>
-    public long MinSessionLifetimeMs { get; init; } = 10_000;
+    public long MinSessionLifetimeMs
+    {
+        get; init;
+    } = 10_000;
 
     /// <summary>
     /// Validates the configuration and throws if invalid.

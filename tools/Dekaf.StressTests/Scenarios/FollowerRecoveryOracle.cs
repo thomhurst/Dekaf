@@ -34,7 +34,9 @@ internal sealed class FollowerRecoveryOracle
     public FollowerRecoveryOracle(long[] endOffsets)
     {
         if (endOffsets.Length == 0 || Array.Exists(endOffsets, static offset => offset <= 0 || offset > int.MaxValue))
+        {
             throw new ArgumentException("Every recovery partition must contain seeded records.", nameof(endOffsets));
+        }
         _endOffsets = (long[])endOffsets.Clone();
         _nextOffsets = new long[endOffsets.Length];
         _pendingRetries = new long[endOffsets.Length];
@@ -45,19 +47,29 @@ internal sealed class FollowerRecoveryOracle
     public bool ObserveFollowerData(int partition, long requestedOffset, int epoch)
     {
         if (epoch < 0 || epoch != Epoch)
+        {
             return false;
+        }
         if (requestedOffset < 0 || requestedOffset >= _endOffsets[partition])
+        {
             throw Fail("Follower returned data outside the seeded interval.");
+        }
         if (Interlocked.Increment(ref _followerResponses[partition]) % FaultInterval != 0)
+        {
             return false;
+        }
         // The finite seeded interval fits in 32 bits. Pack the replay/phase generation
         // with its offset so a response racing a seek cannot leave a live stale fault.
         var expected = Volatile.Read(ref _pendingRetries[partition]);
         if (expected != -1 && (int)(expected >> 32) == epoch)
+        {
             return false;
+        }
         var pending = ((long)epoch << 32) | (uint)requestedOffset;
         if (Interlocked.CompareExchange(ref _pendingRetries[partition], pending, expected) != expected)
+        {
             return false;
+        }
         Interlocked.Increment(ref _faults);
         return true;
     }
@@ -66,7 +78,9 @@ internal sealed class FollowerRecoveryOracle
     {
         var expected = Volatile.Read(ref _pendingRetries[partition]);
         if (epoch < 0 || epoch != Epoch || expected == -1 || (int)(expected >> 32) != epoch)
+        {
             return;
+        }
         var faultOffset = (long)(uint)expected;
         // A response alone cannot establish request causality across overlapping
         // fetches and replay seeks. Count exact matches and advances already proven
@@ -81,19 +95,27 @@ internal sealed class FollowerRecoveryOracle
         if (Interlocked.CompareExchange(ref _pendingRetries[partition], -1, expected) == expected)
         {
             if (requestedOffset == faultOffset)
+            {
                 Interlocked.Increment(ref _retries);
+            }
             else
+            {
                 Interlocked.Increment(ref _progressRetries);
+            }
         }
     }
 
     public bool RecordConsumed(int partition, long offset)
     {
         if (offset != _nextOffsets[partition] || offset >= _endOffsets[partition])
+        {
             throw Fail($"Replay gap or duplicate in partition {partition}: got {offset}, expected {_nextOffsets[partition]}.");
+        }
         _nextOffsets[partition]++;
         if (_nextOffsets[partition] != _endOffsets[partition] || ++_completedPartitions != _endOffsets.Length)
+        {
             return false;
+        }
         Volatile.Write(ref _rewinding, 1);
         Interlocked.Increment(ref _epoch);
         Array.Clear(_nextOffsets);

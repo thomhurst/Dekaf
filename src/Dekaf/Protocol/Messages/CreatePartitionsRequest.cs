@@ -13,17 +13,26 @@ public sealed class CreatePartitionsRequest : IKafkaRequest<CreatePartitionsResp
     /// <summary>
     /// The topics to add partitions to.
     /// </summary>
-    public required IReadOnlyList<CreatePartitionsTopic> Topics { get; init; }
+    public required IReadOnlyList<CreatePartitionsTopic> Topics
+    {
+        get; init;
+    }
 
     /// <summary>
     /// How long to wait in milliseconds before timing out the request.
     /// </summary>
-    public int TimeoutMs { get; init; } = 30000;
+    public int TimeoutMs
+    {
+        get; init;
+    } = 30000;
 
     /// <summary>
     /// If true, check that the partition can be created as specified, but don't create anything.
     /// </summary>
-    public bool ValidateOnly { get; init; }
+    public bool ValidateOnly
+    {
+        get; init;
+    }
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {
@@ -47,17 +56,26 @@ public sealed class CreatePartitionsTopic
     /// <summary>
     /// The topic name.
     /// </summary>
-    public required string Name { get; init; }
+    public required string Name
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The new partition count.
     /// </summary>
-    public required int Count { get; init; }
+    public required int Count
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The new partition assignments, or null for automatic.
     /// </summary>
-    public IReadOnlyList<CreatePartitionsAssignment>? Assignments { get; init; }
+    public IReadOnlyList<CreatePartitionsAssignment>? Assignments
+    {
+        get; init;
+    }
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {
@@ -82,7 +100,10 @@ public sealed class CreatePartitionsAssignment
     /// <summary>
     /// The broker IDs for replicas.
     /// </summary>
-    public required IReadOnlyList<int> BrokerIds { get; init; }
+    public required IReadOnlyList<int> BrokerIds
+    {
+        get; init;
+    }
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {

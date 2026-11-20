@@ -26,12 +26,18 @@ public class ConsumerActivityHotPathBenchmarks
     private Header[]? _headers;
 
     [Params(false, true)]
-    public bool WithProducerContext { get; set; }
+    public bool WithProducerContext
+    {
+        get; set;
+    }
 
     // Partition ids other than the first; 2048 is past the cached partition id table, so the span
     // tags it from the overflow cache.
     [Params(3, 2048)]
-    public int Partition { get; set; }
+    public int Partition
+    {
+        get; set;
+    }
 
     [GlobalSetup]
     public void Setup()

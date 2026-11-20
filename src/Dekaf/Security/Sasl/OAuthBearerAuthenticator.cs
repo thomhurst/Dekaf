@@ -62,7 +62,9 @@ public sealed class OAuthBearerAuthenticator : ISaslAuthenticator
     private ValueTask<OAuthBearerToken> RefreshTokenAsync(OAuthBearerToken? observedToken, CancellationToken cancellationToken)
     {
         if (cancellationToken.IsCancellationRequested)
+        {
             return new ValueTask<OAuthBearerToken>(Task.FromCanceled<OAuthBearerToken>(cancellationToken));
+        }
 
         Task? refreshCompleted = null;
         lock (_tokenLock)
@@ -70,16 +72,24 @@ public sealed class OAuthBearerAuthenticator : ISaslAuthenticator
             var cachedToken = _currentToken;
             // Only a replacement token can invalidate the caller's expired-cache observation.
             if (!ReferenceEquals(cachedToken, observedToken) && cachedToken is not null && !cachedToken.IsExpired(bufferSeconds: 60))
+            {
                 return new ValueTask<OAuthBearerToken>(cachedToken);
+            }
 
             if (_refreshInProgress)
+            {
                 refreshCompleted = (_refreshWaiters ??= new(TaskCreationOptions.RunContinuationsAsynchronously)).Task;
+            }
             else
+            {
                 _refreshInProgress = true;
+            }
         }
 
         if (refreshCompleted is not null)
+        {
             return WaitForRefreshAsync(refreshCompleted, cancellationToken);
+        }
 
         // Invoke user code outside the lock; only genuinely overlapping callers need a signal.
         try
@@ -126,7 +136,9 @@ public sealed class OAuthBearerAuthenticator : ISaslAuthenticator
         lock (_tokenLock)
         {
             if (token is not null)
+            {
                 Volatile.Write(ref _currentToken, token);
+            }
             _refreshInProgress = false;
             waiters = _refreshWaiters;
             _refreshWaiters = null;

@@ -207,7 +207,9 @@ public static class PartitionedConsumerExtensions
                 if (slot is not null && !slot.TryAcquire())
                 {
                     if (!context.HasQueuedMessage)
+                    {
                         break;
+                    }
                     if (!await slot.WaitAsync(cancellationToken).ConfigureAwait(false))
                     {
                         // A seek is discarding this lane: release its queued records without a slot.
@@ -278,7 +280,9 @@ public static class PartitionedConsumerExtensions
                 }
 
                 if (batch.Count == 0)
+                {
                     continue;
+                }
 
                 await processor(handlerContext, records, cancellationToken).ConfigureAwait(false);
 
@@ -295,12 +299,16 @@ public static class PartitionedConsumerExtensions
                     }
                 }
                 if (completedOffset >= 0)
+                {
                     progress.Publish(completedOffset, leaderEpoch, completedRecords);
+                }
             }
             finally
             {
                 for (var i = 0; i < records.Count; i++)
+                {
                     records[i].ReleaseStorage();
+                }
                 batch.Clear();
                 slot?.Release();
             }
@@ -350,7 +358,9 @@ public static class PartitionedConsumerExtensions
         PartitionedProcessingOptions options)
     {
         if (!options.IsRuntimeManagedCommitPolicy)
+        {
             return;
+        }
 
         if (consumer is IConsumerCommitConfiguration
             {
@@ -373,7 +383,10 @@ public static class PartitionedConsumerExtensions
 
 internal interface IConsumerLoggerFactorySource
 {
-    ILoggerFactory? LoggerFactory { get; }
+    ILoggerFactory? LoggerFactory
+    {
+        get;
+    }
 }
 
 /// <summary>
@@ -493,7 +506,9 @@ public sealed class PartitionProcessorContext<TKey, TValue>
     internal AsyncHandlerSlotWaiter? CreateHandlerSlotWaiter()
     {
         if (_lane.HandlerSlots is not { } slots)
+        {
             return null;
+        }
 
         var waiter = new AsyncHandlerSlotWaiter(slots);
         _lane.InterruptOnDiscard(waiter);
@@ -620,17 +635,26 @@ public sealed class PartitionedProcessingOptions
     /// <summary>
     /// Gets the maximum queued records per partition lane.
     /// </summary>
-    public int MaxBufferedRecordsPerPartition { get; init; } = 256;
+    public int MaxBufferedRecordsPerPartition
+    {
+        get; init;
+    } = 256;
 
     /// <summary>
     /// Gets the ordering scope used by record and batch handler overloads.
     /// </summary>
-    public PartitionedProcessingOrder Ordering { get; init; } = PartitionedProcessingOrder.Partition;
+    public PartitionedProcessingOrder Ordering
+    {
+        get; init;
+    } = PartitionedProcessingOrder.Partition;
 
     /// <summary>
     /// Gets the maximum concurrent record or batch handlers per partition when <see cref="Ordering"/> is <see cref="PartitionedProcessingOrder.Key"/>.
     /// </summary>
-    public int MaxConcurrentHandlersPerPartition { get; init; } = 1;
+    public int MaxConcurrentHandlersPerPartition
+    {
+        get; init;
+    } = 1;
 
     /// <summary>
     /// Gets the maximum concurrent record or batch handlers across all partitions, or null for no
@@ -641,7 +665,10 @@ public sealed class PartitionedProcessingOptions
     /// at most one handler at a time, so a busy partition cannot starve the others. Records waiting
     /// for a handler stay buffered. Requires a record or batch handler overload.
     /// </remarks>
-    public int? MaxConcurrentHandlers { get; init; }
+    public int? MaxConcurrentHandlers
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Gets the maximum records buffered across all partitions, or null for no consumer-wide limit.
@@ -655,7 +682,10 @@ public sealed class PartitionedProcessingOptions
     /// <see cref="PartitionBackpressureMode.AwaitCapacity"/> waits for capacity.
     /// <see cref="MaxBufferedRecordsPerPartition"/> still applies to each partition.
     /// </remarks>
-    public int? MaxBufferedRecords { get; init; }
+    public int? MaxBufferedRecords
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Gets the maximum number of records passed to a batch handler invocation.
@@ -670,48 +700,75 @@ public sealed class PartitionedProcessingOptions
     /// at least 400 to permit 100-record batches with four workers. Batches can be smaller
     /// when fewer records are available for their key.
     /// </remarks>
-    public int MaxHandlerBatchSize { get; init; } = 1;
+    public int MaxHandlerBatchSize
+    {
+        get; init;
+    } = 1;
 
     /// <summary>
     /// Gets how the runtime applies backpressure when a partition lane is full.
     /// </summary>
-    public PartitionBackpressureMode BackpressureMode { get; init; } = PartitionBackpressureMode.PauseResume;
+    public PartitionBackpressureMode BackpressureMode
+    {
+        get; init;
+    } = PartitionBackpressureMode.PauseResume;
 
     /// <summary>
     /// Gets how partition processors stop during revoke, lost assignment, or shutdown.
     /// </summary>
-    public PartitionStopPolicy StopPolicy { get; init; } = PartitionStopPolicy.Drain;
+    public PartitionStopPolicy StopPolicy
+    {
+        get; init;
+    } = PartitionStopPolicy.Drain;
 
     /// <summary>
     /// Gets the maximum time to wait for a partition processor to stop.
     /// </summary>
-    public TimeSpan StopTimeout { get; init; } = TimeSpan.FromSeconds(30);
+    public TimeSpan StopTimeout
+    {
+        get; init;
+    } = TimeSpan.FromSeconds(30);
 
     /// <summary>
     /// Gets how processor failures affect the partitioned run.
     /// </summary>
-    public PartitionWorkerErrorPolicy ErrorPolicy { get; init; } = PartitionWorkerErrorPolicy.StopConsumer;
+    public PartitionWorkerErrorPolicy ErrorPolicy
+    {
+        get; init;
+    } = PartitionWorkerErrorPolicy.StopConsumer;
 
     /// <summary>
     /// Gets the first delay before restarting a failed lane when <see cref="ErrorPolicy"/> is <see cref="PartitionWorkerErrorPolicy.Ignore"/>.
     /// The value must be greater than <see cref="TimeSpan.Zero"/>.
     /// </summary>
-    public TimeSpan IgnoreRestartBackoff { get; init; } = TimeSpan.FromMilliseconds(100);
+    public TimeSpan IgnoreRestartBackoff
+    {
+        get; init;
+    } = TimeSpan.FromMilliseconds(100);
 
     /// <summary>
     /// Gets the maximum exponential restart delay for failed lanes when <see cref="ErrorPolicy"/> is <see cref="PartitionWorkerErrorPolicy.Ignore"/>.
     /// </summary>
-    public TimeSpan IgnoreRestartBackoffMax { get; init; } = TimeSpan.FromSeconds(5);
+    public TimeSpan IgnoreRestartBackoffMax
+    {
+        get; init;
+    } = TimeSpan.FromSeconds(5);
 
     /// <summary>
     /// Gets how completed partition offsets are committed.
     /// </summary>
-    public PartitionCommitPolicy CommitPolicy { get; init; } = PartitionCommitPolicy.CommitCompletedOnRevoke;
+    public PartitionCommitPolicy CommitPolicy
+    {
+        get; init;
+    } = PartitionCommitPolicy.CommitCompletedOnRevoke;
 
     /// <summary>
     /// Gets the interval for periodic completed-offset commits.
     /// </summary>
-    public TimeSpan CommitInterval { get; init; } = TimeSpan.FromSeconds(5);
+    public TimeSpan CommitInterval
+    {
+        get; init;
+    } = TimeSpan.FromSeconds(5);
 
     /// <summary>
     /// Gets the monitor that reports the run's in-flight work, or <see langword="null"/> to disable monitoring.
@@ -720,7 +777,10 @@ public sealed class PartitionedProcessingOptions
     /// Read <see cref="PartitionedProcessingMonitor.OldestOutstandingRecordAt"/> from health checks while the run is active.
     /// A monitor observes one run at a time.
     /// </remarks>
-    public PartitionedProcessingMonitor? Monitor { get; init; }
+    public PartitionedProcessingMonitor? Monitor
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Gets an optional control that seeks partitions while the run is active.
@@ -729,7 +789,10 @@ public sealed class PartitionedProcessingOptions
     /// A control attaches to one active run at a time; starting a second run with the same control
     /// while the first is active throws <see cref="InvalidOperationException"/>.
     /// </remarks>
-    public PartitionedProcessingControl? Control { get; init; }
+    public PartitionedProcessingControl? Control
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Gets an optional observer called before and after each commit the runtime sends under a
@@ -739,7 +802,10 @@ public sealed class PartitionedProcessingOptions
     /// Commits a handler requests through <see cref="PartitionProcessorContext{TKey, TValue}.CommitProcessedAsync"/>
     /// are not observed; the handler can instrument that call itself.
     /// </remarks>
-    public IOffsetCommitObserver? CommitObserver { get; init; }
+    public IOffsetCommitObserver? CommitObserver
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Gets the transactional producer whose transactions carry the run's commits under
@@ -749,11 +815,17 @@ public sealed class PartitionedProcessingOptions
     /// Required by that policy and rejected by the others. Create it with
     /// <see cref="PartitionedTransactionalProducer.Create{TKey, TValue}"/>.
     /// </remarks>
-    public PartitionedTransactionalProducer? TransactionalProducer { get; init; }
+    public PartitionedTransactionalProducer? TransactionalProducer
+    {
+        get; init;
+    }
 
     // Runs on the runtime loop after a seek marks a lane to discard its queued records and before
     // the lane stops, so tests can release an in-flight handler at a deterministic point.
-    internal Action<TopicPartition>? SeekDiscardingLaneForTest { get; init; }
+    internal Action<TopicPartition>? SeekDiscardingLaneForTest
+    {
+        get; init;
+    }
 
     /// <summary>
     /// True when the runtime itself commits completed offsets based on MarkProcessed tracking.
@@ -772,25 +844,39 @@ public sealed class PartitionedProcessingOptions
         ArgumentOutOfRangeException.ThrowIfLessThan(MaxHandlerBatchSize, 1);
 
         if (MaxConcurrentHandlers < 1)
+        {
             throw new ArgumentOutOfRangeException(nameof(MaxConcurrentHandlers));
+        }
 
         if (MaxBufferedRecords < 1)
+        {
             throw new ArgumentOutOfRangeException(nameof(MaxBufferedRecords));
+        }
 
         if (StopTimeout < TimeSpan.Zero && StopTimeout != Timeout.InfiniteTimeSpan)
+        {
             throw new ArgumentOutOfRangeException(nameof(StopTimeout));
+        }
 
         if (IgnoreRestartBackoff <= TimeSpan.Zero)
+        {
             throw new ArgumentOutOfRangeException(nameof(IgnoreRestartBackoff));
+        }
 
         if (IgnoreRestartBackoffMax <= TimeSpan.Zero)
+        {
             throw new ArgumentOutOfRangeException(nameof(IgnoreRestartBackoffMax));
+        }
 
         if (IgnoreRestartBackoffMax < IgnoreRestartBackoff)
+        {
             throw new ArgumentOutOfRangeException(nameof(IgnoreRestartBackoffMax));
+        }
 
         if (CommitInterval <= TimeSpan.Zero)
+        {
             throw new ArgumentOutOfRangeException(nameof(CommitInterval));
+        }
 
         if (IsTransactionalCommitPolicy)
         {
@@ -819,10 +905,14 @@ public sealed class PartitionedProcessingOptions
     internal void ValidatePartitionProcessor()
     {
         if (Ordering != PartitionedProcessingOrder.Partition)
+        {
             throw new InvalidOperationException("Key-ordered partitioned processing requires a record or batch handler overload.");
+        }
 
         if (MaxConcurrentHandlers.HasValue)
+        {
             throw new InvalidOperationException($"{nameof(MaxConcurrentHandlers)} requires a record or batch handler overload.");
+        }
 
         if (IsTransactionalCommitPolicy)
         {
@@ -834,7 +924,9 @@ public sealed class PartitionedProcessingOptions
     internal PartitionedProcessingLimits? CreateLimits(Action bufferCapacityAvailable, Action bufferResumeAvailable)
     {
         if (MaxConcurrentHandlers is null && MaxBufferedRecords is null)
+        {
             return null;
+        }
 
         return new PartitionedProcessingLimits(
             MaxBufferedRecords is { } maxBuffered
@@ -1121,7 +1213,9 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue> : IPartitionedPro
                         if (moveNext.IsCompleted)
                         {
                             if (!await moveNext.ConfigureAwait(false))
+                            {
                                 break;
+                            }
 
                             await DrainCommandsAsync(linkedCancellation.Token).ConfigureAwait(false);
                             ThrowIfFailed();
@@ -1135,7 +1229,9 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue> : IPartitionedPro
                     if (pendingBatchMove.IsCompleted)
                     {
                         if (!await pendingBatchMove.ConfigureAwait(false))
+                        {
                             break;
+                        }
 
                         pendingBatchMove = null;
                         await DrainCommandsAsync(linkedCancellation.Token).ConfigureAwait(false);
@@ -1150,7 +1246,9 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue> : IPartitionedPro
                         if (waitToRead.IsCompleted)
                         {
                             if (!await waitToRead.ConfigureAwait(false))
+                            {
                                 break;
+                            }
 
                             continue;
                         }
@@ -1161,7 +1259,9 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue> : IPartitionedPro
                     if (pendingCommandWait.IsCompleted)
                     {
                         if (!await pendingCommandWait.ConfigureAwait(false))
+                        {
                             break;
+                        }
 
                         pendingCommandWait = null;
                         continue;
@@ -1174,7 +1274,9 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue> : IPartitionedPro
                         delay).ConfigureAwait(false);
 
                     if (completed == pendingBatchMove || completed == pendingCommandWait)
+                    {
                         continue;
+                    }
 
                     await SyncAssignmentAsync(linkedCancellation.Token).ConfigureAwait(false);
                 }
@@ -1185,7 +1287,9 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue> : IPartitionedPro
 
                 await ObserveAbandonedTaskAsync(pendingBatchMove).ConfigureAwait(false);
                 if (pendingCommandWait is { IsCompleted: true })
+                {
                     await ObserveAbandonedTaskAsync(pendingCommandWait).ConfigureAwait(false);
+                }
 
                 await batchEnumerator.DisposeAsync().ConfigureAwait(false);
             }
@@ -1227,15 +1331,21 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue> : IPartitionedPro
         // Runtime cancellation stops input immediately. A commit already being serviced
         // keeps the same bounded grace period as draining the handler's queued input.
         if (_shutdownCancellation.IsCancellationRequested || _options.StopPolicy == PartitionStopPolicy.Cancel)
+        {
             _shutdownCancellation.Cancel();
+        }
         else if (_options.StopTimeout != Timeout.InfiniteTimeSpan)
+        {
             _shutdownCancellation.CancelAfter(_options.StopTimeout);
+        }
     }
 
     private static async ValueTask ObserveAbandonedTaskAsync(Task<bool>? task)
     {
         if (task is null)
+        {
             return;
+        }
 
         try
         {
@@ -1258,7 +1368,9 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue> : IPartitionedPro
     {
         var partitionArray = partitions as TopicPartition[] ?? partitions.ToArray();
         if (partitionArray.Length > 0)
+        {
             TryQueueCommand(RuntimeCommand<TKey, TValue>.AssignPartitions(partitionArray));
+        }
     }
 
     private void QueueStoppedPartitions(
@@ -1267,7 +1379,9 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue> : IPartitionedPro
     {
         var partitionArray = partitions as TopicPartition[] ?? partitions.ToArray();
         if (partitionArray.Length > 0)
+        {
             TryQueueCommand(RuntimeCommand<TKey, TValue>.StopPartitions(partitionArray, stopReason, completion: null));
+        }
     }
 
     /// <summary>
@@ -1283,7 +1397,9 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue> : IPartitionedPro
     {
         var partitionArray = partitions as TopicPartition[] ?? partitions.ToArray();
         if (partitionArray.Length == 0)
+        {
             return default;
+        }
 
         // A leave's revocation ends the membership whatever the callback does, and the runtime's
         // commit waits for that leave to finish. Waiting here would hold the leave until its
@@ -1296,7 +1412,9 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue> : IPartitionedPro
 
         var completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         if (!TryQueueCommand(RuntimeCommand<TKey, TValue>.StopPartitions(partitionArray, PartitionStopReason.Revoke, completion)))
+        {
             return default;
+        }
 
         // The runtime loop never awaits a poll in progress, so a callback delivered from the
         // runtime's own poll cannot block the loop that completes it.
@@ -1338,7 +1456,9 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue> : IPartitionedPro
         CancellationToken cancellationToken)
     {
         if (cancellationToken.IsCancellationRequested)
+        {
             return new ValueTask(Task.FromCanceled(cancellationToken));
+        }
 
         // A transaction commit waits for this handler's records, so it cannot wait for the commit.
         if (IsTransactional)
@@ -1363,12 +1483,16 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue> : IPartitionedPro
     public ValueTask SeekAsync(TopicPartitionOffset offset, CancellationToken cancellationToken)
     {
         if (cancellationToken.IsCancellationRequested)
+        {
             return new ValueTask(Task.FromCanceled(cancellationToken));
+        }
 
         // Seeks are rare control operations, so each allocates its completion.
         var completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         if (!TryQueueCommand(RuntimeCommand<TKey, TValue>.Seek(offset, completion, cancellationToken)))
+        {
             return new ValueTask(Task.FromException(CreateSeekStoppedException(offset)));
+        }
 
         return new ValueTask(completion.Task.WaitAsync(cancellationToken));
     }
@@ -1468,7 +1592,9 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue> : IPartitionedPro
                     // The abort discarded this lane's output with the others', so it rewinds like
                     // them instead of moving to the target, and the seek fails.
                     if (lane is not null)
+                    {
                         RestartRewoundLane(lane);
+                    }
                     completion.TrySetException(abortedCommit);
                     return;
                 }
@@ -1477,7 +1603,9 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue> : IPartitionedPro
             _consumer.Seek(target);
             (_seekedPartitions ??= []).Add(partition);
             if (_pausedByRuntime.Remove(partition))
+            {
                 _consumer.Partitions.Resume(partition);
+            }
 
             StartLane(partition);
             completion.TrySetResult();
@@ -1502,11 +1630,15 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue> : IPartitionedPro
         CancellationToken cancellationToken)
     {
         if (lane?.GetCommitOffset() is { } completed)
+        {
             return target.Offset < completed.Offset ? target : null;
+        }
 
         using var lookupCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         if (_options.StopTimeout != Timeout.InfiniteTimeSpan)
+        {
             lookupCancellation.CancelAfter(_options.StopTimeout);
+        }
 
         try
         {
@@ -1555,7 +1687,9 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue> : IPartitionedPro
         if (completed is { } value && value.Offset < target.Offset)
         {
             if (lane!.GetUncommittedOffset() is null)
+            {
                 return;
+            }
 
             offset = value;
         }
@@ -1568,7 +1702,9 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue> : IPartitionedPro
 
         using var commitCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         if (_options.StopTimeout != Timeout.InfiniteTimeSpan)
+        {
             commitCancellation.CancelAfter(_options.StopTimeout);
+        }
 
         try
         {
@@ -1580,7 +1716,9 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue> : IPartitionedPro
                     new TopicPartition(target.Topic, target.Partition),
                     commitCancellation.Token).ConfigureAwait(false);
                 if (committed is not { } committedOffset || committedOffset <= target.Offset)
+                {
                     return;
+                }
             }
 
             await CommitRuntimeOffsetsAsync([offset], newlyCompleted, OffsetCommitReason.Seek, commitCancellation.Token)
@@ -1610,7 +1748,9 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue> : IPartitionedPro
         foreach (var partition in _lanes.Keys)
         {
             if (!IsAssigned(partition, assignment))
+            {
                 _partitionsToStop.Add(partition);
+            }
         }
 
         for (var i = 0; i < _partitionsToStop.Count; i++)
@@ -1643,17 +1783,23 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue> : IPartitionedPro
         bool reconciledWhenAssigned)
     {
         if (transitions.Count == 0)
+        {
             return;
+        }
 
         _reconciledTransitions.Clear();
         foreach (var partition in transitions)
         {
             if (assignment.Contains(partition) == reconciledWhenAssigned)
+            {
                 _reconciledTransitions.Add(partition);
+            }
         }
 
         for (var i = 0; i < _reconciledTransitions.Count; i++)
+        {
             transitions.Remove(_reconciledTransitions[i]);
+        }
         _reconciledTransitions.Clear();
     }
 
@@ -1688,7 +1834,9 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue> : IPartitionedPro
         foreach (var partition in partitions)
         {
             if (!IsAssigned(partition, assignment))
+            {
                 _partitionsToStop.Add(partition);
+            }
         }
 
         for (var i = 0; i < _partitionsToStop.Count; i++)
@@ -1696,7 +1844,9 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue> : IPartitionedPro
             var partition = _partitionsToStop[i];
             partitions.Remove(partition);
             if (removePause)
+            {
                 _pausedByRuntime.Remove(partition);
+            }
             _ignoreRestartFailures.Remove(partition);
             _ignoreRestartRecords.Remove(partition);
         }
@@ -1709,23 +1859,33 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue> : IPartitionedPro
     {
         // EOF batches enumerate no records, so they need no completion reservation.
         if (batch.IsPartitionEof)
+        {
             return default;
+        }
 
         var partition = batch.TopicPartition;
         if (_seekedPartitions is { Count: > 0 } seeked && seeked.Contains(partition))
+        {
             return default;
+        }
 
         if (!_lanes.TryGetValue(partition, out var lane) && !TryStartLaneForUnroutedBatch(partition, out lane))
+        {
             return default;
+        }
 
         var records = batch.GetEnumerator();
         // Filters and assignment changes can leave a non-EOF batch without a
         // deliverable record. Reserve storage only after the first record exists.
         if (!records.MoveNext())
+        {
             return default;
+        }
 
         if (!records.Current.IsPartitionEof)
+        {
             lane.RecordArrival();
+        }
         var completionBatch = lane.CreateCompletionBatch(Math.Min(batch.MaximumRecordCount, MaximumCompletionReservation));
         var published = 0;
         var publicationContinuesAsync = false;
@@ -1743,7 +1903,9 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue> : IPartitionedPro
                 }
 
                 if (!records.Current.IsPartitionEof)
+                {
                     published++;
+                }
                 PauseIfNeeded(lane);
             }
             while (records.MoveNext());
@@ -1753,7 +1915,9 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue> : IPartitionedPro
         finally
         {
             if (!publicationContinuesAsync)
+            {
                 lane.EndBatch(completionBatch, published);
+            }
         }
     }
 
@@ -1825,20 +1989,28 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue> : IPartitionedPro
                     if (lane.IsCompleted
                         || !_lanes.TryGetValue(lane.TopicPartition, out var currentLane)
                         || !ReferenceEquals(currentLane, lane))
+                    {
                         return;
+                    }
 
                     if (lane.TryEnqueue(records.Current, completionBatch))
+                    {
                         break;
+                    }
 
                     await signal.WaitAsync(Timeout.Infinite).ConfigureAwait(false);
                 }
 
                 // Clear the hold once the record is queued: the lane's queue covers it now.
                 if (lane.HeldRecordOffset is not null)
+                {
                     lane.HeldRecordOffset = null;
+                }
 
                 if (!records.Current.IsPartitionEof)
+                {
                     published++;
+                }
                 PauseIfNeeded(lane);
             }
             while (records.MoveNext());
@@ -1853,7 +2025,9 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue> : IPartitionedPro
         ref OffsetCompletionBatch? batch, ref int published)
     {
         if (batch is null || published < batch.Capacity)
+        {
             return;
+        }
         // Reserve only the next bounded slab as publication reaches it. Allocate
         // before finishing the old slab so the caller still owns it if allocation fails.
         var next = lane.CreateCompletionBatch(MaximumCompletionReservation);
@@ -1885,17 +2059,23 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue> : IPartitionedPro
         foreach (var partition in assignment)
         {
             if (!_revokedAheadOfSnapshot.Contains(partition))
+            {
                 StartLaneIfIdle(partition);
+            }
         }
 
         foreach (var partition in _assignedAheadOfSnapshot)
+        {
             StartLaneIfIdle(partition);
+        }
     }
 
     private void StartAssignedPartitions(TopicPartition[] partitions)
     {
         foreach (var partition in partitions)
+        {
             StartLaneIfIdle(partition);
+        }
     }
 
     private void StartLaneIfIdle(TopicPartition partition)
@@ -1913,11 +2093,15 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue> : IPartitionedPro
     private void PauseIfNeeded(PartitionLane<TKey, TValue> lane)
     {
         if (_options.BackpressureMode != PartitionBackpressureMode.PauseResume)
+        {
             return;
+        }
 
         var budget = _bufferBudget;
         if (!lane.IsFull && (budget is null || !budget.IsFull))
+        {
             return;
+        }
 
         if (_pausedByRuntime.Add(lane.TopicPartition))
         {
@@ -1930,12 +2114,16 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue> : IPartitionedPro
     private void ResumeIfNeeded(PartitionLane<TKey, TValue> lane)
     {
         if (_options.BackpressureMode != PartitionBackpressureMode.PauseResume || !lane.HasCapacity)
+        {
             return;
+        }
 
         if (_bufferBudget is { IsFull: true } budget)
         {
             if (_pausedByRuntime.Contains(lane.TopicPartition))
+            {
                 budget.RequestResume();
+            }
             return;
         }
 
@@ -1955,13 +2143,17 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue> : IPartitionedPro
         {
             // A paused partition without a lane is held for a failure or a restart backoff.
             if (_lanes.TryGetValue(partition, out var lane))
+            {
                 _lanesToResume.Add(lane);
+            }
         }
 
         try
         {
             for (var i = 0; i < _lanesToResume.Count; i++)
+            {
                 ResumeIfNeeded(_lanesToResume[i]);
+            }
         }
         finally
         {
@@ -1983,7 +2175,9 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue> : IPartitionedPro
     private bool TryQueueCommand(RuntimeCommand<TKey, TValue> command)
     {
         if (!_commands.Writer.TryWrite(command))
+        {
             return false;
+        }
 
         Volatile.Read(ref _capacitySignal)?.Signal();
         Volatile.Read(ref _stopSignal)?.Signal();
@@ -2015,7 +2209,9 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue> : IPartitionedPro
             {
                 case RuntimeCommandKind.Resume:
                     if (_lanes.TryGetValue(command.Lane!.TopicPartition, out var lane))
+                    {
                         ResumeIfNeeded(lane);
+                    }
 
                     break;
 
@@ -2111,14 +2307,18 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue> : IPartitionedPro
         // A seek, or a revoke followed by an assignment, can replace the lane before its failure
         // arrives. The failure belongs to the lane that reported it, not to its replacement.
         if (!_lanes.TryGetValue(lane.TopicPartition, out var current) || !ReferenceEquals(current, lane))
+        {
             return;
+        }
 
         _lanes.Remove(lane.TopicPartition);
         if (_options.ErrorPolicy == PartitionWorkerErrorPolicy.StopPartition)
         {
             _stoppedByFailure.Add(lane.TopicPartition);
             if (_pausedByRuntime.Add(lane.TopicPartition))
+            {
                 _consumer.Partitions.Pause(lane.TopicPartition);
+            }
 
             LogPartitionProcessorFailureStoppingPartition(
                 lane.TopicPartition,
@@ -2132,14 +2332,18 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue> : IPartitionedPro
             cancellationToken).ConfigureAwait(false);
 
         if (_options.ErrorPolicy != PartitionWorkerErrorPolicy.Ignore)
+        {
             return;
+        }
 
         if (!_shutdownCancellation.IsCancellationRequested
             && IsAssigned(lane.TopicPartition, ReadAssignment())
             && !_lanes.ContainsKey(lane.TopicPartition))
         {
             if (lane.LastProcessedOffset.HasValue)
+            {
                 _ignoreRestartFailures.Remove(lane.TopicPartition);
+            }
 
             var restartAttempt = RecordIgnoreRestartFailure(lane.TopicPartition);
             var restartDelay = GetIgnoreRestartDelay(restartAttempt);
@@ -2153,13 +2357,17 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue> : IPartitionedPro
             // consumer would refetch every unenumerated batch. Hold the partition paused until
             // its lane restarts so the backoff keeps its fetched data and does no extra I/O.
             if (_pausedByRuntime.Add(lane.TopicPartition))
+            {
                 _consumer.Partitions.Pause(lane.TopicPartition);
+            }
 
             // The consumer position is past every record routed to the failed lane. Rewind to
             // the first record its processor never received, so the restarted lane processes
             // those records instead of committing past them.
             if (GetFirstUndeliveredOffset(lane) is { } rewindOffset)
+            {
                 _consumer.Seek(rewindOffset);
+            }
 
             _pendingIgnoreRestarts.Add(lane.TopicPartition);
             _ignoreRestartRecords[lane.TopicPartition] = lane.UncommittedRecords;
@@ -2188,7 +2396,9 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue> : IPartitionedPro
         }
 
         if (_pausedByRuntime.Remove(partition))
+        {
             _consumer.Partitions.Resume(partition);
+        }
 
         StartLane(partition, inheritedRecords);
     }
@@ -2223,7 +2433,9 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue> : IPartitionedPro
         _ignoreRestartTasks.TryRemove(task, out _);
 
         if (!task.IsFaulted || task.Exception is null)
+        {
             return;
+        }
 
         var exception = task.Exception.InnerExceptions.Count == 1
             ? task.Exception.InnerException!
@@ -2246,10 +2458,12 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue> : IPartitionedPro
         try
         {
             if (commitProcessed)
+            {
                 await CommitStoppedLaneAsync(
                     lane,
                     reason == PartitionStopReason.Revoke ? OffsetCommitReason.Revoke : OffsetCommitReason.Stop,
                     cancellationToken).ConfigureAwait(false);
+            }
         }
         finally
         {
@@ -2294,7 +2508,9 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue> : IPartitionedPro
         using var signal = new AsyncAutoResetSignal();
         using var commitCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         if (_options.StopTimeout != Timeout.InfiniteTimeSpan)
+        {
             commitCancellation.CancelAfter(_options.StopTimeout);
+        }
 
         Volatile.Write(ref _stopSignal, signal);
         _ = stopping.ContinueWith(static (_, state) => ((AsyncAutoResetSignal)state!).Signal(),
@@ -2318,7 +2534,9 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue> : IPartitionedPro
                 }
 
                 if (!stopping.IsCompleted)
+                {
                     await signal.WaitAsync(Timeout.Infinite).ConfigureAwait(false);
+                }
             }
 
             return await stopping.ConfigureAwait(false);
@@ -2361,7 +2579,9 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue> : IPartitionedPro
         for (var i = 0; i < lanes.Length; i++)
         {
             if (lanes[i] is null)
+            {
                 continue;
+            }
 
             try
             {
@@ -2377,9 +2597,13 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue> : IPartitionedPro
         try
         {
             if (reason == PartitionStopReason.Revoke && ShouldCommitOnPartitionStop())
+            {
                 await CommitRevokedLanesAsync(lanes, cancellationToken).ConfigureAwait(false);
+            }
             else if (IsTransactional && failure is null)
+            {
                 await FinishStoppedLanesTransactionAsync(lanes, reason, cancellationToken).ConfigureAwait(false);
+            }
         }
         catch (Exception exception)
         {
@@ -2387,10 +2611,14 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue> : IPartitionedPro
         }
 
         for (var i = 0; i < laneExceptions.Length; i++)
+        {
             FailOnLaneStopException(laneExceptions[i]);
+        }
 
         if (failure is not null)
+        {
             ExceptionDispatchInfo.Capture(failure).Throw();
+        }
 
         StartAssignedPartitions(ReadAssignment());
     }
@@ -2401,7 +2629,9 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue> : IPartitionedPro
         CancellationToken cancellationToken)
     {
         if (DetachLane(partition) is not { } lane)
+        {
             return;
+        }
 
         await StopLaneAsync(
             lane,
@@ -2410,7 +2640,9 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue> : IPartitionedPro
             cancellationToken).ConfigureAwait(false);
 
         if (IsTransactional)
+        {
             await FinishStoppedLanesTransactionAsync([lane], reason, cancellationToken).ConfigureAwait(false);
+        }
     }
 
     /// <summary>Removes <paramref name="partition"/>'s lane and its runtime pause and restart state.</summary>
@@ -2478,10 +2710,14 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue> : IPartitionedPro
     {
         // Share the shutdown deadline with a handler commit already in flight.
         if (_options.StopPolicy == PartitionStopPolicy.Drain)
+        {
             return StopAllAsync(_shutdownCancellation.Token);
+        }
 
         if (_options.StopTimeout == Timeout.InfiniteTimeSpan)
+        {
             return StopAllAsync(CancellationToken.None);
+        }
 
         return StopAllWithTimeoutAsync();
     }
@@ -2499,7 +2735,9 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue> : IPartitionedPro
         var tasks = _ignoreRestartTasks.Keys.ToArray();
 
         if (tasks.Length == 0)
+        {
             return;
+        }
 
         try
         {
@@ -2520,7 +2758,9 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue> : IPartitionedPro
 
         var now = DateTimeOffset.UtcNow;
         if (now < _nextPeriodicCommit)
+        {
             return;
+        }
 
         _nextPeriodicCommit = now.Add(_options.CommitInterval);
 
@@ -2535,11 +2775,15 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue> : IPartitionedPro
         foreach (var lane in _lanes.Values)
         {
             if (lane.GetUncommittedOffset(out var completedRecords) is { } offset)
+            {
                 (pending ??= []).Add((lane, offset, completedRecords));
+            }
         }
 
         if (pending is not null)
+        {
             await CommitPendingOffsetsAsync(pending, OffsetCommitReason.Periodic, cancellationToken).ConfigureAwait(false);
+        }
     }
 
     /// <summary>
@@ -2555,11 +2799,15 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue> : IPartitionedPro
         foreach (var lane in lanes)
         {
             if (lane is not null && lane.GetUncommittedOffset(out var completedRecords) is { } offset)
+            {
                 (pending ??= []).Add((lane, offset, completedRecords));
+            }
         }
 
         if (pending is null)
+        {
             return;
+        }
 
         if (_options.StopTimeout == Timeout.InfiniteTimeSpan)
         {
@@ -2608,7 +2856,9 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue> : IPartitionedPro
         }
 
         foreach (var (lane, offset, completedRecords) in pending)
+        {
             lane.MarkCommitted(offset.Offset, completedRecords);
+        }
     }
 
     // skipUnchanged applies only to runtime-managed commits. A handler's CommitProcessedAsync always
@@ -2621,7 +2871,9 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue> : IPartitionedPro
     {
         var completedRecords = 0L;
         if ((skipUnchanged ? lane.GetUncommittedOffset(out completedRecords) : lane.GetCommitOffset(out completedRecords)) is not { } offset)
+        {
             return;
+        }
 
         if (skipUnchanged)
         {
@@ -2722,7 +2974,9 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue> : IPartitionedPro
     private ValueTask SendRuntimeCommitAsync(TopicPartitionOffset[] offsets, CancellationToken cancellationToken)
     {
         if (!IsTransactional)
+        {
             return _consumer.CommitAsync(offsets, cancellationToken);
+        }
 
         var metadata = _consumer.ConsumerGroupMetadata
             ?? throw new InvalidOperationException("The consumer has no group membership to send offsets to the transaction with.");
@@ -2753,7 +3007,9 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue> : IPartitionedPro
         }
 
         if (reason != PartitionStopReason.Lost)
+        {
             return;
+        }
 
         foreach (var lane in lanes)
         {
@@ -2803,7 +3059,9 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue> : IPartitionedPro
         bool beginNext = true)
     {
         if (_transaction is null)
+        {
             return null;
+        }
 
         var bounded = reason == OffsetCommitReason.Revoke;
         using var revokeCancellation = bounded && _options.StopTimeout != Timeout.InfiniteTimeSpan
@@ -2824,14 +3082,18 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue> : IPartitionedPro
 
             List<(PartitionLane<TKey, TValue>? Lane, TopicPartitionOffset Offset, long CompletedRecords)>? pending = null;
             if (stoppedLanes is null && seekCommit is { } partitionOnly)
+            {
                 (pending ??= []).Add((null, partitionOnly, 0));
+            }
 
             if (stoppedLanes is not null)
             {
                 foreach (var lane in stoppedLanes)
                 {
                     if (lane is null)
+                    {
                         continue;
+                    }
 
                     // A handler the stop cancelled may have produced part of its output.
                     if (lane.HasUncompletedReads)
@@ -2849,21 +3111,27 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue> : IPartitionedPro
                     }
 
                     if (offset is { } value)
+                    {
                         (pending ??= []).Add((lane, value, completedRecords));
+                    }
                 }
             }
 
             foreach (var lane in _lanes.Values)
             {
                 if (lane.GetUncommittedOffset(out var completedRecords) is { } offset)
+                {
                     (pending ??= []).Add((lane, offset, completedRecords));
+                }
             }
 
             if (pending is null)
             {
                 // Every record read so far is committed, so the transaction holds no output.
                 if (!beginNext)
+                {
                     await AbortOpenTransactionAsync(Timeout.InfiniteTimeSpan).ConfigureAwait(false);
+                }
 
                 return null;
             }
@@ -2874,17 +3142,23 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue> : IPartitionedPro
             {
                 offsets[i] = pending[i].Offset;
                 if (pending[i].Lane is { } lane)
+                {
                     newlyCompleted += GetNewlyCompletedRecords(lane, pending[i].CompletedRecords);
+                }
             }
 
             await CommitRuntimeOffsetsAsync(offsets, newlyCompleted, reason, commitToken).ConfigureAwait(false);
             _uncommittedTransaction = null;
 
             foreach (var (lane, offset, completedRecords) in pending)
+            {
                 lane?.MarkCommitted(offset.Offset, completedRecords);
+            }
 
             if (beginNext)
+            {
                 BeginNextTransaction();
+            }
             return null;
         }
         catch (Exception exception) when (_transaction is not null || _uncommittedTransaction is not null)
@@ -2923,7 +3197,9 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue> : IPartitionedPro
             }
 
             if (!pending)
+            {
                 return true;
+            }
 
             ThrowIfFailed();
             cancellationToken.ThrowIfCancellationRequested();
@@ -2931,7 +3207,9 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue> : IPartitionedPro
 
             var remaining = deadline - DateTimeOffset.UtcNow;
             if (remaining <= TimeSpan.Zero)
+            {
                 return false;
+            }
 
             await gate.WaitForProgressAsync((int)Math.Min(remaining.TotalMilliseconds, TransactionWaitPollMilliseconds))
                 .ConfigureAwait(false);
@@ -2975,7 +3253,9 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue> : IPartitionedPro
         _readGate!.Open();
         var stopping = new ValueTask<Exception?>[lanes.Length];
         for (var i = 0; i < lanes.Length; i++)
+        {
             stopping[i] = lanes[i].StopAsync(PartitionStopPolicy.Cancel, _options.StopTimeout, CancellationToken.None);
+        }
 
         try
         {
@@ -2988,13 +3268,17 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue> : IPartitionedPro
         }
 
         for (var i = 0; i < stopping.Length; i++)
+        {
             FailOnLaneStopException(await stopping[i].ConfigureAwait(false));
+        }
 
         ThrowIfFailed();
         BeginNextTransaction();
 
         foreach (var lane in lanes)
+        {
             RestartRewoundLane(lane);
+        }
     }
 
     /// <summary>Starts a stopped lane's partition again from where an aborted transaction rewinds it.</summary>
@@ -3008,7 +3292,9 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue> : IPartitionedPro
         }
 
         if (_pausedByRuntime.Remove(partition))
+        {
             _consumer.Partitions.Resume(partition);
+        }
 
         StartLane(partition);
     }
@@ -3025,7 +3311,9 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue> : IPartitionedPro
         _transaction = null;
         _uncommittedTransaction = null;
         if (transaction is null)
+        {
             return;
+        }
 
         using var abortCancellation = timeout == Timeout.InfiniteTimeSpan ? null : new CancellationTokenSource(timeout);
         try
@@ -3036,7 +3324,9 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue> : IPartitionedPro
         {
             var timeoutException = new TimeoutException($"The transaction abort did not finish within {timeout}.");
             if (throwOnFailure)
+            {
                 throw timeoutException;
+            }
             LogTransactionAbortFailed(timeoutException);
         }
         catch (Exception exception) when (!throwOnFailure)
@@ -3089,7 +3379,9 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue> : IPartitionedPro
     private void CaptureFailure(Exception exception)
     {
         lock (_failureGate)
+        {
             _failure ??= ExceptionDispatchInfo.Capture(exception);
+        }
     }
 
     private void CompletePendingCommands()
@@ -3099,11 +3391,17 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue> : IPartitionedPro
             // Shutdown has already stopped and committed every lane, so a revocation waiting
             // for a stop command is released; a commit request that never ran is cancelled.
             if (command.Kind == RuntimeCommandKind.Commit)
+            {
                 command.Completion!.TrySetCanceled();
+            }
             else if (command.Kind == RuntimeCommandKind.Seek)
+            {
                 command.Completion!.TrySetException(CreateSeekStoppedException(command.SeekOffset));
+            }
             else
+            {
                 command.Completion?.TrySetResult();
+            }
         }
     }
 
@@ -3176,7 +3474,9 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue> : IPartitionedPro
     private void LogStartingLaneForUnroutedBatch(TopicPartition partition)
     {
         if (!_logger.IsEnabled(LogLevel.Debug))
+        {
             return;
+        }
 
         _logger.LogDebug(
             "Starting partition processor for {Topic}-{Partition} on its first batch; no rebalance callback or assignment sync started it.",
@@ -3286,7 +3586,10 @@ internal sealed class PartitionLane<TKey, TValue> : IOutstandingRecordSource
         });
     }
 
-    public TopicPartition TopicPartition { get; }
+    public TopicPartition TopicPartition
+    {
+        get;
+    }
 
     public CancellationToken StoppingToken => _stopping.Token;
 
@@ -3301,7 +3604,9 @@ internal sealed class PartitionLane<TKey, TValue> : IOutstandingRecordSource
     {
         // A later CancelAsync returns an already completed task, so keep the first one.
         lock (_stopRequested)
+        {
             return _stopRequest ??= _stopRequested.CancelAsync();
+        }
     }
 
     public bool IsCompleted => Volatile.Read(ref _completed) != 0;
@@ -3314,10 +3619,14 @@ internal sealed class PartitionLane<TKey, TValue> : IOutstandingRecordSource
         {
             var automaticProgress = Volatile.Read(ref _automaticProgress);
             if (automaticProgress is not null)
+            {
                 return automaticProgress.LastProcessedOffset;
+            }
 
             lock (_completedRanges)
+            {
                 return _lastProcessedOffset;
+            }
         }
     }
 
@@ -3332,7 +3641,10 @@ internal sealed class PartitionLane<TKey, TValue> : IOutstandingRecordSource
     /// Only the runtime loop reads or writes it. It stays set when the route abandons the record
     /// because the lane completed, so a failure handled later still rewinds to it.
     /// </summary>
-    public TopicPartitionOffset? HeldRecordOffset { get; set; }
+    public TopicPartitionOffset? HeldRecordOffset
+    {
+        get; set;
+    }
 
     public bool IsFull => Volatile.Read(ref _bufferedCount) >= _capacity;
 
@@ -3363,7 +3675,9 @@ internal sealed class PartitionLane<TKey, TValue> : IOutstandingRecordSource
         // Full fence on both sides: either DiscardQueuedRecords sees the waiter or this sees the flag.
         Interlocked.Exchange(ref _discardSlotWaiter, waiter);
         if (Volatile.Read(ref _discardQueuedRecords) != 0)
+        {
             waiter.Interrupt();
+        }
     }
 
     /// <summary>
@@ -3431,7 +3745,9 @@ internal sealed class PartitionLane<TKey, TValue> : IOutstandingRecordSource
                 }
                 _budget?.Release(abandonedCount);
                 lock (_completedRanges)
+                {
                     _completedRanges.Retire();
+                }
                 _monitor?.Unregister(this);
             }
         });
@@ -3445,13 +3761,17 @@ internal sealed class PartitionLane<TKey, TValue> : IOutstandingRecordSource
     public void RecordArrival()
     {
         if (_timeline is { } timeline)
+        {
             RecordArrival(timeline);
+        }
     }
 
     private void RecordArrival(OutstandingRecordTimeline timeline)
     {
         if (timeline.IsFull)
+        {
             timeline.Prune(GetNextUnprocessedOffset(), _lastEnqueuedOffset);
+        }
         timeline.Append(_lastEnqueuedOffset, DateTime.UtcNow.Ticks);
     }
 
@@ -3460,7 +3780,9 @@ internal sealed class PartitionLane<TKey, TValue> : IOutstandingRecordSource
         utcTicks = 0;
         var timeline = _timeline;
         if (timeline is null)
+        {
             return false;
+        }
 
         // Read progress before the enqueue position: a record counted complete is never
         // reported, and a record queued after the progress read is newer than its predecessors.
@@ -3476,29 +3798,39 @@ internal sealed class PartitionLane<TKey, TValue> : IOutstandingRecordSource
     {
         var automaticProgress = Volatile.Read(ref _automaticProgress);
         if (automaticProgress is not null)
+        {
             return automaticProgress.CompletedOffset;
+        }
 
         lock (_completedRanges)
+        {
             return _completedOffset ?? -1;
+        }
     }
 
     [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     public bool TryEnqueue(in ConsumeResult<TKey, TValue> result, OffsetCompletionBatch? completionBatch)
     {
         if (Volatile.Read(ref _completed) != 0)
+        {
             return false;
+        }
 
         // A full lane is rejected before reserving, so a reservation never fails only because
         // this queue is full and never wakes the route for capacity it cannot use.
         var budget = _budget;
         if (budget is not null && (IsFull || !budget.TryReserve()))
+        {
             return false;
+        }
 
         result.RetainStorage();
         // An automatic processor may start while the writer still owns its first
         // manual batch. Stop filling that reservation once progress changes hands.
         if (completionBatch is not null && Volatile.Read(ref _automaticProgress) is not null)
+        {
             completionBatch = null;
+        }
         var isEof = result.IsPartitionEof;
         var index = isEof || completionBatch is null ? 0 : completionBatch.PrepareRecord(_lastEnqueuedOffset, _enqueuedRecords + 1);
         var queued = result with { ProcessingIndex = index, ProcessingBatch = completionBatch };
@@ -3513,7 +3845,9 @@ internal sealed class PartitionLane<TKey, TValue> : IOutstandingRecordSource
         {
             completionBatch?.PublishRecord();
             if (_enqueuedRecords++ == 0)
+            {
                 _firstEnqueuedOffset = result.Offset;
+            }
             // Monitor reads race this write; the volatile store keeps it atomic on 32-bit runtimes.
             Volatile.Write(ref _lastEnqueuedOffset, result.Offset);
         }
@@ -3524,11 +3858,15 @@ internal sealed class PartitionLane<TKey, TValue> : IOutstandingRecordSource
     public OffsetCompletionBatch? CreateCompletionBatch(int capacity)
     {
         if (Volatile.Read(ref _automaticProgress) is not null)
+        {
             return null;
+        }
         lock (_completedRanges)
         {
             if (_automaticProgress is not null)
+            {
                 return null;
+            }
             var batch = new OffsetCompletionBatch(capacity, _completedRanges);
             _completedRanges.AddReservation(batch);
             return batch;
@@ -3538,9 +3876,13 @@ internal sealed class PartitionLane<TKey, TValue> : IOutstandingRecordSource
     public void EndBatch(OffsetCompletionBatch? batch, int published)
     {
         if (batch is null)
+        {
             return;
+        }
         lock (_completedRanges)
+        {
             batch.Finish(published);
+        }
     }
 
     public ValueTask<bool> WaitToWriteAsync(CancellationToken cancellationToken)
@@ -3551,7 +3893,9 @@ internal sealed class PartitionLane<TKey, TValue> : IOutstandingRecordSource
     public ValueTask<bool> WaitToReadMessageAsync(CancellationToken cancellationToken)
     {
         if (_readGate is { IsOpen: false } gate)
+        {
             return WaitToReadAfterGateAsync(gate, cancellationToken);
+        }
 
         return _channel.Reader.WaitToReadAsync(cancellationToken);
     }
@@ -3569,7 +3913,9 @@ internal sealed class PartitionLane<TKey, TValue> : IOutstandingRecordSource
     {
         var gate = _readGate;
         if (gate is null)
+        {
             return TryReadQueuedMessage(out message);
+        }
 
         if (!gate.TryEnter())
         {
@@ -3580,10 +3926,14 @@ internal sealed class PartitionLane<TKey, TValue> : IOutstandingRecordSource
         try
         {
             if (!TryReadQueuedMessage(out message))
+            {
                 return false;
+            }
 
             if (!message.IsPartitionEof)
+            {
                 Volatile.Write(ref _lastReadOffset, message.Offset);
+            }
             return true;
         }
         finally
@@ -3626,7 +3976,9 @@ internal sealed class PartitionLane<TKey, TValue> : IOutstandingRecordSource
         var committed = Volatile.Read(ref _committedOffset);
         var offset = committed >= 0 ? committed : _firstEnqueuedOffset;
         if (offset >= 0)
+        {
             return new TopicPartitionOffset(TopicPartition.Topic, TopicPartition.Partition, offset);
+        }
 
         return HeldRecordOffset;
     }
@@ -3634,7 +3986,9 @@ internal sealed class PartitionLane<TKey, TValue> : IOutstandingRecordSource
     private bool TryReadQueuedMessage(out ConsumeResult<TKey, TValue> message)
     {
         if (!_channel.Reader.TryRead(out message))
+        {
             return false;
+        }
 
         if (Volatile.Read(ref _discardQueuedRecords) != 0)
         {
@@ -3657,7 +4011,9 @@ internal sealed class PartitionLane<TKey, TValue> : IOutstandingRecordSource
         _readBudget?.Release();
         var bufferedCount = Interlocked.Decrement(ref _bufferedCount);
         if (bufferedCount == _capacity - 1)
+        {
             _capacityAvailable(this);
+        }
 
         return true;
     }
@@ -3666,29 +4022,43 @@ internal sealed class PartitionLane<TKey, TValue> : IOutstandingRecordSource
     {
         var completionBatch = message.ProcessingBatch;
         if (completionBatch is null)
+        {
             throw new InvalidOperationException("Cannot mark a message that was not delivered through manual partition completion tracking as processed.");
+        }
         if (!ReferenceEquals(completionBatch.LaneIdentity, _completedRanges))
+        {
             throw new InvalidOperationException("Cannot mark a message from another partition or processing epoch as processed.");
+        }
 
         if (message.IsPartitionEof)
+        {
             return;
+        }
 
         lock (_completedRanges)
         {
             if (_completedRanges.IsRetired)
+            {
                 return;
+            }
 
             if (!_lastProcessedOffset.HasValue || message.Offset > _lastProcessedOffset.Value)
+            {
                 _lastProcessedOffset = message.Offset;
+            }
 
             // Duplicate completions and records retained after lane retirement are benign;
             // their storage may already be returned, unlike a foreign lane identity above.
             if (message.Offset <= _lastCompletedOffset || completionBatch.Nodes is null)
+            {
                 return;
+            }
 
             var node = completionBatch.GetCompletionNode(message.ProcessingIndex);
             if (node.Height != -1)
+            {
                 return;
+            }
             _markedRecords++;
             if (_completedRanges.Complete(completionBatch, node, message.Offset,
                     message.LeaderEpoch ?? -1, _lastCompletedOffset, out var completed, out var epoch, out var completedRecords))
@@ -3742,7 +4112,9 @@ internal sealed class PartitionLane<TKey, TValue> : IOutstandingRecordSource
             else
             {
                 lock (_completedRanges)
+                {
                     completedRecords = _markedRecords;
+                }
             }
             return Math.Max(0, completedRecords - CommittedRecords);
         }
@@ -3771,7 +4143,9 @@ internal sealed class PartitionLane<TKey, TValue> : IOutstandingRecordSource
         {
             var observed = Interlocked.CompareExchange(ref location, value, current);
             if (observed == current)
+            {
                 return;
+            }
             current = observed;
         }
     }
@@ -3786,7 +4160,9 @@ internal sealed class PartitionLane<TKey, TValue> : IOutstandingRecordSource
     {
         var automaticProgress = Volatile.Read(ref _automaticProgress);
         if (automaticProgress is not null)
+        {
             return automaticProgress.GetCommitOffset(out completedRecords);
+        }
 
         lock (_completedRanges)
         {
@@ -3832,7 +4208,9 @@ internal sealed class PartitionLane<TKey, TValue> : IOutstandingRecordSource
         // CancelAsync signals the token synchronously but runs callbacks asynchronously.
         var stopping = Task.WhenAll(_processorTask ?? Task.CompletedTask, RequestStopAsync());
         if (stopPolicy == PartitionStopPolicy.Cancel)
+        {
             stopping = Task.WhenAll(stopping, _stopping.CancelAsync());
+        }
 
         try
         {
@@ -3888,7 +4266,9 @@ internal sealed class PartitionLane<TKey, TValue> : IOutstandingRecordSource
     private void CompleteWriter()
     {
         if (Interlocked.Exchange(ref _completed, 1) == 0)
+        {
             _channel.Writer.TryComplete();
+        }
     }
 }
 

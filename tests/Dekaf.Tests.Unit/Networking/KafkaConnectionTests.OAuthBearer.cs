@@ -109,8 +109,14 @@ public sealed partial class KafkaConnectionTests
 
     private sealed class ConnectionOAuthTokenHandler : HttpMessageHandler
     {
-        public int RequestCount { get; private set; }
-        public int DisposeCount { get; private set; }
+        public int RequestCount
+        {
+            get; private set;
+        }
+        public int DisposeCount
+        {
+            get; private set;
+        }
 
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
@@ -124,7 +130,9 @@ public sealed partial class KafkaConnectionTests
         protected override void Dispose(bool disposing)
         {
             if (disposing)
+            {
                 DisposeCount++;
+            }
             base.Dispose(disposing);
         }
     }

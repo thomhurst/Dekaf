@@ -10,7 +10,10 @@ public sealed class WriteTxnMarkersRequest : IKafkaRequest<WriteTxnMarkersRespon
     public static short LowestSupportedVersion => 1;
     public static short HighestSupportedVersion => 2;
 
-    public required IReadOnlyList<WriteTxnMarkersRequestMarker> Markers { get; init; }
+    public required IReadOnlyList<WriteTxnMarkersRequestMarker> Markers
+    {
+        get; init;
+    }
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {
@@ -28,12 +31,30 @@ public sealed class WriteTxnMarkersRequest : IKafkaRequest<WriteTxnMarkersRespon
 /// </summary>
 public sealed class WriteTxnMarkersRequestMarker
 {
-    public long ProducerId { get; init; }
-    public short ProducerEpoch { get; init; }
-    public bool TransactionResult { get; init; }
-    public required IReadOnlyList<WriteTxnMarkersRequestTopic> Topics { get; init; }
-    public int CoordinatorEpoch { get; init; }
-    public sbyte TransactionVersion { get; init; }
+    public long ProducerId
+    {
+        get; init;
+    }
+    public short ProducerEpoch
+    {
+        get; init;
+    }
+    public bool TransactionResult
+    {
+        get; init;
+    }
+    public required IReadOnlyList<WriteTxnMarkersRequestTopic> Topics
+    {
+        get; init;
+    }
+    public int CoordinatorEpoch
+    {
+        get; init;
+    }
+    public sbyte TransactionVersion
+    {
+        get; init;
+    }
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {
@@ -61,8 +82,14 @@ public sealed class WriteTxnMarkersRequestMarker
 /// </summary>
 public sealed class WriteTxnMarkersRequestTopic
 {
-    public required string Name { get; init; }
-    public required IReadOnlyList<int> PartitionIndexes { get; init; }
+    public required string Name
+    {
+        get; init;
+    }
+    public required IReadOnlyList<int> PartitionIndexes
+    {
+        get; init;
+    }
 
     public void Write(ref KafkaProtocolWriter writer)
     {

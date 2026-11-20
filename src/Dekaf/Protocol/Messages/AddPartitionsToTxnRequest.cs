@@ -18,27 +18,42 @@ public sealed class AddPartitionsToTxnRequest : IKafkaRequest<AddPartitionsToTxn
     /// <summary>
     /// The transactional ID.
     /// </summary>
-    public required string TransactionalId { get; init; }
+    public required string TransactionalId
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The producer ID.
     /// </summary>
-    public long ProducerId { get; init; }
+    public long ProducerId
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The producer epoch.
     /// </summary>
-    public short ProducerEpoch { get; init; }
+    public short ProducerEpoch
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Whether this is a verify-only request (v4+). Defaults to false.
     /// </summary>
-    public bool VerifyOnly { get; init; }
+    public bool VerifyOnly
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The topics and partitions to add to the transaction.
     /// </summary>
-    public required IReadOnlyList<AddPartitionsToTxnTopic> Topics { get; init; }
+    public required IReadOnlyList<AddPartitionsToTxnTopic> Topics
+    {
+        get; init;
+    }
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {
@@ -87,8 +102,14 @@ public sealed class AddPartitionsToTxnRequest : IKafkaRequest<AddPartitionsToTxn
 /// </summary>
 public sealed class AddPartitionsToTxnTopic
 {
-    public required string Name { get; init; }
-    public required IReadOnlyList<int> Partitions { get; init; }
+    public required string Name
+    {
+        get; init;
+    }
+    public required IReadOnlyList<int> Partitions
+    {
+        get; init;
+    }
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {

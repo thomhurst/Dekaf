@@ -20,22 +20,40 @@ namespace Dekaf.Consumer;
 public interface IRebalanceConsumer
 {
     /// <summary>Gets the current subscription.</summary>
-    StringSet Subscription { get; }
+    StringSet Subscription
+    {
+        get;
+    }
 
     /// <summary>Gets the current server-side topic regex subscription, if any.</summary>
-    string? SubscriptionPattern { get; }
+    string? SubscriptionPattern
+    {
+        get;
+    }
 
     /// <summary>Gets the assignment visible to this callback.</summary>
-    TopicPartitionSet Assignment { get; }
+    TopicPartitionSet Assignment
+    {
+        get;
+    }
 
     /// <summary>Gets the paused partitions.</summary>
-    TopicPartitionSet Paused { get; }
+    TopicPartitionSet Paused
+    {
+        get;
+    }
 
     /// <summary>Gets the current group member ID.</summary>
-    string? MemberId { get; }
+    string? MemberId
+    {
+        get;
+    }
 
     /// <summary>Gets current consumer group metadata, if the group has been joined.</summary>
-    ConsumerGroupMetadata? ConsumerGroupMetadata { get; }
+    ConsumerGroupMetadata? ConsumerGroupMetadata
+    {
+        get;
+    }
 
     /// <summary>Commits all currently stored offsets.</summary>
     ValueTask CommitAsync(CancellationToken cancellationToken = default);

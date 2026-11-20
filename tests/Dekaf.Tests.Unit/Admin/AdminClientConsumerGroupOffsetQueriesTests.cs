@@ -30,7 +30,9 @@ public sealed class AdminClientConsumerGroupOffsetQueriesTests
             .Returns(_ =>
             {
                 if (requests != 0)
+                {
                     retryRefreshes++;
+                }
                 return ValueTask.FromResult(MetadataResponseFor((Topic, TopicId)));
             });
         connection.SendAsync<OffsetFetchRequest, OffsetFetchResponse>(Arg.Any<OffsetFetchRequest>(), Arg.Any<short>(), Arg.Any<CancellationToken>())
@@ -40,15 +42,19 @@ public sealed class AdminClientConsumerGroupOffsetQueriesTests
                 var response = Response(call.ArgAt<OffsetFetchRequest>(0), version,
                     [Partition(0, 42, groupError ? ErrorCode.None : error)]);
                 if (groupError)
+                {
                     response = version < 8
                         ? new OffsetFetchResponse { ErrorCode = error, Topics = response.Topics }
                         : new OffsetFetchResponse
                         {
                             Groups = [new OffsetFetchResponseGroup
                             {
-                                GroupId = Group, ErrorCode = error, Topics = response.Groups![0].Topics
+                                GroupId = Group,
+                                ErrorCode = error,
+                                Topics = response.Groups![0].Topics
                             }]
                         };
+                }
                 return ValueTask.FromResult(response);
             });
 
@@ -119,7 +125,8 @@ public sealed class AdminClientConsumerGroupOffsetQueriesTests
             .Returns(call => ValueTask.FromResult(Response(call.ArgAt<OffsetFetchRequest>(0), negotiated, [Partition(0, 42)])));
         var results = await admin.ListConsumerGroupOffsetsAsync(new Dictionary<string, ListConsumerGroupOffsetsSpec>
         {
-            [Group] = new(), ["second"] = new()
+            [Group] = new(),
+            ["second"] = new()
         }, new ListConsumerGroupOffsetsOptions { RequireStable = true });
         await Assert.That(results.Count).IsEqualTo(2);
         await Assert.That(results["second"].Offsets[new(Topic, 0)].Offset!.Value.Offset).IsEqualTo(42);
@@ -152,16 +159,26 @@ public sealed class AdminClientConsumerGroupOffsetQueriesTests
             .Returns(call =>
             {
                 var request = call.ArgAt<OffsetFetchRequest>(0);
-                if (Interlocked.Increment(ref requests) == 5) fifthRequest.TrySetResult();
+                if (Interlocked.Increment(ref requests) == 5)
+                {
+                    fifthRequest.TrySetResult();
+                }
                 var groups = request.Groups!.Select(group =>
                 {
-                    if (group.GroupId == "complete") Interlocked.Increment(ref completedGroupRequests);
+                    if (group.GroupId == "complete")
+                    {
+                        Interlocked.Increment(ref completedGroupRequests);
+                    }
                     return new OffsetFetchResponseGroup
                     {
                         GroupId = group.GroupId,
                         ErrorCode = ErrorCode.None,
-                        Topics = [new OffsetFetchResponseTopic { Name = Topic, Partitions = [Partition(0, 42,
-                            group.GroupId == Group && Volatile.Read(ref stable) == 0 ? ErrorCode.UnstableOffsetCommit : ErrorCode.None)] }]
+                        Topics = [new OffsetFetchResponseTopic
+                        {
+                            Name = Topic,
+                            Partitions = [Partition(0, 42,
+                            group.GroupId == Group && Volatile.Read(ref stable) == 0 ? ErrorCode.UnstableOffsetCommit : ErrorCode.None)]
+                        }]
                     };
                 }).ToArray();
                 return ValueTask.FromResult(new OffsetFetchResponse { Groups = groups });
@@ -169,7 +186,8 @@ public sealed class AdminClientConsumerGroupOffsetQueriesTests
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
         var pending = admin.ListConsumerGroupOffsetsAsync(new Dictionary<string, ListConsumerGroupOffsetsSpec>
         {
-            [Group] = new(), ["complete"] = new()
+            [Group] = new(),
+            ["complete"] = new()
         }, new ListConsumerGroupOffsetsOptions { RequireStable = true }, timeout.Token).AsTask();
         await fifthRequest.Task.WaitAsync(timeout.Token);
         await Assert.That(pending.IsCompleted).IsFalse();
@@ -200,7 +218,11 @@ public sealed class AdminClientConsumerGroupOffsetQueriesTests
         var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var never = new TaskCompletionSource<OffsetFetchResponse>(TaskCreationOptions.RunContinuationsAsynchronously);
         connection.SendAsync<OffsetFetchRequest, OffsetFetchResponse>(Arg.Any<OffsetFetchRequest>(), Arg.Any<short>(), Arg.Any<CancellationToken>())
-            .Returns(call => { entered.TrySetResult(); return new ValueTask<OffsetFetchResponse>(never.Task.WaitAsync(call.ArgAt<CancellationToken>(2))); });
+            .Returns(call =>
+            {
+                entered.TrySetResult();
+                return new ValueTask<OffsetFetchResponse>(never.Task.WaitAsync(call.ArgAt<CancellationToken>(2)));
+            });
         using var cancellation = new CancellationTokenSource();
         var pending = admin.ListConsumerGroupOffsetsAsync(Specs(0), cancellationToken: cancellation.Token).AsTask();
         await entered.Task.WaitAsync(TimeSpan.FromSeconds(10));
@@ -217,8 +239,14 @@ public sealed class AdminClientConsumerGroupOffsetQueriesTests
         bootstrap.SendAsync<FindCoordinatorRequest, FindCoordinatorResponse>(Arg.Any<FindCoordinatorRequest>(), Arg.Any<short>(), Arg.Any<CancellationToken>())
             .Returns(_ => ValueTask.FromResult(new FindCoordinatorResponse
             {
-                Coordinators = [new Coordinator { Key = Group, NodeId = Interlocked.Increment(ref discoveries) == 1 ? 2 : 3,
-                    Host = "localhost", Port = 9092, ErrorCode = ErrorCode.None }]
+                Coordinators = [new Coordinator
+                {
+                    Key = Group,
+                    NodeId = Interlocked.Increment(ref discoveries) == 1 ? 2 : 3,
+                    Host = "localhost",
+                    Port = 9092,
+                    ErrorCode = ErrorCode.None
+                }]
             }));
         var oldDestination = Substitute.For<IKafkaConnection>();
         oldDestination.SendAsync<OffsetFetchRequest, OffsetFetchResponse>(Arg.Any<OffsetFetchRequest>(), Arg.Any<short>(), Arg.Any<CancellationToken>())
@@ -250,9 +278,11 @@ public sealed class AdminClientConsumerGroupOffsetQueriesTests
             {
                 var request = call.ArgAt<OffsetFetchRequest>(0);
                 if (version < 8)
+                {
                     return ValueTask.FromResult(request.GroupId == Group
                         ? new OffsetFetchResponse { ErrorCode = ErrorCode.GroupAuthorizationFailed, Topics = [] }
                         : Response(request, version, [Partition(0, 42)]));
+                }
                 return ValueTask.FromResult(new OffsetFetchResponse
                 {
                     Groups = request.Groups!.Select(group => new OffsetFetchResponseGroup
@@ -265,7 +295,8 @@ public sealed class AdminClientConsumerGroupOffsetQueriesTests
             });
         var results = await admin.ListConsumerGroupOffsetsAsync(new Dictionary<string, ListConsumerGroupOffsetsSpec>
         {
-            [Group] = new(), ["success"] = new()
+            [Group] = new(),
+            ["success"] = new()
         });
         await Assert.That(results[Group].ErrorCode).IsEqualTo(ErrorCode.GroupAuthorizationFailed);
         await Assert.That(results[Group].Offsets).IsEmpty();
@@ -324,9 +355,13 @@ public sealed class AdminClientConsumerGroupOffsetQueriesTests
         public string Host => "localhost";
         public int Port => 9092;
         public bool IsConnected => true;
-        public KafkaConnectionCapabilities Capabilities { get; } = KafkaConnectionCapabilities.Create(new ApiVersionsResponse
+        public KafkaConnectionCapabilities Capabilities
         {
-            ErrorCode = ErrorCode.None, ApiKeys = [new ApiVersion(ApiKey.OffsetFetch, 6, maximum)]
+            get;
+        } = KafkaConnectionCapabilities.Create(new ApiVersionsResponse
+        {
+            ErrorCode = ErrorCode.None,
+            ApiKeys = [new ApiVersion(ApiKey.OffsetFetch, 6, maximum)]
         });
         public ValueTask<TResponse> SendAsync<TRequest, TResponse>(TRequest request, short apiVersion, CancellationToken cancellationToken = default)
             where TRequest : IKafkaRequest<TResponse> where TResponse : IKafkaResponse => inner.SendAsync<TRequest, TResponse>(request, apiVersion, cancellationToken);
@@ -349,7 +384,11 @@ public sealed class AdminClientConsumerGroupOffsetQueriesTests
 
     private static OffsetFetchResponsePartition Partition(int index, long offset, ErrorCode error = ErrorCode.None) => new()
     {
-        PartitionIndex = index, CommittedOffset = offset, CommittedLeaderEpoch = 7, Metadata = "checkpoint", ErrorCode = error
+        PartitionIndex = index,
+        CommittedOffset = offset,
+        CommittedLeaderEpoch = 7,
+        Metadata = "checkpoint",
+        ErrorCode = error
     };
 
     private static OffsetFetchResponse Response(OffsetFetchRequest request, short version, OffsetFetchResponsePartition[] partitions)

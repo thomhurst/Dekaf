@@ -627,7 +627,9 @@ public sealed class OAuthBearerTokenProviderTests
         var base64 = value.Replace('-', '+').Replace('_', '/');
         var padding = base64.Length % 4;
         if (padding > 0)
+        {
             base64 += new string('=', 4 - padding);
+        }
 
         return Convert.FromBase64String(base64);
     }
@@ -636,11 +638,26 @@ public sealed class OAuthBearerTokenProviderTests
 
     private sealed class CapturingTokenEndpointHandler : HttpMessageHandler
     {
-        public List<IReadOnlyDictionary<string, string>> Requests { get; } = [];
-        public List<string?> AuthorizationSchemes { get; } = [];
-        public List<string?> AuthorizationParameters { get; } = [];
-        public int ExpiresInSeconds { get; init; } = 3600;
-        public HttpStatusCode ResponseStatusCode { get; init; } = HttpStatusCode.OK;
+        public List<IReadOnlyDictionary<string, string>> Requests
+        {
+            get;
+        } = [];
+        public List<string?> AuthorizationSchemes
+        {
+            get;
+        } = [];
+        public List<string?> AuthorizationParameters
+        {
+            get;
+        } = [];
+        public int ExpiresInSeconds
+        {
+            get; init;
+        } = 3600;
+        public HttpStatusCode ResponseStatusCode
+        {
+            get; init;
+        } = HttpStatusCode.OK;
 
         protected override async Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request,
@@ -681,7 +698,10 @@ public sealed class OAuthBearerTokenProviderTests
         string expectedClientId,
         string expectedClientSecret) : HttpMessageHandler
     {
-        public bool CredentialsMatched { get; private set; }
+        public bool CredentialsMatched
+        {
+            get; private set;
+        }
 
         protected override Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request,
@@ -693,7 +713,9 @@ public sealed class OAuthBearerTokenProviderTests
             var encodedCredentials = Encoding.UTF8.GetString(credentialBytes);
             var components = encodedCredentials.Split(':', 2);
             if (components.Length != 2)
+            {
                 throw new InvalidOperationException("Basic credentials separator missing.");
+            }
 
             var clientId = DecodeFormValue(components[0]);
             var clientSecret = DecodeFormValue(components[1]);
@@ -715,7 +737,10 @@ public sealed class OAuthBearerTokenProviderTests
 
     private sealed class CapturingAzureImdsHandler : HttpMessageHandler
     {
-        public List<AzureImdsRequest> Requests { get; } = [];
+        public List<AzureImdsRequest> Requests
+        {
+            get;
+        } = [];
 
         protected override Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request,

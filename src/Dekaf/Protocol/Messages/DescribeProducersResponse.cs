@@ -12,8 +12,14 @@ public sealed class DescribeProducersResponse : IKafkaResponse
     public static short LowestSupportedVersion => 0;
     public static short HighestSupportedVersion => 0;
 
-    public int ThrottleTimeMs { get; init; }
-    public required IReadOnlyList<DescribeProducersResponseTopic> Topics { get; init; }
+    public int ThrottleTimeMs
+    {
+        get; init;
+    }
+    public required IReadOnlyList<DescribeProducersResponseTopic> Topics
+    {
+        get; init;
+    }
 
     public static IKafkaResponse Read(ref KafkaProtocolReader reader, short version)
     {
@@ -38,8 +44,14 @@ public sealed class DescribeProducersResponse : IKafkaResponse
 /// </summary>
 public sealed class DescribeProducersResponseTopic
 {
-    public required string Name { get; init; }
-    public required IReadOnlyList<DescribeProducersResponsePartition> Partitions { get; init; }
+    public required string Name
+    {
+        get; init;
+    }
+    public required IReadOnlyList<DescribeProducersResponsePartition> Partitions
+    {
+        get; init;
+    }
 
     public static DescribeProducersResponseTopic Read(ref KafkaProtocolReader reader)
     {
@@ -64,10 +76,22 @@ public sealed class DescribeProducersResponseTopic
 /// </summary>
 public sealed class DescribeProducersResponsePartition
 {
-    public int PartitionIndex { get; init; }
-    public ErrorCode ErrorCode { get; init; }
-    public string? ErrorMessage { get; init; }
-    public required IReadOnlyList<DescribeProducersResponseProducer> ActiveProducers { get; init; }
+    public int PartitionIndex
+    {
+        get; init;
+    }
+    public ErrorCode ErrorCode
+    {
+        get; init;
+    }
+    public string? ErrorMessage
+    {
+        get; init;
+    }
+    public required IReadOnlyList<DescribeProducersResponseProducer> ActiveProducers
+    {
+        get; init;
+    }
 
     public static DescribeProducersResponsePartition Read(ref KafkaProtocolReader reader)
     {
@@ -96,12 +120,30 @@ public sealed class DescribeProducersResponsePartition
 /// </summary>
 public sealed class DescribeProducersResponseProducer
 {
-    public long ProducerId { get; init; }
-    public int ProducerEpoch { get; init; }
-    public int LastSequence { get; init; }
-    public long LastTimestamp { get; init; }
-    public int CoordinatorEpoch { get; init; }
-    public long CurrentTxnStartOffset { get; init; }
+    public long ProducerId
+    {
+        get; init;
+    }
+    public int ProducerEpoch
+    {
+        get; init;
+    }
+    public int LastSequence
+    {
+        get; init;
+    }
+    public long LastTimestamp
+    {
+        get; init;
+    }
+    public int CoordinatorEpoch
+    {
+        get; init;
+    }
+    public long CurrentTxnStartOffset
+    {
+        get; init;
+    }
 
     public static DescribeProducersResponseProducer Read(ref KafkaProtocolReader reader)
     {

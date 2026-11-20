@@ -56,7 +56,10 @@ public sealed class StaticMembershipTests(KafkaTestContainer kafka) : KafkaInteg
             await foreach (var msg in consumer1.ConsumeAsync(cts.Token))
             {
                 messages.Add(msg);
-                if (messages.Count >= 4) break;
+                if (messages.Count >= 4)
+                {
+                    break;
+                }
             }
 
             firstAssignment = consumer1.Assignment.ToArray().Select(tp => tp.Partition).ToHashSet();
@@ -97,7 +100,10 @@ public sealed class StaticMembershipTests(KafkaTestContainer kafka) : KafkaInteg
         await foreach (var msg in consumer2.ConsumeAsync(cts2.Token))
         {
             messages2.Add(msg);
-            if (messages2.Count >= 4) break;
+            if (messages2.Count >= 4)
+            {
+                break;
+            }
         }
 
         await Assert.That(messages2).Count().IsGreaterThanOrEqualTo(1);
@@ -627,7 +633,10 @@ public sealed class StaticMembershipTests(KafkaTestContainer kafka) : KafkaInteg
             await foreach (var msg in consumer1.ConsumeAsync(cts.Token))
             {
                 messages.Add(msg);
-                if (messages.Count >= 3) break;
+                if (messages.Count >= 3)
+                {
+                    break;
+                }
             }
 
             await Assert.That(messages).Count().IsEqualTo(3);
@@ -673,7 +682,10 @@ public sealed class StaticMembershipTests(KafkaTestContainer kafka) : KafkaInteg
         await foreach (var msg in consumer2.ConsumeAsync(cts2.Token))
         {
             messages2.Add(msg);
-            if (messages2.Count >= 3) break;
+            if (messages2.Count >= 3)
+            {
+                break;
+            }
         }
 
         await Assert.That(messages2).Count().IsEqualTo(3);

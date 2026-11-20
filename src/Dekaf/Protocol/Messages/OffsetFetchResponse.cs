@@ -18,22 +18,34 @@ public sealed class OffsetFetchResponse : IKafkaResponse
     /// <summary>
     /// Throttle time in milliseconds.
     /// </summary>
-    public int ThrottleTimeMs { get; init; }
+    public int ThrottleTimeMs
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Topics with offsets (v0-v7).
     /// </summary>
-    public IReadOnlyList<OffsetFetchResponseTopic>? Topics { get; init; }
+    public IReadOnlyList<OffsetFetchResponseTopic>? Topics
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Error code (v2-v7).
     /// </summary>
-    public ErrorCode ErrorCode { get; init; }
+    public ErrorCode ErrorCode
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Groups (v8+).
     /// </summary>
-    public IReadOnlyList<OffsetFetchResponseGroup>? Groups { get; init; }
+    public IReadOnlyList<OffsetFetchResponseGroup>? Groups
+    {
+        get; init;
+    }
 
     public static IKafkaResponse Read(ref KafkaProtocolReader reader, short version)
     {
@@ -78,9 +90,18 @@ public sealed class OffsetFetchResponse : IKafkaResponse
 /// </summary>
 public sealed class OffsetFetchResponseTopic
 {
-    public string Name { get; init; } = string.Empty;
-    public Guid TopicId { get; init; }
-    public required IReadOnlyList<OffsetFetchResponsePartition> Partitions { get; init; }
+    public string Name
+    {
+        get; init;
+    } = string.Empty;
+    public Guid TopicId
+    {
+        get; init;
+    }
+    public required IReadOnlyList<OffsetFetchResponsePartition> Partitions
+    {
+        get; init;
+    }
 
     public static OffsetFetchResponseTopic Read(ref KafkaProtocolReader reader, short version)
     {
@@ -110,11 +131,26 @@ public sealed class OffsetFetchResponseTopic
 /// </summary>
 public sealed class OffsetFetchResponsePartition
 {
-    public required int PartitionIndex { get; init; }
-    public required long CommittedOffset { get; init; }
-    public int CommittedLeaderEpoch { get; init; } = -1;
-    public string? Metadata { get; init; }
-    public required ErrorCode ErrorCode { get; init; }
+    public required int PartitionIndex
+    {
+        get; init;
+    }
+    public required long CommittedOffset
+    {
+        get; init;
+    }
+    public int CommittedLeaderEpoch
+    {
+        get; init;
+    } = -1;
+    public string? Metadata
+    {
+        get; init;
+    }
+    public required ErrorCode ErrorCode
+    {
+        get; init;
+    }
 
     public static OffsetFetchResponsePartition Read(ref KafkaProtocolReader reader, short version)
     {
@@ -142,9 +178,18 @@ public sealed class OffsetFetchResponsePartition
 /// </summary>
 public sealed class OffsetFetchResponseGroup
 {
-    public required string GroupId { get; init; }
-    public required IReadOnlyList<OffsetFetchResponseTopic> Topics { get; init; }
-    public required ErrorCode ErrorCode { get; init; }
+    public required string GroupId
+    {
+        get; init;
+    }
+    public required IReadOnlyList<OffsetFetchResponseTopic> Topics
+    {
+        get; init;
+    }
+    public required ErrorCode ErrorCode
+    {
+        get; init;
+    }
 
     public static OffsetFetchResponseGroup Read(ref KafkaProtocolReader reader, short version)
     {

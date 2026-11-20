@@ -33,9 +33,13 @@ public sealed class InMemoryTransactionOffsetTests
                 await producer.CompletePreparedTransactionAsync(state, commit);
             }
             else if (commit)
+            {
                 await transaction.CommitAsync();
+            }
             else
+            {
                 await transaction.AbortAsync();
+            }
         }
 
         await Assert.That(cluster.GetWatermarks(Partition).High).IsEqualTo(3L);
@@ -82,7 +86,9 @@ public sealed class InMemoryTransactionOffsetTests
 
         var offsets = new List<long>();
         await foreach (var record in consumer.ConsumeSnapshotAsync())
+        {
             offsets.Add(record.Offset);
+        }
 
         long[] expected = isolationLevel == IsolationLevel.ReadCommitted ? [2L] : [0L, 2L];
         await Assert.That(offsets).IsEquivalentTo(expected);
@@ -106,9 +112,13 @@ public sealed class InMemoryTransactionOffsetTests
         {
             await transaction.ProduceAsync(Message(0));
             if (commit)
+            {
                 await transaction.CommitAsync();
+            }
             else
+            {
                 await transaction.AbortAsync();
+            }
         }
         await using var consumer = new InMemoryConsumer<string, string>(cluster,
             new InMemoryConsumerOptions { IsolationLevel = isolationLevel });
@@ -180,9 +190,13 @@ public sealed class InMemoryTransactionOffsetTests
             await using var transaction = producer.BeginTransaction();
             await transaction.ProduceAsync(Message(0));
             if (i % 2 == 0)
+            {
                 await transaction.AbortAsync();
+            }
             else
+            {
                 await transaction.CommitAsync();
+            }
         }
         if (readCommitted)
         {
@@ -194,7 +208,9 @@ public sealed class InMemoryTransactionOffsetTests
             });
         }
         if (withFault)
+        {
             cluster.FaultPlan.PauseNext(new KafkaFaultScope(KafkaFaultOperation.ShareConsume)).Release();
+        }
         await using var consumer = new InMemoryShareConsumer<string, string>(cluster,
             new InMemoryShareConsumerOptions { AutoOffsetReset = AutoOffsetReset.Earliest, GroupId = "share-markers" });
         consumer.Subscribe(Partition.Topic);
@@ -213,7 +229,9 @@ public sealed class InMemoryTransactionOffsetTests
         await using var remaining = consumer.PollAsync().GetAsyncEnumerator();
         await Assert.That(await remaining.MoveNextAsync()).IsEqualTo(releaseFirst);
         if (releaseFirst)
+        {
             await Assert.That(remaining.Current.Offset).IsEqualTo(firstOffset);
+        }
     }
 
     [Test]

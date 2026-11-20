@@ -28,9 +28,13 @@ public class SaslAuthenticationTests(SaslKafkaContainer saslKafka)
             .WithBootstrapServers(saslKafka.BootstrapServers)
             .WithSaslScramMaxIterations(limit);
         if (sha512)
+        {
             builder.WithSaslScramSha512(SaslKafkaContainer.SaslUsername, SaslKafkaContainer.SaslPassword);
+        }
         else
+        {
             builder.WithSaslScramSha256(SaslKafkaContainer.SaslUsername, SaslKafkaContainer.SaslPassword);
+        }
         await using var admin = builder.Build();
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
         if (limit == 4096)

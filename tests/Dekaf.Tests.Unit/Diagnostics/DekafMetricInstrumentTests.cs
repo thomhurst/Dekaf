@@ -14,7 +14,9 @@ public sealed class DekafMetricInstrumentTests
         listener.InstrumentPublished = (instrument, _) =>
         {
             if (instrument.Meter.Name == DekafDiagnostics.MeterName)
+            {
                 instrumentNames.Add(instrument.Name);
+            }
         };
         listener.Start();
 

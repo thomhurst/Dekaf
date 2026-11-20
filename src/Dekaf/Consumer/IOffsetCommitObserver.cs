@@ -49,12 +49,18 @@ public readonly struct OffsetCommitObservation(
     /// <summary>
     /// Gets why the commit was sent.
     /// </summary>
-    public OffsetCommitReason Reason { get; } = reason;
+    public OffsetCommitReason Reason
+    {
+        get;
+    } = reason;
 
     /// <summary>
     /// Gets the offsets the commit request carries: the next offset to consume for each partition.
     /// </summary>
-    public IReadOnlyList<TopicPartitionOffset> Offsets { get; } = offsets;
+    public IReadOnlyList<TopicPartitionOffset> Offsets
+    {
+        get;
+    } = offsets;
 
     /// <summary>
     /// Gets how many completed records the commit newly covers across its partitions: records
@@ -78,7 +84,10 @@ public readonly struct OffsetCommitObservation(
     /// report zero.
     /// </para>
     /// </remarks>
-    public long CompletedRecordCount { get; } = completedRecordCount;
+    public long CompletedRecordCount
+    {
+        get;
+    } = completedRecordCount;
 }
 
 /// <summary>

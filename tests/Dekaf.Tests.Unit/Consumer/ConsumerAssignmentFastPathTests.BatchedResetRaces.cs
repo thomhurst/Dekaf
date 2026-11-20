@@ -73,8 +73,11 @@ public sealed partial class ConsumerAssignmentFastPathTests
                         ErrorCode = ErrorCode.None,
                         Partitions = Enumerable.Range(0, 2).Select(index => new PartitionMetadata
                         {
-                            PartitionIndex = index, LeaderId = 0, ErrorCode = ErrorCode.None,
-                            ReplicaNodes = [0], IsrNodes = [0]
+                            PartitionIndex = index,
+                            LeaderId = 0,
+                            ErrorCode = ErrorCode.None,
+                            ReplicaNodes = [0],
+                            IsrNodes = [0]
                         }).ToArray()
                     }).ToArray()
                 });
@@ -98,7 +101,9 @@ public sealed partial class ConsumerAssignmentFastPathTests
         await Assert.That(metadataRequests[0].Topics!.Select(topic => topic.Name!))
             .IsEquivalentTo(["missing-a", "missing-b"]);
         foreach (var partition in partitions)
+        {
             await Assert.That(GetFetchPositions(consumer)[partition]).IsEqualTo(100L);
+        }
     }
 
     [Test]

@@ -15,12 +15,18 @@ public sealed class AlterUserScramCredentialsResponse : IKafkaResponse
     /// <summary>
     /// The duration in milliseconds for which the request was throttled due to quota violation.
     /// </summary>
-    public int ThrottleTimeMs { get; init; }
+    public int ThrottleTimeMs
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The results for each alteration.
     /// </summary>
-    public required IReadOnlyList<AlterUserScramCredentialsResult> Results { get; init; }
+    public required IReadOnlyList<AlterUserScramCredentialsResult> Results
+    {
+        get; init;
+    }
 
     public static IKafkaResponse Read(ref KafkaProtocolReader reader, short version)
     {
@@ -50,17 +56,26 @@ public sealed class AlterUserScramCredentialsResult
     /// <summary>
     /// The user name.
     /// </summary>
-    public required string User { get; init; }
+    public required string User
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The error code for this user, or 0 if there was no error.
     /// </summary>
-    public ErrorCode ErrorCode { get; init; }
+    public ErrorCode ErrorCode
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The error message for this user, or null if there was no error.
     /// </summary>
-    public string? ErrorMessage { get; init; }
+    public string? ErrorMessage
+    {
+        get; init;
+    }
 
     public static AlterUserScramCredentialsResult Read(ref KafkaProtocolReader reader, short version)
     {

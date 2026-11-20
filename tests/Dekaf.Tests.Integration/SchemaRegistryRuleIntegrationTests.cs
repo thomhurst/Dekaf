@@ -398,7 +398,9 @@ public sealed class SchemaRegistryRuleIntegrationTests(KafkaWithSchemaRegistryCo
         await Assert.That(calls).IsEquivalentTo(["Upgrade:MigrationV1->MigrationV2"]);
 
         for (var index = 0; index < 32; index++)
+        {
             await Assert.That(deserializer.Deserialize(wire, CreateContext(topic))).IsEqualTo("payload|v2");
+        }
 
 #if !NATIVEAOT
         // NativeAOT retains the migration/payload checks above; private layout inspection is JIT-only.
@@ -826,7 +828,9 @@ public sealed class SchemaRegistryRuleIntegrationTests(KafkaWithSchemaRegistryCo
             calls.Enqueue($"{context.Direction}:{context.Rule.Name}");
             var result = payload.ToArray();
             for (var i = 0; i < result.Length; i++)
+            {
                 result[i] ^= mask;
+            }
 
             return result;
         }
@@ -930,11 +934,20 @@ public sealed class SchemaRegistryRuleIntegrationTests(KafkaWithSchemaRegistryCo
             CancellationToken cancellationToken = default) =>
             inner.DeleteSubjectAsync(subject, permanent, cancellationToken);
 
-        public bool KekDeleted { get; set; }
+        public bool KekDeleted
+        {
+            get; set;
+        }
 
-        public bool DekDeleted { get; set; }
+        public bool DekDeleted
+        {
+            get; set;
+        }
 
-        public int KeyRegistrationCount { get; private set; }
+        public int KeyRegistrationCount
+        {
+            get; private set;
+        }
 
         public Task<Kek> RegisterKekAsync(
             RegisterKekRequest request,
@@ -971,7 +984,9 @@ public sealed class SchemaRegistryRuleIntegrationTests(KafkaWithSchemaRegistryCo
             var algorithm = request.Algorithm ?? DekAlgorithm.Aes256Gcm;
             var shared = _keks[kekName].Shared;
             if (shared && request.EncryptedKeyMaterial is not null)
+            {
                 throw new InvalidOperationException("Server-managed DEKs must omit encrypted key material.");
+            }
             var dek = new Dek
             {
                 KekName = kekName,

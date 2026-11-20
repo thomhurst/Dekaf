@@ -36,7 +36,10 @@ internal sealed class TopicProducer<TKey, TValue> : ITopicProducer<TKey, TValue>
     }
 
     /// <inheritdoc />
-    public string Topic { get; }
+    public string Topic
+    {
+        get;
+    }
 
     /// <inheritdoc />
     public ValueTask InitializeAsync(CancellationToken cancellationToken = default)
@@ -64,7 +67,9 @@ internal sealed class TopicProducer<TKey, TValue> : ITopicProducer<TKey, TValue>
     {
         ThrowIfDisposed();
         if (_producer is IProducerFastPath<TKey, TValue> fastPath)
+        {
             return fastPath.ProduceAsync(Topic, key, value, headers, partition: null, timestamp: null, cancellationToken);
+        }
 
         return _producer.ProduceAsync(new ProducerMessage<TKey, TValue>
         {
@@ -84,7 +89,9 @@ internal sealed class TopicProducer<TKey, TValue> : ITopicProducer<TKey, TValue>
     {
         ThrowIfDisposed();
         if (_producer is IProducerFastPath<TKey, TValue> fastPath)
+        {
             return fastPath.ProduceAsync(Topic, key, value, headers: null, partition: partition, timestamp: null, cancellationToken);
+        }
 
         return _producer.ProduceAsync(new ProducerMessage<TKey, TValue>
         {
@@ -166,7 +173,9 @@ internal sealed class TopicProducer<TKey, TValue> : ITopicProducer<TKey, TValue>
         ArgumentNullException.ThrowIfNull(messages);
 
         if (_producer is IProducerFastPath<TKey, TValue> fastPath)
+        {
             return fastPath.ProduceAllAsync(Topic, messages, cancellationToken);
+        }
 
         // Convert TopicProducerMessage to ProducerMessage with embedded topic
         var producerMessages = messages.Select(m => new ProducerMessage<TKey, TValue>
@@ -194,7 +203,9 @@ internal sealed class TopicProducer<TKey, TValue> : ITopicProducer<TKey, TValue>
     {
         // Atomically set disposed flag - only first caller proceeds
         if (Interlocked.CompareExchange(ref _disposed, 1, 0) != 0)
+        {
             return;
+        }
 
         if (_ownsProducer)
         {
@@ -205,6 +216,8 @@ internal sealed class TopicProducer<TKey, TValue> : ITopicProducer<TKey, TValue>
     private void ThrowIfDisposed()
     {
         if (Volatile.Read(ref _disposed) != 0)
+        {
             throw new ObjectDisposedException(nameof(TopicProducer<TKey, TValue>));
+        }
     }
 }

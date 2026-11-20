@@ -351,21 +351,57 @@ public sealed class SchemaIdentityInteroperabilityFixtureTests
 
     private sealed class IdentityFixture
     {
-        public required string Format { get; init; }
-        public required string ProducerPackage { get; init; }
-        public required string RegistryImage { get; init; }
-        public required int SchemaId { get; init; }
-        public required string SchemaGuid { get; init; }
-        public required string Schema { get; init; }
-        public required string PrefixPayloadHex { get; init; }
-        public required string HeaderPayloadHex { get; init; }
-        public required string HeaderName { get; init; }
-        public required string HeaderValueHex { get; init; }
+        public required string Format
+        {
+            get; init;
+        }
+        public required string ProducerPackage
+        {
+            get; init;
+        }
+        public required string RegistryImage
+        {
+            get; init;
+        }
+        public required int SchemaId
+        {
+            get; init;
+        }
+        public required string SchemaGuid
+        {
+            get; init;
+        }
+        public required string Schema
+        {
+            get; init;
+        }
+        public required string PrefixPayloadHex
+        {
+            get; init;
+        }
+        public required string HeaderPayloadHex
+        {
+            get; init;
+        }
+        public required string HeaderName
+        {
+            get; init;
+        }
+        public required string HeaderValueHex
+        {
+            get; init;
+        }
     }
 
     private sealed class IdentityFixtureJsonRecord
     {
-        public int Id { get; init; }
-        public required string Name { get; init; }
+        public int Id
+        {
+            get; init;
+        }
+        public required string Name
+        {
+            get; init;
+        }
     }
 }

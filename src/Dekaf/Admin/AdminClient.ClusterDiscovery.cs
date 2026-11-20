@@ -29,7 +29,9 @@ public sealed partial class AdminClient : IClusterDiscoveryAdminClient
             var connection = lease.Connection;
             var minimumVersion = endpointType == DescribeClusterEndpointType.Controller ? (short)1 : (short)0;
             if (options.IncludeFencedBrokers)
+            {
                 minimumVersion = 2;
+            }
             var version = _metadataManager.GetNegotiatedApiVersion(
                 connection, ApiKey.DescribeCluster, minimumVersion, DescribeClusterRequest.HighestSupportedVersion);
             var response = await connection.SendAsync<DescribeClusterRequest, DescribeClusterResponse>(
@@ -39,10 +41,14 @@ public sealed partial class AdminClient : IClusterDiscoveryAdminClient
                     IncludeFencedBrokers = options.IncludeFencedBrokers
                 }, version, attemptToken).ConfigureAwait(false);
             if (response.ErrorCode != ErrorCode.None)
+            {
                 throw KafkaException.FromErrorCode(response.ErrorCode, response.ErrorMessage ?? "DescribeCluster failed.");
+            }
             if (response.EndpointType != endpointType)
+            {
                 throw KafkaException.FromErrorCode(ErrorCode.MismatchedEndpointType,
                     $"DescribeCluster returned {response.EndpointType} nodes for a {endpointType} endpoint.");
+            }
 
             var nodes = new ClusterNodeDescription[response.Nodes.Count];
             for (var i = 0; i < nodes.Length; i++)

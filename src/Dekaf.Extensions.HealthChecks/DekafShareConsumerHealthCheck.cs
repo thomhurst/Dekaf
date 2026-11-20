@@ -54,10 +54,14 @@ public sealed class DekafShareConsumerHealthCheck<TKey, TValue> : IHealthCheck
     private static HealthCheckResult Evaluate(bool isStopped, ConsumerGroupStatus? group, HealthStatus failureStatus)
     {
         if (isStopped)
+        {
             return new HealthCheckResult(failureStatus, "Share consumer is stopped.");
+        }
 
         if (group is null || !group.HasConsumerGroup)
+        {
             return new HealthCheckResult(failureStatus, "Share consumer has no share group.");
+        }
 
         var data = new Dictionary<string, object>
         {

@@ -339,7 +339,9 @@ public ref struct KafkaProtocolWriter
         var actualBytes = Encoding.UTF8.GetBytes(value, span[sizeof(short)..]);
 
         if (actualBytes > short.MaxValue)
+        {
             throw new ArgumentException($"String exceeds maximum Kafka short-prefixed string length ({actualBytes} bytes > {short.MaxValue}).", nameof(value));
+        }
 
         BinaryPrimitives.WriteInt16BigEndian(span, (short)actualBytes);
         _output.Advance(sizeof(short) + actualBytes);
@@ -382,7 +384,9 @@ public ref struct KafkaProtocolWriter
         var lengthBytes = WriteVarUIntToSpan((uint)(actualBytes + 1), span);
 
         if (actualBytes > 0 && lengthBytes != MaxUnsignedVarIntByteCount)
+        {
             span.Slice(MaxUnsignedVarIntByteCount, actualBytes).CopyTo(span[lengthBytes..]);
+        }
 
         _output.Advance(lengthBytes + actualBytes);
         _bytesWritten += lengthBytes + actualBytes;
@@ -392,7 +396,9 @@ public ref struct KafkaProtocolWriter
     private void WriteUtf8Bytes(scoped ReadOnlySpan<byte> value)
     {
         if (value.Length == 0)
+        {
             return;
+        }
 
         var span = _output.GetSpan(value.Length);
         value.CopyTo(span);
@@ -458,7 +464,9 @@ public ref struct KafkaProtocolWriter
     public void WriteRawBytes(ReadOnlySpan<byte> value)
     {
         if (value.Length == 0)
+        {
             return;
+        }
 
         var span = _output.GetSpan(value.Length);
         value.CopyTo(span);

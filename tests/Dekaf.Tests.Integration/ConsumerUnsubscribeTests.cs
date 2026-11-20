@@ -198,7 +198,10 @@ public sealed class ConsumerUnsubscribeTests(KafkaTestContainer kafka) : KafkaIn
 
     private sealed class CommittingListener : IConsumerAwareRebalanceListener
     {
-        public TaskCompletionSource RevokedCommitted { get; } =
+        public TaskCompletionSource RevokedCommitted
+        {
+            get;
+        } =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         public ValueTask OnPartitionsAssignedAsync(
@@ -303,7 +306,9 @@ public sealed class ConsumerUnsubscribeTests(KafkaTestContainer kafka) : KafkaIn
             .WithRebalanceListener(listener)
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory());
         if (autoCommitInterval is { } interval)
+        {
             builder = builder.WithAutoCommitInterval(interval);
+        }
 
         return await builder.BuildAsync();
     }
@@ -361,7 +366,9 @@ public sealed class ConsumerUnsubscribeTests(KafkaTestContainer kafka) : KafkaIn
         public ValueTask OnPartitionsRevokedAsync(IEnumerable<TopicPartition> partitions, CancellationToken cancellationToken)
         {
             foreach (var partition in partitions)
+            {
                 _revoked.Enqueue(partition);
+            }
             return ValueTask.CompletedTask;
         }
 
@@ -383,7 +390,9 @@ public sealed class ConsumerUnsubscribeTests(KafkaTestContainer kafka) : KafkaIn
                 try
                 {
                     await foreach (var record in consumer.ConsumeAsync(loop._cts.Token))
+                    {
                         loop._records.Enqueue(record);
+                    }
                 }
                 catch (OperationCanceledException) when (loop._cts.IsCancellationRequested)
                 {

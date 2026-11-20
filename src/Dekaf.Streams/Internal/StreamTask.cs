@@ -27,19 +27,40 @@ internal readonly struct RawRecord(
     long offset,
     Headers? headers)
 {
-    public ReadOnlyMemory<byte> Key { get; } = key;
+    public ReadOnlyMemory<byte> Key
+    {
+        get;
+    } = key;
 
-    public bool KeyIsNull { get; } = keyIsNull;
+    public bool KeyIsNull
+    {
+        get;
+    } = keyIsNull;
 
-    public ReadOnlyMemory<byte> Value { get; } = value;
+    public ReadOnlyMemory<byte> Value
+    {
+        get;
+    } = value;
 
-    public bool ValueIsNull { get; } = valueIsNull;
+    public bool ValueIsNull
+    {
+        get;
+    } = valueIsNull;
 
-    public long Timestamp { get; } = timestamp;
+    public long Timestamp
+    {
+        get;
+    } = timestamp;
 
-    public long Offset { get; } = offset;
+    public long Offset
+    {
+        get;
+    } = offset;
 
-    public Headers? Headers { get; } = headers;
+    public Headers? Headers
+    {
+        get;
+    } = headers;
 }
 
 internal interface ISourceProcessor
@@ -50,19 +71,37 @@ internal interface ISourceProcessor
 /// <summary>State shared by the nodes and stores of one task.</summary>
 internal sealed class TaskContext(string applicationId, string subtopologyId, int partition, IRecordCollector collector)
 {
-    public string ApplicationId { get; } = applicationId;
+    public string ApplicationId
+    {
+        get;
+    } = applicationId;
 
-    public string SubtopologyId { get; } = subtopologyId;
+    public string SubtopologyId
+    {
+        get;
+    } = subtopologyId;
 
-    public int Partition { get; } = partition;
+    public int Partition
+    {
+        get;
+    } = partition;
 
-    public IRecordCollector Collector { get; } = collector;
+    public IRecordCollector Collector
+    {
+        get;
+    } = collector;
 
     /// <summary>Timestamp of the record being processed; changelog writes carry it.</summary>
-    public long Timestamp { get; set; }
+    public long Timestamp
+    {
+        get; set;
+    }
 
     /// <summary>Records skipped because they had a null key or arrived after their window closed.</summary>
-    public long DroppedRecords { get; set; }
+    public long DroppedRecords
+    {
+        get; set;
+    }
 }
 
 /// <summary>Builds the runtime nodes and stores of one task from the topology graph.</summary>
@@ -70,13 +109,25 @@ internal sealed class TaskBuilder(TaskContext context, IStateStoreEngine engine,
 {
     private readonly Dictionary<GraphNode, object> _built = [];
 
-    public TaskContext Context { get; } = context;
+    public TaskContext Context
+    {
+        get;
+    } = context;
 
-    public Dictionary<string, object> Stores { get; } = [];
+    public Dictionary<string, object> Stores
+    {
+        get;
+    } = [];
 
-    public Dictionary<string, IRestorableStore> RestoreTargets { get; } = [];
+    public Dictionary<string, IRestorableStore> RestoreTargets
+    {
+        get;
+    } = [];
 
-    public List<IDisposable> Disposables { get; } = [];
+    public List<IDisposable> Disposables
+    {
+        get;
+    } = [];
 
     public bool TryGetBuilt<T>(GraphNode node, out T built) where T : class
     {

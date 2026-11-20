@@ -31,9 +31,13 @@ public sealed class InMemoryPreparedRecoveryTests
 
         await using var replacement = new InMemoryProducer<string, string>(cluster, Writer);
         if (useDefaultOverload)
+        {
             await replacement.InitTransactionsAsync();
+        }
         else
+        {
             await replacement.InitTransactionsAsync(keepPreparedTransaction: false);
+        }
 
         await using var next = replacement.BeginTransaction();
         _ = await next.ProduceAsync("orders", "k", "committed");
@@ -103,9 +107,13 @@ public sealed class InMemoryPreparedRecoveryTests
         await recovering.InitTransactionsAsync(keepPreparedTransaction: true);
 
         if (commitAdopted)
+        {
             await transaction.CommitAsync();
+        }
         else
+        {
             await transaction.AbortAsync();
+        }
 
         await using var next = recovering.BeginTransaction();
         _ = await next.ProduceAsync("next", "k", "second");

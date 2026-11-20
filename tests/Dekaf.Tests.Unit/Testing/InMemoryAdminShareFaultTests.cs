@@ -1056,7 +1056,9 @@ public sealed class InMemoryAdminShareFaultTests
         await barrier.WaitUntilEnteredAsync();
         var concurrent = new Task[8];
         for (var index = 0; index < concurrent.Length; index++)
+        {
             concurrent[index] = consumer.CloseAsync().AsTask();
+        }
 
         await Assert.That(barrier.Release()).IsTrue();
         await first;
@@ -1171,15 +1173,22 @@ public sealed class InMemoryAdminShareFaultTests
     {
         public event Action<KafkaFaultObservation>? FaultConsumed
         {
-            add { }
-            remove { }
+            add
+            {
+            }
+            remove
+            {
+            }
         }
 
         public int Count => 0;
 
         public long Version => 0;
 
-        public int GetResultCount { get; private set; }
+        public int GetResultCount
+        {
+            get; private set;
+        }
 
         public bool HasMatchingFault(in KafkaFaultScope operationScope) => false;
 

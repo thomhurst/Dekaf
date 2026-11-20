@@ -5,12 +5,30 @@ namespace Dekaf.Admin;
 /// </summary>
 public sealed class MetadataQuorumDescription
 {
-    public int LeaderId { get; init; }
-    public int LeaderEpoch { get; init; }
-    public long HighWatermark { get; init; }
-    public required IReadOnlyList<QuorumReplicaState> CurrentVoters { get; init; }
-    public required IReadOnlyList<QuorumReplicaState> Observers { get; init; }
-    public IReadOnlyList<QuorumNode> Nodes { get; init; } = [];
+    public int LeaderId
+    {
+        get; init;
+    }
+    public int LeaderEpoch
+    {
+        get; init;
+    }
+    public long HighWatermark
+    {
+        get; init;
+    }
+    public required IReadOnlyList<QuorumReplicaState> CurrentVoters
+    {
+        get; init;
+    }
+    public required IReadOnlyList<QuorumReplicaState> Observers
+    {
+        get; init;
+    }
+    public IReadOnlyList<QuorumNode> Nodes
+    {
+        get; init;
+    } = [];
 }
 
 /// <summary>
@@ -18,11 +36,26 @@ public sealed class MetadataQuorumDescription
 /// </summary>
 public sealed class QuorumReplicaState
 {
-    public int ReplicaId { get; init; }
-    public Guid? ReplicaDirectoryId { get; init; }
-    public long LogEndOffset { get; init; }
-    public long LastFetchTimestamp { get; init; } = -1;
-    public long LastCaughtUpTimestamp { get; init; } = -1;
+    public int ReplicaId
+    {
+        get; init;
+    }
+    public Guid? ReplicaDirectoryId
+    {
+        get; init;
+    }
+    public long LogEndOffset
+    {
+        get; init;
+    }
+    public long LastFetchTimestamp
+    {
+        get; init;
+    } = -1;
+    public long LastCaughtUpTimestamp
+    {
+        get; init;
+    } = -1;
 }
 
 /// <summary>
@@ -30,8 +63,14 @@ public sealed class QuorumReplicaState
 /// </summary>
 public sealed class QuorumNode
 {
-    public int NodeId { get; init; }
-    public required IReadOnlyList<RaftVoterEndpoint> Listeners { get; init; }
+    public int NodeId
+    {
+        get; init;
+    }
+    public required IReadOnlyList<RaftVoterEndpoint> Listeners
+    {
+        get; init;
+    }
 }
 
 /// <summary>
@@ -39,9 +78,18 @@ public sealed class QuorumNode
 /// </summary>
 public sealed class RaftVoterEndpoint
 {
-    public required string Name { get; init; }
-    public required string Host { get; init; }
-    public int Port { get; init; }
+    public required string Name
+    {
+        get; init;
+    }
+    public required string Host
+    {
+        get; init;
+    }
+    public int Port
+    {
+        get; init;
+    }
 }
 
 /// <summary>
@@ -49,9 +97,18 @@ public sealed class RaftVoterEndpoint
 /// </summary>
 public sealed class AddRaftVoterOptions
 {
-    public string? ClusterId { get; init; }
-    public int TimeoutMs { get; init; } = 30000;
-    public bool AckWhenCommitted { get; init; } = true;
+    public string? ClusterId
+    {
+        get; init;
+    }
+    public int TimeoutMs
+    {
+        get; init;
+    } = 30000;
+    public bool AckWhenCommitted
+    {
+        get; init;
+    } = true;
 }
 
 /// <summary>
@@ -59,5 +116,8 @@ public sealed class AddRaftVoterOptions
 /// </summary>
 public sealed class RemoveRaftVoterOptions
 {
-    public string? ClusterId { get; init; }
+    public string? ClusterId
+    {
+        get; init;
+    }
 }

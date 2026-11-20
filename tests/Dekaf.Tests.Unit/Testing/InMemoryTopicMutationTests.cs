@@ -37,7 +37,9 @@ public sealed class InMemoryTopicMutationTests
             var created = (await admin.DescribeTopicsAsync([topic.Name]))[topic.Name];
             await Assert.That(created.Partitions.Count).IsEqualTo(2);
             foreach (var partition in created.Partitions)
+            {
                 await Assert.That(partition.ReplicaNodes).IsEquivalentTo([0]);
+            }
         }
         await Assert.That(topic.NumPartitions).IsEqualTo(partitions);
         await Assert.That(topic.ReplicationFactor).IsEqualTo((short)replicas);

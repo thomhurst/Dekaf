@@ -140,7 +140,10 @@ public interface IWindowedStream<TKey, TValue>
 public interface ITable<TKey, TValue>
 {
     /// <summary>Gets the name of the store that holds the table.</summary>
-    string StoreName { get; }
+    string StoreName
+    {
+        get;
+    }
 
     /// <summary>Returns the table's updates as a stream.</summary>
     IStream<TKey, TValue> ToStream();

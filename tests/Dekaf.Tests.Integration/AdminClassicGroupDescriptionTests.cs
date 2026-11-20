@@ -19,9 +19,11 @@ public sealed class AdminClassicGroupDescriptionTests(KafkaTestContainer kafka) 
         await producer.ProduceAsync(topic, "key", "value");
         using var consumer = new ConfluentKafka.ConsumerBuilder<string, string>(new ConfluentKafka.ConsumerConfig
         {
-            BootstrapServers = KafkaContainer.BootstrapServers, GroupId = group,
+            BootstrapServers = KafkaContainer.BootstrapServers,
+            GroupId = group,
             GroupProtocol = ConfluentKafka.GroupProtocol.Consumer,
-            AutoOffsetReset = ConfluentKafka.AutoOffsetReset.Earliest, EnableAutoCommit = false
+            AutoOffsetReset = ConfluentKafka.AutoOffsetReset.Earliest,
+            EnableAutoCommit = false
         }).Build();
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(60));
         consumer.Subscribe(topic);
@@ -56,10 +58,12 @@ public sealed class AdminClassicGroupDescriptionTests(KafkaTestContainer kafka) 
         await producer.ProduceAsync(topic, "key", "value");
         using var consumer = new ConfluentKafka.ConsumerBuilder<string, string>(new ConfluentKafka.ConsumerConfig
         {
-            BootstrapServers = KafkaContainer.BootstrapServers, GroupId = group,
+            BootstrapServers = KafkaContainer.BootstrapServers,
+            GroupId = group,
             GroupProtocol = ConfluentKafka.GroupProtocol.Classic,
             PartitionAssignmentStrategy = ConfluentKafka.PartitionAssignmentStrategy.Range,
-            AutoOffsetReset = ConfluentKafka.AutoOffsetReset.Earliest, EnableAutoCommit = false
+            AutoOffsetReset = ConfluentKafka.AutoOffsetReset.Earliest,
+            EnableAutoCommit = false
         }).Build();
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(60));
         consumer.Subscribe(topic);

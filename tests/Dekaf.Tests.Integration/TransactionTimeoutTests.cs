@@ -79,7 +79,10 @@ public sealed class TransactionTimeoutTests(KafkaTestContainer kafka) : Transact
         await foreach (var msg in consumer1.ConsumeAsync(cts1.Token))
         {
             topic1Messages.Add(msg);
-            if (topic1Messages.Count >= 3) break;
+            if (topic1Messages.Count >= 3)
+            {
+                break;
+            }
         }
 
         var topic2Messages = new List<ConsumeResult<string, string>>();
@@ -87,7 +90,10 @@ public sealed class TransactionTimeoutTests(KafkaTestContainer kafka) : Transact
         await foreach (var msg in consumer2.ConsumeAsync(cts2.Token))
         {
             topic2Messages.Add(msg);
-            if (topic2Messages.Count >= 3) break;
+            if (topic2Messages.Count >= 3)
+            {
+                break;
+            }
         }
 
         await Assert.That(topic1Messages.Count).IsEqualTo(3);
@@ -313,7 +319,10 @@ public sealed class TransactionTimeoutTests(KafkaTestContainer kafka) : Transact
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))
         {
             messages.Add(msg);
-            if (messages.Count >= 2) break;
+            if (messages.Count >= 2)
+            {
+                break;
+            }
         }
 
         await Assert.That(messages.Count).IsEqualTo(2);
@@ -377,7 +386,10 @@ public sealed class TransactionTimeoutTests(KafkaTestContainer kafka) : Transact
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))
         {
             messages.Add(msg);
-            if (messages.Count >= messageCount) break;
+            if (messages.Count >= messageCount)
+            {
+                break;
+            }
         }
 
         await Assert.That(messages.Count).IsEqualTo(messageCount);

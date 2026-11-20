@@ -15,12 +15,18 @@ public sealed class SaslHandshakeResponse : IKafkaResponse
     /// <summary>
     /// The error code, or 0 if there was no error.
     /// </summary>
-    public required ErrorCode ErrorCode { get; init; }
+    public required ErrorCode ErrorCode
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The SASL mechanisms supported by the broker.
     /// </summary>
-    public required IReadOnlyList<string> Mechanisms { get; init; }
+    public required IReadOnlyList<string> Mechanisms
+    {
+        get; init;
+    }
 
     public static IKafkaResponse Read(ref KafkaProtocolReader reader, short version)
     {

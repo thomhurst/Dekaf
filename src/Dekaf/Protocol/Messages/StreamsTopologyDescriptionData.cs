@@ -11,8 +11,14 @@ public sealed class StreamsTopologyDescriptionData
     internal const int MaxGlobalStoreCount = 100_000;
     internal const int MaxNameCount = 1_000_000;
 
-    public required IReadOnlyList<StreamsTopologyDescriptionSubtopologyData> Subtopologies { get; init; }
-    public required IReadOnlyList<StreamsTopologyDescriptionGlobalStoreData> GlobalStores { get; init; }
+    public required IReadOnlyList<StreamsTopologyDescriptionSubtopologyData> Subtopologies
+    {
+        get; init;
+    }
+    public required IReadOnlyList<StreamsTopologyDescriptionGlobalStoreData> GlobalStores
+    {
+        get; init;
+    }
 
     public void Write(ref KafkaProtocolWriter writer)
     {
@@ -68,8 +74,14 @@ public sealed class StreamsTopologyDescriptionData
 /// </summary>
 public sealed class StreamsTopologyDescriptionSubtopologyData
 {
-    public required string SubtopologyId { get; init; }
-    public required IReadOnlyList<StreamsTopologyDescriptionNodeData> Nodes { get; init; }
+    public required string SubtopologyId
+    {
+        get; init;
+    }
+    public required IReadOnlyList<StreamsTopologyDescriptionNodeData> Nodes
+    {
+        get; init;
+    }
 
     public void Write(ref KafkaProtocolWriter writer)
     {
@@ -103,17 +115,35 @@ public sealed class StreamsTopologyDescriptionSubtopologyData
 /// </summary>
 public sealed class StreamsTopologyDescriptionNodeData
 {
-    public required string Name { get; init; }
+    public required string Name
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The node type: 1 = source, 2 = processor, 3 = sink.
     /// </summary>
-    public sbyte NodeType { get; init; }
+    public sbyte NodeType
+    {
+        get; init;
+    }
 
-    public required IReadOnlyList<string> SourceTopics { get; init; }
-    public string? SinkTopic { get; init; }
-    public required IReadOnlyList<string> Stores { get; init; }
-    public required IReadOnlyList<string> Successors { get; init; }
+    public required IReadOnlyList<string> SourceTopics
+    {
+        get; init;
+    }
+    public string? SinkTopic
+    {
+        get; init;
+    }
+    public required IReadOnlyList<string> Stores
+    {
+        get; init;
+    }
+    public required IReadOnlyList<string> Successors
+    {
+        get; init;
+    }
 
     public void Write(ref KafkaProtocolWriter writer)
     {
@@ -165,8 +195,14 @@ public sealed class StreamsTopologyDescriptionNodeData
 /// </summary>
 public sealed class StreamsTopologyDescriptionGlobalStoreData
 {
-    public required StreamsTopologyDescriptionNodeData Source { get; init; }
-    public required StreamsTopologyDescriptionNodeData Processor { get; init; }
+    public required StreamsTopologyDescriptionNodeData Source
+    {
+        get; init;
+    }
+    public required StreamsTopologyDescriptionNodeData Processor
+    {
+        get; init;
+    }
 
     public void Write(ref KafkaProtocolWriter writer)
     {

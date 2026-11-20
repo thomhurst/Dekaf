@@ -323,6 +323,9 @@ public sealed class SchemaRegistrySubjectCompatibilityTests(KafkaWithSchemaRegis
 
     private sealed class CompatibilityJsonRecord
     {
-        public int Id { get; init; }
+        public int Id
+        {
+            get; init;
+        }
     }
 }

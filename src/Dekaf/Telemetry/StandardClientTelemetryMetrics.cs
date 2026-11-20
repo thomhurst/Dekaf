@@ -33,7 +33,10 @@ internal sealed class StandardClientTelemetryMetrics
     private int _waitDepth, _waitSequence;
     private long _waitStarted = -1, _waitTotal;
 
-    internal Func<int>? AssignedPartitionCountProvider { get; set; }
+    internal Func<int>? AssignedPartitionCountProvider
+    {
+        get; set;
+    }
 
     internal StandardClientTelemetryMetrics(bool producer, Func<long>? clock = null, long frequency = 0)
     {
@@ -66,7 +69,9 @@ internal sealed class StandardClientTelemetryMetrics
         SubscribeMeasurement(ref _rebalance, RebalancePrefix, prefixes, now, includeTotal: true);
         var rebalanceTotal = Requested(RebalancePrefix + "total", prefixes);
         if (rebalanceTotal && !_rebalanceTotalRequested)
+        {
             _rebalancePreviousTicks = Volatile.Read(ref _rebalanceTicks);
+        }
         _rebalanceTotalRequested = rebalanceTotal;
 
         var poll = Requested(PollIdleRatio, prefixes);
@@ -85,23 +90,31 @@ internal sealed class StandardClientTelemetryMetrics
         var requested = Requested(prefix + "avg", prefixes) || Requested(prefix + "max", prefixes)
             || (includeTotal && Requested(prefix + "total", prefixes));
         if (!requested)
+        {
             Volatile.Write(ref measurement, null);
+        }
         else if (Volatile.Read(ref measurement) is null)
+        {
             Volatile.Write(ref measurement, new Measurement(now));
+        }
     }
 
     internal void RecordRequest(ApiKey apiKey, long started, long elapsed)
     {
         var measurement = GetRequestMeasurement(apiKey);
         if (measurement is not null && started >= measurement.Started)
+        {
             measurement.Record(elapsed);
+        }
     }
 
     internal void RecordRequest(ApiKey apiKey, long started)
     {
         var measurement = GetRequestMeasurement(apiKey);
         if (measurement is not null && started >= measurement.Started)
+        {
             measurement.Record(Math.Max(0, _clock() - started));
+        }
     }
 
     private Measurement? GetRequestMeasurement(ApiKey apiKey) => apiKey switch
@@ -124,7 +137,10 @@ internal sealed class StandardClientTelemetryMetrics
 
         internal void Record(long created, long drained)
         {
-            if (_measurement is null || created < _measurement.Started) return;
+            if (_measurement is null || created < _measurement.Started)
+            {
+                return;
+            }
             var ticks = Math.Max(0, drained - created);
             _total += ticks;
             _max = Math.Max(_max, ticks);
@@ -133,7 +149,10 @@ internal sealed class StandardClientTelemetryMetrics
 
         internal readonly void Complete()
         {
-            if (_count != 0) _measurement!.Record(_count, _total, _max);
+            if (_count != 0)
+            {
+                _measurement!.Record(_count, _total, _max);
+            }
         }
     }
 
@@ -143,7 +162,9 @@ internal sealed class StandardClientTelemetryMetrics
     {
         var measurement = Volatile.Read(ref _rebalance);
         if (measurement is null || started < measurement.Started)
+        {
             return;
+        }
         var elapsed = Math.Max(0, _clock() - started);
         measurement.Record(elapsed);
         Interlocked.Add(ref _rebalanceTicks, elapsed);
@@ -152,7 +173,9 @@ internal sealed class StandardClientTelemetryMetrics
     internal void BeginPollWait()
     {
         if (_waitDepth++ != 0 || Volatile.Read(ref _pollEnabled) == 0)
+        {
             return;
+        }
         Interlocked.Increment(ref _waitSequence);
         _waitStarted = _clock();
         Interlocked.Increment(ref _waitSequence);
@@ -161,7 +184,9 @@ internal sealed class StandardClientTelemetryMetrics
     internal void EndPollWait()
     {
         if (--_waitDepth != 0 || _waitStarted < 0)
+        {
             return;
+        }
         Interlocked.Increment(ref _waitSequence);
         _waitTotal += Math.Max(0, _clock() - _waitStarted);
         _waitStarted = -1;
@@ -173,7 +198,10 @@ internal sealed class StandardClientTelemetryMetrics
         while (true)
         {
             var sequence = Volatile.Read(ref _waitSequence);
-            if ((sequence & 1) != 0) continue;
+            if ((sequence & 1) != 0)
+            {
+                continue;
+            }
             var total = Volatile.Read(ref _waitTotal);
             var started = Volatile.Read(ref _waitStarted);
             now = _clock();
@@ -215,15 +243,22 @@ internal sealed class StandardClientTelemetryMetrics
             Add(metrics, RebalancePrefix + "total", Milliseconds(ticks), ClientTelemetryMetricUnit.Milliseconds, ClientTelemetryMetricKind.Counter);
         }
         if (Requested(AssignedPartitions, prefixes) && AssignedPartitionCountProvider is { } assignment)
+        {
             Add(metrics, AssignedPartitions, assignment(), ClientTelemetryMetricUnit.Dimensionless);
+        }
 
         if (Volatile.Read(ref _pollEnabled) != 0 && Requested(PollIdleRatio, prefixes))
         {
             var idle = ReadWaitTicks(out var pollTime, out var version, out _);
-            if (pollTime <= _pollPreviousTime) return;
+            if (pollTime <= _pollPreviousTime)
+            {
+                return;
+            }
             _pollHasSample |= version != _pollStartingWaitSequence;
             if (_pollHasSample)
+            {
                 Add(metrics, PollIdleRatio, Math.Max(0, Math.Min(1, (idle - _pollPreviousTicks) / (double)(pollTime - _pollPreviousTime))), ClientTelemetryMetricUnit.Dimensionless);
+            }
             _pollPreviousTicks = idle;
             _pollPreviousTime = pollTime;
         }
@@ -232,13 +267,23 @@ internal sealed class StandardClientTelemetryMetrics
     private void CollectMeasurement(Measurement? measurement, string prefix, IReadOnlyList<string> prefixes,
         List<ClientTelemetryMetric> metrics)
     {
-        if (measurement is null) return;
+        if (measurement is null)
+        {
+            return;
+        }
         measurement.ReadSnapshot(out var count, out var total, out var max);
-        if (count == 0) return;
+        if (count == 0)
+        {
+            return;
+        }
         if (Requested(prefix + "avg", prefixes))
+        {
             Add(metrics, prefix + "avg", Milliseconds(total) / count, ClientTelemetryMetricUnit.Milliseconds);
+        }
         if (Requested(prefix + "max", prefixes))
+        {
             Add(metrics, prefix + "max", Milliseconds(max), ClientTelemetryMetricUnit.Milliseconds);
+        }
     }
 
     private double Milliseconds(long ticks) => ticks * (1000d / _frequency);
@@ -250,7 +295,12 @@ internal sealed class StandardClientTelemetryMetrics
     private static bool Requested(string name, IReadOnlyList<string> prefixes)
     {
         for (var index = 0; index < prefixes.Count; index++)
-            if (name.StartsWith(prefixes[index], StringComparison.Ordinal)) return true;
+        {
+            if (name.StartsWith(prefixes[index], StringComparison.Ordinal))
+            {
+                return true;
+            }
+        }
         return false;
     }
 
@@ -273,7 +323,10 @@ internal sealed class StandardClientTelemetryMetrics
             while (max > maximum)
             {
                 var previous = Interlocked.CompareExchange(ref _max, max, maximum);
-                if (previous == maximum) break;
+                if (previous == maximum)
+                {
+                    break;
+                }
                 maximum = previous;
             }
             Interlocked.Add(ref _count, count);
@@ -290,7 +343,10 @@ internal sealed class StandardClientTelemetryMetrics
                 // Every recording adds the same positive weight before and after
                 // its field updates. Equality rules out both unfinished writers
                 // and any recording that started while these fields were read.
-                if (completed != Volatile.Read(ref _startedCount)) continue;
+                if (completed != Volatile.Read(ref _startedCount))
+                {
+                    continue;
+                }
                 _snapshotCount = completed;
                 _snapshotTotal = observedTotal;
                 _snapshotMax = observedMax;

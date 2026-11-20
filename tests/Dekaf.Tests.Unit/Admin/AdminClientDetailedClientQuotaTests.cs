@@ -43,9 +43,14 @@ public sealed class AdminClientDetailedClientQuotaTests
         var calls = 0;
         Setup(connection, request =>
         {
-            if (++calls == 1) return new() { Entries = [Entry(request.Entries[0]), Entry(request.Entries[1], rejection)] };
+            if (++calls == 1)
+            {
+                return new() { Entries = [Entry(request.Entries[0]), Entry(request.Entries[1], rejection)] };
+            }
             if (request.Entries.Count != 1 || request.Entries[0].Entity[1].EntityName != "")
+            {
                 throw new InvalidOperationException("Confirmed success was replayed.");
+            }
             return new() { Entries = [Entry(request.Entries[0])] };
         });
         var results = await admin.AlterClientQuotasDetailedAsync(Alterations());
@@ -66,10 +71,23 @@ public sealed class AdminClientDetailedClientQuotaTests
         var calls = 0;
         Setup(connection, request =>
         {
-            if (++calls == 1) return new() { Entries = [Entry(request.Entries[0]), Entry(request.Entries[1], ErrorCode.NotController)] };
-            if (failure == "timeout") return new() { Entries = [Entry(request.Entries[0], ErrorCode.RequestTimedOut, "uncertain")] };
-            if (failure == "malformed") throw new MalformedProtocolDataException("malformed frame");
-            if (failure == "cancel") { cancellation.Cancel(); throw new OperationCanceledException(cancellation.Token); }
+            if (++calls == 1)
+            {
+                return new() { Entries = [Entry(request.Entries[0]), Entry(request.Entries[1], ErrorCode.NotController)] };
+            }
+            if (failure == "timeout")
+            {
+                return new() { Entries = [Entry(request.Entries[0], ErrorCode.RequestTimedOut, "uncertain")] };
+            }
+            if (failure == "malformed")
+            {
+                throw new MalformedProtocolDataException("malformed frame");
+            }
+            if (failure == "cancel")
+            {
+                cancellation.Cancel();
+                throw new OperationCanceledException(cancellation.Token);
+            }
             throw new IOException("lost response");
         });
         var results = await admin.AlterClientQuotasDetailedAsync(Alterations(), cancellationToken: cancellation.Token);
@@ -84,8 +102,11 @@ public sealed class AdminClientDetailedClientQuotaTests
     {
         var (admin, connection) = CreateAdmin();
         await using var client = admin;
-        Setup(connection, request => new() { Entries = [Entry(request.Entries[0]), Entry(request.Entries[0]),
-            new() { Entity = [new() { EntityType = "user", EntityName = "unrequested" }] }] });
+        Setup(connection, request => new()
+        {
+            Entries = [Entry(request.Entries[0]), Entry(request.Entries[0]),
+            new() { Entity = [new() { EntityType = "user", EntityName = "unrequested" }] }]
+        });
         var results = await admin.AlterClientQuotasDetailedAsync(Alterations());
         await Assert.That(results.Count).IsEqualTo(2);
         await Assert.That(results.Values.All(static result => result.Outcome == AdminMutationOutcome.Unknown)).IsTrue();
@@ -102,7 +123,9 @@ public sealed class AdminClientDetailedClientQuotaTests
         Setup(connection, request =>
         {
             if (!request.ValidateOnly || request.Entries[0].Entity[0].EntityName is not null || request.Entries[0].Ops[0].Value != 2048)
+            {
                 throw new InvalidOperationException("Snapshot or validate-only flag changed.");
+            }
             components[0] = ClientQuotaEntityComponent.User("changed");
             operations[0] = ClientQuotaOperation.RemoveValue("consumer_byte_rate");
             return new() { Entries = [Entry(request.Entries[0], ++calls == 1 ? ErrorCode.NotController : ErrorCode.None)] };
@@ -161,15 +184,19 @@ public sealed class AdminClientDetailedClientQuotaTests
         await using var client = admin;
         var sends = 0;
         if (dispatched)
+        {
             connection.SendAsync<AlterClientQuotasRequest, AlterClientQuotasResponse>(Arg.Any<AlterClientQuotasRequest>(), Arg.Any<short>(), Arg.Any<CancellationToken>())
                 .Returns(call =>
                 {
                     Interlocked.Increment(ref sends);
                     return new ValueTask<AlterClientQuotasResponse>(WaitForCancellation<AlterClientQuotasResponse>(call.Arg<CancellationToken>()));
                 });
+        }
         else
+        {
             connection.SendAsync<MetadataRequest, MetadataResponse>(Arg.Any<MetadataRequest>(), Arg.Any<short>(), Arg.Any<CancellationToken>())
                 .Returns(call => new ValueTask<MetadataResponse>(WaitForCancellation<MetadataResponse>(call.Arg<CancellationToken>())));
+        }
 
         // A starved thread pool can let the deadline fire before the send is dispatched. That
         // run must still report NotAttempted, so check it, then lengthen the deadline until the
@@ -186,7 +213,9 @@ public sealed class AdminClientDetailedClientQuotaTests
             }
 
             if (sent == dispatched)
+            {
                 break;
+            }
         }
     }
 
@@ -221,11 +250,15 @@ public sealed class AdminClientDetailedClientQuotaTests
                 await Assert.That(result.Outcome).IsEqualTo(AdminMutationOutcome.NotAttempted);
                 await Assert.That(result.Exception).IsTypeOf<KafkaTimeoutException>();
                 if (attempted)
+                {
                     await Assert.That(result.Exception!.InnerException).IsTypeOf<System.Net.Sockets.SocketException>();
+                }
             }
 
             if (attempted)
+            {
                 break;
+            }
         }
     }
 
@@ -271,10 +304,14 @@ public sealed class AdminClientDetailedClientQuotaTests
         var metadata = new MetadataResponse
         {
             Brokers = [new() { NodeId = 1, Host = "localhost", Port = 9092 }],
-            ControllerId = knownController ? 1 : -1, Topics = []
+            ControllerId = knownController ? 1 : -1,
+            Topics = []
         };
         var manager = new MetadataManager(pool, ["localhost:9092"]);
-        if (initializeMetadata) manager.Metadata.Update(metadata);
+        if (initializeMetadata)
+        {
+            manager.Metadata.Update(metadata);
+        }
         manager.SetApiVersion(ApiKey.Metadata, 9, 13);
         manager.SetApiVersion(ApiKey.AlterClientQuotas, 0, 1);
         connection.SendAsync<MetadataRequest, MetadataResponse>(Arg.Any<MetadataRequest>(), Arg.Any<short>(), Arg.Any<CancellationToken>())
@@ -287,7 +324,9 @@ public sealed class AdminClientDetailedClientQuotaTests
             }));
         return (new AdminClient(new AdminClientOptions
         {
-            BootstrapServers = ["localhost:9092"], RetryBackoffMs = 1, RetryBackoffMaxMs = 1
+            BootstrapServers = ["localhost:9092"],
+            RetryBackoffMs = 1,
+            RetryBackoffMaxMs = 1
         }, pool, manager), connection);
     }
 

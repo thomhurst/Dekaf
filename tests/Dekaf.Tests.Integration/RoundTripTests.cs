@@ -272,7 +272,10 @@ public class RoundTripTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kaf
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))
         {
             consumed.Add(msg);
-            if (consumed.Count >= messageCount) break;
+            if (consumed.Count >= messageCount)
+            {
+                break;
+            }
         }
 
         // Assert - order should be preserved within partition
@@ -467,7 +470,10 @@ public class RoundTripTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kaf
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))
         {
             consumed.Add(msg);
-            if (consumed.Count >= producerCount * messagesPerProducer) break;
+            if (consumed.Count >= producerCount * messagesPerProducer)
+            {
+                break;
+            }
         }
 
         // Cleanup producers

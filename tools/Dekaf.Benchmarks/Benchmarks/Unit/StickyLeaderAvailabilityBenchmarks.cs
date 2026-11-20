@@ -23,10 +23,16 @@ public class StickyLeaderAvailabilityBenchmarks
     private IUniformStickyPartitioner _uniformPartitioner = null!;
 
     [Params(10, 1_000)]
-    public int PartitionCount { get; set; }
+    public int PartitionCount
+    {
+        get; set;
+    }
 
     [Params(false, true)]
-    public bool RackAware { get; set; }
+    public bool RackAware
+    {
+        get; set;
+    }
 
     [GlobalSetup]
     public void Setup()

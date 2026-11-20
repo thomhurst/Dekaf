@@ -20,7 +20,9 @@ public sealed partial class InMemoryAdminClient : IConsumerGroupMemberRemovalAdm
                 members = _cluster.SnapshotConsumerGroupMembers(groupId);
                 // Discovery and eviction have separate fault boundaries, like the broker API.
                 if (members.Length != 0)
+                {
                     await ApplyAdminFaultAsync(token, groupId: groupId).ConfigureAwait(false);
+                }
             }
             token.ThrowIfCancellationRequested();
             return _cluster.RemoveConsumerGroupMembers(groupId, members);

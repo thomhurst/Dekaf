@@ -199,7 +199,9 @@ public sealed class IdempotentInitializationTests
                 {
                     Brokers = [new BrokerMetadata
                     {
-                        NodeId = remainingBroker.NodeId, Host = remainingBroker.Host, Port = remainingBroker.Port
+                        NodeId = remainingBroker.NodeId,
+                        Host = remainingBroker.Host,
+                        Port = remainingBroker.Port
                     }],
                     Topics = []
                 });
@@ -266,7 +268,9 @@ public sealed class IdempotentInitializationTests
         harness.Connect = (id, _) =>
         {
             if (id == harness.BrokerIds[1])
+            {
                 roundTried.TrySetResult();
+            }
 
             return ValueTask.FromException<IKafkaConnection>(id == harness.BrokerIds[0] ? firstFailure : lastFailure);
         };
@@ -319,7 +323,9 @@ public sealed class IdempotentInitializationTests
         harness.Send = (_, _) =>
         {
             if (harness.Requests.Count == 2)
+            {
                 requestsObserved.TrySetResult();
+            }
 
             return ValueTask.FromResult(new InitProducerIdResponse { ErrorCode = ErrorCode.CoordinatorLoadInProgress });
         };
@@ -424,19 +430,23 @@ public sealed class IdempotentInitializationTests
         await using var harness = new ProducerInitializationHarness(maxBlockMs: 1000, manualMaxBlock: true);
         var stalled = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         if (duringConnect)
+        {
             harness.Connect = async (_, token) =>
             {
                 stalled.TrySetResult();
                 await Task.Delay(Timeout.Infinite, token);
                 return harness.Connections[1];
             };
+        }
         else
+        {
             harness.Send = async (_, token) =>
             {
                 stalled.TrySetResult();
                 await Task.Delay(Timeout.Infinite, token);
                 return Success();
             };
+        }
 
         var exception = await TimeOutAfterAsync(harness, stalled.Task, cancellationToken);
 
@@ -513,7 +523,9 @@ public sealed class IdempotentInitializationTests
         harness.Send = (_, _) =>
         {
             if (harness.Requests.Count == harness.BrokerIds.Length)
+            {
                 roundAnswered.TrySetResult();
+            }
 
             return ValueTask.FromResult(new InitProducerIdResponse { ErrorCode = ErrorCode.CoordinatorLoadInProgress });
         };
@@ -540,19 +552,23 @@ public sealed class IdempotentInitializationTests
         using var caller = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         if (duringConnect)
+        {
             harness.Connect = async (_, token) =>
             {
                 started.SetResult();
                 await Task.Delay(Timeout.Infinite, token);
                 return harness.Connections[1];
             };
+        }
         else
+        {
             harness.Send = async (_, token) =>
             {
                 started.SetResult();
                 await Task.Delay(Timeout.Infinite, token);
                 return Success();
             };
+        }
 
         var initialization = harness.Producer.InitializeAsync(caller.Token).AsTask();
         await started.Task.WaitAsync(cancellationToken);

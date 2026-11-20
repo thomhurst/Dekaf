@@ -26,7 +26,9 @@ internal sealed class RecordHeaderRoutingPlan
         {
             var name = names[index];
             if (!string.Equals(name, MaterializedHeadersSentinel, StringComparison.Ordinal))
+            {
                 _slots.Add(name, _slots.Count);
+            }
         }
 
         KeyRequiresMaterializedHeaders = keyRequiresMaterializedHeaders;
@@ -35,8 +37,14 @@ internal sealed class RecordHeaderRoutingPlan
 
     internal int Count => _slots.Count;
     internal Dictionary<string, int>.KeyCollection HeaderNames => _slots.Keys;
-    internal bool KeyRequiresMaterializedHeaders { get; }
-    internal bool ValueRequiresMaterializedHeaders { get; }
+    internal bool KeyRequiresMaterializedHeaders
+    {
+        get;
+    }
+    internal bool ValueRequiresMaterializedHeaders
+    {
+        get;
+    }
     internal bool NeedsMaterializedHeaders =>
         KeyRequiresMaterializedHeaders || ValueRequiresMaterializedHeaders;
 
@@ -48,7 +56,9 @@ internal sealed class RecordHeaderRoutingPlan
     {
         var indexedHeaderCount = Math.Min(Count - 2, headerCount);
         if (indexedHeaderCount <= 0)
+        {
             return 0;
+        }
 
         var capacity = (uint)indexedHeaderCount * 2 - 1;
         capacity |= capacity >> 1;
@@ -81,7 +91,9 @@ internal sealed class RecordHeaderRoutingPlan
     private static void Collect<T>(IDeserializer<T>? deserializer, ref List<string>? names)
     {
         if (deserializer is not IRecordHeaderRoutingProvider provider)
+        {
             return;
+        }
 
         names ??= [];
         provider.CollectHeaderNames(names);
@@ -90,14 +102,18 @@ internal sealed class RecordHeaderRoutingPlan
     private static bool RequiresMaterializedHeaders<T>(IDeserializer<T>? deserializer)
     {
         if (deserializer is not IRecordHeaderRoutingProvider provider)
+        {
             return false;
+        }
 
         List<string> names = [];
         provider.CollectHeaderNames(names);
         for (var index = 0; index < names.Count; index++)
         {
             if (string.Equals(names[index], MaterializedHeadersSentinel, StringComparison.Ordinal))
+            {
                 return true;
+            }
         }
 
         return false;
@@ -119,10 +135,14 @@ internal readonly struct RecordHeaderRoutingLookup(
     {
         destination.Clear();
         if (headers is null)
+        {
             return;
+        }
 
         for (var index = 0; index < headerCount; index++)
+        {
             destination.Add(headers[index]);
+        }
     }
 
     internal bool TryGetLast(string headerName, out Header header)
@@ -150,9 +170,13 @@ internal readonly struct RecordHeaderRoutingLookup(
                 {
                     header = headers[routedHeaderTailOffset + bucket];
                     if (header.Key is null)
+                    {
                         return false;
+                    }
                     if (string.Equals(header.Key, headerName, StringComparison.Ordinal))
+                    {
                         return true;
+                    }
                     bucket = (bucket + 1) & mask;
                 }
 
@@ -216,7 +240,7 @@ public interface ISerializer<in T>
 #if NET9_0_OR_GREATER
         , allows ref struct
 #endif
-        ;
+    ;
 }
 
 /// <summary>
@@ -230,7 +254,10 @@ public interface ISerializer<in T>
 public interface IRecordHeaderSerializer
 {
     /// <summary>Gets whether this serializer may add record headers.</summary>
-    bool ProducesRecordHeaders { get; }
+    bool ProducesRecordHeaders
+    {
+        get;
+    }
 }
 
 /// <summary>
@@ -244,7 +271,10 @@ public interface IRecordHeaderSerializer
 public interface IRecordHeaderDeserializer
 {
     /// <summary>Gets whether this deserializer may read record headers.</summary>
-    bool ConsumesRecordHeaders { get; }
+    bool ConsumesRecordHeaders
+    {
+        get;
+    }
 }
 
 /// <summary>
@@ -294,11 +324,15 @@ internal static class RecordHeaderDeserializer
         SerializationContext context)
     {
         if (deserializer is ICallerOwnedHeaderDeserializer<T> callerOwned)
+        {
             return callerOwned.DeserializeCallerOwned(data, context);
+        }
 
         if (deserializer is not IRecordHeaderDeserializer { ConsumesRecordHeaders: true }
             && context.Headers is not null)
+        {
             context.Headers = null;
+        }
         return deserializer.Deserialize(data, context);
     }
 
@@ -323,10 +357,14 @@ internal static class RecordHeaderDeserializer
         in RecordHeaderRoutingLookup headers)
     {
         if (deserializer is IRecordHeaderDeserializer<T> nested)
+        {
             return nested.Deserialize(data, context, in headers);
+        }
 
         if (context.Headers is not null)
+        {
             context.Headers = null;
+        }
         return deserializer.Deserialize(data, context);
     }
 }
@@ -391,7 +429,9 @@ internal sealed class RecordHeaderDeserializerAdapter<T>(IDeserializer<T> inner)
         out T value)
     {
         if (inner is IAsyncDeserializerPreparer<T> preparer)
+        {
             return preparer.TryDeserialize(data, context, out value);
+        }
 
         value = inner.Deserialize(data, context);
         return true;
@@ -443,7 +483,9 @@ internal sealed class RecordHeaderDeserializerAdapter<T>(IDeserializer<T> inner)
     void IRecordHeaderRoutingProvider.CollectHeaderNames(List<string> names)
     {
         if (inner is IRecordHeaderRoutingProvider provider)
+        {
             provider.CollectHeaderNames(names);
+        }
 
         for (var index = 0; index < names.Count; index++)
         {
@@ -451,7 +493,9 @@ internal sealed class RecordHeaderDeserializerAdapter<T>(IDeserializer<T> inner)
                     names[index],
                     RecordHeaderRoutingPlan.MaterializedHeadersSentinel,
                     StringComparison.Ordinal))
+            {
                 return;
+            }
         }
 
         names.Add(RecordHeaderRoutingPlan.MaterializedHeadersSentinel);
@@ -509,12 +553,18 @@ public struct SerializationContext
     /// <summary>
     /// The topic the data is for.
     /// </summary>
-    public string Topic { get; set; }
+    public string Topic
+    {
+        get; set;
+    }
 
     /// <summary>
     /// Whether this is key or value data.
     /// </summary>
-    public SerializationComponent Component { get; set; }
+    public SerializationComponent Component
+    {
+        get; set;
+    }
 
     /// <summary>
     /// Headers associated with the record.
@@ -524,7 +574,10 @@ public struct SerializationContext
     /// It is valid only for the current <see cref="IDeserializer{T}.Deserialize"/> or async
     /// deserializer call. Deserializers must not retain it; copy entries when a snapshot is needed.
     /// </remarks>
-    public Headers? Headers { get; set; }
+    public Headers? Headers
+    {
+        get; set;
+    }
 
     /// <summary>
     /// Raw record-key bytes available while deserializing a consumed value.
@@ -534,7 +587,10 @@ public struct SerializationContext
     /// current <see cref="IDeserializer{T}.Deserialize"/> or async deserializer call. Deserializers
     /// must not retain it. This property is empty for key deserialization and serialization.
     /// </remarks>
-    public ReadOnlyMemory<byte> KeyData { get; set; }
+    public ReadOnlyMemory<byte> KeyData
+    {
+        get; set;
+    }
 
     /// <summary>
     /// Whether <see cref="KeyData"/> represents a null consumed record key.
@@ -548,7 +604,10 @@ public struct SerializationContext
     /// Whether the original data was null (as opposed to empty).
     /// This allows deserializers to distinguish between null values and empty byte arrays.
     /// </summary>
-    public bool IsNull { get; set; }
+    public bool IsNull
+    {
+        get; set;
+    }
 }
 
 /// <summary>

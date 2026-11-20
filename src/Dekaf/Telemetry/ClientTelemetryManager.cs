@@ -29,7 +29,10 @@ internal interface IClientTelemetryPayloadProvider
 
 internal sealed class EmptyClientTelemetryPayloadProvider : IClientTelemetryPayloadProvider
 {
-    public static EmptyClientTelemetryPayloadProvider Instance { get; } = new();
+    public static EmptyClientTelemetryPayloadProvider Instance
+    {
+        get;
+    } = new();
 
     public ReadOnlyMemory<byte> Collect(
         ClientTelemetrySubscription subscription,
@@ -88,8 +91,14 @@ internal sealed partial class ClientTelemetryManager : IAsyncDisposable
     // A subscription request that fails transiently (no broker in metadata yet, a connection
     // reset, a retriable error code) is retried by the loop with exponential backoff, so a broker
     // restarting while the client starts does not leave telemetry off for the client's lifetime.
-    internal TimeSpan SubscriptionRetryBackoff { get; init; } = DefaultSubscriptionRetryBackoff;
-    internal TimeSpan SubscriptionRetryMaxBackoff { get; init; } = DefaultSubscriptionRetryMaxBackoff;
+    internal TimeSpan SubscriptionRetryBackoff
+    {
+        get; init;
+    } = DefaultSubscriptionRetryBackoff;
+    internal TimeSpan SubscriptionRetryMaxBackoff
+    {
+        get; init;
+    } = DefaultSubscriptionRetryMaxBackoff;
 
     public async ValueTask StartAsync(CancellationToken cancellationToken = default)
     {
@@ -229,7 +238,9 @@ internal sealed partial class ClientTelemetryManager : IAsyncDisposable
         {
             _startLock.Release();
             if (completesStop)
+            {
                 _stopCompletion.TrySetResult(true);
+            }
         }
     }
 
@@ -269,9 +280,13 @@ internal sealed partial class ClientTelemetryManager : IAsyncDisposable
         _loopCts = null;
         _loopTask = null;
         if (loopTask is not null)
+        {
             _ = DisposeLoopAsync(loopTask, loopCts);
+        }
         else
+        {
             loopCts?.Dispose();
+        }
     }
 
     private async Task DisposeLoopAsync(Task loopTask, CancellationTokenSource? loopCts)
@@ -419,7 +434,9 @@ internal sealed partial class ClientTelemetryManager : IAsyncDisposable
         {
             var remainingTicks = requiredTicks - (Stopwatch.GetTimestamp() - lastPushTimestamp);
             if (remainingTicks <= 0)
+            {
                 return;
+            }
 
             var remainingMs = Math.Min(Math.Ceiling(remainingTicks * 1000d / Stopwatch.Frequency), int.MaxValue);
             await Task.Delay(TimeSpan.FromMilliseconds(remainingMs), cancellationToken).ConfigureAwait(false);

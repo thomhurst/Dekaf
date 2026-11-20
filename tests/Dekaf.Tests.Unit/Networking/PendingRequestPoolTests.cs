@@ -325,8 +325,14 @@ public class PendingRequestPoolTests
 
     private sealed class TestReservation(bool failReset) : IResponseMemoryReservation
     {
-        public InvalidOperationException Failure { get; } = new("Injected reservation cleanup failure.");
-        public int DisposeCalls { get; private set; }
+        public InvalidOperationException Failure
+        {
+            get;
+        } = new("Injected reservation cleanup failure.");
+        public int DisposeCalls
+        {
+            get; private set;
+        }
 
         public void Dispose()
         {

@@ -108,7 +108,9 @@ public class ProtocolBenchmarks
         buffer.Clear();
         var writer = new KafkaProtocolWriter(buffer);
         for (var i = 0; i < records.Count; i++)
+        {
             records[i].Write(ref writer);
+        }
         return buffer.WrittenSpan.ToArray();
     }
 
@@ -344,7 +346,9 @@ public class ProtocolBenchmarks
     {
         var sum = 0;
         while (!reader.End)
+        {
             sum += Record.Read(ref reader).OffsetDelta;
+        }
         return sum;
     }
 

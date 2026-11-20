@@ -232,7 +232,10 @@ public class OAuthBearerAuthenticationTests(OAuthBearerKafkaContainer oauthKafka
             _acceptLoop = Task.Run(AcceptLoopAsync);
         }
 
-        public string Url { get; }
+        public string Url
+        {
+            get;
+        }
         public int RequestCount => Volatile.Read(ref _requestCount);
         public IReadOnlyDictionary<string, string> LastForm => _lastForm ?? throw new InvalidOperationException("No token request received");
 
@@ -317,7 +320,9 @@ public class OAuthBearerAuthenticationTests(OAuthBearerKafkaContainer oauthKafka
             {
                 var read = await stream.ReadAsync(readBuffer, cancellationToken);
                 if (read == 0)
+                {
                     throw new InvalidOperationException("Token endpoint request ended before headers");
+                }
 
                 buffer.Write(readBuffer, 0, read);
                 headerEnd = IndexOf(buffer.GetBuffer(), (int)buffer.Length, "\r\n\r\n"u8.ToArray());
@@ -330,7 +335,9 @@ public class OAuthBearerAuthenticationTests(OAuthBearerKafkaContainer oauthKafka
             var bodyBytes = new byte[contentLength];
             var bufferedBodyLength = Math.Min(contentLength, requestBytes.Length - bodyStart);
             if (bufferedBodyLength > 0)
+            {
                 Array.Copy(requestBytes, bodyStart, bodyBytes, 0, bufferedBodyLength);
+            }
 
             var remaining = contentLength - bufferedBodyLength;
             while (remaining > 0)
@@ -338,7 +345,9 @@ public class OAuthBearerAuthenticationTests(OAuthBearerKafkaContainer oauthKafka
                 var offset = contentLength - remaining;
                 var read = await stream.ReadAsync(bodyBytes.AsMemory(offset, remaining), cancellationToken);
                 if (read == 0)
+                {
                     throw new InvalidOperationException("Token endpoint request ended before body");
+                }
                 remaining -= read;
             }
 
@@ -350,7 +359,9 @@ public class OAuthBearerAuthenticationTests(OAuthBearerKafkaContainer oauthKafka
             foreach (var line in headerText.Split("\r\n"))
             {
                 if (line.StartsWith("Content-Length:", StringComparison.OrdinalIgnoreCase))
+                {
                     return int.Parse(line["Content-Length:".Length..].Trim());
+                }
             }
 
             return 0;
@@ -371,7 +382,9 @@ public class OAuthBearerAuthenticationTests(OAuthBearerKafkaContainer oauthKafka
                 }
 
                 if (found)
+                {
                     return i;
+                }
             }
 
             return -1;

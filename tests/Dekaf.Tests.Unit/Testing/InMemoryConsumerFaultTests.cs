@@ -313,7 +313,9 @@ public sealed class InMemoryConsumerFaultTests
 
         var records = new List<ConsumeResult<string, string>>();
         await foreach (var record in consumer.ConsumeSnapshotAsync())
+        {
             records.Add(record);
+        }
 
         await Assert.That(records).Count().IsEqualTo(1);
         await Assert.That(faultPlan.MatchingProbeCount).IsEqualTo(0);
@@ -2093,7 +2095,9 @@ public sealed class InMemoryConsumerFaultTests
         cluster.FaultPlan.FaultConsumed += observation =>
         {
             if (observation.OperationScope.Operation == KafkaFaultOperation.Commit)
+            {
                 closeTask = consumer.CloseAsync().AsTask();
+            }
         };
 
         var consume = consumer.ConsumeOneAsync(Timeout.InfiniteTimeSpan).AsTask();
@@ -2463,7 +2467,9 @@ public sealed class InMemoryConsumerFaultTests
         await consumer.CommitAsync();
         var remaining = new List<string>();
         await foreach (var record in consumer.ConsumeSnapshotAsync())
+        {
             remaining.Add(record.Key!);
+        }
         await Assert.That(remaining).IsEquivalentTo(["remaining"]);
     }
 
@@ -2539,9 +2545,13 @@ public sealed class InMemoryConsumerFaultTests
             occurrenceCount: 4);
 
         if (dispose)
+        {
             await consumer.DisposeAsync();
+        }
         else
+        {
             await consumer.CloseAsync();
+        }
 
         await Assert.That(attempts).IsEqualTo(3);
         await Assert.That(cluster.FaultPlan.Count).IsEqualTo(1);
@@ -2573,9 +2583,13 @@ public sealed class InMemoryConsumerFaultTests
             occurrenceCount: failures);
 
         if (dispose)
+        {
             await consumer.DisposeAsync();
+        }
         else
+        {
             await consumer.CloseAsync();
+        }
 
         await Assert.That(cluster.FaultPlan.Count).IsEqualTo(0);
         await Assert.That(cluster.GetCommittedOffset(GroupId, Partition)).IsEqualTo(1);
@@ -2939,7 +2953,9 @@ public sealed class InMemoryConsumerFaultTests
         cluster.FaultPlan.FaultConsumed += observation =>
         {
             if (observation.OperationScope.Operation == operation)
+            {
                 consume = consumer.ConsumeOneAsync(Timeout.InfiniteTimeSpan).AsTask();
+            }
         };
 
         var actual = Assert.Throws<InvalidOperationException>(() => consumer.Subscribe("payments"));
@@ -2966,7 +2982,9 @@ public sealed class InMemoryConsumerFaultTests
         cluster.FaultPlan.FaultConsumed += observation =>
         {
             if (observation.OperationScope.Operation == KafkaFaultOperation.JoinGroup)
+            {
                 topics[0] = "payments";
+            }
         };
 
         consumer.Subscribe(topics);
@@ -3163,9 +3181,15 @@ public sealed class InMemoryConsumerFaultTests
         private Action? _matchingObserved;
         private Action? _commitProbeObserved;
 
-        public int MatchingProbeCount { get; private set; }
+        public int MatchingProbeCount
+        {
+            get; private set;
+        }
 
-        public int PotentialProbeCount { get; private set; }
+        public int PotentialProbeCount
+        {
+            get; private set;
+        }
 
         public event Action<KafkaFaultObservation>? FaultConsumed
         {
@@ -3280,7 +3304,9 @@ public sealed class InMemoryConsumerFaultTests
         public string Deserialize(ReadOnlyMemory<byte> data, SerializationContext context)
         {
             if (Interlocked.Exchange(ref _invokeCallback, 0) != 0)
+            {
                 callback();
+            }
 
             return Encoding.UTF8.GetString(data.Span);
         }

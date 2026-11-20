@@ -17,14 +17,18 @@ public sealed partial class InMemoryAdminClient : IConsumerGroupOffsetQueryAdmin
         var opts = options ?? new ListConsumerGroupOffsetsOptions();
         ArgumentOutOfRangeException.ThrowIfNegative(opts.TimeoutMs);
         if (requests.Length == 0)
+        {
             return new Dictionary<string, ConsumerGroupOffsetsResult>(StringComparer.Ordinal);
+        }
 
         return await ExecuteWithTimeoutAsync(async token =>
         {
             var fetched = await ReadGroupOffsetSnapshotsAsync(requests, opts.RequireStable, token).ConfigureAwait(false);
             var results = new Dictionary<string, ConsumerGroupOffsetsResult>(requests.Length, StringComparer.Ordinal);
             foreach (var (groupId, _) in requests)
+            {
                 results.Add(groupId, ConsumerGroupOffsetsResult.FromStreamsResult(fetched[groupId]));
+            }
             token.ThrowIfCancellationRequested();
             return results;
         }, opts.TimeoutMs, nameof(ListConsumerGroupOffsetsAsync), cancellationToken).ConfigureAwait(false);
@@ -49,7 +53,9 @@ public sealed partial class InMemoryAdminClient : IConsumerGroupOffsetQueryAdmin
                 {
                     ValidateTopicPartition(partition);
                     if (!unique.Add(partition))
+                    {
                         throw new ArgumentException($"Partition '{partition.Topic}-{partition.Partition}' is duplicated.", nameof(groupSpecs));
+                    }
                 }
             }
             requests[index++] = (groupId, partitions);
@@ -66,17 +72,23 @@ public sealed partial class InMemoryAdminClient : IConsumerGroupOffsetQueryAdmin
         List<(string GroupId, TopicPartition[]? Partitions)>? pending = null;
         Task? changed = null;
         if (requests.Length == 0)
+        {
             await ApplyAdminFaultAsync(cancellationToken).ConfigureAwait(false);
+        }
 
         foreach (var (groupId, selectedPartitions) in requests)
         {
             if (selectedPartitions is { Length: > 0 })
             {
                 foreach (var partition in selectedPartitions)
+                {
                     await ApplyAdminFaultAsync(cancellationToken, partition.Topic, partition.Partition, groupId).ConfigureAwait(false);
+                }
             }
             else
+            {
                 await ApplyAdminFaultAsync(cancellationToken, groupId: groupId).ConfigureAwait(false);
+            }
 
             if (requireStable)
             {
@@ -90,7 +102,9 @@ public sealed partial class InMemoryAdminClient : IConsumerGroupOffsetQueryAdmin
                 results.Add(groupId, CreateGroupOffsetsResult(groupId, selectedPartitions, stableOffsets));
             }
             else
+            {
                 results.Add(groupId, CreateGroupOffsetsResult(groupId, selectedPartitions, _cluster.GetGroupOffsetDetails(groupId)));
+            }
         }
 
         if (pending is not null)
@@ -105,7 +119,9 @@ public sealed partial class InMemoryAdminClient : IConsumerGroupOffsetQueryAdmin
                 {
                     var request = pending[i];
                     if (_cluster.TryGetStableGroupOffsetDetails(request.GroupId, request.Partitions, out var offsets, out var signal))
+                    {
                         results.Add(request.GroupId, CreateGroupOffsetsResult(request.GroupId, request.Partitions, offsets));
+                    }
                     else
                     {
                         pending[remaining++] = request;
@@ -119,7 +135,9 @@ public sealed partial class InMemoryAdminClient : IConsumerGroupOffsetQueryAdmin
             // request order after unstable groups complete in a different order.
             var ordered = new Dictionary<string, StreamsGroupOffsetsResult>(requests.Length, StringComparer.Ordinal);
             foreach (var (groupId, _) in requests)
+            {
                 ordered.Add(groupId, results[groupId]);
+            }
             results = ordered;
         }
         cancellationToken.ThrowIfCancellationRequested();
@@ -143,7 +161,9 @@ public sealed partial class InMemoryAdminClient : IConsumerGroupOffsetQueryAdmin
         else
         {
             foreach (var (partition, offset) in storedOffsets)
+            {
                 offsets.Add(partition, CreateGroupOffsetDescription(partition, true, offset));
+            }
         }
         return new StreamsGroupOffsetsResult { GroupId = groupId, ErrorCode = ErrorCode.None, Offsets = offsets };
     }

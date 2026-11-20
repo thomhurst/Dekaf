@@ -16,12 +16,18 @@ public sealed class CreatePartitionsResponse : IKafkaResponse
     /// The duration in milliseconds for which the request was throttled due to quota violation
     /// (zero if not throttled).
     /// </summary>
-    public int ThrottleTimeMs { get; init; }
+    public int ThrottleTimeMs
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Results for each topic.
     /// </summary>
-    public required IReadOnlyList<CreatePartitionsResponseResult> Results { get; init; }
+    public required IReadOnlyList<CreatePartitionsResponseResult> Results
+    {
+        get; init;
+    }
 
     public static IKafkaResponse Read(ref KafkaProtocolReader reader, short version)
     {
@@ -52,17 +58,26 @@ public sealed class CreatePartitionsResponseResult
     /// <summary>
     /// The topic name.
     /// </summary>
-    public required string Name { get; init; }
+    public required string Name
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The error code, or 0 if there was no error.
     /// </summary>
-    public ErrorCode ErrorCode { get; init; }
+    public ErrorCode ErrorCode
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The error message, or null if there was no error.
     /// </summary>
-    public string? ErrorMessage { get; init; }
+    public string? ErrorMessage
+    {
+        get; init;
+    }
 
     public static CreatePartitionsResponseResult Read(ref KafkaProtocolReader reader, short version)
     {

@@ -216,10 +216,14 @@ public sealed partial class OutboxRelayService : BackgroundService
             }
 
             if (!cycle.HadError || cycle.PublishedAny)
+            {
                 _fruitlessCycles = 0;
+            }
 
             if (cycle.PublishedAny && !cycle.HadError)
+            {
                 continue;
+            }
 
             try
             {
@@ -234,10 +238,14 @@ public sealed partial class OutboxRelayService : BackgroundService
                     // A long configured poll interval must not let idle leases expire.
                     var untilRenewal = _options.LeaseRenewInterval - _timeProvider.GetElapsedTime(_rebalanceTimestamp);
                     if (untilRenewal <= TimeSpan.Zero)
+                    {
                         continue;
+                    }
                     var untilPoll = _options.PollInterval;
                     if (_notifier is OutboxNotifier && !_discoveryRequired)
+                    {
                         untilPoll -= _timeProvider.GetElapsedTime(_probeTimestamp);
+                    }
                     var delay = _ownedBuckets.Count == 0 || untilRenewal < untilPoll
                         ? untilRenewal : untilPoll;
                     // A bucket backing off from a rejected row is retried when its own backoff
@@ -248,16 +256,26 @@ public sealed partial class OutboxRelayService : BackgroundService
                     {
                         var untilRetry = cycle.RetryAfter - _timeProvider.GetElapsedTime(cycle.Started);
                         if (untilRetry < delay)
+                        {
                             delay = untilRetry;
+                        }
                     }
                     if (delay <= TimeSpan.Zero)
+                    {
                         continue;
+                    }
                     if (_notifier is null)
+                    {
                         await Task.Delay(delay, _timeProvider, stoppingToken).ConfigureAwait(false);
+                    }
                     else if (cycle.RetryAfter > TimeSpan.Zero && _notifier is OutboxNotifier hints)
+                    {
                         await WaitWhileBackingOffAsync(hints, delay, stoppingToken).ConfigureAwait(false);
+                    }
                     else
+                    {
                         await WaitForNotificationAsync(_notifier, delay, stoppingToken).ConfigureAwait(false);
+                    }
                 }
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
@@ -294,7 +312,9 @@ public sealed partial class OutboxRelayService : BackgroundService
 
         var remaining = delay - _timeProvider.GetElapsedTime(started);
         if (remaining > TimeSpan.Zero)
+        {
             await Task.Delay(remaining, _timeProvider, stoppingToken).ConfigureAwait(false);
+        }
     }
 
     /// <summary>
@@ -310,19 +330,25 @@ public sealed partial class OutboxRelayService : BackgroundService
     {
         var floor = _options.ErrorBackoff;
         if (publishedAny)
+        {
             return floor;
+        }
 
         var failures = ++_fruitlessCycles;
         var backoff = JitteredBackoff(failures);
         if (failures <= 1 || _ownedBuckets.Count == 0)
+        {
             return backoff;
+        }
 
         // The ceiling is a whole renew interval, but the kept leases are already part of the
         // way through theirs: with a renew interval close to the lease duration, a wait that
         // ignored their age would let them run out, and a peer claim them, before the retry.
         var untilRenewal = _options.LeaseRenewInterval - _timeProvider.GetElapsedTime(_rebalanceTimestamp);
         if (untilRenewal >= backoff)
+        {
             return backoff;
+        }
         return untilRenewal > floor ? untilRenewal : floor;
     }
 
@@ -336,7 +362,9 @@ public sealed partial class OutboxRelayService : BackgroundService
         var floor = _options.ErrorBackoff;
         var cap = _options.LeaseRenewInterval;
         if (failures <= 1 || cap <= floor)
+        {
             return floor;
+        }
 
         // The shift is bounded so the ceiling cannot overflow before it is capped.
         var doublings = Math.Min(failures - 1, 30);
@@ -352,7 +380,9 @@ public sealed partial class OutboxRelayService : BackgroundService
     {
         var readyCount = _pendingBucketCount;
         for (var index = 0; index < readyCount; index++)
+        {
             _readyBuckets![_pendingBuckets[index]] = true;
+        }
         for (var index = 0; index < hintCount; index++)
         {
             var bucket = _hintBuckets![index];
@@ -363,7 +393,9 @@ public sealed partial class OutboxRelayService : BackgroundService
         }
         // Hints are already distinct; only the carried readiness needs clearing.
         for (var index = 0; index < readyCount; index++)
+        {
             _readyBuckets![_pendingBuckets[index]] = false;
+        }
         return _pendingBucketCount > readyCount;
     }
 
@@ -382,7 +414,9 @@ public sealed partial class OutboxRelayService : BackgroundService
             await WaitForNotificationAsync(hints, delay, stoppingToken).ConfigureAwait(false);
             var remaining = delay - _timeProvider.GetElapsedTime(waitStarted);
             if (remaining <= TimeSpan.Zero)
+            {
                 return;
+            }
 
             var hintCount = hints.DrainHints(_hintBuckets, out var unknown);
             if (unknown)
@@ -391,7 +425,9 @@ public sealed partial class OutboxRelayService : BackgroundService
                 return;
             }
             if (hintCount > 0 && MergeHintedBuckets(hintCount))
+            {
                 return;
+            }
 
             delay = remaining;
             waitStarted = _timeProvider.GetTimestamp();
@@ -405,7 +441,9 @@ public sealed partial class OutboxRelayService : BackgroundService
         {
             var hash = 2166136261u;
             foreach (var character in relayId)
+            {
                 hash = (hash ^ character) * 16777619u;
+            }
             return (int)hash;
         }
     }
@@ -439,7 +477,9 @@ public sealed partial class OutboxRelayService : BackgroundService
             }
 
             if (_ownedBuckets.Count == 0)
+            {
                 return new CycleResult(PublishedAny: false, HadError: false);
+            }
 
             // Keep full buckets ready between sweeps, without an extra discovery query
             // per batch. Poll periodically even while busy to discover newly active buckets.
@@ -449,7 +489,9 @@ public sealed partial class OutboxRelayService : BackgroundService
                 var hintCount = hints.DrainHints(_hintBuckets, out var unknown);
                 discover |= unknown;
                 if (!discover && hintCount > 0)
+                {
                     MergeHintedBuckets(hintCount);
+                }
             }
             else
             {
@@ -462,7 +504,9 @@ public sealed partial class OutboxRelayService : BackgroundService
                     .ConfigureAwait(false);
                 _pendingBucketCount = pendingBuckets.Count;
                 for (var index = 0; index < pendingBuckets.Count; index++)
+                {
                     _pendingBuckets[index] = pendingBuckets[index];
+                }
                 _probeTimestamp = started;
                 _discoveryRequired = false;
             }
@@ -479,7 +523,9 @@ public sealed partial class OutboxRelayService : BackgroundService
             for (var bucketIndex = 0; bucketIndex < pendingCount; bucketIndex++)
             {
                 if (cancellationToken.IsCancellationRequested)
+                {
                     break;
+                }
 
                 if (_ownedBuckets.Count == 0 || LeaseAge() >= _options.LeaseDuration)
                 {
@@ -491,7 +537,9 @@ public sealed partial class OutboxRelayService : BackgroundService
                 }
 
                 if (_renewalStore is null && !OwnsBucket(_pendingBuckets[bucketIndex]))
+                {
                     continue;
+                }
 
                 // Keep bucket draining in the cycle state machine. A pending publisher
                 // needs one suspension instead of a second pooled async operation.
@@ -508,7 +556,9 @@ public sealed partial class OutboxRelayService : BackgroundService
                             _pendingBuckets[retainedCount++] = bucket;
                             backingOffCount++;
                             if (headRetryDue < retryAfter)
+                            {
                                 retryAfter = headRetryDue;
+                            }
                             continue;
                         }
 
@@ -544,7 +594,9 @@ public sealed partial class OutboxRelayService : BackgroundService
                             _pendingBuckets[retainedCount++] = bucket;
                             backingOffCount++;
                             if (headRetryDue < retryAfter)
+                            {
                                 retryAfter = headRetryDue;
+                            }
                             break;
                         }
                     }
@@ -589,7 +641,9 @@ public sealed partial class OutboxRelayService : BackgroundService
 
                                         var nextRenewal = GetRenewalDelay(remaining, cancellationToken);
                                         if (await Task.WhenAny(publishTask, nextRenewal).ConfigureAwait(false) == publishTask)
+                                        {
                                             break;
+                                        }
 
                                         await nextRenewal.ConfigureAwait(false);
                                         CancelRenewalDelay();
@@ -641,7 +695,9 @@ public sealed partial class OutboxRelayService : BackgroundService
                             publishFinished = completionObserved ? _observedPublishFinished : _timeProvider.GetTimestamp();
                         }
                         if (measurePublish)
+                        {
                             RecordPublishResult(result, cancellationToken);
+                        }
                     }
                     catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
                     {
@@ -650,13 +706,17 @@ public sealed partial class OutboxRelayService : BackgroundService
                     catch
                     {
                         if (measurePublish)
+                        {
                             OutboxMetrics.Record(OutboxMetrics.Failures, _metrics, 1);
+                        }
                         throw;
                     }
                     finally
                     {
                         if (measureDuration)
+                        {
                             OutboxMetrics.RecordDuration(OutboxMetrics.PublishDuration, _metrics, publishStarted, publishFinished);
+                        }
                     }
 
                     // The lease the publish ran under: the current one, or the one a failed
@@ -681,7 +741,9 @@ public sealed partial class OutboxRelayService : BackgroundService
 
                     ValidatePublishDuration(publishStarted, publishFinished);
                     if (renewalError is OutboxMisconfigurationException misconfiguration)
+                    {
                         throw misconfiguration;
+                    }
                     // Listener callbacks and concurrent renewal can outlast publishing.
                     // They must not inflate its budget, but lease ownership still ages.
                     var leaseChecked = hadPublishMetrics || completionObserved ? _timeProvider.GetTimestamp() : publishFinished;
@@ -713,7 +775,9 @@ public sealed partial class OutboxRelayService : BackgroundService
                             // publish these rows again. Marking is idempotent, so the rows are
                             // marked once more within the shutdown deadline, as above.
                             if (_timeProvider.GetElapsedTime(leaseTimestamp) < _options.LeaseDuration)
+                            {
                                 await MarkPublishedBeforeStopAsync(bucket, published).ConfigureAwait(false);
+                            }
                             throw;
                         }
                         publishedAny = true;
@@ -721,7 +785,9 @@ public sealed partial class OutboxRelayService : BackgroundService
                     }
 
                     if (headOnly)
+                    {
                         OutboxMetrics.Record(OutboxMetrics.HeadRowRetries, _metrics, 1);
+                    }
 
                     if (result.FirstError is not null)
                     {
@@ -747,12 +813,16 @@ public sealed partial class OutboxRelayService : BackgroundService
                         backingOffCount++;
                         var retryDue = backoff + _timeProvider.GetElapsedTime(started, failedAt);
                         if (retryDue < retryAfter)
+                        {
                             retryAfter = retryDue;
+                        }
                         break;
                     }
 
                     if (headOnly)
+                    {
                         LogHeadRowRecovered(bucket, batch[0].MessageId, _headRowFailures[bucket] + 1);
+                    }
                     _headRowFailures[bucket] = 0;
 
                     if (renewalError is not null)
@@ -767,7 +837,9 @@ public sealed partial class OutboxRelayService : BackgroundService
                         // With only one owned bucket there is no peer to starve. Avoid an
                         // extra cycle per batch, but still yield for fair-share acquisition.
                         if (_ownedBuckets.Count == 1 && _timeProvider.GetElapsedTime(_rebalanceTimestamp) < _options.LeaseRenewInterval)
+                        {
                             continue;
+                        }
                         _pendingBuckets[retainedCount++] = bucket;
                     }
                     break;
@@ -778,7 +850,9 @@ public sealed partial class OutboxRelayService : BackgroundService
             // readiness from an earlier ownership epoch into the next sweep.
             _pendingBucketCount = !hadError && generation == _leaseGeneration ? retainedCount : 0;
             if (hadError)
+            {
                 _discoveryRequired = true;
+            }
             else if (backingOffCount > 0 && backingOffCount == retainedCount && _notifier is not OutboxNotifier)
             {
                 // Only buckets backing off from a rejected row are left ready. Without bucket
@@ -788,7 +862,9 @@ public sealed partial class OutboxRelayService : BackgroundService
                 _discoveryRequired = true;
             }
             if (hadError || publishedAny || backingOffCount == 0)
+            {
                 return new CycleResult(publishedAny, hadError);
+            }
 
             // Only buckets backing off from a rejected row are left. That is not a relay-wide
             // failure: the relay idles until the earliest of their retries, and a commit to
@@ -798,14 +874,18 @@ public sealed partial class OutboxRelayService : BackgroundService
         finally
         {
             if (measureCycleDuration)
+            {
                 OutboxMetrics.RecordDuration(OutboxMetrics.CycleDuration, _metrics, started);
+            }
         }
     }
 
     private void ResetLeaseState()
     {
         if (_ownedBuckets.Count > 0 && LeaseAge() >= _options.LeaseDuration)
+        {
             OutboxMetrics.Record(OutboxMetrics.LeaseExpirations, _metrics, 1);
+        }
         _ownedBuckets = [];
         Volatile.Write(ref _metrics.OwnedBuckets, 0);
         _leaseTimestamp = 0;
@@ -829,7 +909,9 @@ public sealed partial class OutboxRelayService : BackgroundService
     private void PublishOwnedBuckets(IReadOnlyList<int> buckets)
     {
         if (_notifier is not IOutboxBucketNotifier bucketNotifier)
+        {
             return;
+        }
 
         try
         {
@@ -848,11 +930,15 @@ public sealed partial class OutboxRelayService : BackgroundService
         // The store contract guarantees MarkPublishedAsync receives the same instances
         // GetNextBatchAsync returned, as a contiguous prefix, in order.
         if (ackedCount == batch.Count)
+        {
             return batch;
+        }
 
         var prefix = new OutboxMessage[ackedCount];
         for (var i = 0; i < ackedCount; i++)
+        {
             prefix[i] = batch[i];
+        }
         return prefix;
     }
 
@@ -871,7 +957,9 @@ public sealed partial class OutboxRelayService : BackgroundService
         {
             var bucket = acquired[index];
             if ((uint)bucket >= (uint)_headRowFailures.Length || _headRowFailures[bucket] == 0)
+            {
                 continue;
+            }
             var stillHeld = false;
             for (var heldIndex = 0; heldIndex < held.Count; heldIndex++)
             {
@@ -882,7 +970,9 @@ public sealed partial class OutboxRelayService : BackgroundService
                 }
             }
             if (!stillHeld)
+            {
                 _headRowRecheck[bucket] = true;
+            }
         }
     }
 
@@ -904,7 +994,9 @@ public sealed partial class OutboxRelayService : BackgroundService
     {
         // Observe a stalled relay's expired set before reacquisition replaces its timestamp.
         if (_ownedBuckets.Count > 0 && LeaseAge() >= _options.LeaseDuration)
+        {
             ResetLeaseState();
+        }
 
         // Captured before the store call: the database computes lease expiry when the call
         // starts, so a slow acquisition must age the lease, not refresh it. Assigned only
@@ -922,7 +1014,9 @@ public sealed partial class OutboxRelayService : BackgroundService
         // The old lease can expire during acquisition, including when no buckets are returned.
         // Observe that epoch before replacing either its ownership or timestamp.
         if (_ownedBuckets.Count > 0 && LeaseAge() >= _options.LeaseDuration)
+        {
             ResetLeaseState();
+        }
         _leaseTimestamp = acquisitionTimestamp;
         _rebalanceTimestamp = acquisitionTimestamp;
         _pendingBucketCount = 0;
@@ -930,7 +1024,9 @@ public sealed partial class OutboxRelayService : BackgroundService
         _leaseGeneration++;
 
         if (acquired.Count != _ownedBuckets.Count)
+        {
             LogLeasesChanged(_options.RelayId, acquired.Count, _options.BucketCount);
+        }
 
         RecheckHeadOfRegainedBuckets(_ownedBuckets, acquired);
         _ownedBuckets = acquired;
@@ -939,7 +1035,9 @@ public sealed partial class OutboxRelayService : BackgroundService
         {
             Array.Clear(_ownedBucketFlags);
             for (var index = 0; index < acquired.Count; index++)
+            {
                 _ownedBucketFlags[acquired[index]] = true;
+            }
         }
         UpdateMetricsLease();
         PublishOwnedBuckets(acquired);

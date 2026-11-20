@@ -5,13 +5,34 @@ namespace Dekaf.Admin;
 /// </summary>
 public sealed class ShareGroupDescription
 {
-    public required string GroupId { get; init; }
-    public required string GroupState { get; init; }
-    public int GroupEpoch { get; init; }
-    public int AssignmentEpoch { get; init; }
-    public string? AssignorName { get; init; }
-    public required IReadOnlyList<ShareGroupMemberDescription> Members { get; init; }
-    public int AuthorizedOperations { get; init; }
+    public required string GroupId
+    {
+        get; init;
+    }
+    public required string GroupState
+    {
+        get; init;
+    }
+    public int GroupEpoch
+    {
+        get; init;
+    }
+    public int AssignmentEpoch
+    {
+        get; init;
+    }
+    public string? AssignorName
+    {
+        get; init;
+    }
+    public required IReadOnlyList<ShareGroupMemberDescription> Members
+    {
+        get; init;
+    }
+    public int AuthorizedOperations
+    {
+        get; init;
+    }
 }
 
 /// <summary>
@@ -19,13 +40,34 @@ public sealed class ShareGroupDescription
 /// </summary>
 public sealed class ShareGroupMemberDescription
 {
-    public required string MemberId { get; init; }
-    public string? RackId { get; init; }
-    public int MemberEpoch { get; init; }
-    public required string ClientId { get; init; }
-    public required string ClientHost { get; init; }
-    public required IReadOnlyList<string> SubscribedTopicNames { get; init; }
-    public IReadOnlyList<TopicPartition>? Assignment { get; init; }
+    public required string MemberId
+    {
+        get; init;
+    }
+    public string? RackId
+    {
+        get; init;
+    }
+    public int MemberEpoch
+    {
+        get; init;
+    }
+    public required string ClientId
+    {
+        get; init;
+    }
+    public required string ClientHost
+    {
+        get; init;
+    }
+    public required IReadOnlyList<string> SubscribedTopicNames
+    {
+        get; init;
+    }
+    public IReadOnlyList<TopicPartition>? Assignment
+    {
+        get; init;
+    }
 }
 
 /// <summary>
@@ -33,7 +75,10 @@ public sealed class ShareGroupMemberDescription
 /// </summary>
 public sealed class ListShareGroupsOptions
 {
-    public IReadOnlyList<string>? States { get; init; }
+    public IReadOnlyList<string>? States
+    {
+        get; init;
+    }
 }
 
 /// <summary>
@@ -41,14 +86,23 @@ public sealed class ListShareGroupsOptions
 /// </summary>
 public sealed class DeleteShareGroupResult
 {
-    public required string GroupId { get; init; }
-    public Protocol.ErrorCode ErrorCode { get; init; }
+    public required string GroupId
+    {
+        get; init;
+    }
+    public Protocol.ErrorCode ErrorCode
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The broker's error message for this group, or null when the broker sent none. Brokers send one from
     /// DeleteGroups v3 (Kafka 4.4+), for example with <see cref="Protocol.ErrorCode.GroupDeletionFailed"/>.
     /// </summary>
-    public string? ErrorMessage { get; init; }
+    public string? ErrorMessage
+    {
+        get; init;
+    }
 }
 
 /// <summary>
@@ -56,12 +110,30 @@ public sealed class DeleteShareGroupResult
 /// </summary>
 public sealed class ShareGroupOffsetDescription
 {
-    public required TopicPartition TopicPartition { get; init; }
-    public long StartOffset { get; init; }
-    public int LeaderEpoch { get; init; }
-    public long Lag { get; init; } = -1;
-    public Protocol.ErrorCode ErrorCode { get; init; }
-    public string? ErrorMessage { get; init; }
+    public required TopicPartition TopicPartition
+    {
+        get; init;
+    }
+    public long StartOffset
+    {
+        get; init;
+    }
+    public int LeaderEpoch
+    {
+        get; init;
+    }
+    public long Lag
+    {
+        get; init;
+    } = -1;
+    public Protocol.ErrorCode ErrorCode
+    {
+        get; init;
+    }
+    public string? ErrorMessage
+    {
+        get; init;
+    }
 }
 
 /// <summary>
@@ -69,6 +141,12 @@ public sealed class ShareGroupOffsetDescription
 /// </summary>
 public sealed class ShareGroupOffsetAlteration
 {
-    public required TopicPartition TopicPartition { get; init; }
-    public required long StartOffset { get; init; }
+    public required TopicPartition TopicPartition
+    {
+        get; init;
+    }
+    public required long StartOffset
+    {
+        get; init;
+    }
 }

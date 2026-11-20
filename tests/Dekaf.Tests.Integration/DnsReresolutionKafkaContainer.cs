@@ -23,9 +23,18 @@ public sealed class DnsReresolutionKafkaContainer : IAsyncInitializer, IAsyncDis
     private int _upstreamPort;
 
     public const string StableHost = "dns-reresolution.test";
-    public static IPAddress PrimaryAddress { get; } = IPAddress.Parse("127.0.0.2");
-    public static IPAddress SecondaryAddress { get; } = IPAddress.Parse("127.0.0.3");
-    public static IPAddress DeadAddress { get; } = IPAddress.Parse("127.0.0.4");
+    public static IPAddress PrimaryAddress
+    {
+        get;
+    } = IPAddress.Parse("127.0.0.2");
+    public static IPAddress SecondaryAddress
+    {
+        get;
+    } = IPAddress.Parse("127.0.0.3");
+    public static IPAddress DeadAddress
+    {
+        get;
+    } = IPAddress.Parse("127.0.0.4");
 
     public string BootstrapServers => $"{StableHost}:{_relayPort}";
     public int PrimaryAcceptedConnections => _primaryRelay?.AcceptedConnections ?? 0;
@@ -86,7 +95,9 @@ public sealed class DnsReresolutionKafkaContainer : IAsyncInitializer, IAsyncDis
     {
         await DisposeRelaysAsync().ConfigureAwait(false);
         if (_kafka is not null)
+        {
             await _kafka.DisposeAsync().ConfigureAwait(false);
+        }
     }
 
     private async ValueTask StartRelaysAsync(int port = 0)
@@ -107,7 +118,9 @@ public sealed class DnsReresolutionKafkaContainer : IAsyncInitializer, IAsyncDis
     private void SetRelayTargets()
     {
         if (_upstreamHost is null)
+        {
             return;
+        }
 
         _primaryRelay?.SetTarget(_upstreamHost, _upstreamPort);
         _secondaryRelay?.SetTarget(_upstreamHost, _upstreamPort);
@@ -116,9 +129,13 @@ public sealed class DnsReresolutionKafkaContainer : IAsyncInitializer, IAsyncDis
     private async ValueTask DisposeRelaysAsync()
     {
         if (_primaryRelay is not null)
+        {
             await _primaryRelay.DisposeAsync().ConfigureAwait(false);
+        }
         if (_secondaryRelay is not null)
+        {
             await _secondaryRelay.DisposeAsync().ConfigureAwait(false);
+        }
         _primaryRelay = null;
         _secondaryRelay = null;
     }
@@ -162,7 +179,10 @@ public sealed class DnsReresolutionKafkaContainer : IAsyncInitializer, IAsyncDis
             _acceptTask = AcceptAsync();
         }
 
-        public int Port { get; }
+        public int Port
+        {
+            get;
+        }
         public int AcceptedConnections => Volatile.Read(ref _acceptedConnections);
 
         public void SetTarget(string host, int port)
@@ -174,16 +194,22 @@ public sealed class DnsReresolutionKafkaContainer : IAsyncInitializer, IAsyncDis
         public async ValueTask DisposeAsync()
         {
             if (Interlocked.Exchange(ref _disposeState, 1) != 0)
+            {
                 return;
+            }
 
             _stopping.Cancel();
             _listener.Stop();
             foreach (var client in _clients.Values)
+            {
                 client.Dispose();
+            }
 
             await _acceptTask.ConfigureAwait(false);
             if (!_connections.IsEmpty)
+            {
                 await Task.WhenAll(_connections.Values).ConfigureAwait(false);
+            }
             _stopping.Dispose();
         }
 

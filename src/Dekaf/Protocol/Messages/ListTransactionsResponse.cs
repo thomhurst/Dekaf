@@ -13,10 +13,22 @@ public sealed class ListTransactionsResponse : IKafkaResponse
     public static short LowestSupportedVersion => 0;
     public static short HighestSupportedVersion => 2;
 
-    public int ThrottleTimeMs { get; init; }
-    public ErrorCode ErrorCode { get; init; }
-    public required IReadOnlyList<string> UnknownStateFilters { get; init; }
-    public required IReadOnlyList<ListTransactionsResponseState> TransactionStates { get; init; }
+    public int ThrottleTimeMs
+    {
+        get; init;
+    }
+    public ErrorCode ErrorCode
+    {
+        get; init;
+    }
+    public required IReadOnlyList<string> UnknownStateFilters
+    {
+        get; init;
+    }
+    public required IReadOnlyList<ListTransactionsResponseState> TransactionStates
+    {
+        get; init;
+    }
 
     public static IKafkaResponse Read(ref KafkaProtocolReader reader, short version)
     {
@@ -48,9 +60,18 @@ public sealed class ListTransactionsResponse : IKafkaResponse
 /// </summary>
 public sealed class ListTransactionsResponseState
 {
-    public required string TransactionalId { get; init; }
-    public long ProducerId { get; init; }
-    public required string TransactionState { get; init; }
+    public required string TransactionalId
+    {
+        get; init;
+    }
+    public long ProducerId
+    {
+        get; init;
+    }
+    public required string TransactionState
+    {
+        get; init;
+    }
 
     public static ListTransactionsResponseState Read(ref KafkaProtocolReader reader)
     {

@@ -177,7 +177,9 @@ public sealed class OutboxFairShareTests
                 var movable = relays
                     .Where(relay => held[relay] > shares[relay] || (held[relay] < shares[relay] && free > 0)).ToList();
                 if (movable.Count == 0)
+                {
                     break;
+                }
 
                 var mover = movable[random.Next(movable.Count)];
                 var step = held[mover] > shares[mover] ? -1 : 1;

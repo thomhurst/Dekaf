@@ -2,8 +2,8 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using ModularPipelines;
 using ModularPipelines.Context;
-using ModularPipelines.Git;
 using ModularPipelines.DotNet.Options;
+using ModularPipelines.Git;
 
 namespace Dekaf.Pipeline.Modules;
 

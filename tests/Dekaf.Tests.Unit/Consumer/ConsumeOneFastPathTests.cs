@@ -1,6 +1,6 @@
 using System.Collections.Concurrent;
-using System.Diagnostics.Metrics;
 using System.Diagnostics;
+using System.Diagnostics.Metrics;
 using System.Reflection;
 using System.Text;
 using Dekaf.Consumer;
@@ -155,7 +155,9 @@ public sealed partial class ConsumeOneFastPathTests
                 TimeSpan.FromSeconds(1),
                 CancellationToken.None);
             if (!nestedConsume.IsCompletedSuccessfully)
+            {
                 throw new InvalidOperationException("The nested consume unexpectedly suspended.");
+            }
             _ = nestedConsume.Result;
         });
         await using var outerConsumer = CreateInitializedConsumerWithDeserializers(
@@ -233,13 +235,17 @@ public sealed partial class ConsumeOneFastPathTests
 
         var firstConsume = firstConsumer.ConsumeOneAsync(TimeSpan.FromSeconds(10), CancellationToken.None);
         if (firstConsume.IsCompleted)
+        {
             throw new InvalidOperationException("The first key deserializer did not suspend.");
+        }
 
         try
         {
             var secondConsume = secondConsumer.ConsumeOneAsync(TimeSpan.FromSeconds(1), CancellationToken.None);
             if (!secondConsume.IsCompletedSuccessfully)
+            {
                 throw new InvalidOperationException("The second consume unexpectedly suspended.");
+            }
             _ = secondConsume.Result;
         }
         finally
@@ -988,12 +994,18 @@ public sealed partial class ConsumeOneFastPathTests
         listener.SetMeasurementEventCallback<long>((instrument, measurement, tags, _) =>
         {
             if (AccumulatorTestHelpers.GetTag(tags, DekafDiagnostics.MessagingDestinationName) != topic)
+            {
                 return;
+            }
 
             if (instrument.Name == "messaging.client.consumed.messages")
+            {
                 messagesReceived.Add(measurement);
+            }
             else if (instrument.Name == "dekaf.consumer.consumed.bytes")
+            {
                 bytesReceived.Add(measurement);
+            }
         });
         listener.Start();
 
@@ -1353,7 +1365,9 @@ public sealed partial class ConsumeOneFastPathTests
         SetInitialized(consumer);
 
         if (fetches.Length == 0)
+        {
             return consumer;
+        }
 
         var partitions = fetches
             .Select(static fetch => fetch.TopicPartition)
@@ -1362,10 +1376,14 @@ public sealed partial class ConsumeOneFastPathTests
         consumer.Assign(partitions);
         var fetchPositions = GetFetchPositions(consumer);
         foreach (var partition in partitions)
+        {
             fetchPositions[partition] = 0;
+        }
         var pendingFetches = GetPendingFetches(consumer);
         foreach (var fetch in fetches)
+        {
             pendingFetches.Enqueue(fetch);
+        }
 
         return consumer;
     }
@@ -1468,13 +1486,18 @@ public sealed partial class ConsumeOneFastPathTests
     {
         public bool ConsumesRecordHeaders => true;
 
-        public int HeaderCount { get; private set; }
+        public int HeaderCount
+        {
+            get; private set;
+        }
 
         public string Deserialize(ReadOnlyMemory<byte> data, SerializationContext context)
         {
             HeaderCount = context.Headers?.Count ?? 0;
             if (addMarker)
+            {
                 context.Headers!.Add("key-visited", Array.Empty<byte>());
+            }
             return Encoding.UTF8.GetString(data.Span);
         }
     }
@@ -1485,7 +1508,10 @@ public sealed partial class ConsumeOneFastPathTests
     {
         public bool ConsumesRecordHeaders => true;
 
-        public Headers? Headers { get; private set; }
+        public Headers? Headers
+        {
+            get; private set;
+        }
 
         public ValueTask<string> DeserializeAsync(
             ReadOnlyMemory<byte> data,
@@ -1529,7 +1555,10 @@ public sealed partial class ConsumeOneFastPathTests
     {
         public bool ConsumesRecordHeaders => true;
 
-        public string? HeaderValue { get; private set; }
+        public string? HeaderValue
+        {
+            get; private set;
+        }
 
         public string Deserialize(ReadOnlyMemory<byte> data, SerializationContext context)
         {
@@ -1556,18 +1585,32 @@ public sealed partial class ConsumeOneFastPathTests
         public GatedPreparedStringDeserializer(bool initiallyPrepared = false)
         {
             if (!initiallyPrepared)
+            {
                 return;
+            }
 
             _prepared = 1;
             _release.TrySetResult();
         }
 
-        public TaskCompletionSource PreparationStarted { get; } =
+        public TaskCompletionSource PreparationStarted
+        {
+            get;
+        } =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
 
-        public int PrepareCount { get; private set; }
-        public int PrepareCallCount { get; private set; }
-        public int DeserializeCount { get; private set; }
+        public int PrepareCount
+        {
+            get; private set;
+        }
+        public int PrepareCallCount
+        {
+            get; private set;
+        }
+        public int DeserializeCount
+        {
+            get; private set;
+        }
 
         public bool TryDeserialize(
             ReadOnlyMemory<byte> data,
@@ -1591,7 +1634,9 @@ public sealed partial class ConsumeOneFastPathTests
         {
             PrepareCallCount++;
             if (Volatile.Read(ref _prepared) != 0)
+            {
                 return;
+            }
 
             PrepareCount++;
             PreparationStarted.TrySetResult();
@@ -1602,7 +1647,9 @@ public sealed partial class ConsumeOneFastPathTests
         public string Deserialize(ReadOnlyMemory<byte> data, SerializationContext context)
         {
             if (Volatile.Read(ref _prepared) == 0)
+            {
                 throw new InvalidOperationException("Deserializer was used before preparation.");
+            }
 
             DeserializeCount++;
             return Encoding.UTF8.GetString(data.Span);
@@ -1617,7 +1664,10 @@ public sealed partial class ConsumeOneFastPathTests
           IAsyncDeserializerPreparationRequirement
     {
         public bool RequiresPreparation => false;
-        public int PrepareCallCount { get; private set; }
+        public int PrepareCallCount
+        {
+            get; private set;
+        }
 
         public string Deserialize(ReadOnlyMemory<byte> data, SerializationContext context) =>
             Encoding.UTF8.GetString(data.Span);
@@ -1655,12 +1705,16 @@ public sealed partial class ConsumeOneFastPathTests
             ActivityStarted = activity =>
             {
                 if (activity.OperationName == operationName)
+                {
                     started.Enqueue(activity);
+                }
             },
             ActivityStopped = activity =>
             {
                 if (activity.OperationName == operationName)
+                {
                     stopped.Enqueue(activity);
+                }
             }
         };
         ActivitySource.AddActivityListener(listener);
@@ -1672,8 +1726,14 @@ public sealed partial class ConsumeOneFastPathTests
     {
         private int _prepared;
 
-        public int PrepareCount { get; private set; }
-        public int TryDeserializeCount { get; private set; }
+        public int PrepareCount
+        {
+            get; private set;
+        }
+        public int TryDeserializeCount
+        {
+            get; private set;
+        }
 
         public string Deserialize(ReadOnlyMemory<byte> data, SerializationContext context) =>
             throw new InvalidOperationException("Prepared deserializer must use TryDeserialize.");
@@ -1710,8 +1770,14 @@ public sealed partial class ConsumeOneFastPathTests
     {
         private int _generation;
 
-        public int PrepareCount { get; private set; }
-        public int TryDeserializeCount { get; private set; }
+        public int PrepareCount
+        {
+            get; private set;
+        }
+        public int TryDeserializeCount
+        {
+            get; private set;
+        }
 
         public string Deserialize(ReadOnlyMemory<byte> data, SerializationContext context) =>
             throw new InvalidOperationException("Prepared deserializer must use TryDeserialize.");
@@ -1756,7 +1822,10 @@ public sealed partial class ConsumeOneFastPathTests
 
     private sealed class TrackingPooledMemory(Action onDispose) : IPooledMemory
     {
-        public int DisposeCount { get; private set; }
+        public int DisposeCount
+        {
+            get; private set;
+        }
         public ReadOnlyMemory<byte> Memory => ReadOnlyMemory<byte>.Empty;
 
         public void Dispose()
@@ -2031,7 +2100,9 @@ public sealed partial class ConsumeOneFastPathTests
             get
             {
                 if (index >= _faultAtIndex)
+                {
                     throw new ArgumentOutOfRangeException(nameof(index), $"Simulated truncated record at index {index}");
+                }
                 return _goodRecords[index];
             }
         }
@@ -2039,7 +2110,9 @@ public sealed partial class ConsumeOneFastPathTests
         public IEnumerator<Record> GetEnumerator()
         {
             for (var i = 0; i < Count; i++)
+            {
                 yield return this[i];
+            }
         }
 
         System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => GetEnumerator();
@@ -2055,9 +2128,13 @@ public sealed partial class ConsumeOneFastPathTests
             return _logger;
         }
 
-        public void AddProvider(ILoggerProvider provider) { }
+        public void AddProvider(ILoggerProvider provider)
+        {
+        }
 
-        public void Dispose() { }
+        public void Dispose()
+        {
+        }
 
         public CapturingLogger GetLogger() =>
             _logger ?? throw new InvalidOperationException("CreateLogger was never called.");
@@ -2065,7 +2142,10 @@ public sealed partial class ConsumeOneFastPathTests
 
     private sealed class CapturingLogger : ILogger
     {
-        public List<LogEntry> Entries { get; } = [];
+        public List<LogEntry> Entries
+        {
+            get;
+        } = [];
 
         public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
 

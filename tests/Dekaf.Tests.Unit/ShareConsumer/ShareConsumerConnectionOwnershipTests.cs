@@ -237,7 +237,9 @@ public sealed class ShareConsumerConnectionOwnershipTests
             {
                 disposalsAtRefresh = memory.Disposals;
                 if (cancelDuringRefresh)
+                {
                     cancellation.Cancel();
+                }
             },
             ShareFetchResponses = new Queue<ShareFetchResponse>(
             [
@@ -266,9 +268,13 @@ public sealed class ShareConsumerConnectionOwnershipTests
         var sendTask = InvokeSendShareFetchForPartitionsAsync(consumer, cancellation.Token);
 
         if (cancelDuringRefresh)
+        {
             await Assert.That(async () => await sendTask).Throws<OperationCanceledException>();
+        }
         else
+        {
             await sendTask;
+        }
 
         await Assert.That(disposalsAtRefresh).IsEqualTo(1);
         await Assert.That(memory.Disposals).IsEqualTo(1);
@@ -389,7 +395,10 @@ public sealed class ShareConsumerConnectionOwnershipTests
     private sealed class TrackingMemory : IPooledMemory
     {
         public ReadOnlyMemory<byte> Memory => ReadOnlyMemory<byte>.Empty;
-        public int Disposals { get; private set; }
+        public int Disposals
+        {
+            get; private set;
+        }
         public void Dispose() => Disposals++;
     }
 
@@ -405,19 +414,40 @@ public sealed class ShareConsumerConnectionOwnershipTests
         public string Host => "localhost";
         public int Port => 9092;
         public bool IsConnected => true;
-        public KafkaConnectionCapabilities Capabilities { get; } =
+        public KafkaConnectionCapabilities Capabilities
+        {
+            get;
+        } =
             KafkaConnectionCapabilities.Create(new ApiVersionsResponse
             {
                 ErrorCode = ErrorCode.None,
                 ApiKeys = versions
             });
         public int LeaseCount => Volatile.Read(ref _leaseCount);
-        public int LeaseCountDuringSend { get; private set; }
-        public int ShareFetchSendCount { get; private set; }
-        public int ShareAcknowledgeSendCount { get; private set; }
-        public Action? OnMetadataRequest { get; init; }
-        public Queue<ShareFetchResponse>? ShareFetchResponses { get; init; }
-        public ShareAcknowledgeResponse? ShareAcknowledgeResponse { get; init; }
+        public int LeaseCountDuringSend
+        {
+            get; private set;
+        }
+        public int ShareFetchSendCount
+        {
+            get; private set;
+        }
+        public int ShareAcknowledgeSendCount
+        {
+            get; private set;
+        }
+        public Action? OnMetadataRequest
+        {
+            get; init;
+        }
+        public Queue<ShareFetchResponse>? ShareFetchResponses
+        {
+            get; init;
+        }
+        public ShareAcknowledgeResponse? ShareAcknowledgeResponse
+        {
+            get; init;
+        }
 
         int IRetirableKafkaConnection.LeaseCount => LeaseCount;
         int IRetirableKafkaConnection.ActiveOperationCount => 0;
@@ -425,11 +455,15 @@ public sealed class ShareConsumerConnectionOwnershipTests
         bool IRetirableKafkaConnection.TryAcquireLease()
         {
             if (Volatile.Read(ref _retirementState) != 0)
+            {
                 return false;
+            }
 
             Interlocked.Increment(ref _leaseCount);
             if (Volatile.Read(ref _retirementState) == 0)
+            {
                 return true;
+            }
 
             ((IRetirableKafkaConnection)this).ReleaseLease();
             return false;
@@ -452,7 +486,9 @@ public sealed class ShareConsumerConnectionOwnershipTests
         {
             LeaseCountDuringSend = LeaseCount;
             if (request is MetadataRequest)
+            {
                 OnMetadataRequest?.Invoke();
+            }
             IKafkaResponse response = request switch
             {
                 ShareGroupHeartbeatRequest => new ShareGroupHeartbeatResponse

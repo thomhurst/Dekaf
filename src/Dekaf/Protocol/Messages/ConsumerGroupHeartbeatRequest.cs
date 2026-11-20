@@ -16,57 +16,87 @@ public sealed class ConsumerGroupHeartbeatRequest : IKafkaRequest<ConsumerGroupH
     /// <summary>
     /// The group ID.
     /// </summary>
-    public required string GroupId { get; init; }
+    public required string GroupId
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The member ID. For v0: empty string for new members (server-assigned).
     /// For v1+ (KIP-1082): client-generated UUID v4 sent on the first heartbeat.
     /// </summary>
-    public required string MemberId { get; init; }
+    public required string MemberId
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The member epoch. 0 for new members, -1 to leave the group, -2 for a static member rejoining.
     /// </summary>
-    public required int MemberEpoch { get; init; }
+    public required int MemberEpoch
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The group instance ID for static membership.
     /// </summary>
-    public string? InstanceId { get; init; }
+    public string? InstanceId
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The rack ID of the consumer, used for rack-aware assignment.
     /// </summary>
-    public string? RackId { get; init; }
+    public string? RackId
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The maximum time in milliseconds that the coordinator will wait for the member to revoke
     /// partitions. Only provided when joining or rejoining the group.
     /// </summary>
-    public int RebalanceTimeoutMs { get; init; } = -1;
+    public int RebalanceTimeoutMs
+    {
+        get; init;
+    } = -1;
 
     /// <summary>
     /// The list of topic names the consumer is subscribed to.
     /// Null if not changed since the last heartbeat.
     /// </summary>
-    public IReadOnlyList<string>? SubscribedTopicNames { get; init; }
+    public IReadOnlyList<string>? SubscribedTopicNames
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The subscribed topic regex pattern for regex-based subscriptions (v1+ only).
     /// Null if unchanged since the last heartbeat. Empty string clears a previous regex subscription.
     /// </summary>
-    public string? SubscribedTopicRegex { get; init; }
+    public string? SubscribedTopicRegex
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The server-side assignor to use. Null to use the broker default.
     /// </summary>
-    public string? ServerAssignor { get; init; }
+    public string? ServerAssignor
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The topic partitions currently owned by this member.
     /// Null if not changed since the last heartbeat.
     /// </summary>
-    public IReadOnlyList<ConsumerGroupHeartbeatTopicPartitions>? TopicPartitions { get; init; }
+    public IReadOnlyList<ConsumerGroupHeartbeatTopicPartitions>? TopicPartitions
+    {
+        get; init;
+    }
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {
@@ -108,19 +138,28 @@ public sealed class ConsumerGroupHeartbeatTopicPartitions
     /// <summary>
     /// The topic ID (UUID).
     /// </summary>
-    public required Guid TopicId { get; init; }
+    public required Guid TopicId
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The partition indexes.
     /// </summary>
-    public required IReadOnlyList<int> Partitions { get; init; }
+    public required IReadOnlyList<int> Partitions
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The subset of <see cref="Partitions"/> classified by the coordinator as newly expanded
     /// (v2+ responses only). Empty when the broker does not support KIP-1327, which no released Kafka
     /// version implements yet.
     /// </summary>
-    public IReadOnlyList<int> NewPartitions { get; init; } = [];
+    public IReadOnlyList<int> NewPartitions
+    {
+        get; init;
+    } = [];
 
     public void Write(ref KafkaProtocolWriter writer)
     {

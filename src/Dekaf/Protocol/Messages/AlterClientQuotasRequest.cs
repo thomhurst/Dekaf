@@ -13,12 +13,18 @@ public sealed class AlterClientQuotasRequest : IKafkaRequest<AlterClientQuotasRe
     /// <summary>
     /// Quota entries to alter.
     /// </summary>
-    public required IReadOnlyList<AlterClientQuotasRequestEntry> Entries { get; init; }
+    public required IReadOnlyList<AlterClientQuotasRequestEntry> Entries
+    {
+        get; init;
+    }
 
     /// <summary>
     /// True if the broker should validate the request but not change quotas.
     /// </summary>
-    public bool ValidateOnly { get; init; }
+    public bool ValidateOnly
+    {
+        get; init;
+    }
 
     public static bool IsFlexibleVersion(short version) => version >= 1;
     public static short GetRequestHeaderVersion(short version) => version >= 1 ? (short)2 : (short)1;
@@ -58,12 +64,18 @@ public sealed class AlterClientQuotasRequestEntry
     /// <summary>
     /// Entity components to alter.
     /// </summary>
-    public required IReadOnlyList<AlterClientQuotasEntityData> Entity { get; init; }
+    public required IReadOnlyList<AlterClientQuotasEntityData> Entity
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Operations to apply to the entity.
     /// </summary>
-    public required IReadOnlyList<AlterClientQuotasOpData> Ops { get; init; }
+    public required IReadOnlyList<AlterClientQuotasOpData> Ops
+    {
+        get; init;
+    }
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {
@@ -100,12 +112,18 @@ public sealed class AlterClientQuotasEntityData
     /// <summary>
     /// Entity type name: user, client-id, or ip.
     /// </summary>
-    public required string EntityType { get; init; }
+    public required string EntityType
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Entity name, or null for the default entity.
     /// </summary>
-    public string? EntityName { get; init; }
+    public string? EntityName
+    {
+        get; init;
+    }
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {
@@ -130,17 +148,26 @@ public sealed class AlterClientQuotasOpData
     /// <summary>
     /// Quota key.
     /// </summary>
-    public required string Key { get; init; }
+    public required string Key
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Quota value for set operations.
     /// </summary>
-    public required double Value { get; init; }
+    public required double Value
+    {
+        get; init;
+    }
 
     /// <summary>
     /// True to remove this quota key.
     /// </summary>
-    public bool Remove { get; init; }
+    public bool Remove
+    {
+        get; init;
+    }
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {

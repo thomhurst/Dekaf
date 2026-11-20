@@ -61,7 +61,9 @@ public class AspireConfigurationSchemaTests
     {
         var directory = new DirectoryInfo(AppContext.BaseDirectory);
         while (directory is not null && !File.Exists(Path.Combine(directory.FullName, "Dekaf.sln")))
+        {
             directory = directory.Parent;
+        }
         var path = Path.Combine(directory!.FullName, "src", package, "ConfigurationSchema.json");
         return JsonDocument.Parse(File.ReadAllText(path));
     }

@@ -49,7 +49,9 @@ public sealed class DekafOutboxPublisher : IOutboxPublisher
         ArgumentException.ThrowIfNullOrEmpty(messageIdHeaderName);
 
         if (messages.Count == 0)
+        {
             return new OutboxPublishResult(0, null);
+        }
 
         // Fire every produce before awaiting any, then await in order. Per-record outcomes
         // are required for prefix accounting, which is why this is not ProduceAllAsync
@@ -158,7 +160,9 @@ public sealed class DekafOutboxPublisher : IOutboxPublisher
                 // The contiguous prefix is intact at index i iff every prior task acked;
                 // once any task fails, ackedCount freezes below all later indexes.
                 if (ackedCount == i)
+                {
                     ackedCount++;
+                }
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
@@ -169,7 +173,9 @@ public sealed class DekafOutboxPublisher : IOutboxPublisher
             catch (Exception ex)
             {
                 if (activity is not null)
+                {
                     DekafDiagnostics.RecordException(activity, ex);
+                }
                 firstError ??= ex;
             }
             finally
@@ -191,7 +197,9 @@ public sealed class DekafOutboxPublisher : IOutboxPublisher
     {
         storedContext = default;
         if (!DekafDiagnostics.Source.HasListeners())
+        {
             return false;
+        }
 
         string? traceparent = null;
         string? tracestate = null;
@@ -199,9 +207,13 @@ public sealed class DekafOutboxPublisher : IOutboxPublisher
         {
             var header = headers[i];
             if (header.Key == TraceContextPropagator.TraceparentHeader)
+            {
                 traceparent = header.GetValueAsString();
+            }
             else if (header.Key == TraceContextPropagator.TracestateHeader)
+            {
                 tracestate = header.GetValueAsString();
+            }
         }
 
         if (traceparent is null
@@ -222,7 +234,9 @@ public sealed class DekafOutboxPublisher : IOutboxPublisher
         var activity = DekafDiagnostics.Source.StartActivity(
             string.Concat("outbox relay ", message.Topic), ActivityKind.Internal, storedContext);
         if (activity is null)
+        {
             return null;
+        }
 
         activity.SetTag(DekafDiagnostics.MessagingSystem, DekafDiagnostics.MessagingSystemValue);
         activity.SetTag(DekafDiagnostics.MessagingDestinationName, message.Topic);
@@ -233,6 +247,8 @@ public sealed class DekafOutboxPublisher : IOutboxPublisher
     public async ValueTask DisposeAsync()
     {
         if (_ownsProducer)
+        {
             await _producer.DisposeAsync().ConfigureAwait(false);
+        }
     }
 }

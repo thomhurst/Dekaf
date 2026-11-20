@@ -119,7 +119,10 @@ public sealed class ConcurrentAccessPatternTests(KafkaTestContainer kafka) : Kaf
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))
         {
             messages.Add(msg);
-            if (messages.Count >= totalExpected) break;
+            if (messages.Count >= totalExpected)
+            {
+                break;
+            }
         }
 
         await Assert.That(messages).Count().IsEqualTo(totalExpected);
@@ -148,17 +151,23 @@ public sealed class ConcurrentAccessPatternTests(KafkaTestContainer kafka) : Kaf
             Task.Run(async () =>
             {
                 for (var i = 0; i < 10; i++)
+                {
                     await ordersProducer.ProduceAsync($"order-{i}", $"order-data-{i}");
+                }
             }),
             Task.Run(async () =>
             {
                 for (var i = 0; i < 10; i++)
+                {
                     await eventsProducer.ProduceAsync($"event-{i}", $"event-data-{i}");
+                }
             }),
             Task.Run(async () =>
             {
                 for (var i = 0; i < 10; i++)
+                {
                     await metricsProducer.ProduceAsync($"metric-{i}", $"metric-data-{i}");
+                }
             })
         };
 
@@ -260,7 +269,10 @@ public sealed class ConcurrentAccessPatternTests(KafkaTestContainer kafka) : Kaf
             await foreach (var msg in consumer.ConsumeAsync(cts.Token))
             {
                 consumed.Add(msg);
-                if (consumed.Count >= messageCount) break;
+                if (consumed.Count >= messageCount)
+                {
+                    break;
+                }
             }
         });
 
@@ -310,9 +322,13 @@ public sealed class ConcurrentAccessPatternTests(KafkaTestContainer kafka) : Kaf
                 (metadata, error) =>
                 {
                     if (error is not null)
+                    {
                         deliveryErrors.Add(error);
+                    }
                     else
+                    {
                         delivered.Add(metadata);
+                    }
                 });
         }
 
@@ -369,7 +385,10 @@ public sealed class ConcurrentAccessPatternTests(KafkaTestContainer kafka) : Kaf
             await foreach (var msg in consumer.ConsumeAsync(cts.Token))
             {
                 allConsumed.Add(msg);
-                if (allConsumed.Count >= messageCount) break;
+                if (allConsumed.Count >= messageCount)
+                {
+                    break;
+                }
             }
         });
 
@@ -386,7 +405,10 @@ public sealed class ConcurrentAccessPatternTests(KafkaTestContainer kafka) : Kaf
             await foreach (var msg in consumer.ConsumeAsync(cts.Token))
             {
                 allConsumed.Add(msg);
-                if (allConsumed.Count >= messageCount) break;
+                if (allConsumed.Count >= messageCount)
+                {
+                    break;
+                }
             }
         });
 
@@ -431,7 +453,10 @@ public sealed class ConcurrentAccessPatternTests(KafkaTestContainer kafka) : Kaf
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))
         {
             messages.Add(msg);
-            if (messages.Count >= expectedCount) break;
+            if (messages.Count >= expectedCount)
+            {
+                break;
+            }
         }
 
         await Assert.That(messages).Count().IsEqualTo(expectedCount);

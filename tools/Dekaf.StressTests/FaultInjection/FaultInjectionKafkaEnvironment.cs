@@ -60,9 +60,15 @@ internal sealed class FaultInjectionKafkaEnvironment : IAsyncDisposable
         _dockerClient = dockerClient;
     }
 
-    internal int BrokerCount { get; }
+    internal int BrokerCount
+    {
+        get;
+    }
 
-    internal string BootstrapServers { get; }
+    internal string BootstrapServers
+    {
+        get;
+    }
 
     internal static async Task<FaultInjectionKafkaEnvironment> CreateAsync(
         int brokerCount,
@@ -182,12 +188,20 @@ internal sealed class FaultInjectionKafkaEnvironment : IAsyncDisposable
             toxiproxyConnection?.Dispose();
             foreach (var broker in brokers)
             {
-                try { await broker.DisposeAsync().ConfigureAwait(false); } catch { }
+                try
+                {
+                    await broker.DisposeAsync().ConfigureAwait(false);
+                }
+                catch { }
             }
 
             if (toxiproxyContainer is not null)
             {
-                try { await toxiproxyContainer.DisposeAsync().ConfigureAwait(false); } catch { }
+                try
+                {
+                    await toxiproxyContainer.DisposeAsync().ConfigureAwait(false);
+                }
+                catch { }
             }
 
             await network.DisposeAsync().ConfigureAwait(false);
@@ -692,21 +706,39 @@ internal sealed class FaultInjectionKafkaEnvironment : IAsyncDisposable
 
         _disposed = true;
         var errors = new List<Exception>();
-        try { await ResetProxiesAsync().ConfigureAwait(false); }
+        try
+        {
+            await ResetProxiesAsync().ConfigureAwait(false);
+        }
         catch (Exception ex) { errors.Add(ex); }
         foreach (var broker in _brokers)
         {
-            try { await broker.DisposeAsync().ConfigureAwait(false); }
+            try
+            {
+                await broker.DisposeAsync().ConfigureAwait(false);
+            }
             catch (Exception ex) { errors.Add(ex); }
         }
 
-        try { _dockerClient.Dispose(); }
+        try
+        {
+            _dockerClient.Dispose();
+        }
         catch (Exception ex) { errors.Add(ex); }
-        try { _toxiproxyConnection.Dispose(); }
+        try
+        {
+            _toxiproxyConnection.Dispose();
+        }
         catch (Exception ex) { errors.Add(ex); }
-        try { await _toxiproxyContainer.DisposeAsync().ConfigureAwait(false); }
+        try
+        {
+            await _toxiproxyContainer.DisposeAsync().ConfigureAwait(false);
+        }
         catch (Exception ex) { errors.Add(ex); }
-        try { await _network.DisposeAsync().ConfigureAwait(false); }
+        try
+        {
+            await _network.DisposeAsync().ConfigureAwait(false);
+        }
         catch (Exception ex) { errors.Add(ex); }
 
         if (errors.Count > 0)

@@ -19,18 +19,27 @@ public readonly struct ShareAcknowledgementCommitResult
     /// <summary>
     /// Gets the topic-partition whose acknowledgements completed.
     /// </summary>
-    public TopicPartition TopicPartition { get; }
+    public TopicPartition TopicPartition
+    {
+        get;
+    }
 
     /// <summary>
     /// Gets an allocation-free view of the acknowledged offsets in ascending order.
     /// </summary>
-    public ShareAcknowledgedOffsets Offsets { get; }
+    public ShareAcknowledgedOffsets Offsets
+    {
+        get;
+    }
 
     /// <summary>
     /// Gets the final exception after broker retries, or <see langword="null"/> when all
     /// acknowledgements for this topic-partition succeeded.
     /// </summary>
-    public Exception? Exception { get; }
+    public Exception? Exception
+    {
+        get;
+    }
 
     /// <summary>
     /// Gets whether all acknowledgements for this topic-partition succeeded.

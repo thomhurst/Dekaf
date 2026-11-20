@@ -7,6 +7,7 @@ namespace Dekaf.Admin;
 public sealed partial class AdminClient : IDetailedSecurityMutationAdminClient
 {
     internal readonly record struct IndexedAcl(int Index, AclBinding Binding);
+
     internal sealed record ScramUserMutation(string User, List<UserScramCredentialAlteration> Alterations);
 
     /// <inheritdoc />
@@ -20,13 +21,19 @@ public sealed partial class AdminClient : IDetailedSecurityMutationAdminClient
         var results = await ExecuteDetailedMutationAsync<int, IndexedAcl, CreateAclsRequest, CreateAclsResponse>(
             items, static item => item.Index,
             new(ApiKey.CreateAcls, CreateAclsRequest.LowestSupportedVersion, CreateAclsRequest.HighestSupportedVersion, nameof(CreateAclsAsync)),
-            timeout, static (pending, _, _) => new() { Creations = pending.Select(static item => new AclCreation
+            timeout, static (pending, _, _) => new()
             {
-                ResourceType = (sbyte)item.Binding.Pattern.Type, ResourceName = item.Binding.Pattern.Name,
-                ResourcePatternType = (sbyte)item.Binding.Pattern.PatternType, Principal = item.Binding.Entry.Principal,
-                Host = item.Binding.Entry.Host, Operation = (sbyte)item.Binding.Entry.Operation,
-                PermissionType = (sbyte)item.Binding.Entry.Permission
-            }).ToArray() },
+                Creations = pending.Select(static item => new AclCreation
+                {
+                    ResourceType = (sbyte)item.Binding.Pattern.Type,
+                    ResourceName = item.Binding.Pattern.Name,
+                    ResourcePatternType = (sbyte)item.Binding.Pattern.PatternType,
+                    Principal = item.Binding.Entry.Principal,
+                    Host = item.Binding.Entry.Host,
+                    Operation = (sbyte)item.Binding.Entry.Operation,
+                    PermissionType = (sbyte)item.Binding.Entry.Permission
+                }).ToArray()
+            },
             static (pending, response) =>
             {
                 var mapped = new Dictionary<int, AdminMutationResult>(pending.Count);
@@ -63,7 +70,9 @@ public sealed partial class AdminClient : IDetailedSecurityMutationAdminClient
                 || binding.Pattern.PatternType is not (PatternType.Literal or PatternType.Prefixed)
                 || binding.Entry.Operation is < AclOperation.All or > AclOperation.TwoPhaseCommit
                 || binding.Entry.Permission is not (AclPermissionType.Allow or AclPermissionType.Deny))
+            {
                 throw new ArgumentException("ACL creation requires concrete resource, pattern, operation and permission types.", nameof(aclBindings));
+            }
             items.Add(new(items.Count, binding));
         }
         return items;
@@ -88,8 +97,11 @@ public sealed partial class AdminClient : IDetailedSecurityMutationAdminClient
                 var salt = upsertion.Salt ?? RandomNumberGenerator.GetBytes(32);
                 return new ScramCredentialUpsertion
                 {
-                    Name = upsertion.User, Mechanism = (byte)upsertion.Mechanism, Iterations = upsertion.Iterations,
-                    Salt = salt, SaltedPassword = ComputeSaltedPassword(upsertion.Password, salt, upsertion.Iterations, upsertion.Mechanism)
+                    Name = upsertion.User,
+                    Mechanism = (byte)upsertion.Mechanism,
+                    Iterations = upsertion.Iterations,
+                    Salt = salt,
+                    SaltedPassword = ComputeSaltedPassword(upsertion.Password, salt, upsertion.Iterations, upsertion.Mechanism)
                 };
             }).ToArray())).ToList();
         return ExecuteDetailedMutationAsync<string, PreparedScramUser, AlterUserScramCredentialsRequest, AlterUserScramCredentialsResponse>(
@@ -122,9 +134,13 @@ public sealed partial class AdminClient : IDetailedSecurityMutationAdminClient
                 _ => throw new ArgumentException("Unsupported SCRAM alteration type.", nameof(alterations))
             };
             if (mechanism is not (ScramMechanism.ScramSha256 or ScramMechanism.ScramSha512))
+            {
                 throw new ArgumentException("Unsupported SCRAM mechanism.", nameof(alterations));
+            }
             if (!identities.Add((alteration.User, mechanism)))
+            {
                 throw new ArgumentException("A user/mechanism may only be altered once per request.", nameof(alterations));
+            }
             UserScramCredentialAlteration snapshot = alteration;
             if (alteration is UserScramCredentialUpsertion upsert)
             {
@@ -132,12 +148,17 @@ public sealed partial class AdminClient : IDetailedSecurityMutationAdminClient
                 ArgumentOutOfRangeException.ThrowIfLessThan(upsert.Iterations, 4096);
                 snapshot = new UserScramCredentialUpsertion
                 {
-                    User = upsert.User, Mechanism = upsert.Mechanism, Iterations = upsert.Iterations,
-                    Password = upsert.Password, Salt = upsert.Salt?.ToArray()
+                    User = upsert.User,
+                    Mechanism = upsert.Mechanism,
+                    Iterations = upsert.Iterations,
+                    Password = upsert.Password,
+                    Salt = upsert.Salt?.ToArray()
                 };
             }
             if (!groups.TryGetValue(alteration.User, out var group))
+            {
                 groups.Add(alteration.User, group = new(alteration.User, []));
+            }
             group.Alterations.Add(snapshot);
         }
         return groups.Values.ToList();

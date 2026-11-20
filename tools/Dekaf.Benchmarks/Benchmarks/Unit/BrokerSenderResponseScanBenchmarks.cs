@@ -35,7 +35,10 @@ public class BrokerSenderResponseScanBenchmarks
     private Action<BrokerSender.PartitionCarryOver, CancellationToken, Dictionary<BrokerSender.ProduceResponseKey, ProduceResponsePartitionData>?> _scan = null!;
 
     [Params(1, 8)]
-    public int PendingCount { get; set; }
+    public int PendingCount
+    {
+        get; set;
+    }
 
     [GlobalSetup]
     public async Task Setup()
@@ -59,7 +62,9 @@ public class BrokerSenderResponseScanBenchmarks
             new CompressionCodecRegistry(),
             new PartitionInflightTracker(),
             getProduceApiVersion: static () => 9,
-            setProduceApiVersion: static _ => { },
+            setProduceApiVersion: static _ =>
+            {
+            },
             isTransactional: static () => false,
             tryEnsurePartitionsInTransaction: null,
             bumpEpoch: null,
@@ -108,7 +113,9 @@ public class BrokerSenderResponseScanBenchmarks
     {
         _scan(_carryOver, CancellationToken.None, _responseLookup);
         if (_pending.Count != PendingCount)
+        {
             throw new InvalidOperationException("An unanswered response must stay pending.");
+        }
 
         return _pending.Count;
     }
@@ -127,7 +134,9 @@ public class BrokerSenderResponseScanBenchmarks
         public ValueTask<IKafkaConnection> GetConnectionAsync(int brokerId, CancellationToken token = default) => throw new NotSupportedException();
         public ValueTask<IKafkaConnection> GetConnectionAsync(string host, int port, CancellationToken token = default) => throw new NotSupportedException();
         public ValueTask<IKafkaConnection> GetConnectionByIndexAsync(int brokerId, int index, CancellationToken token = default) => throw new NotSupportedException();
-        public void RegisterBroker(int id, string host, int port) { }
+        public void RegisterBroker(int id, string host, int port)
+        {
+        }
         public ValueTask<int> ScaleConnectionGroupAsync(int id, int count, CancellationToken token = default) => ValueTask.FromResult(1);
         public ValueTask<IKafkaConnection?> ShrinkConnectionGroupAsync(int id, int count, CancellationToken token = default) => ValueTask.FromResult<IKafkaConnection?>(null);
         public ValueTask RemoveConnectionAsync(int id) => ValueTask.CompletedTask;

@@ -12,10 +12,22 @@ namespace Dekaf.Testing;
 
 internal interface IInMemoryPreparedTransaction
 {
-    bool IsCompleted { get; }
-    bool IsPrepared { get; }
-    PreparedTransactionState PreparedState { get; }
-    object TransactionalIdentity { get; }
+    bool IsCompleted
+    {
+        get;
+    }
+    bool IsPrepared
+    {
+        get;
+    }
+    PreparedTransactionState PreparedState
+    {
+        get;
+    }
+    object TransactionalIdentity
+    {
+        get;
+    }
 
     ValueTask CompletePreparedAsync(
         IInMemoryTransactionRecoveryContext recoveryContext,
@@ -355,7 +367,9 @@ public sealed class InMemoryProducer<TKey, TValue> :
 
         var result = new List<RecordMetadata>();
         foreach (var message in messages)
+        {
             result.Add(await ProduceAsync(message, cancellationToken).ConfigureAwait(false));
+        }
 
         return result.ToArray();
     }
@@ -370,7 +384,9 @@ public sealed class InMemoryProducer<TKey, TValue> :
 
         var result = new List<RecordMetadata>();
         foreach (var (key, value) in messages)
+        {
             result.Add(await ProduceAsync(topic, key, value, cancellationToken).ConfigureAwait(false));
+        }
 
         return result.ToArray();
     }
@@ -388,7 +404,9 @@ public sealed class InMemoryProducer<TKey, TValue> :
         ThrowIfDisposed();
 
         if ((options & PurgeOptions.All) == PurgeOptions.None)
+        {
             return ValueTask.CompletedTask;
+        }
 
         if (Volatile.Read(ref _activeTransaction) is { IsCompleted: false } ||
             Volatile.Read(ref _pendingPreparedTransaction) is { IsCompleted: false } ||
@@ -426,7 +444,9 @@ public sealed class InMemoryProducer<TKey, TValue> :
                     "Transactions not initialized. Call InitTransactionsAsync() before BeginTransaction().");
             }
             if (_preparedRecoveryInProgress)
+            {
                 throw new InvalidOperationException("A prepared transaction recovery is already in progress.");
+            }
             if (_pendingPreparedTransaction is { IsCompleted: false } ||
                 _activeTransaction is { IsCompleted: false, IsPrepared: true })
             {
@@ -434,7 +454,9 @@ public sealed class InMemoryProducer<TKey, TValue> :
                     "A prepared transaction is waiting for completion. Complete, commit, or abort it before starting a new one.");
             }
             if (_activeTransaction is { IsCompleted: false })
+            {
                 throw new InvalidOperationException("A transaction is already active.");
+            }
 
             var transaction = new InMemoryTransaction(this);
             Volatile.Write(ref _activeTransaction, transaction);
@@ -454,7 +476,9 @@ public sealed class InMemoryProducer<TKey, TValue> :
         {
             ThrowIfDisposingOrDisposed();
             if (_activeTransaction is { IsCompleted: false, IsPrepared: false })
+            {
                 throw new InvalidOperationException("A transaction is already active. Commit or abort it before initializing transactions.");
+            }
             recoveryCompletion = StartPreparedRecovery();
         }
 
@@ -466,10 +490,14 @@ public sealed class InMemoryProducer<TKey, TValue> :
 
             var transaction = _cluster.GetPreparedTransaction(_transactionalIdentity);
             lock (_transactionGate)
+            {
                 Volatile.Write(ref _pendingPreparedTransaction, transaction);
+            }
 
             if (transaction is not null && !keepPreparedTransaction)
+            {
                 await transaction.CompletePreparedAsync(this, committed: false, cancellationToken).ConfigureAwait(false);
+            }
 
             Volatile.Write(ref _transactionsInitialized, true);
         }
@@ -486,7 +514,9 @@ public sealed class InMemoryProducer<TKey, TValue> :
     {
         cancellationToken.ThrowIfCancellationRequested();
         if (!preparedState.HasTransaction)
+        {
             throw new ArgumentException("Prepared transaction state must identify a transaction.", nameof(preparedState));
+        }
         ThrowIfDisposed();
         ThrowIfFatalTransactionError();
 
@@ -496,10 +526,14 @@ public sealed class InMemoryProducer<TKey, TValue> :
         {
             ThrowIfDisposingOrDisposed();
             if (_preparedRecoveryInProgress)
+            {
                 throw new InvalidOperationException("A prepared transaction recovery is already in progress.");
+            }
 
             if (_pendingPreparedTransaction is { IsCompleted: true })
+            {
                 Volatile.Write(ref _pendingPreparedTransaction, null);
+            }
             transaction = _pendingPreparedTransaction ?? (IInMemoryPreparedTransaction?)_activeTransaction;
             if (!Volatile.Read(ref _transactionsInitialized) ||
                 transaction is null || transaction.IsCompleted || !transaction.IsPrepared ||
@@ -529,7 +563,9 @@ public sealed class InMemoryProducer<TKey, TValue> :
     private TaskCompletionSource StartPreparedRecovery()
     {
         if (_preparedRecoveryInProgress)
+        {
             throw new InvalidOperationException("A prepared transaction recovery is already in progress.");
+        }
         Volatile.Write(ref _preparedRecoveryInProgress, true);
         var completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         _preparedRecoveryCompletion = completion;
@@ -541,7 +577,9 @@ public sealed class InMemoryProducer<TKey, TValue> :
         lock (_transactionGate)
         {
             if (_pendingPreparedTransaction is { IsCompleted: true })
+            {
                 Volatile.Write(ref _pendingPreparedTransaction, null);
+            }
             Volatile.Write(ref _preparedRecoveryInProgress, false);
             completion.TrySetResult();
             _preparedRecoveryCompletion = null;
@@ -563,7 +601,9 @@ public sealed class InMemoryProducer<TKey, TValue> :
         lock (_transactionGate)
         {
             if (_disposeCompletion is not null)
+            {
                 return new ValueTask(_disposeCompletion.Task);
+            }
 
             Volatile.Write(ref _disposeStarted, true);
             disposeCompletion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -584,10 +624,14 @@ public sealed class InMemoryProducer<TKey, TValue> :
         try
         {
             if (preparedRecovery is not null)
+            {
                 await preparedRecovery.ConfigureAwait(false);
+            }
 
             if (transaction is { IsCompleted: false, IsPrepared: false })
+            {
                 await transaction.DisposeAsync().ConfigureAwait(false);
+            }
 
             Volatile.Write(ref _disposed, true);
             disposeCompletion.TrySetResult();
@@ -632,7 +676,9 @@ public sealed class InMemoryProducer<TKey, TValue> :
         ArgumentException.ThrowIfNullOrWhiteSpace(topic);
         ThrowIfFatalTransactionError();
         if (transactionMarker is null)
+        {
             ThrowIfProducerCannotProduce();
+        }
 
         if (key is not null && _keyProducesRecordHeaders
             || value is not null && _valueProducesRecordHeaders)
@@ -828,7 +874,9 @@ public sealed class InMemoryProducer<TKey, TValue> :
     private void ThrowIfFatalTransactionError()
     {
         if (Volatile.Read(ref _fatalTransactionException) is { } exception)
+        {
             throw exception;
+        }
     }
 
     private void CompleteTransaction(InMemoryTransaction transaction)
@@ -838,7 +886,9 @@ public sealed class InMemoryProducer<TKey, TValue> :
             transaction.PublishCompleted();
             Volatile.Read(ref TransactionCompletionPublishedTestHook)?.Invoke();
             if (ReferenceEquals(_activeTransaction, transaction))
+            {
                 Volatile.Write(ref _activeTransaction, null);
+            }
         }
     }
 
@@ -876,14 +926,20 @@ public sealed class InMemoryProducer<TKey, TValue> :
                 .ConfigureAwait(false);
             cancellationToken.ThrowIfCancellationRequested();
             if (admission.IsPrepared)
+            {
                 admissionSerializer.SerializePrepared(value, ref writer, context, in admission);
+            }
             else
+            {
                 serializer.Serialize(value, ref writer, context);
+            }
         }
         else
         {
             if (serializer is IAsyncSerializerPreparer<T> preparer)
+            {
                 await preparer.PrepareAsync(value, context, cancellationToken).ConfigureAwait(false);
+            }
             cancellationToken.ThrowIfCancellationRequested();
             serializer.Serialize(value, ref writer, context);
         }
@@ -975,7 +1031,10 @@ public sealed class InMemoryProducer<TKey, TValue> :
             TransactionMarker = InMemoryKafkaCluster.CreateTransactionMarker();
         }
 
-        public InMemoryTransactionMarker TransactionMarker { get; }
+        public InMemoryTransactionMarker TransactionMarker
+        {
+            get;
+        }
 
         public object TransactionalIdentity => _producer._transactionalIdentity;
 
@@ -993,13 +1052,17 @@ public sealed class InMemoryProducer<TKey, TValue> :
             CancellationToken cancellationToken = default)
         {
             if (!TryEnterMutation("Cannot produce", out var admissionException))
+            {
                 return ValueTask.FromException<RecordMetadata>(admissionException);
+            }
 
             try
             {
                 var operation = _producer.ProduceTransactionAsync(this, message, cancellationToken);
                 if (!operation.IsCompletedSuccessfully)
+                {
                     return CompleteProduceAsync(operation);
+                }
 
                 ExitMutation();
                 return operation;
@@ -1029,13 +1092,17 @@ public sealed class InMemoryProducer<TKey, TValue> :
             CancellationToken cancellationToken = default)
         {
             if (!TryEnterMutation("Cannot produce", out var admissionException))
+            {
                 return ValueTask.FromException<RecordMetadata>(admissionException);
+            }
 
             try
             {
                 var operation = _producer.ProduceTransactionAsync(this, topic, key, value, cancellationToken);
                 if (!operation.IsCompletedSuccessfully)
+                {
                     return CompleteProduceAsync(operation);
+                }
 
                 ExitMutation();
                 return operation;
@@ -1234,14 +1301,18 @@ public sealed class InMemoryProducer<TKey, TValue> :
                 if (TryEnterDisposalCompletion(out var ownedCompletion, out var mutationCompletion))
                 {
                     if (mutationCompletion is not null)
+                    {
                         await mutationCompletion.ConfigureAwait(false);
+                    }
 
                     Complete(committed: false);
                     return;
                 }
 
                 if (ownedCompletion is null)
+                {
                     return;
+                }
 
                 await ownedCompletion.ConfigureAwait(false);
             }
@@ -1319,16 +1390,22 @@ public sealed class InMemoryProducer<TKey, TValue> :
             }
 
             if (failure is not null)
+            {
                 failure = (recoveryContext ?? _producer).CaptureFatalTransactionException(failure);
+            }
             _producer.CompleteTransaction(this);
             if (failure is not null)
+            {
                 throw failure;
+            }
         }
 
         private void EnterMutation(string operation)
         {
             if (!TryEnterMutation(operation, out var exception))
+            {
                 throw exception;
+            }
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -1390,7 +1467,9 @@ public sealed class InMemoryProducer<TKey, TValue> :
                 var lifecycle = Volatile.Read(ref _lifecycle);
                 var state = GetState(lifecycle);
                 if (state != TransactionLifecycleState.Active)
+                {
                     ThrowForState("Cannot prepare transaction", state);
+                }
                 if ((lifecycle & MutationCountMask) != 0)
                 {
                     throw new InvalidOperationException(
@@ -1474,7 +1553,9 @@ public sealed class InMemoryProducer<TKey, TValue> :
             {
                 // Local metadata rejection already aborted and published completion.
                 if (GetState(Volatile.Read(ref _lifecycle)) == TransactionLifecycleState.Completed)
+                {
                     return;
+                }
                 Volatile.Write(ref _lifecycle, Pack(state));
                 completion = _completionAttempt;
                 _completionAttempt = null;
@@ -1525,7 +1606,9 @@ public sealed class InMemoryProducer<TKey, TValue> :
         private Task? CreateMutationCompletion(long lifecycle)
         {
             if ((lifecycle & MutationCountMask) == 0)
+            {
                 return null;
+            }
 
             var completion = new TaskCompletionSource(
                 TaskCreationOptions.RunContinuationsAsynchronously);
@@ -1533,7 +1616,9 @@ public sealed class InMemoryProducer<TKey, TValue> :
 
             // The last mutation may have exited between the lifecycle transition and publication.
             if ((Volatile.Read(ref _lifecycle) & MutationCountMask) == 0)
+            {
                 completion.TrySetResult();
+            }
 
             return completion.Task;
         }
@@ -1557,11 +1642,15 @@ public sealed class InMemoryProducer<TKey, TValue> :
             {
                 var lifecycle = Volatile.Read(ref _lifecycle);
                 if (GetState(lifecycle) != TransactionLifecycleState.Active)
+                {
                     return;
+                }
 
                 var abortable = Pack(TransactionLifecycleState.Abortable) | (lifecycle & MutationCountMask);
                 if (Interlocked.CompareExchange(ref _lifecycle, abortable, lifecycle) == lifecycle)
+                {
                     return;
+                }
             }
         }
 
@@ -1571,11 +1660,15 @@ public sealed class InMemoryProducer<TKey, TValue> :
             {
                 var lifecycle = Volatile.Read(ref _lifecycle);
                 if (GetState(lifecycle) == state)
+                {
                     return;
+                }
 
                 var updated = Pack(state) | (lifecycle & MutationCountMask);
                 if (Interlocked.CompareExchange(ref _lifecycle, updated, lifecycle) == lifecycle)
+                {
                     return;
+                }
             }
         }
 
@@ -1585,7 +1678,9 @@ public sealed class InMemoryProducer<TKey, TValue> :
         private Exception ExceptionForState(string operation, TransactionLifecycleState state)
         {
             if (state == TransactionLifecycleState.Abortable && _abortableException is { } exception)
+            {
                 return exception;
+            }
 
             return new InvalidOperationException(state switch
             {
@@ -1629,7 +1724,10 @@ public sealed class InMemoryProducer<TKey, TValue> :
             Topic = topic;
         }
 
-        public string Topic { get; }
+        public string Topic
+        {
+            get;
+        }
 
         public ValueTask InitializeAsync(CancellationToken cancellationToken = default) =>
             _producer.InitializeAsync(cancellationToken);

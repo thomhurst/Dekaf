@@ -26,7 +26,9 @@ public sealed class SchemaRegistrySubjectDeletionIntegrationTests(KafkaWithSchem
 
         await client.DeleteSubjectAsync(subject, cancellationToken: cancellationToken);
         if (permanent)
+        {
             await client.DeleteSubjectAsync(subject, permanent: true, cancellationToken: cancellationToken);
+        }
         await Assert.ThrowsAsync<SchemaRegistryException>(() => observer.GetSchemaBySubjectAsync(subject));
 
         var restoredId = await client.RegisterSchemaAsync(subject, schema, normalize, cancellationToken);
@@ -36,6 +38,8 @@ public sealed class SchemaRegistrySubjectDeletionIntegrationTests(KafkaWithSchem
         await Assert.That(restored.Id).IsEqualTo(restoredId);
         await Assert.That(Avro.Schema.Parse(restored.Schema.SchemaString)).IsEqualTo(Avro.Schema.Parse(schema.SchemaString));
         if (!permanent)
+        {
             await Assert.That(restoredId).IsEqualTo(originalId);
+        }
     }
 }

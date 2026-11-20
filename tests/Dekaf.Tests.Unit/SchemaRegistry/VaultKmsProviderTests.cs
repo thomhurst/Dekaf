@@ -136,7 +136,9 @@ public partial class VaultKmsProviderTests
         var results = await Task.WhenAll(operations);
 
         for (var index = 0; index < results.Length; index++)
+        {
             await Assert.That(results[index]).IsEquivalentTo(new byte[] { (byte)(index + 1) });
+        }
         await client.Received(32).EncryptAsync(
             VaultAddress,
             "transit",
@@ -323,7 +325,9 @@ public partial class VaultKmsProviderTests
         await Assert.That(actual.SequenceEqual(expected)).IsTrue();
         await Assert.That(bufferPool.ReturnedBuffers.Count).IsGreaterThan(1);
         foreach (var buffer in bufferPool.ReturnedBuffers)
+        {
             await Assert.That(buffer.All(static value => value == 0)).IsTrue();
+        }
     }
 
     [Test]
@@ -352,7 +356,9 @@ public partial class VaultKmsProviderTests
         var tokens = await Task.WhenAll(operations);
 
         foreach (var token in tokens)
+        {
             await Assert.That(token).IsEqualTo("app-token");
+        }
         await Assert.That(loginCount).IsEqualTo(1);
     }
 
@@ -442,7 +448,9 @@ public partial class VaultKmsProviderTests
         public override void Post(SendOrPostCallback d, object? state)
         {
             lock (_callbacks)
+            {
                 _callbacks.Enqueue((d, state));
+            }
         }
 
         internal void Drain()
@@ -453,7 +461,9 @@ public partial class VaultKmsProviderTests
                 lock (_callbacks)
                 {
                     if (!_callbacks.TryDequeue(out callback))
+                    {
                         return;
+                    }
                 }
 
                 callback.Callback(callback.State);
@@ -463,7 +473,10 @@ public partial class VaultKmsProviderTests
 
     private sealed class TrackingArrayPool : ArrayPool<byte>
     {
-        internal List<byte[]> ReturnedBuffers { get; } = [];
+        internal List<byte[]> ReturnedBuffers
+        {
+            get;
+        } = [];
 
         public override byte[] Rent(int minimumLength) => new byte[minimumLength];
 

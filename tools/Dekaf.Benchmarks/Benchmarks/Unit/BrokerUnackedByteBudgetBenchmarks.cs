@@ -31,7 +31,9 @@ public class BrokerUnackedByteBudgetBenchmarks
         for (var i = 0; i < Operations; i++)
         {
             if (!_budget.TryReserve(1_024, out _))
+            {
                 throw new InvalidOperationException("Benchmark reservation unexpectedly blocked.");
+            }
             _budget.Release(1_024);
         }
 

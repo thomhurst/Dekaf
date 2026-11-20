@@ -48,7 +48,10 @@ public readonly struct ShareAcknowledgedOffsets
     /// <summary>
     /// Gets the number of acknowledged offsets.
     /// </summary>
-    public int Length { get; }
+    public int Length
+    {
+        get;
+    }
 
     /// <summary>
     /// Gets the acknowledged offset at the specified index.
@@ -67,9 +70,13 @@ public readonly struct ShareAcknowledgedOffsets
             ArgumentOutOfRangeException.ThrowIfGreaterThanOrEqual(index, Length);
 
             if (_hasCompactRanges)
+            {
                 return GetRangeOffset(_batches!, index);
+            }
             if (_hasGaps)
+            {
                 return GetSparseOffset(_batches!, index);
+            }
 
             var batches = _batches!;
             for (var batchIndex = 0; batchIndex < batches.Count; batchIndex++)
@@ -77,7 +84,9 @@ public readonly struct ShareAcknowledgedOffsets
                 var batch = batches[batchIndex];
                 var count = batch.AcknowledgeTypes.Length;
                 if (index < count)
+                {
                     return batch.FirstOffset + index;
+                }
 
                 index -= count;
             }
@@ -104,7 +113,9 @@ public readonly struct ShareAcknowledgedOffsets
                 var prefixLength = Math.Min(index + 1, types.Length - offset);
                 var acknowledged = prefixLength - CountGaps(types.AsSpan(offset, prefixLength));
                 if (index < acknowledged)
+                {
                     return batch.FirstOffset + offset + index;
+                }
                 index -= acknowledged;
                 offset += prefixLength;
             }
@@ -112,9 +123,13 @@ public readonly struct ShareAcknowledgedOffsets
             for (; offset < types.Length; offset++)
             {
                 if (types[offset] == (byte)AcknowledgeType.Gap)
+                {
                     continue;
+                }
                 if (index-- == 0)
+                {
                     return batch.FirstOffset + offset;
+                }
             }
         }
 
@@ -131,9 +146,13 @@ public readonly struct ShareAcknowledgedOffsets
             if (types.Length == 1)
             {
                 if (types[0] == (byte)AcknowledgeType.Gap)
+                {
                     continue;
+                }
                 if (index < batch.OffsetCount)
+                {
                     return batch.FirstOffset + index;
+                }
                 index -= batch.OffsetCount;
                 continue;
             }
@@ -146,7 +165,9 @@ public readonly struct ShareAcknowledgedOffsets
                 var prefixLength = Math.Min(index + 1, types.Length - offset);
                 var acknowledged = prefixLength - CountGaps(types.AsSpan(offset, prefixLength));
                 if (index < acknowledged)
+                {
                     return batch.FirstOffset + offset + index;
+                }
                 index -= acknowledged;
                 offset += prefixLength;
             }
@@ -154,9 +175,13 @@ public readonly struct ShareAcknowledgedOffsets
             for (; offset < types.Length; offset++)
             {
                 if (types[offset] == (byte)AcknowledgeType.Gap)
+                {
                     continue;
+                }
                 if (index-- == 0)
+                {
                     return batch.FirstOffset + offset;
+                }
             }
         }
 
@@ -170,7 +195,9 @@ public readonly struct ShareAcknowledgedOffsets
 #else
         var count = 0;
         for (var index = 0; index < types.Length; index++)
+        {
             count += types[index] == (byte)AcknowledgeType.Gap ? 1 : 0;
+        }
         return count;
 #endif
     }
@@ -181,12 +208,16 @@ public readonly struct ShareAcknowledgedOffsets
     public void CopyTo(Span<long> destination)
     {
         if (destination.Length < Length)
+        {
             throw new ArgumentException("Destination is shorter than the offset collection.", nameof(destination));
+        }
 
         var index = 0;
         var batches = _batches;
         if (batches is null)
+        {
             return;
+        }
 
         for (var batchIndex = 0; batchIndex < batches.Count; batchIndex++)
         {
@@ -198,13 +229,19 @@ public readonly struct ShareAcknowledgedOffsets
                 {
                     var count = batch.OffsetCount;
                     for (var offsetIndex = 0; offsetIndex < count; offsetIndex++)
+                    {
                         destination[index++] = batch.FirstOffset + offsetIndex;
+                    }
                 }
                 continue;
             }
             for (var offsetIndex = 0; offsetIndex < types.Length; offsetIndex++)
+            {
                 if (!_hasGaps || types[offsetIndex] != (byte)AcknowledgeType.Gap)
+                {
                     destination[index++] = batch.FirstOffset + offsetIndex;
+                }
+            }
         }
     }
 
@@ -241,7 +278,10 @@ public readonly struct ShareAcknowledgedOffsets
         /// <summary>
         /// Gets the current acknowledged offset.
         /// </summary>
-        public long Current { get; private set; }
+        public long Current
+        {
+            get; private set;
+        }
 
         /// <summary>
         /// Advances to the next acknowledged offset.
@@ -253,13 +293,17 @@ public readonly struct ShareAcknowledgedOffsets
                 while (++_offsetIndex < _offsetCount)
                 {
                     if (_types is not null && _types[_offsetIndex] == (byte)AcknowledgeType.Gap)
+                    {
                         continue;
+                    }
                     Current = _firstOffset + _offsetIndex;
                     return true;
                 }
 
                 if (!MoveToNextBatch())
+                {
                     return false;
+                }
             }
         }
 

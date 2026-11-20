@@ -506,7 +506,10 @@ public sealed class ConsumerLagTests
     {
         await using var consumer = CreateConsumer();
 
-        await Assert.That(() => { _ = consumer.QueryCurrentLagAsync(Partition); })
+        await Assert.That(() =>
+            {
+                _ = consumer.QueryCurrentLagAsync(Partition);
+            })
             .Throws<InvalidOperationException>();
     }
 
@@ -519,7 +522,10 @@ public sealed class ConsumerLagTests
         using var cancellation = new CancellationTokenSource();
         cancellation.Cancel();
 
-        await Assert.That(() => { _ = consumer.QueryCurrentLagAsync(Partition, cancellation.Token); })
+        await Assert.That(() =>
+            {
+                _ = consumer.QueryCurrentLagAsync(Partition, cancellation.Token);
+            })
             .Throws<OperationCanceledException>();
     }
 
@@ -542,7 +548,10 @@ public sealed class ConsumerLagTests
 
         await Assert.That(() => consumer.GetCurrentLag(Partition))
             .Throws<NotSupportedException>();
-        await Assert.That(() => { _ = consumer.QueryCurrentLagAsync(Partition); })
+        await Assert.That(() =>
+            {
+                _ = consumer.QueryCurrentLagAsync(Partition);
+            })
             .Throws<NotSupportedException>();
     }
 

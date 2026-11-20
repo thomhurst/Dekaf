@@ -18,12 +18,18 @@ public sealed class DescribeShareGroupOffsetsResponse : IKafkaResponse
     /// The duration in milliseconds for which the request was throttled due to quota violation
     /// (zero if not throttled).
     /// </summary>
-    public int ThrottleTimeMs { get; init; }
+    public int ThrottleTimeMs
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The described groups.
     /// </summary>
-    public required IReadOnlyList<DescribeShareGroupOffsetsResponseGroup> Groups { get; init; }
+    public required IReadOnlyList<DescribeShareGroupOffsetsResponseGroup> Groups
+    {
+        get; init;
+    }
 
     public static IKafkaResponse Read(ref KafkaProtocolReader reader, short version)
     {
@@ -53,22 +59,34 @@ public sealed class DescribeShareGroupOffsetsResponseGroup
     /// <summary>
     /// The group ID.
     /// </summary>
-    public required string GroupId { get; init; }
+    public required string GroupId
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The topics with offsets.
     /// </summary>
-    public required IReadOnlyList<DescribeShareGroupOffsetsResponseTopic> Topics { get; init; }
+    public required IReadOnlyList<DescribeShareGroupOffsetsResponseTopic> Topics
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The error code, or 0 if there was no error.
     /// </summary>
-    public ErrorCode ErrorCode { get; init; }
+    public ErrorCode ErrorCode
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The error message, or null if there was no error.
     /// </summary>
-    public string? ErrorMessage { get; init; }
+    public string? ErrorMessage
+    {
+        get; init;
+    }
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {
@@ -118,17 +136,26 @@ public sealed class DescribeShareGroupOffsetsResponseTopic
     /// <summary>
     /// The topic name.
     /// </summary>
-    public required string TopicName { get; init; }
+    public required string TopicName
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The topic ID (UUID).
     /// </summary>
-    public Guid TopicId { get; init; }
+    public Guid TopicId
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The partitions with offsets.
     /// </summary>
-    public required IReadOnlyList<DescribeShareGroupOffsetsResponsePartition> Partitions { get; init; }
+    public required IReadOnlyList<DescribeShareGroupOffsetsResponsePartition> Partitions
+    {
+        get; init;
+    }
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {
@@ -173,32 +200,50 @@ public sealed class DescribeShareGroupOffsetsResponsePartition
     /// <summary>
     /// The partition index.
     /// </summary>
-    public int PartitionIndex { get; init; }
+    public int PartitionIndex
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The share group start offset.
     /// </summary>
-    public long StartOffset { get; init; }
+    public long StartOffset
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The leader epoch.
     /// </summary>
-    public int LeaderEpoch { get; init; }
+    public int LeaderEpoch
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The lag of the share group on this partition (v1+). -1 if not available.
     /// </summary>
-    public long Lag { get; init; } = -1;
+    public long Lag
+    {
+        get; init;
+    } = -1;
 
     /// <summary>
     /// The error code, or 0 if there was no error.
     /// </summary>
-    public ErrorCode ErrorCode { get; init; }
+    public ErrorCode ErrorCode
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The error message, or null if there was no error.
     /// </summary>
-    public string? ErrorMessage { get; init; }
+    public string? ErrorMessage
+    {
+        get; init;
+    }
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {

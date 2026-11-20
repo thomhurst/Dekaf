@@ -95,7 +95,9 @@ public static class DekafDiagnostics
     internal static string PartitionIdTagValue(int partition)
     {
         if ((uint)partition < (uint)PartitionIds.Length)
+        {
             return PartitionIds[partition] ??= FormatPartitionId(partition);
+        }
 
         return partition < 0
             ? FormatPartitionId(partition)

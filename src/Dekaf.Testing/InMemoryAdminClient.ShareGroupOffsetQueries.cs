@@ -18,7 +18,9 @@ public sealed partial class InMemoryAdminClient : IShareGroupOffsetQueryAdminCli
         var opts = options ?? new ListShareGroupOffsetsOptions();
         ArgumentOutOfRangeException.ThrowIfNegative(opts.TimeoutMs);
         if (requests.Length == 0)
+        {
             return new(new Dictionary<string, ShareGroupOffsetsResult>(StringComparer.Ordinal));
+        }
         AdminClient.ThrowIfShareOffsetQueryDeadlineExpired(opts.TimeoutMs);
         return ExecuteWithTimeoutAsync<IReadOnlyDictionary<string, ShareGroupOffsetsResult>>(async token =>
         {
@@ -45,7 +47,9 @@ public sealed partial class InMemoryAdminClient : IShareGroupOffsetQueryAdminCli
                             await ApplyAdminFaultAsync(token, partition.Topic, partition.Partition, groupId).ConfigureAwait(false);
                             error = _cluster.GetTopicPartitionError(partition);
                             if (error == ErrorCode.UnknownTopicId)
+                            {
                                 error = ErrorCode.UnknownTopicOrPartition;
+                            }
                         }
                         catch (KafkaException exception)
                         {
@@ -56,7 +60,9 @@ public sealed partial class InMemoryAdminClient : IShareGroupOffsetQueryAdminCli
                         var offset = stored.TryGetValue(partition, out var checkpoint) ? checkpoint : (TopicPartitionOffset?)null;
                         offsets.Add(partition, new()
                         {
-                            TopicPartition = partition, ErrorCode = error, ErrorMessage = message,
+                            TopicPartition = partition,
+                            ErrorCode = error,
+                            ErrorMessage = message,
                             StartOffset = error == ErrorCode.None ? offset?.Offset ?? -1 : -1,
                             LeaderEpoch = error == ErrorCode.None ? offset?.LeaderEpoch ?? -1 : -1,
                             Lag = error == ErrorCode.None && offset is not null

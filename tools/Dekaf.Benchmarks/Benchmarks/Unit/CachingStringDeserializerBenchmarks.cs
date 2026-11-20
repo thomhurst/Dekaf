@@ -38,17 +38,23 @@ public class CachingStringDeserializerBenchmarks
     {
         _uniqueKeys = new ReadOnlyMemory<byte>[UniqueKeyCount];
         for (var i = 0; i < _uniqueKeys.Length; i++)
+        {
             _uniqueKeys[i] = Encoding.UTF8.GetBytes($"unique-key-{i}");
+        }
 
         _boundedKeys = new ReadOnlyMemory<byte>[BoundedKeyCount];
         for (var i = 0; i < _boundedKeys.Length; i++)
+        {
             _boundedKeys[i] = Encoding.UTF8.GetBytes($"bounded-key-{i}");
+        }
 
         // Promote the cache, then one more pass so every key is admitted and the
         // benchmark measures pure hits.
         CachingDeserializerWarmup.PromoteOrThrow(_boundedDeserializer, _context, _boundedKeys);
         for (var i = 0; i < _boundedKeys.Length; i++)
+        {
             _boundedDeserializer.Deserialize(_boundedKeys[i], _context);
+        }
 
         _repeatedKey = Encoding.UTF8.GetBytes("repeated-key");
         CachingDeserializerWarmup.PromoteOrThrow(_repeatedDeserializer, _context, [_repeatedKey]);
@@ -65,7 +71,9 @@ public class CachingStringDeserializerBenchmarks
                 CachingStringDeserializer.DefaultKeyCacheMaxBytes,
                 CachingStringDeserializer.DefaultKeyCacheMaxEntries);
             for (var i = 0; i < _uniqueKeys.Length; i++)
+            {
                 characters += deserializer.Deserialize(_uniqueKeys[i], _context).Length;
+            }
         }
 
         return characters;
@@ -76,7 +84,9 @@ public class CachingStringDeserializerBenchmarks
     {
         var characters = 0;
         for (var i = 0; i < _boundedKeys.Length; i++)
+        {
             characters += _boundedDeserializer.Deserialize(_boundedKeys[i], _context).Length;
+        }
 
         return characters;
     }

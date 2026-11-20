@@ -318,7 +318,10 @@ public sealed class ProtobufSchemaReferenceTests
 
     private sealed class RecordingReferenceStrategy : IReferenceSubjectNameStrategy
     {
-        internal List<(string Topic, string ReferenceName, bool IsKey)> Calls { get; } = [];
+        internal List<(string Topic, string ReferenceName, bool IsKey)> Calls
+        {
+            get;
+        } = [];
 
         public string GetSubjectName(string topic, string referenceName, bool isKey)
         {
@@ -362,7 +365,10 @@ public sealed class ReferenceGraphMessage : IMessage<ReferenceGraphMessage>, IBu
         Descriptor = descriptors.Single(static file => file.Name == "graph/root.proto").MessageTypes[0];
     }
 
-    public static MessageDescriptor Descriptor { get; }
+    public static MessageDescriptor Descriptor
+    {
+        get;
+    }
     public static MessageParser<ReferenceGraphMessage> Parser => MessageParser;
     MessageDescriptor IMessage.Descriptor => Descriptor;
 
@@ -371,23 +377,33 @@ public sealed class ReferenceGraphMessage : IMessage<ReferenceGraphMessage>, IBu
     public bool Equals(ReferenceGraphMessage? other) => other is not null;
     public override bool Equals(object? obj) => obj is ReferenceGraphMessage;
     public override int GetHashCode() => 0;
-    public void MergeFrom(ReferenceGraphMessage message) { }
+    public void MergeFrom(ReferenceGraphMessage message)
+    {
+    }
 
     public void MergeFrom(CodedInputStream input)
     {
         while (input.ReadTag() != 0)
+        {
             input.SkipLastField();
+        }
     }
 
-    public void WriteTo(CodedOutputStream output) { }
+    public void WriteTo(CodedOutputStream output)
+    {
+    }
 
     void IBufferMessage.InternalMergeFrom(ref ParseContext input)
     {
         while (input.ReadTag() != 0)
+        {
             _unknownFields = UnknownFieldSet.MergeFieldFrom(_unknownFields, ref input);
+        }
     }
 
-    void IBufferMessage.InternalWriteTo(ref WriteContext output) { }
+    void IBufferMessage.InternalWriteTo(ref WriteContext output)
+    {
+    }
 
     private static FileDescriptorProto CreateSharedDescriptor()
     {

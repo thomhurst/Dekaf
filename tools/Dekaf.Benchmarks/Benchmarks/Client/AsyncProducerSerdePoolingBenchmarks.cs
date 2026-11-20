@@ -70,7 +70,9 @@ public class AsyncProducerSerdePoolingBenchmarks
             "_asyncSerializationHeadersPool");
         _rentedHeaders = new Headers[Operations];
         if (_headerPool.MaxPoolSize != Operations)
+        {
             throw new InvalidOperationException("Async serialization header pool capacity mismatch.");
+        }
         SaturateHeaderPool();
 
         await _producer.StopSenderLoopsForTestingAsync().ConfigureAwait(false);
@@ -175,10 +177,14 @@ public class AsyncProducerSerdePoolingBenchmarks
     private void SaturateHeaderPool()
     {
         for (var i = 0; i < _rentedHeaders.Length; i++)
+        {
             _rentedHeaders[i] = _headerPool.Rent();
+        }
 
         if (_headerPool.Misses != 0)
+        {
             throw new InvalidOperationException("Async serialization header pool missed at supported concurrency.");
+        }
 
         for (var i = 0; i < _rentedHeaders.Length; i++)
         {
@@ -196,16 +202,22 @@ public class AsyncProducerSerdePoolingBenchmarks
             var drained = DrainOne(_producer.RecordAccumulator, ref offset)
                 | DrainOne(_yieldingProducer.RecordAccumulator, ref offset);
             if (drained)
+            {
                 spinner.Reset();
+            }
             else
+            {
                 spinner.SpinOnce();
+            }
         }
     }
 
     private static bool DrainOne(DekafProducer.RecordAccumulator accumulator, ref long offset)
     {
         if (!accumulator.TryDrainBatch(out var batch))
+        {
             return false;
+        }
 
         batch.CompleteSend(offset++, DateTimeOffset.UtcNow);
         accumulator.ReleaseBatchMemory(batch);

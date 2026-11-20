@@ -173,10 +173,14 @@ public sealed class QuotaAndRateLimitingTests(KafkaTestContainer kafka) : KafkaI
                 }));
 
                 if (diagnostics.MaxObservedBrokerThrottleTimeMs > 0 && firstThrottledMessage < 0)
+                {
                     firstThrottledMessage = i;
+                }
 
                 if (firstThrottledMessage >= 0 && i >= firstThrottledMessage + messagesAfterThrottle)
+                {
                     break;
+                }
             }
 
             await producer.FlushAsync();
@@ -348,8 +352,7 @@ public sealed class QuotaAndRateLimitingTests(KafkaTestContainer kafka) : KafkaI
                 await Assert.That(result.Offset).IsGreaterThanOrEqualTo(0);
             }
         }
-        catch (Errors.KafkaException ex) when (
-            ex.Message.Contains("quota") ||
+        catch (Errors.KafkaException ex) when (ex.Message.Contains("quota") ||
             ex.Message.Contains("not a valid") ||
             ex.Message.Contains("Unknown"))
         {
@@ -426,14 +429,16 @@ public sealed class QuotaAndRateLimitingTests(KafkaTestContainer kafka) : KafkaI
             await foreach (var msg in consumer.ConsumeAsync(cts.Token))
             {
                 consumed.Add(msg);
-                if (consumed.Count >= messageCount) break;
+                if (consumed.Count >= messageCount)
+                {
+                    break;
+                }
             }
 
             // Assert - all messages should be consumed despite throttling (just slower)
             await Assert.That(consumed.Count).IsEqualTo(messageCount);
         }
-        catch (Errors.KafkaException ex) when (
-            ex.Message.Contains("quota") ||
+        catch (Errors.KafkaException ex) when (ex.Message.Contains("quota") ||
             ex.Message.Contains("not a valid") ||
             ex.Message.Contains("Unknown"))
         {
@@ -539,8 +544,7 @@ public sealed class QuotaAndRateLimitingTests(KafkaTestContainer kafka) : KafkaI
             // but we log for diagnostic purposes.
             Console.WriteLine($"[QuotaTest] Baseline: {baselineMs}ms, Throttled: {throttledSw.ElapsedMilliseconds}ms");
         }
-        catch (Errors.KafkaException ex) when (
-            ex.Message.Contains("quota") ||
+        catch (Errors.KafkaException ex) when (ex.Message.Contains("quota") ||
             ex.Message.Contains("not a valid") ||
             ex.Message.Contains("Unknown"))
         {

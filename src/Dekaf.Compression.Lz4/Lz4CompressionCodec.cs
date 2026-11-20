@@ -79,18 +79,15 @@ public sealed class Lz4CompressionCodec : ICompressionCodecWithLevel
             using var reader = LZ4Frame.Decode(source);
             reader.CopyTo(trackedDestination);
         }
-        catch (ArgumentException exception)
-            when (!trackedDestination.DestinationThrewArgumentException)
+        catch (ArgumentException exception) when (!trackedDestination.DestinationThrewArgumentException)
         {
             throw new InvalidDataException("Invalid LZ4 payload.", exception);
         }
-        catch (InvalidOperationException exception)
-            when (!trackedDestination.DestinationThrewInvalidOperationException)
+        catch (InvalidOperationException exception) when (!trackedDestination.DestinationThrewInvalidOperationException)
         {
             throw new InvalidDataException("Invalid LZ4 payload.", exception);
         }
-        catch (NotImplementedException exception)
-            when (!trackedDestination.DestinationThrewNotImplementedException)
+        catch (NotImplementedException exception) when (!trackedDestination.DestinationThrewNotImplementedException)
         {
             // K4os throws NotImplementedException for valid-but-unsupported frame
             // features (e.g. the DictID flag); surface those as corrupt-payload
@@ -126,11 +123,20 @@ public sealed class Lz4CompressionCodec : ICompressionCodecWithLevel
 
         internal bool IsInUse => _destination is not null;
 
-        internal bool DestinationThrewArgumentException { get; private set; }
+        internal bool DestinationThrewArgumentException
+        {
+            get; private set;
+        }
 
-        internal bool DestinationThrewInvalidOperationException { get; private set; }
+        internal bool DestinationThrewInvalidOperationException
+        {
+            get; private set;
+        }
 
-        internal bool DestinationThrewNotImplementedException { get; private set; }
+        internal bool DestinationThrewNotImplementedException
+        {
+            get; private set;
+        }
 
         internal void Initialize(IBufferWriter<byte> destination)
         {

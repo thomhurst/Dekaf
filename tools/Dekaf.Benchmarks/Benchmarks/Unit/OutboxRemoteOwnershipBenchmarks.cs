@@ -11,10 +11,16 @@ namespace Dekaf.Benchmarks.Benchmarks.Unit;
 public class OutboxRemoteOwnershipBenchmarks
 {
     [Params(8, 1024, 1000000)]
-    public int OwnedCount { get; set; }
+    public int OwnedCount
+    {
+        get; set;
+    }
 
     [Params(false, true)]
-    public bool Miss { get; set; }
+    public bool Miss
+    {
+        get; set;
+    }
 
     private ServiceProvider _provider = null!;
     private Action<int> _receive = null!;
@@ -30,7 +36,9 @@ public class OutboxRemoteOwnershipBenchmarks
         var notifier = (IOutboxBucketNotifier)_provider.GetRequiredService<IOutboxNotifier>();
         var owned = new int[OwnedCount];
         for (var index = 0; index < owned.Length; index++)
+        {
             owned[index] = index * 2;
+        }
         notifier.SetOwnedBuckets(owned);
         _bucket = owned[^1] + (Miss ? 1 : 0);
         _receive = notifier.GetType().GetMethod("NotifyReceived", BindingFlags.NonPublic | BindingFlags.Instance)!
@@ -38,7 +46,9 @@ public class OutboxRemoteOwnershipBenchmarks
         _reader = ((Channel<byte>)notifier.GetType().GetField("_notifications", BindingFlags.NonPublic | BindingFlags.Instance)!
             .GetValue(notifier)!).Reader;
         if (Receive() == Miss)
+        {
             throw new InvalidOperationException("Only owned bucket hints should signal the relay.");
+        }
     }
 
     [Benchmark]

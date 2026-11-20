@@ -18,7 +18,11 @@ public class PartitionedOffsetFragmentationBenchmarks
     public void Setup()
     {
         _lane = new(new TopicPartition("fragmentation", 0), 32,
-            static (_, _) => default, static _ => { }, static (_, _) => { });
+            static (_, _) => default, static _ =>
+            {
+            }, static (_, _) =>
+            {
+            });
         _records = new ConsumeResult<string, string>[RecordCount];
     }
 
@@ -35,22 +39,34 @@ public class PartitionedOffsetFragmentationBenchmarks
             var record = new ConsumeResult<string, string>("fragmentation", 0, _offset,
                 "key", "value", null, 0, TimestampType.CreateTime, index);
             if (!_lane.TryEnqueue(record, batch) || !_lane.TryReadMessage(out _records[index]))
+            {
                 throw new InvalidOperationException("Unable to prepare the completion window.");
+            }
         }
         _lane.EndBatch(batch, RecordCount);
 
         for (var index = 1; index < _records.Length; index += 2)
+        {
             _lane.MarkProcessed(_records[index]);
+        }
         if (_lane.GetCommitOffset()?.Offset != previousCheckpoint)
+        {
             throw new InvalidOperationException("Completion advanced past an unfinished predecessor.");
+        }
         for (var index = 0; index < _records.Length; index += 2)
+        {
             _lane.MarkProcessed(_records[index]);
+        }
 
         var checkpoint = _lane.GetCommitOffset();
         if (checkpoint?.Offset != _records[^1].Offset + 1)
+        {
             throw new InvalidOperationException("The completed window did not advance its checkpoint.");
+        }
         if (_records[0].ProcessingBatch!.Nodes is not null)
+        {
             throw new InvalidOperationException("The completed window retained its reserved nodes.");
+        }
         return checkpoint;
     }
 }

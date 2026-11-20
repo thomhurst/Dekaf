@@ -14,7 +14,10 @@ public sealed class DeleteGroupsRequest : IKafkaRequest<DeleteGroupsResponse>
     /// <summary>
     /// The group IDs to delete.
     /// </summary>
-    public required IReadOnlyList<string> GroupsNames { get; init; }
+    public required IReadOnlyList<string> GroupsNames
+    {
+        get; init;
+    }
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {

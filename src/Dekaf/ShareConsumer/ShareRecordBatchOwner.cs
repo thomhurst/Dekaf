@@ -28,22 +28,35 @@ internal sealed class ShareRecordBatchOwner
     }
 
     // Metadata never changes: results retained past their payload lifetime still expose it.
-    internal string Topic { get; }
-    internal int Partition { get; }
-    internal uint Generation { get; private set; }
+    internal string Topic
+    {
+        get;
+    }
+    internal int Partition
+    {
+        get;
+    }
+    internal uint Generation
+    {
+        get; private set;
+    }
 
     internal void ReleasePoll()
     {
         // Zero permanently invalidates an exhausted owner; no delivered token uses it.
         if (Generation != 0)
+        {
             Generation = Generation == MaximumGeneration ? 0 : Generation + 1;
+        }
         Release();
     }
 
     internal ShareRecordBatchOwner RefreshGeneration()
     {
         if (Generation != 0)
+        {
             return this;
+        }
 
         // Transfer one existing parser/renewal/poll reference to a fresh token owner.
         // Always point directly at the storage root, never build a chain of owners.
@@ -73,43 +86,61 @@ internal sealed class ShareRecordBatchOwner
     {
         // IKafkaShareConsumer requires serialized access to its operations.
         if (_references == 0)
+        {
             throw new InvalidOperationException("Cannot renew a record after its borrowed payload lifetime has ended.");
+        }
         _references++;
     }
 
     internal void Release()
     {
         if (--_references != 0)
+        {
             return;
+        }
         var storage = _batchStorage;
         _batchStorage = null;
         if (storage is not null)
         {
             if (storage is RecordBatch batch)
+            {
                 batch.DisposeAndReturnUnownedConsumerBatch();
+            }
             else
+            {
                 ((ShareRecordBatchOwner)storage).Release();
+            }
         }
         var payload = _payload;
         var payloadPool = _payloadPool;
         _payload = null;
         _payloadPool = null;
         if (payload is not null)
+        {
             payloadPool!.Return(payload);
+        }
         // Never wrap the generation: an arbitrarily old result must not become valid
         // again. Only exhaustion of the full generation retires an owner.
         if (Generation is not (0 or MaximumGeneration))
+        {
             _pool.Return(this);
+        }
         else
+        {
             _pool.RetireOwner();
+        }
     }
 
     internal void CompleteParsing()
     {
         if (_batchStorage is ShareRecordBatchOwner storage)
+        {
             storage.CompleteBatch();
+        }
         else
+        {
             CompleteBatch();
+        }
         Release();
     }
 
@@ -160,8 +191,7 @@ internal sealed class ShareRecordBatchOwner
             if (_ownerCount == _available.Length)
             {
                 // A miss means every slot is empty; no retained references need copying.
-                _available = new ShareRecordBatchOwner?[
-                    _available.Length <= int.MaxValue / 2 ? _available.Length * 2 : int.MaxValue];
+                _available = new ShareRecordBatchOwner?[_available.Length <= int.MaxValue / 2 ? _available.Length * 2 : int.MaxValue];
             }
             var owner = new ShareRecordBatchOwner(partition, this);
             _ownerCount++;

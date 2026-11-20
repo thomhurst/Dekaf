@@ -113,7 +113,9 @@ public sealed partial class KafkaConsumerServiceTests
             retryPolicy: failureHandling == "retryPolicy" ? new BackoffPolicy(TimeSpan.FromHours(1)) : null,
             deadLetterOptions: failureHandling == "deadLetter" ? new DeadLetterOptions() : null);
         if (failureHandling == "deadLetter")
+        {
             SetDlqProducer(service, producer);
+        }
         service.DuringProcessing = () =>
         {
             RevokeBySync(inner, FetchedPartition);
@@ -178,7 +180,9 @@ public sealed partial class KafkaConsumerServiceTests
         Action<object> reassignBeforeRewind = instance =>
         {
             if (!ReferenceEquals(instance, service) || Interlocked.Exchange(ref reassigned, 1) != 0)
+            {
                 return;
+            }
 
             RevokeBySync(inner, FetchedPartition);
             AssignAndInitialize(inner, FetchedPartition);
@@ -285,7 +289,9 @@ public sealed partial class KafkaConsumerServiceTests
             .Where(partition => !partitions.Contains(partition))
             .ToList();
         if (revoked.Count != 0)
+        {
             RevokeInCoordinator(coordinator, revoked);
+        }
 
         assigned.SetValue(coordinator, new HashSet<TopicPartition>(partitions));
         var version = typeof(ConsumerCoordinator)

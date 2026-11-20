@@ -9,10 +9,16 @@ public class ShareConsumerTelemetryCloseBenchmarks
     private HostedShareRequestBenchmarks _requests = null!;
 
     [Params(false, true)]
-    public bool Hosted { get; set; }
+    public bool Hosted
+    {
+        get; set;
+    }
 
     [ParamsAllValues]
-    public ShareRequestTelemetryMode Telemetry { get; set; }
+    public ShareRequestTelemetryMode Telemetry
+    {
+        get; set;
+    }
 
     [GlobalSetup]
     public async Task Setup()

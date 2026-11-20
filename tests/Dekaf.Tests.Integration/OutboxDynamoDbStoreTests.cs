@@ -81,7 +81,9 @@ public sealed class OutboxDynamoDbStoreTests(DynamoDbLocalContainer dynamoDb)
         var expected = new List<Guid>();
 
         for (var index = 0; index < 3; index++)
+        {
             expected.Add(await EnqueueOneAsync(writer, bucket: 5));
+        }
         // One transaction spanning two buckets: bucket 5 keeps its list order.
         OutboxMessage[] batch = [Message(5), Message(2), Message(5), Message(2), Message(5)];
         await writer.EnqueueAsync(batch);
@@ -223,7 +225,9 @@ public sealed class OutboxDynamoDbStoreTests(DynamoDbLocalContainer dynamoDb)
         var writer = new DynamoDbOutboxWriter(client, options);
         var previousOwner = new DynamoDbOutboxStore(client, options);
         for (var index = 0; index < 3; index++)
+        {
             await EnqueueOneAsync(writer, bucket: 6);
+        }
         await previousOwner.MarkPublishedAsync(6, await previousOwner.GetNextBatchAsync(6, 10));
         var fourth = await EnqueueOneAsync(writer, bucket: 6);
         var fifth = await EnqueueOneAsync(writer, bucket: 6);
@@ -265,7 +269,9 @@ public sealed class OutboxDynamoDbStoreTests(DynamoDbLocalContainer dynamoDb)
         var store = new DynamoDbOutboxStore(client, options);
         var value = new byte[300 * 1024];
         for (var index = 0; index < 6; index++)
+        {
             await writer.EnqueueAsync(Message(1, value: value));
+        }
 
         // Six 300 KB rows cannot fit one 1 MB query page.
         await Assert.That((await store.GetNextBatchAsync(1, 5)).Count).IsEqualTo(5);
@@ -427,14 +433,14 @@ public sealed class OutboxDynamoDbStoreTests(DynamoDbLocalContainer dynamoDb)
 
     private static OutboxMessage Message(
         int bucket, byte[]? key = null, byte[]? value = null, DateTimeOffset? createdAt = null) => new()
-    {
-        MessageId = Guid.NewGuid(),
-        Bucket = bucket,
-        Topic = "orders",
-        Key = key,
-        Value = value,
-        CreatedAtUtc = createdAt ?? DateTimeOffset.UtcNow
-    };
+        {
+            MessageId = Guid.NewGuid(),
+            Bucket = bucket,
+            Topic = "orders",
+            Key = key,
+            Value = value,
+            CreatedAtUtc = createdAt ?? DateTimeOffset.UtcNow
+        };
 
     private static async Task<Guid> EnqueueOneAsync(IDynamoDbOutboxWriter writer, int bucket)
     {

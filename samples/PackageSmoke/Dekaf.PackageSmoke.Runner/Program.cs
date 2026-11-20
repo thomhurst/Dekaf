@@ -1,5 +1,5 @@
-using Dekaf.PackageSmoke.NetStandard20;
 using Dekaf.PackageSmoke.AbstractionsAdapter;
+using Dekaf.PackageSmoke.NetStandard20;
 using Dekaf.Producer;
 
 var result = NetStandardPackageSmoke.Run();

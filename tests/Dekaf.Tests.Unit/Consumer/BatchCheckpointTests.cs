@@ -134,7 +134,9 @@ public class BatchCheckpointTests
         using var pending = CreatePending();
         var batch = new ConsumeBatch<byte[], byte[]>(pending, Serializers.ByteArray, Serializers.ByteArray,
             maxRecords: 1, recordFilter: new RejectAll());
-        foreach (var _ in batch) { }
+        foreach (var _ in batch)
+        {
+        }
         await Assert.That(batch.Count).IsEqualTo(0);
         await Assert.That(batch.TryGetNextOffset(out var checkpoint)).IsTrue();
         await Assert.That(checkpoint.Offset).IsEqualTo(11);
@@ -169,7 +171,9 @@ public class BatchCheckpointTests
         for (var i = 0; i < 100; i++)
         {
             if (batch.Capture(out var checkpoint))
+            {
                 sum += checkpoint.Offset;
+            }
         }
         var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
         await Assert.That(sum).IsEqualTo(1100);
@@ -279,9 +283,13 @@ public class BatchCheckpointTests
             if (checkingCheckpoint && ++statusReads == 2)
             {
                 if (reuseWindow)
+                {
                     pending.BeginCheckpointWindow(new object());
+                }
                 else
+                {
                     return BatchIterationStatus.Stopped;
+                }
             }
             return BatchIterationStatus.Continue;
         });
@@ -297,8 +305,10 @@ public class BatchCheckpointTests
     {
         var consumer = new KafkaConsumer<byte[], byte[]>(new ConsumerOptions
         {
-            BootstrapServers = ["localhost:9092"], OffsetCommitMode = OffsetCommitMode.Manual,
-            QueuedMinMessages = 1, MaxPollRecords = 1
+            BootstrapServers = ["localhost:9092"],
+            OffsetCommitMode = OffsetCommitMode.Manual,
+            QueuedMinMessages = 1,
+            MaxPollRecords = 1
         }, Serializers.ByteArray, Serializers.ByteArray);
         consumer.Assign(pending.TopicPartition);
         const BindingFlags flags = BindingFlags.NonPublic | BindingFlags.Instance;
@@ -327,10 +337,14 @@ public class BatchCheckpointTests
 
     private static RecordBatch DataBatch(long offset, int epoch, Record[] records,
         RecordBatchAttributes attributes = default, long producerId = -1) => new()
-    {
-        BaseOffset = offset, PartitionLeaderEpoch = epoch, Records = records,
-        LastOffsetDelta = records.Length - 1, Attributes = attributes, ProducerId = producerId
-    };
+        {
+            BaseOffset = offset,
+            PartitionLeaderEpoch = epoch,
+            Records = records,
+            LastOffsetDelta = records.Length - 1,
+            Attributes = attributes,
+            ProducerId = producerId
+        };
 
     private sealed class CheckpointBatch
     {

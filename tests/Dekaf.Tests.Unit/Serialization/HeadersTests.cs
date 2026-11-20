@@ -269,7 +269,9 @@ public class HeadersTests
         var headers = new Headers();
         headers.BeginRecordHeaderStaging(source);
         for (var index = 0; index < 20; index++)
+        {
             headers.Add(new Header($"staged-{index}", new byte[] { (byte)index }));
+        }
 
         await Assert.That(headers.Count).IsEqualTo(21);
         await Assert.That(headers[0].Key).IsEqualTo("caller");
@@ -300,12 +302,16 @@ public class HeadersTests
         var outerCheckpoint = headers.CaptureCheckpoint();
         headers.BeginRecordHeaderStaging();
         for (var index = 0; index < 4; index++)
+        {
             headers.Add(new Header($"outer-{index}", new byte[] { (byte)index }));
+        }
 
         var innerCheckpoint = headers.CaptureCheckpoint();
         headers.BeginRecordHeaderStaging();
         for (var index = 0; index < 5; index++)
+        {
             headers.Add(new Header($"inner-{index}", new byte[] { (byte)index }));
+        }
 
         headers.Restore(in innerCheckpoint);
 
@@ -563,7 +569,9 @@ public class HeadersTests
 
         headers.RemoveAll(static (header, keys) => keys.GetFirst(header.Key) is not null, replacement);
         for (var i = 0; i < replacement.Count; i++)
+        {
             headers.Add(replacement[i]);
+        }
 
         await Assert.That(Keys(headers))
             .IsEqualTo("interceptor,nullable,tail,tenant,duplicate,duplicate");
@@ -749,7 +757,9 @@ public class HeadersTests
         Run(headers, replacement, header, keep);
         var before = GC.GetAllocatedBytesForCurrentThread();
         for (var i = 0; i < 100; i++)
+        {
             Run(headers, replacement, header, keep);
+        }
         var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
 
         await Assert.That(allocated).IsEqualTo(0);

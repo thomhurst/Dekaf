@@ -104,9 +104,13 @@ public sealed class InMemoryConsumerGroupOffsetQueryTests
         await empty;
 
         if (commit)
+        {
             await transaction.CommitAsync();
+        }
         else
+        {
             await transaction.AbortAsync();
+        }
         var result = (await pending)["group"].Offsets[partition].Offset!.Value;
         await Assert.That(result.Offset).IsEqualTo(commit ? 19 : 7);
         await Assert.That(result.LeaderEpoch).IsEqualTo(commit ? 5 : 2);

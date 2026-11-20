@@ -385,8 +385,7 @@ public sealed class ConsumerPauseResumeCacheTests
         var partition = new TopicPartition(PrefetchedTopic, 0);
         await using var consumer = CreatePrefetchedConsumer();
         consumer.Assign(partition);
-        var fetchPositions = (ConcurrentDictionary<TopicPartition, long>)
-            GetField("_fetchPositions").GetValue(consumer)!;
+        var fetchPositions = (ConcurrentDictionary<TopicPartition, long>)GetField("_fetchPositions").GetValue(consumer)!;
         fetchPositions[partition] = 0;
         var enqueue = typeof(KafkaConsumer<string, string>).GetMethod(
             "EnqueuePendingFetch",
@@ -519,10 +518,13 @@ public sealed class ConsumerPauseResumeCacheTests
             .CreateDelegate<Func<int, CancellationTokenSource, CancellationToken, ValueTask>>(consumer);
         var exceptionCount = new StrongBox<int>();
         var observedOperation = new AsyncLocal<StrongBox<int>?>();
+
         void ObserveException(object? sender, System.Runtime.ExceptionServices.FirstChanceExceptionEventArgs args)
         {
             if (args.Exception is OperationCanceledException && observedOperation.Value is { } count)
+            {
                 Interlocked.Increment(ref count.Value);
+            }
         }
 
         AppDomain.CurrentDomain.FirstChanceException += ObserveException;
@@ -545,11 +547,17 @@ public sealed class ConsumerPauseResumeCacheTests
                 }
 
                 if (callerCancellation)
+                {
                     callerSource.Cancel();
+                }
                 if (internalCancellation)
+                {
                     consumeSource.Cancel();
+                }
                 else
+                {
                     consumer.Resume(partition);
+                }
 
                 if (!callerCancellation && !internalCancellation)
                 {
@@ -779,8 +787,7 @@ public sealed class ConsumerPauseResumeCacheTests
             Serializers.String);
         consumer.Assign(partition);
         GetField("_initialized").SetValue(consumer, true);
-        var fetchPositions = (ConcurrentDictionary<TopicPartition, long>)
-            GetField("_fetchPositions").GetValue(consumer)!;
+        var fetchPositions = (ConcurrentDictionary<TopicPartition, long>)GetField("_fetchPositions").GetValue(consumer)!;
         fetchPositions[partition] = 0;
         var pendingFetches = (Queue<PendingFetchData>)GetField("_pendingFetches").GetValue(consumer)!;
         pendingFetches.Enqueue(retained);
@@ -880,8 +887,7 @@ public sealed class ConsumerPauseResumeCacheTests
         consumer.Assign([revokedPartition, activePartition]);
         GetField("_initialized").SetValue(consumer, true);
         GetField("_prefetchTask").SetValue(consumer, Task.CompletedTask);
-        var fetchPositions = (ConcurrentDictionary<TopicPartition, long>)
-            GetField("_fetchPositions").GetValue(consumer)!;
+        var fetchPositions = (ConcurrentDictionary<TopicPartition, long>)GetField("_fetchPositions").GetValue(consumer)!;
         fetchPositions[revokedPartition] = 0;
         fetchPositions[activePartition] = 0;
         var prefetchBufferField = GetField("_prefetchBuffer");
@@ -1201,15 +1207,17 @@ public sealed class ConsumerPauseResumeCacheTests
         consumer.Assign(partitions);
 
         GetField("_initialized").SetValue(consumer, true);
-        var fetchPositions = (ConcurrentDictionary<TopicPartition, long>)
-            GetField("_fetchPositions").GetValue(consumer)!;
-        var pendingFetches = (Queue<PendingFetchData>)
-            GetField("_pendingFetches").GetValue(consumer)!;
+        var fetchPositions = (ConcurrentDictionary<TopicPartition, long>)GetField("_fetchPositions").GetValue(consumer)!;
+        var pendingFetches = (Queue<PendingFetchData>)GetField("_pendingFetches").GetValue(consumer)!;
 
         foreach (var partition in partitions)
+        {
             fetchPositions[partition] = 0;
+        }
         foreach (var fetch in fetches)
+        {
             pendingFetches.Enqueue(fetch);
+        }
         GetField("_pendingFetchDepth").SetValue(consumer, fetches.Length);
 
         return consumer;
@@ -1261,7 +1269,9 @@ public sealed class ConsumerPauseResumeCacheTests
         if (moveNext is not null)
         {
             if (testCompleted)
+            {
                 await moveNext;
+            }
             else
             {
                 Task pendingMoveNext = moveNext;
@@ -1270,14 +1280,20 @@ public sealed class ConsumerPauseResumeCacheTests
         }
 
         if (records is null)
+        {
             return;
+        }
 
         if (testCompleted)
+        {
             await records.DisposeAsync();
+        }
         else
+        {
             await records.DisposeAsync()
                 .AsTask()
                 .ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
+        }
     }
 
     private static FieldInfo GetField(string name) =>
@@ -1388,7 +1404,9 @@ public sealed class ConsumerPauseResumeCacheTests
     {
         var result = GroupPartitionsByBrokerMethod.Invoke(consumer, [CancellationToken.None]);
         if (result is not ValueTask<Dictionary<int, List<TopicPartition>>> valueTask)
+        {
             throw new InvalidOperationException("GroupPartitionsByBrokerAsync returned unexpected type");
+        }
 
         return await valueTask.ConfigureAwait(false);
     }
@@ -1405,7 +1423,9 @@ public sealed class ConsumerPauseResumeCacheTests
     {
         var entry = CachedPartitionsByBrokerField.GetValue(consumer);
         if (entry is null)
+        {
             return null;
+        }
 
         var property = entry.GetType().GetProperty("PartitionsByBroker")
             ?? throw new InvalidOperationException("PartitionsByBroker property not found");

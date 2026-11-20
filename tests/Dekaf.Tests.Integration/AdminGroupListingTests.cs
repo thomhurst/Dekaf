@@ -36,14 +36,23 @@ public sealed class AdminGroupListingTests(KafkaTestContainer kafka) : KafkaInte
         await streams.InitializeAsync();
         await streams.JoinAsync(new StreamsGroupMemberUpdate
         {
-            ProcessId = "listing-process", ActiveTasks = [], StandbyTasks = [], WarmupTasks = [], ClientTags = [],
+            ProcessId = "listing-process",
+            ActiveTasks = [],
+            StandbyTasks = [],
+            WarmupTasks = [],
+            ClientTags = [],
             Topology = new Dekaf.Streams.StreamsGroupTopology
             {
                 Epoch = 0,
                 Subtopologies = [new Dekaf.Streams.StreamsGroupSubtopology
                 {
-                    SubtopologyId = "0", SourceTopics = [topic], SourceTopicRegex = [], StateChangelogTopics = [],
-                    RepartitionSinkTopics = [], RepartitionSourceTopics = [], CopartitionGroups = []
+                    SubtopologyId = "0",
+                    SourceTopics = [topic],
+                    SourceTopicRegex = [],
+                    StateChangelogTopics = [],
+                    RepartitionSinkTopics = [],
+                    RepartitionSourceTopics = [],
+                    CopartitionGroups = []
                 }]
             }
         });
@@ -63,8 +72,10 @@ public sealed class AdminGroupListingTests(KafkaTestContainer kafka) : KafkaInte
         var joined = await connection.SendAsync<TestJoinGroupRequest, TestJoinGroupResponse>(
             new(prefix + "connect", ""), 5, timeout.Token);
         if (joined.ErrorCode == ErrorCode.MemberIdRequired)
+        {
             joined = await connection.SendAsync<TestJoinGroupRequest, TestJoinGroupResponse>(
                 new(prefix + "connect", joined.MemberId), 5, timeout.Token);
+        }
         await Assert.That(joined.ErrorCode).IsEqualTo(ErrorCode.None);
         try
         {
@@ -91,7 +102,8 @@ public sealed class AdminGroupListingTests(KafkaTestContainer kafka) : KafkaInte
                 });
             var classic = await admin.ListGroupsAsync(new ListGroupsOptions
             {
-                Types = ["classic"], ProtocolTypes = ["connect"],
+                Types = ["classic"],
+                ProtocolTypes = ["connect"],
                 States = [all.Single(group => group.GroupId == prefix + "connect").State!.ToLowerInvariant()]
             }, timeout.Token);
             await Assert.That(classic.Any(group => group.GroupId == prefix + "connect")).IsTrue();
@@ -143,8 +155,14 @@ public sealed class AdminGroupListingTests(KafkaTestContainer kafka) : KafkaInte
         public static ApiKey ApiKey => ApiKey.JoinGroup;
         public static short LowestSupportedVersion => 5;
         public static short HighestSupportedVersion => 5;
-        public required ErrorCode ErrorCode { get; init; }
-        public required string MemberId { get; init; }
+        public required ErrorCode ErrorCode
+        {
+            get; init;
+        }
+        public required string MemberId
+        {
+            get; init;
+        }
         public static IKafkaResponse Read(ref KafkaProtocolReader reader, short version)
         {
             _ = reader.ReadInt32();
@@ -186,7 +204,10 @@ public sealed class AdminGroupListingTests(KafkaTestContainer kafka) : KafkaInte
         public static ApiKey ApiKey => ApiKey.LeaveGroup;
         public static short LowestSupportedVersion => 3;
         public static short HighestSupportedVersion => 3;
-        public required ErrorCode ErrorCode { get; init; }
+        public required ErrorCode ErrorCode
+        {
+            get; init;
+        }
         public static IKafkaResponse Read(ref KafkaProtocolReader reader, short version)
         {
             _ = reader.ReadInt32();
@@ -197,7 +218,10 @@ public sealed class AdminGroupListingTests(KafkaTestContainer kafka) : KafkaInte
                 _ = reader.ReadString();
                 _ = reader.ReadString();
                 var memberError = (ErrorCode)reader.ReadInt16();
-                if (memberError != ErrorCode.None) error = memberError;
+                if (memberError != ErrorCode.None)
+                {
+                    error = memberError;
+                }
             }
             return new TestLeaveGroupResponse { ErrorCode = error };
         }

@@ -66,15 +66,22 @@ internal sealed class MpscFetchBuffer
         Action? afterConsumerCancellationRegisteredForTesting = null)
     {
         if (capacity < 1)
+        {
             throw new ArgumentOutOfRangeException(nameof(capacity), "Capacity must be positive.");
+        }
 
         const int MaxPowerOfTwoCapacity = 1 << 30;
         if (capacity > MaxPowerOfTwoCapacity)
+        {
             throw new ArgumentOutOfRangeException(nameof(capacity), $"Capacity must be <= {MaxPowerOfTwoCapacity}.");
+        }
 
         // Round up to next power of 2 for mask-based indexing
         var size = 1;
-        while (size < capacity) size <<= 1;
+        while (size < capacity)
+        {
+            size <<= 1;
+        }
         _buffer = new PendingFetchData?[size];
         _committedSequences = new long[size];
         _mask = size - 1;
@@ -119,10 +126,14 @@ internal sealed class MpscFetchBuffer
             var tail = Volatile.Read(ref _tail.Value);
 
             if (head - tail >= _buffer.Length)
+            {
                 return false; // Full
+            }
 
             if (Interlocked.CompareExchange(ref _headReserved.Value, head + 1, head) != head)
+            {
                 continue;
+            }
 
             _afterProducerSlotReservedForTesting?.Invoke(head);
 
@@ -138,7 +149,9 @@ internal sealed class MpscFetchBuffer
             // tail. Let that tail producer own the wake so waits cannot complete spuriously.
             if (head == Volatile.Read(ref _tail.Value)
                 && Volatile.Read(ref _consumerWaiting) != 0)
+            {
                 SignalConsumerWaitingForData();
+            }
 
             return true;
         }
@@ -152,7 +165,9 @@ internal sealed class MpscFetchBuffer
     {
         // Fast path: space already available
         if (HasSpaceAvailable())
+        {
             return;
+        }
 
         // Slow path: wait for the consumer to drain
         Interlocked.Increment(ref _producerWaiterCount);
@@ -205,7 +220,9 @@ internal sealed class MpscFetchBuffer
         Interlocked.MemoryBarrier();
 
         if (Volatile.Read(ref _producerWaiterCount) > 0)
+        {
             _spaceAvailable.Release();
+        }
 
         return true;
     }
@@ -218,12 +235,16 @@ internal sealed class MpscFetchBuffer
     {
         // Fast check: data already available?
         if (HasDataAvailable())
+        {
             return true;
+        }
 
         if (_completed)
         {
             if (_completionError is not null)
+            {
                 throw _completionError;
+            }
             return HasDataAvailable();
         }
 
@@ -237,19 +258,25 @@ internal sealed class MpscFetchBuffer
 
             // Re-check after reset to avoid missed signal
             if (HasDataAvailable())
+            {
                 return true;
+            }
 
             if (_completed)
             {
                 if (_completionError is not null)
+                {
                     throw _completionError;
+                }
                 return HasDataAvailable();
             }
 
             _dataAvailable.Wait(timeoutMs, cancellationToken);
 
             if (_completionError is not null)
+            {
                 throw _completionError;
+            }
 
             return HasDataAvailable();
         }
@@ -266,16 +293,22 @@ internal sealed class MpscFetchBuffer
     public ValueTask<bool> WaitToReadAsync(int timeoutMs, CancellationToken cancellationToken)
     {
         if (timeoutMs < Timeout.Infinite)
+        {
             throw new ArgumentOutOfRangeException(nameof(timeoutMs), "Timeout must be non-negative or Timeout.Infinite.");
+        }
 
         // Fast check: data already available?
         if (HasDataAvailable())
+        {
             return new ValueTask<bool>(true);
+        }
 
         if (_completed)
         {
             if (_completionError is not null)
+            {
                 throw _completionError;
+            }
             return new ValueTask<bool>(HasDataAvailable());
         }
 
@@ -284,7 +317,9 @@ internal sealed class MpscFetchBuffer
         if (timeoutMs == 0)
         {
             if (_completionError is not null)
+            {
                 throw _completionError;
+            }
             return new ValueTask<bool>(HasDataAvailable());
         }
 
@@ -296,19 +331,25 @@ internal sealed class MpscFetchBuffer
         while (!spin.NextSpinWillYield)
         {
             if (HasDataAvailable())
+            {
                 return new ValueTask<bool>(true);
+            }
 
             spin.SpinOnce();
         }
 
         if (!_readWaiter.TryClaim())
+        {
             return new ValueTask<bool>(false);
+        }
 
         var waitInstalled = false;
         try
         {
             if (!_readWaiter.TrySetCancellationToken(cancellationToken))
+            {
                 return new ValueTask<bool>(false);
+            }
 
             _afterConsumerCancellationRegisteredForTesting?.Invoke();
             Volatile.Write(ref _consumerWaiting, 1);
@@ -327,7 +368,9 @@ internal sealed class MpscFetchBuffer
                 {
                     Volatile.Write(ref _consumerWaiting, 0);
                     if (_completionError is not null)
+                    {
                         throw _completionError;
+                    }
                     return new ValueTask<bool>(HasDataAvailable());
                 }
 
@@ -346,7 +389,9 @@ internal sealed class MpscFetchBuffer
         finally
         {
             if (!waitInstalled)
+            {
                 _readWaiter.ReleaseClaim();
+            }
         }
     }
 
@@ -359,7 +404,9 @@ internal sealed class MpscFetchBuffer
     public void Complete(Exception? error = null)
     {
         if (_completed)
+        {
             return;
+        }
 
         _completionError = error;
         _completed = true;
@@ -392,7 +439,9 @@ internal sealed class MpscFetchBuffer
         lock (_dataAvailableWaiterLock)
         {
             if (_readWaiterActive)
+            {
                 _readWaiter.TrySetSignal();
+            }
         }
     }
 
@@ -416,7 +465,9 @@ internal sealed class MpscFetchBuffer
         }
 
         if (producerTask?.IsFaulted is true)
+        {
             _ = producerTask.Exception;
+        }
 
         DisposeProducerSignals();
     }
@@ -424,7 +475,9 @@ internal sealed class MpscFetchBuffer
     private void DisposeProducerSignals()
     {
         if (Interlocked.Exchange(ref _producerSignalsDisposed, 1) != 0)
+        {
             return;
+        }
 
         _dataAvailable.Dispose();
         _spaceAvailable.Dispose();
@@ -475,7 +528,9 @@ internal sealed class MpscFetchBuffer
             lock (_registrationGate)
             {
                 if (_disposed)
+                {
                     return false;
+                }
 
                 // CancellationTokenSource.TryReset clears registrations without changing token
                 // identity, so equality cannot prove that the previous registration is still live.
@@ -505,9 +560,13 @@ internal sealed class MpscFetchBuffer
                 _timeoutDeadline = Stopwatch.GetTimestamp()
                     + timeoutMs * Stopwatch.Frequency / 1_000;
                 if (_timeoutTimer is null)
+                {
                     _timeoutTimer = new Timer(_timeoutCallback, this, timeoutMs, Timeout.Infinite);
+                }
                 else
+                {
                     _timeoutTimer.Change(timeoutMs, Timeout.Infinite);
+                }
             }
             else
             {
@@ -520,7 +579,9 @@ internal sealed class MpscFetchBuffer
         public void TrySetSignal()
         {
             if (_completed)
+            {
                 return;
+            }
 
             _completed = true;
             _queuedResult = true;
@@ -531,7 +592,9 @@ internal sealed class MpscFetchBuffer
         private void TrySetException(Exception exception)
         {
             if (_completed)
+            {
                 return;
+            }
 
             _completed = true;
             _queuedResult = false;
@@ -543,12 +606,16 @@ internal sealed class MpscFetchBuffer
         {
 #if NET10_0_OR_GREATER
             if (!ThreadPool.UnsafeQueueUserWorkItem(this, preferLocal: false))
+            {
                 ExecuteQueuedCompletion();
+            }
 #else
             // The compatibility reference asset cannot access IThreadPoolWorkItem. Dekaf's
             // supported .NET 10+ runtime selects the allocation-free net10.0 asset above.
             if (!ThreadPool.QueueUserWorkItem(static state => ((ReadWaiter)state!).ExecuteQueuedCompletion(), this))
+            {
                 ExecuteQueuedCompletion();
+            }
 #endif
         }
 
@@ -557,9 +624,13 @@ internal sealed class MpscFetchBuffer
             var exception = _queuedException;
             _queuedException = null;
             if (exception is not null)
+            {
                 _core.SetException(exception);
+            }
             else
+            {
                 _core.SetResult(_queuedResult);
+            }
         }
 
 #if NET10_0_OR_GREATER
@@ -572,7 +643,9 @@ internal sealed class MpscFetchBuffer
             lock (_owner._dataAvailableWaiterLock)
             {
                 if (_owner._readWaiterActive)
+                {
                     TrySetException(new OperationCanceledException(_cancellationToken));
+                }
             }
         }
 
@@ -584,7 +657,9 @@ internal sealed class MpscFetchBuffer
                 lock (_owner._dataAvailableWaiterLock)
                 {
                     if (!_owner._readWaiterActive || _completed || _timeoutDeadline == long.MaxValue)
+                    {
                         return;
+                    }
 
                     var remainingTicks = _timeoutDeadline - Stopwatch.GetTimestamp();
                     if (remainingTicks > 0)
@@ -619,10 +694,14 @@ internal sealed class MpscFetchBuffer
             {
                 var signaled = _core.GetResult(token);
                 if (!signaled)
+                {
                     return false;
+                }
 
                 if (_owner._completionError is not null)
+                {
                     throw _owner._completionError;
+                }
 
                 return _owner.HasDataAvailable();
             }
@@ -658,7 +737,9 @@ internal sealed class MpscFetchBuffer
                 lock (_owner._dataAvailableWaiterLock)
                 {
                     if (_disposed)
+                    {
                         return;
+                    }
 
                     _disposed = true;
 
@@ -666,7 +747,9 @@ internal sealed class MpscFetchBuffer
                     // before tearing down its only wake-up sources, then detach the timer so the
                     // eventual GetResult cleanup cannot call Change on a disposed instance.
                     if (_owner._readWaiterActive)
+                    {
                         TrySetSignal();
+                    }
 
                     cancellationRegistration = _cancellationRegistration;
                     _cancellationRegistration = default;

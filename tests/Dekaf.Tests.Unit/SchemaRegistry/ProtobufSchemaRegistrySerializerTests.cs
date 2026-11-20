@@ -15,7 +15,10 @@ public class ProtobufSchemaRegistrySerializerTests
 
     private sealed class ReplacingRuleExecutor(byte[] serializedPayload) : ISchemaRegistryRuleExecutor
     {
-        public SchemaRegistryRuleContext? Context { get; private set; }
+        public SchemaRegistryRuleContext? Context
+        {
+            get; private set;
+        }
 
         public ReadOnlyMemory<byte> TransformSerializedPayload(
             ReadOnlyMemory<byte> payload,

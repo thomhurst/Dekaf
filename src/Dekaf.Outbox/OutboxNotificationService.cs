@@ -17,7 +17,9 @@ internal sealed partial class OutboxNotificationService : BackgroundService
     {
         options.Validate();
         if (notifier is not OutboxNotifier local)
+        {
             throw new OutboxMisconfigurationException("The outbox notification transport requires the built-in notifier.");
+        }
         _transport = transport;
         _options = options;
         _timeProvider = timeProvider;
@@ -45,7 +47,9 @@ internal sealed partial class OutboxNotificationService : BackgroundService
             {
                 var count = await _outgoing.ReadAsync(buckets, stoppingToken).ConfigureAwait(false);
                 if (count == 0)
+                {
                     continue;
+                }
                 try
                 {
                     await _transport.PublishAsync(buckets.AsMemory(0, count), stoppingToken).ConfigureAwait(false);
@@ -74,7 +78,9 @@ internal sealed partial class OutboxNotificationService : BackgroundService
                 {
                     await _transport.ListenAsync(_received, stoppingToken).ConfigureAwait(false);
                     if (!stoppingToken.IsCancellationRequested)
+                    {
                         LogSubscriptionEnded();
+                    }
                 }
                 catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
                 {

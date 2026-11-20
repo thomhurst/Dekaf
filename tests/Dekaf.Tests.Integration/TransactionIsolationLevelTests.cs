@@ -61,7 +61,10 @@ public sealed class TransactionIsolationLevelTests(KafkaTestContainer kafka) : T
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))
         {
             messages.Add(msg);
-            if (messages.Count >= 2) break;
+            if (messages.Count >= 2)
+            {
+                break;
+            }
         }
 
         // Assert - ReadUncommitted sees messages from open (uncommitted) transaction

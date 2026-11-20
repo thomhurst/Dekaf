@@ -30,10 +30,14 @@ internal sealed class LazyConsumeHeaders : IReadOnlyList<Header>
         int generation)
     {
         if (pooledHeaders is null || count == 0)
+        {
             return Array.Empty<Header>();
+        }
 
         if (owner is null)
+        {
             throw new ObjectDisposedException(nameof(Headers), StaleHeadersMessage);
+        }
 
         return new LazyConsumeHeaders(pooledHeaders, count, owner, generation);
     }
@@ -41,7 +45,9 @@ internal sealed class LazyConsumeHeaders : IReadOnlyList<Header>
     internal static IReadOnlyList<Header> CreateSnapshot(IReadOnlyList<Header> headers)
     {
         if (headers.Count == 0)
+        {
             return Array.Empty<Header>();
+        }
 
         var snapshot = new Header[headers.Count];
         for (var index = 0; index < snapshot.Length; index++)
@@ -62,7 +68,9 @@ internal sealed class LazyConsumeHeaders : IReadOnlyList<Header>
         get
         {
             if ((uint)index >= (uint)_count)
+            {
                 throw new ArgumentOutOfRangeException(nameof(index));
+            }
 
             return GetSnapshot()[index];
         }
@@ -76,7 +84,9 @@ internal sealed class LazyConsumeHeaders : IReadOnlyList<Header>
     {
         var snapshot = Volatile.Read(ref _snapshot);
         if (snapshot is not null)
+        {
             return snapshot;
+        }
 
         return MaterializeSnapshot();
     }
@@ -92,7 +102,9 @@ internal sealed class LazyConsumeHeaders : IReadOnlyList<Header>
         foreach (ref readonly var header in pooledHeaders)
         {
             if (!header.IsValueNull)
+            {
                 valueBytes += header.RawValue.Length;
+            }
         }
 
         var values = valueBytes == 0 ? Array.Empty<byte>() : GC.AllocateUninitializedArray<byte>(valueBytes);
@@ -119,6 +131,8 @@ internal sealed class LazyConsumeHeaders : IReadOnlyList<Header>
     internal static void ThrowIfStale(PendingFetchData owner, int generation)
     {
         if (!owner.IsHeaderGenerationActive(generation))
+        {
             throw new ObjectDisposedException(nameof(Headers), StaleHeadersMessage);
+        }
     }
 }

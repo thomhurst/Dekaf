@@ -62,7 +62,9 @@ public sealed class SchemaPreparationTests
             subjectNameStrategy: SubjectNameStrategy.RecordName);
 
         for (var index = 0; index < SubjectSchemaIdCache.MaxCachedEntries; index++)
+        {
             _ = await serializer.PrepareAsync($"topic-{index}", 42);
+        }
 
         var overflow = serializer.PrepareAsync("overflow-a", 42);
 
@@ -93,7 +95,9 @@ public sealed class SchemaPreparationTests
             subjectNameStrategy: SubjectNameStrategy.RecordName);
 
         for (var index = 0; index < SubjectSchemaIdCache.MaxCachedEntries; index++)
+        {
             _ = await serializer.PrepareAsync($"topic-{index}", 42);
+        }
 
         for (var index = 0; index < 6; index++)
         {
@@ -127,13 +131,19 @@ public sealed class SchemaPreparationTests
             subjectNameStrategy: SubjectNameStrategy.TopicName);
 
         for (var index = 0; index < SubjectSchemaIdCache.MaxCachedEntries; index++)
+        {
             _ = await serializer.PrepareAsync($"topic-{index}", 42);
+        }
 
         for (var index = 0; index < 4; index++)
+        {
             _ = await serializer.PrepareAsync($"overflow-{index}", 42);
+        }
 
         for (var index = 0; index < 30; index++)
+        {
             _ = await serializer.PrepareAsync("overflow-4", 42);
+        }
 
         await Assert.That(schemaFactoryCalls)
             .IsEqualTo(SubjectSchemaIdCache.MaxCachedEntries + 5);
@@ -160,10 +170,14 @@ public sealed class SchemaPreparationTests
             subjectNameStrategy: SubjectNameStrategy.TopicName);
 
         for (var index = 0; index < SubjectSchemaIdCache.MaxCachedEntries; index++)
+        {
             _ = await serializer.PrepareAsync($"topic-{index}", 42);
+        }
 
         for (var index = 0; index < 56; index++)
+        {
             _ = await serializer.PrepareAsync($"overflow-{index % 14}", 42);
+        }
 
         await Assert.That(schemaFactoryCalls)
             .IsEqualTo(SubjectSchemaIdCache.MaxCachedEntries + 14);
@@ -1166,6 +1180,9 @@ public sealed class SchemaPreparationTests
 
     private sealed class PreparationPayload
     {
-        public int Id { get; init; }
+        public int Id
+        {
+            get; init;
+        }
     }
 }

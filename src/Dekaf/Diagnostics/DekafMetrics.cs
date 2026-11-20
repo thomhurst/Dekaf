@@ -46,7 +46,9 @@ internal static class DekafMetrics
     internal static void RecordBatchDelivered(string topic, int recordCount, long encodedBytes)
     {
         if (!MessagesSent.Enabled && !BytesSent.Enabled)
+        {
             return;
+        }
 
         EmitBatchDelivered(topic, recordCount, encodedBytes);
     }
@@ -74,7 +76,9 @@ internal static class DekafMetrics
     internal static void RecordUnobservedProduceErrors(string topic, int errorCount)
     {
         if (errorCount <= 0 || !ProduceErrors.Enabled)
+        {
             return;
+        }
 
         EmitUnobservedProduceErrors(topic, errorCount);
     }
@@ -102,7 +106,9 @@ internal static class DekafMetrics
     internal static void RecordBatchSplit(string topic)
     {
         if (!BatchSplits.Enabled)
+        {
             return;
+        }
 
         EmitBatchSplit(topic);
     }

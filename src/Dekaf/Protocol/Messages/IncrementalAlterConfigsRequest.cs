@@ -13,12 +13,18 @@ public sealed class IncrementalAlterConfigsRequest : IKafkaRequest<IncrementalAl
     /// <summary>
     /// The incremental updates for each resource.
     /// </summary>
-    public required IReadOnlyList<IncrementalAlterConfigsResource> Resources { get; init; }
+    public required IReadOnlyList<IncrementalAlterConfigsResource> Resources
+    {
+        get; init;
+    }
 
     /// <summary>
     /// True if we should validate the request, but not change the configuration.
     /// </summary>
-    public bool ValidateOnly { get; init; }
+    public bool ValidateOnly
+    {
+        get; init;
+    }
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {
@@ -41,17 +47,26 @@ public sealed class IncrementalAlterConfigsResource
     /// <summary>
     /// The resource type (2=TOPIC, 4=BROKER, 8=BROKER_LOGGER).
     /// </summary>
-    public required sbyte ResourceType { get; init; }
+    public required sbyte ResourceType
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The resource name.
     /// </summary>
-    public required string ResourceName { get; init; }
+    public required string ResourceName
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The configurations to alter.
     /// </summary>
-    public required IReadOnlyList<IncrementalAlterableConfig> Configs { get; init; }
+    public required IReadOnlyList<IncrementalAlterableConfig> Configs
+    {
+        get; init;
+    }
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {
@@ -75,17 +90,26 @@ public sealed class IncrementalAlterableConfig
     /// <summary>
     /// The configuration key name.
     /// </summary>
-    public required string Name { get; init; }
+    public required string Name
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The type (Set, Delete, Append, Subtract) of operation.
     /// </summary>
-    public sbyte ConfigOperation { get; init; }
+    public sbyte ConfigOperation
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The value to set for the configuration key.
     /// </summary>
-    public string? Value { get; init; }
+    public string? Value
+    {
+        get; init;
+    }
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {

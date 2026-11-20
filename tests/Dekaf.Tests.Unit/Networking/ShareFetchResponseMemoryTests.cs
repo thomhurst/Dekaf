@@ -18,11 +18,14 @@ public sealed class ShareFetchResponseMemoryTests
         {
             ErrorCode = ErrorCode.UnknownServerError,
             ErrorMessage = "broker diagnostic",
-            Responses = [], NodeEndpoints = []
+            Responses = [],
+            NodeEndpoints = []
         };
         if (retained)
+        {
             response.PooledMemoryOwner = new PooledResponseBuffer(new byte[1], 1, false)
                 .TransferOwnership(reservation);
+        }
         await Assert.That(response.ErrorMessage).IsEqualTo("broker diagnostic");
         response.Dispose();
         response.Dispose();
@@ -50,16 +53,23 @@ public sealed class ShareFetchResponseMemoryTests
         await Assert.That(response.PooledMemoryOwner is not null).IsEqualTo(pooled || reserved);
         await Assert.That(response.Responses[0].Partitions[0].RecordBytes.ToArray()).IsEquivalentTo(new byte[] { 17, 23, 41, 59 });
         if (reservation is not null)
+        {
             await Assert.That(reservation.Disposals).IsEqualTo(0);
+        }
         response.Dispose();
         response.Dispose();
         if (reservation is not null)
+        {
             await Assert.That(reservation.Disposals).IsEqualTo(1);
+        }
     }
 
     private sealed class Reservation : IResponseMemoryReservation
     {
-        public int Disposals { get; private set; }
+        public int Disposals
+        {
+            get; private set;
+        }
         public void Dispose() => Disposals++;
     }
 
@@ -106,11 +116,15 @@ public sealed class ShareFetchResponseMemoryTests
             await Assert.That(response.PooledMemoryOwner).IsNull();
             await Assert.That(pool.RetainedNativeBufferCount).IsEqualTo(1);
             if (reservation is not null)
+            {
                 await Assert.That(reservation.Disposals).IsEqualTo(1);
+            }
             response.Dispose();
             await Assert.That(pool.RetainedNativeBufferCount).IsEqualTo(1);
             if (reservation is not null)
+            {
                 await Assert.That(reservation.Disposals).IsEqualTo(1);
+            }
         }
         finally
         {
@@ -138,7 +152,9 @@ public sealed class ShareFetchResponseMemoryTests
             }).ThrowsException();
             await Assert.That(pool.RetainedNativeBufferCount).IsEqualTo(1);
             if (reservation is not null)
+            {
                 await Assert.That(reservation.Disposals).IsEqualTo(1);
+            }
         }
         finally
         {

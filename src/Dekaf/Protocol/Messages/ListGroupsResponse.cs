@@ -14,17 +14,26 @@ public sealed class ListGroupsResponse : IKafkaResponse
     /// The duration in milliseconds for which the request was throttled due to quota violation
     /// (v1+, zero if not throttled).
     /// </summary>
-    public int ThrottleTimeMs { get; init; }
+    public int ThrottleTimeMs
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The error code, or 0 if there was no error.
     /// </summary>
-    public ErrorCode ErrorCode { get; init; }
+    public ErrorCode ErrorCode
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The groups on this broker.
     /// </summary>
-    public required IReadOnlyList<ListGroupsResponseGroup> Groups { get; init; }
+    public required IReadOnlyList<ListGroupsResponseGroup> Groups
+    {
+        get; init;
+    }
 
     public static IKafkaResponse Read(ref KafkaProtocolReader reader, short version)
     {
@@ -63,22 +72,34 @@ public sealed class ListGroupsResponseGroup
     /// <summary>
     /// The group ID.
     /// </summary>
-    public required string GroupId { get; init; }
+    public required string GroupId
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The group protocol type.
     /// </summary>
-    public string? ProtocolType { get; init; }
+    public string? ProtocolType
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The group state (v4+).
     /// </summary>
-    public string? GroupState { get; init; }
+    public string? GroupState
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The group type (v5+).
     /// </summary>
-    public string? GroupType { get; init; }
+    public string? GroupType
+    {
+        get; init;
+    }
 
     public static ListGroupsResponseGroup Read(ref KafkaProtocolReader reader, short version)
     {

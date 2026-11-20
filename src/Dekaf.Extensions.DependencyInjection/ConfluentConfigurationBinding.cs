@@ -111,20 +111,30 @@ internal static class ConfluentConfigurationBinding
         ValidateProducerProperties(configuration);
 
         if (TryGetEnum(configuration, "Acks", out Acks acks))
+        {
             builder.WithAcks(acks);
+        }
         if (TryGetWholeMilliseconds(configuration, "LingerMs", out var linger))
+        {
             builder.WithLinger(linger);
+        }
         if (TryGet(configuration, "BatchSize", out int batchSize))
+        {
             builder.WithBatchSize(batchSize);
+        }
         if (TryGet(configuration, "QueueBufferingMaxKbytes", out int bufferMemoryKbytes))
         {
             ArgumentOutOfRangeException.ThrowIfNegative(bufferMemoryKbytes);
             builder.WithBufferMemory(checked((ulong)bufferMemoryKbytes * 1024));
         }
         if (TryGet(configuration, "MaxInFlight", out int maxInFlight))
+        {
             builder.WithMaxInFlightRequestsPerConnection(maxInFlight);
+        }
         if (TryGet(configuration, "MessageSendMaxRetries", out int retries))
+        {
             builder.WithRetries(retries);
+        }
         if (TryGet(configuration, "MessageTimeoutMs", out int deliveryTimeoutMs))
         {
             if (deliveryTimeoutMs == 0)
@@ -137,22 +147,34 @@ internal static class ConfluentConfigurationBinding
             builder.WithDeliveryTimeout(TimeSpan.FromMilliseconds(deliveryTimeoutMs));
         }
         if (TryGet(configuration, "RequestTimeoutMs", out int requestTimeoutMs))
+        {
             builder.WithRequestTimeout(TimeSpan.FromMilliseconds(requestTimeoutMs));
+        }
         if (TryGet(configuration, "MessageMaxBytes", out int maxRequestSize))
+        {
             builder.WithMaxRequestSize(maxRequestSize);
+        }
         var hasTransactionalId = TryGet(configuration, "TransactionalId", out string transactionalId);
         builder.WithIdempotence(
             TryGet(configuration, "EnableIdempotence", out bool enableIdempotence)
                 ? enableIdempotence
                 : hasTransactionalId);
         if (hasTransactionalId)
+        {
             builder.WithTransactionalId(transactionalId);
+        }
         if (TryGet(configuration, "TransactionTimeoutMs", out int transactionTimeoutMs))
+        {
             builder.WithTransactionTimeout(TimeSpan.FromMilliseconds(transactionTimeoutMs));
+        }
         if (TryGetEnum(configuration, "CompressionType", out ConfluentCompressionType compressionType))
+        {
             builder.UseCompression(MapCompressionType(compressionType));
+        }
         if (TryGet(configuration, "CompressionLevel", out int compressionLevel) && compressionLevel != -1)
+        {
             builder.WithCompressionLevel(compressionLevel);
+        }
         // Confluent defaults to consistent_random; Dekaf's default (Murmur2) would route keys elsewhere.
         builder.WithPartitioner(
             TryGetEnum(configuration, "Partitioner", out ConfluentPartitioner partitioner)
@@ -171,9 +193,13 @@ internal static class ConfluentConfigurationBinding
         ValidateConsumerProperties(configuration);
 
         if (TryGet(configuration, "GroupId", out string groupId))
+        {
             builder.WithGroupId(groupId);
+        }
         if (TryGet(configuration, "GroupInstanceId", out string groupInstanceId))
+        {
             builder.WithGroupInstanceId(groupInstanceId);
+        }
 
         ApplyGroupProtocol(configuration, builder);
 
@@ -183,36 +209,58 @@ internal static class ConfluentConfigurationBinding
         {
             ArgumentOutOfRangeException.ThrowIfNegative(autoCommitIntervalMs);
             if (autoCommitIntervalMs == 0)
+            {
                 autoCommitEnabled = false;
+            }
             else
+            {
                 builder.WithAutoCommitInterval(TimeSpan.FromMilliseconds(autoCommitIntervalMs));
+            }
         }
 
         builder.WithOffsetCommitMode(autoCommitEnabled ? OffsetCommitMode.Auto : OffsetCommitMode.Manual);
         // librdkafka stores offsets when records are delivered, unlike Dekaf's safer default.
         builder.WithOffsetStoreTiming(OffsetStoreTiming.OnDelivery);
         if (TryGet(configuration, "EnableAutoOffsetStore", out bool enableAutoOffsetStore))
+        {
             builder.WithAutoOffsetStore(enableAutoOffsetStore);
+        }
         if (TryGetEnum(configuration, "AutoOffsetReset", out ConfluentAutoOffsetReset autoOffsetReset))
+        {
             builder.WithAutoOffsetReset(MapAutoOffsetReset(autoOffsetReset));
+        }
         if (TryGet(configuration, "FetchMinBytes", out int fetchMinBytes))
+        {
             builder.WithFetchMinBytes(fetchMinBytes);
+        }
         if (TryGet(configuration, "FetchMaxBytes", out int fetchMaxBytes))
+        {
             builder.WithFetchMaxBytes(fetchMaxBytes);
+        }
         if (TryGet(configuration, "MaxPartitionFetchBytes", out int maxPartitionFetchBytes))
+        {
             builder.WithMaxPartitionFetchBytes(maxPartitionFetchBytes);
+        }
         builder.WithFetchMaxWait(TimeSpan.FromMilliseconds(
             TryGet(configuration, "FetchWaitMaxMs", out int fetchWaitMaxMs)
                 ? fetchWaitMaxMs
                 : ConfluentFetchWaitMaxMsDefault));
         if (TryGet(configuration, "MaxPollIntervalMs", out int maxPollIntervalMs))
+        {
             builder.WithMaxPollInterval(TimeSpan.FromMilliseconds(maxPollIntervalMs));
+        }
         if (TryGet(configuration, "QueuedMinMessages", out int queuedMinMessages))
+        {
             builder.WithQueuedMinMessages(queuedMinMessages);
+        }
         if (TryGet(configuration, "QueuedMaxMessagesKbytes", out int queuedMaxMessagesKbytes))
+        {
             builder.WithQueuedMaxMessagesKbytes(queuedMaxMessagesKbytes);
+        }
         if (TryGet(configuration, "EnablePartitionEof", out bool enablePartitionEof))
+        {
             builder.WithPartitionEof(enablePartitionEof);
+        }
         builder.WithCheckCrcs(TryGet(configuration, "CheckCrcs", out bool checkCrcs) && checkCrcs);
         builder.WithIsolationLevel(
             TryGetEnum(configuration, "IsolationLevel", out IsolationLevel isolationLevel)
@@ -231,13 +279,21 @@ internal static class ConfluentConfigurationBinding
         where TBuilder : struct, IConfluentClientBuilder
     {
         if (TryGet(configuration, "BootstrapServers", out string bootstrapServers))
+        {
             builder.WithBootstrapServers(bootstrapServers);
+        }
         if (TryGet(configuration, "ClientId", out string clientId))
+        {
             builder.WithClientId(clientId);
+        }
         if (TryGet(configuration, "ClientRack", out string clientRack))
+        {
             builder.WithClientRack(clientRack);
+        }
         if (TryGetEnum(configuration, "ClientDnsLookup", out ClientDnsLookup clientDnsLookup))
+        {
             builder.WithClientDnsLookup(clientDnsLookup);
+        }
         if (TryGet(configuration, "ConnectionsMaxIdleMs", out int connectionsMaxIdleMs))
         {
             builder.WithConnectionsMaxIdle(connectionsMaxIdleMs == 0
@@ -245,7 +301,9 @@ internal static class ConfluentConfigurationBinding
                 : TimeSpan.FromMilliseconds(connectionsMaxIdleMs));
         }
         if (TryGet(configuration, "MetadataMaxAgeMs", out int metadataMaxAgeMs))
+        {
             builder.WithMetadataMaxAge(TimeSpan.FromMilliseconds(metadataMaxAgeMs));
+        }
         if (TryGetEnum(
                 configuration,
                 "MetadataRecoveryStrategy",
@@ -262,17 +320,29 @@ internal static class ConfluentConfigurationBinding
                 TimeSpan.FromMilliseconds(metadataRecoveryRebootstrapTriggerMs));
         }
         if (TryGet(configuration, "RetryBackoffMs", out int retryBackoffMs))
+        {
             builder.WithRetryBackoff(TimeSpan.FromMilliseconds(retryBackoffMs));
+        }
         if (TryGet(configuration, "RetryBackoffMaxMs", out int retryBackoffMaxMs))
+        {
             builder.WithRetryBackoffMax(TimeSpan.FromMilliseconds(retryBackoffMaxMs));
+        }
         if (TryGet(configuration, "ReconnectBackoffMs", out int reconnectBackoffMs))
+        {
             builder.WithReconnectBackoff(TimeSpan.FromMilliseconds(reconnectBackoffMs));
+        }
         if (TryGet(configuration, "ReconnectBackoffMaxMs", out int reconnectBackoffMaxMs))
+        {
             builder.WithReconnectBackoffMax(TimeSpan.FromMilliseconds(reconnectBackoffMaxMs));
+        }
         if (TryGet(configuration, "SocketConnectionSetupTimeoutMs", out int connectionTimeoutMs))
+        {
             builder.WithConnectionTimeout(TimeSpan.FromMilliseconds(connectionTimeoutMs));
+        }
         if (TryGet(configuration, "SocketKeepaliveEnable", out bool enableTcpKeepAlive))
+        {
             builder.WithTcpKeepAlive(enableTcpKeepAlive);
+        }
         if (TryGet(configuration, "SocketNagleDisable", out bool disableNagle) && !disableNagle)
         {
             throw new NotSupportedException(
@@ -280,9 +350,13 @@ internal static class ConfluentConfigurationBinding
                 "Dekaf always disables Nagle's algorithm.");
         }
         if (TryGet(configuration, "SocketSendBufferBytes", out int socketSendBufferBytes))
+        {
             builder.WithSocketSendBufferBytes(socketSendBufferBytes);
+        }
         if (TryGet(configuration, "SocketReceiveBufferBytes", out int socketReceiveBufferBytes))
+        {
             builder.WithSocketReceiveBufferBytes(socketReceiveBufferBytes);
+        }
     }
 
     private static void ApplySecurity<TBuilder>(
@@ -311,7 +385,9 @@ internal static class ConfluentConfigurationBinding
         }
 
         if (tlsEnabled)
+        {
             builder.UseTls(CreateTlsConfig(configuration));
+        }
 
         var hasSaslSettings = HasAny(
             configuration,
@@ -334,7 +410,9 @@ internal static class ConfluentConfigurationBinding
         }
 
         if (!saslEnabled)
+        {
             return;
+        }
 
         var mechanism = TryGetEnum(configuration, "SaslMechanism", out ConfluentSaslMechanism configuredMechanism)
             ? MapSaslMechanism(configuredMechanism)
@@ -401,7 +479,9 @@ internal static class ConfluentConfigurationBinding
     {
         var method = Get(configuration, "SaslOauthbearerMethod") ?? "Default";
         if (!method.Equals("Oidc", StringComparison.OrdinalIgnoreCase))
+        {
             throw UnsupportedValue("SaslOauthbearerMethod", method);
+        }
 
         var grantType = Get(configuration, "SaslOauthbearerGrantType");
         if (grantType is not null &&
@@ -424,7 +504,9 @@ internal static class ConfluentConfigurationBinding
     {
         var raw = Get(configuration, "SecurityProtocol");
         if (raw is null)
+        {
             return ConfluentSecurityProtocol.Plaintext;
+        }
         return Enum.TryParse<ConfluentSecurityProtocol>(NormalizeEnumValue(raw), ignoreCase: true, out var protocol) &&
                Enum.IsDefined(protocol)
             ? protocol
@@ -511,7 +593,9 @@ internal static class ConfluentConfigurationBinding
         foreach (var child in configuration.GetChildren())
         {
             if (s_clientProperties.Contains(child.Key) || roleProperties.Contains(child.Key))
+            {
                 continue;
+            }
 
             throw new NotSupportedException(
                 $"Confluent {configType} property '{child.Key}' has no exact Dekaf equivalent. " +
@@ -543,7 +627,9 @@ internal static class ConfluentConfigurationBinding
                 out ConfluentPartitionAssignmentStrategy assignmentStrategy))
         {
             if (assignmentStrategy != ConfluentPartitionAssignmentStrategy.Range)
+            {
                 throw UnsupportedValue("PartitionAssignmentStrategy", assignmentStrategy.ToString());
+            }
             assignor = "range";
         }
 
@@ -568,14 +654,18 @@ internal static class ConfluentConfigurationBinding
         }
 
         if (assignor is not null)
+        {
             builder.WithGroupRemoteAssignor(assignor);
+        }
     }
 
     private static void ValidateConsumeResultFields(IConfiguration configuration)
     {
         var fields = Get(configuration, "ConsumeResultFields");
         if (fields is not null && !fields.Equals("all", StringComparison.OrdinalIgnoreCase))
+        {
             throw UnsupportedValue("ConsumeResultFields", fields);
+        }
     }
 
     private static bool HasAny(IConfiguration configuration, params string[] keys)
@@ -583,7 +673,9 @@ internal static class ConfluentConfigurationBinding
         foreach (var key in keys)
         {
             if (configuration.GetSection(key).Exists())
+            {
                 return true;
+            }
         }
 
         return false;
@@ -613,7 +705,9 @@ internal static class ConfluentConfigurationBinding
     {
         var section = configuration.GetSection(key);
         if (!section.Exists())
+        {
             return null;
+        }
 
         return section.Value ?? throw new InvalidOperationException(
             $"Confluent property '{key}' must be a scalar value.");

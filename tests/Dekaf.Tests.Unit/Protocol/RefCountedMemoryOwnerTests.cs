@@ -9,8 +9,14 @@ public class RefCountedMemoryOwnerTests
     /// </summary>
     private sealed class TrackingPooledMemory : IPooledMemory
     {
-        public int DisposeCount { get; private set; }
-        public ReadOnlyMemory<byte> Memory { get; } = new byte[] { 1, 2, 3 };
+        public int DisposeCount
+        {
+            get; private set;
+        }
+        public ReadOnlyMemory<byte> Memory
+        {
+            get;
+        } = new byte[] { 1, 2, 3 };
 
         public void Dispose() => DisposeCount++;
     }

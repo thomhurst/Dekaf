@@ -203,7 +203,9 @@ public sealed partial class PartitionedConsumerRuntimeTests
             // Let the clock move past the first arrival so the two batches have distinct times.
             var spinner = new SpinWait();
             while (DateTimeOffset.UtcNow <= firstArrival!.Value)
+            {
                 spinner.SpinOnce();
+            }
 
             // Offsets 1-9 are never delivered, so the commit offset 1 is not a record offset.
             consumer.Enqueue(CreateResult(partition, 10));
@@ -258,15 +260,21 @@ public sealed partial class PartitionedConsumerRuntimeTests
     {
         var timeline = new OutstandingRecordTimeline();
         for (var i = 0; i < 6; i++)
+        {
             timeline.Append(i * 10 - 1, i);
+        }
         // Advance the head so later appends wrap around the ring before it grows.
         timeline.Prune(nextUnprocessedOffset: 40, lastEnqueuedOffset: 1_000);
         for (var i = 6; i < 30; i++)
+        {
             timeline.Append(i * 10 - 1, i);
+        }
 
         await Assert.That(Arrival(timeline, 0)).IsEqualTo(4L);
         for (var i = 4; i < 30; i++)
+        {
             await Assert.That(Arrival(timeline, i * 10 + 5)).IsEqualTo((long)i);
+        }
     }
 
     [Test]
@@ -279,7 +287,9 @@ public sealed partial class PartitionedConsumerRuntimeTests
         for (var i = 0; i < batches; i++)
         {
             if (timeline.IsFull)
+            {
                 timeline.Prune(nextUnprocessedOffset: 0, lastEnqueuedOffset: i - 1);
+            }
             timeline.Append(lastEnqueuedOffset: i - 1, utcTicks: i);
         }
 
@@ -308,14 +318,18 @@ public sealed partial class PartitionedConsumerRuntimeTests
                 // Every record arrives at a tick equal to its offset, so a consistent snapshot
                 // never reports a negative or future tick while the ring grows, wraps and merges.
                 if (timeline.TryGetArrivalUtcTicks(0, out var ticks) && (ticks < 0 || ticks >= batches))
+                {
                     Interlocked.Increment(ref failures);
+                }
             }
         });
 
         for (var i = 0; i < batches; i++)
         {
             if (timeline.IsFull)
+            {
                 timeline.Prune(nextUnprocessedOffset: i / 2, lastEnqueuedOffset: i - 1);
+            }
             timeline.Append(lastEnqueuedOffset: i - 1, utcTicks: i);
         }
 

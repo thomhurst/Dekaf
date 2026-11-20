@@ -15,7 +15,10 @@ public readonly struct ShareBatchHeaders
 {
     private readonly ReadOnlyMemory<byte> _bytes;
     /// <summary>Gets the number of headers, including duplicate keys.</summary>
-    public int Count { get; }
+    public int Count
+    {
+        get;
+    }
 
     internal ShareBatchHeaders(ReadOnlyMemory<byte> bytes, int count)
     {
@@ -38,13 +41,18 @@ public readonly struct ShareBatchHeaders
             _remaining = count;
         }
         /// <summary>Gets the current borrowed header.</summary>
-        public ShareBatchHeader Current { get; private set; }
+        public ShareBatchHeader Current
+        {
+            get; private set;
+        }
 
         /// <summary>Advances to the next header.</summary>
         public bool MoveNext()
         {
             if (_remaining == 0)
+            {
                 return false;
+            }
             var reader = new KafkaProtocolReader(_bytes[_position..]);
             var key = reader.ReadContiguousMemorySlice(reader.ReadVarInt());
             var valueLength = reader.ReadVarInt();
@@ -170,7 +178,9 @@ public sealed class ShareConsumeBatch<TKey, TValue> : IDisposable
     {
         ObjectDisposedException.ThrowIf(IsDisposed, this);
         if (!ReferenceEquals(record.Batch, this))
+        {
             throw new ArgumentException("The record does not belong to this batch.", nameof(record));
+        }
         _storage.Acknowledge(record.Index, type);
     }
 
@@ -178,10 +188,14 @@ public sealed class ShareConsumeBatch<TKey, TValue> : IDisposable
     public void Dispose()
     {
         if (IsDisposed)
+        {
             return;
+        }
         _nextIndex |= int.MinValue;
         if (_replayIndices is not null)
+        {
             ArrayPool<int>.Shared.Return(_replayIndices);
+        }
         _storage.CloseLease(isReplay: _replayIndices is not null);
     }
 
@@ -191,19 +205,26 @@ public sealed class ShareConsumeBatch<TKey, TValue> : IDisposable
         private readonly ShareConsumeBatch<TKey, TValue> batch;
         internal Enumerator(ShareConsumeBatch<TKey, TValue> batch) => this.batch = batch;
         /// <summary>Gets the current borrowed record view.</summary>
-        public ShareBatchRecord<TKey, TValue> Current { get; private set; }
+        public ShareBatchRecord<TKey, TValue> Current
+        {
+            get; private set;
+        }
 
         /// <summary>Advances to the next record and marks it delivered.</summary>
         public bool MoveNext()
         {
             ObjectDisposedException.ThrowIf(batch.IsDisposed, batch);
             if (batch._nextIndex == batch.Count)
+            {
                 return false;
+            }
             var position = batch._nextIndex++;
             var index = batch._replayIndices is null ? position : batch._replayIndices[position];
             batch._storage.Deliver(index);
             if (batch._replayIndices is not null)
+            {
                 batch._storage.Tracker?.RecordReplay();
+            }
             Current = new ShareBatchRecord<TKey, TValue>(batch, index);
             return true;
         }
@@ -245,22 +266,46 @@ internal sealed class ShareBatchStorage<TKey, TValue>
         Entries = ArrayPool<ShareBatchEntry<TKey, TValue>>.Shared.Rent(Math.Max(1, capacity));
     }
 
-    internal TopicPartition TopicPartition { get; }
+    internal TopicPartition TopicPartition
+    {
+        get;
+    }
     internal long BaseOffset => _source.BaseOffset;
     internal long BaseTimestamp => _source.BaseTimestamp;
-    internal int Count { get; set; }
+    internal int Count
+    {
+        get; set;
+    }
     // The source batch declared more records than its bytes held.
-    internal bool TruncatedRecords { get; set; }
-    internal int PendingCount { get; private set; }
-    internal int OpenLeases { get; private set; } = 1;
-    internal int TrackedCount { get; set; }
+    internal bool TruncatedRecords
+    {
+        get; set;
+    }
+    internal int PendingCount
+    {
+        get; private set;
+    }
+    internal int OpenLeases
+    {
+        get; private set;
+    } = 1;
+    internal int TrackedCount
+    {
+        get; set;
+    }
     internal int ReplayStart
     {
         get => _modeAndReplayStart & int.MaxValue;
         set => _modeAndReplayStart = (_modeAndReplayStart & int.MinValue) | value;
     }
-    internal int TrackerIndex { get; set; }
-    internal ShareBatchAcknowledgements<TKey, TValue>.PartitionIndex? PartitionIndex { get; set; }
+    internal int TrackerIndex
+    {
+        get; set;
+    }
+    internal ShareBatchAcknowledgements<TKey, TValue>.PartitionIndex? PartitionIndex
+    {
+        get; set;
+    }
     internal ShareBatchAcknowledgements<TKey, TValue>? Tracker => PartitionIndex?.Owner;
 
     internal void CloseLease(bool isReplay)
@@ -270,7 +315,9 @@ internal sealed class ShareBatchStorage<TKey, TValue>
         // completion removes them. Only the original lease can leave unread or
         // unacknowledged entries.
         if (!isReplay && TrackedCount != 0 && PendingCount != TrackedCount)
+        {
             PartitionIndex?.PruneClosedLease(this);
+        }
         Release();
     }
 
@@ -285,7 +332,9 @@ internal sealed class ShareBatchStorage<TKey, TValue>
     internal void Release()
     {
         if (Interlocked.Decrement(ref _references) != 0)
+        {
             return;
+        }
         ArrayPool<ShareBatchEntry<TKey, TValue>>.Shared.Return(Entries, clearArray: true);
         _source.DisposeAndReturnUnownedConsumerBatch();
     }
@@ -296,21 +345,27 @@ internal sealed class ShareBatchStorage<TKey, TValue>
     {
         PartitionIndex?.AddPending(BaseOffset + Entries[index].Raw.OffsetDelta);
         if (PendingCount++ == 0)
+        {
             Tracker?.AddPendingStorage();
+        }
     }
 
     private void RemovePending()
     {
         PartitionIndex?.RemovePending();
         if (--PendingCount == 0)
+        {
             Tracker?.RemovePendingStorage();
+        }
     }
 
     internal void Deliver(int index)
     {
         ref var entry = ref Entries[index];
         if (entry.Delivered)
+        {
             return;
+        }
         entry.Delivered = true;
         if (_modeAndReplayStart >= 0 && entry.PendingAcknowledgement == 0)
         {
@@ -322,21 +377,33 @@ internal sealed class ShareBatchStorage<TKey, TValue>
     internal void Acknowledge(int index, AcknowledgeType type)
     {
         if (type is < AcknowledgeType.Accept or > AcknowledgeType.Renew)
+        {
             throw new ArgumentOutOfRangeException(nameof(type));
+        }
         if (type == AcknowledgeType.Renew && _modeAndReplayStart >= 0)
+        {
             throw new InvalidOperationException("Renew acknowledgements require explicit acknowledgement mode.");
+        }
         ref var entry = ref Entries[index];
         Tracker?.ThrowIfDisposed();
         if (entry.Settled || entry.Superseded)
+        {
             throw new InvalidOperationException("The record acquisition is no longer active.");
+        }
         if (!entry.Delivered)
+        {
             throw new InvalidOperationException("The record has not been delivered.");
+        }
         if (entry.PendingAcknowledgement == 0)
+        {
             AddPending(index);
+        }
         entry.PendingAcknowledgement = (byte)type;
         entry.Renewed = false;
         if (type == AcknowledgeType.Renew)
+        {
             Tracker?.RecordRenewal(TopicPartition, BaseOffset + entry.Raw.OffsetDelta);
+        }
     }
 
     internal void Submit(int index, byte type, byte[] acknowledgements)
@@ -359,7 +426,9 @@ internal sealed class ShareBatchStorage<TKey, TValue>
             ref var entry = ref Entries[index];
             if (entry.Settled || entry.Superseded
                 || entry.PendingAcknowledgement != 0 || entry.SubmittedAcknowledgement != 0)
+            {
                 continue;
+            }
             AddPending(index);
             entry.PendingAcknowledgement = (byte)AcknowledgeType.Release;
             entry.Renewed = false;
@@ -371,11 +440,15 @@ internal sealed class ShareBatchStorage<TKey, TValue>
         ref var entry = ref Entries[index];
         if (!ReferenceEquals(entry.SubmittedAcknowledgements, acknowledgements)
             || entry.SubmittedAcknowledgement != type || entry.Superseded)
+        {
             return;
+        }
         entry.SubmittedAcknowledgement = 0;
         entry.SubmittedAcknowledgements = null;
         if (entry.PendingAcknowledgement != 0)
+        {
             return;
+        }
         if (!successful)
         {
             // The record keeps its acquisition until the lock expires; the caller can still
@@ -392,7 +465,9 @@ internal sealed class ShareBatchStorage<TKey, TValue>
         entry.Renewed = type == (byte)AcknowledgeType.Renew;
         entry.Settled = !entry.Renewed;
         if (entry.Renewed && index < ReplayStart)
+        {
             ReplayStart = index;
+        }
     }
 
     internal void Supersede(int index)

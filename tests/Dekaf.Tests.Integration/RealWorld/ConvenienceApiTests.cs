@@ -315,7 +315,10 @@ public sealed class ConvenienceApiTests(KafkaTestContainer kafka) : KafkaIntegra
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))
         {
             messages.Add(msg);
-            if (messages.Count >= 50) break;
+            if (messages.Count >= 50)
+            {
+                break;
+            }
         }
 
         await Assert.That(messages).Count().IsEqualTo(50);

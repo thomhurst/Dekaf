@@ -44,7 +44,10 @@ public class PartitionerBenchmarks
     }
 
     [Params(1, 12)]
-    public int PartitionCount { get; set; }
+    public int PartitionCount
+    {
+        get; set;
+    }
 
     [Benchmark(Baseline = true, OperationsPerInvoke = 1_000)]
     public int HashThenPartitionKeyedRecords()
@@ -125,7 +128,9 @@ public class PartitionerBenchmarks
     {
         var result = 0;
         for (var i = 0; i < 1_000; i++)
+        {
             result ^= partitioner.Partition(Topic, _key, keyIsNull: false, PartitionCount);
+        }
 
         return result;
     }

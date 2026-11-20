@@ -139,7 +139,10 @@ public class CompressionCodecRegistryTests
 
     private sealed class ConfigurableCodec(int level) : ICompressionCodecWithLevel
     {
-        public int Level { get; } = level;
+        public int Level
+        {
+            get;
+        } = level;
         public CompressionType Type => CompressionType.Lz4;
         public ICompressionCodec WithCompressionLevel(int compressionLevel) => new ConfigurableCodec(compressionLevel);
         public void Compress(ReadOnlySequence<byte> source, IBufferWriter<byte> destination) => throw new NotSupportedException();

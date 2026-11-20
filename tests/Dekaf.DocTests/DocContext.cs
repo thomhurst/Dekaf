@@ -11,9 +11,9 @@ using Dekaf.Outbox;
 using Dekaf.Producer;
 using Dekaf.SchemaRegistry;
 using Dekaf.SchemaRegistry.Avro.Poco;
-using Dekaf.Serialization;
 using Dekaf.Security;
 using Dekaf.Security.Sasl;
+using Dekaf.Serialization;
 using Dekaf.ShareConsumer;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.EntityFrameworkCore;
@@ -144,9 +144,13 @@ public static class DocContext
     public static ValueTask HandleMessageAsync<T>(T value, CancellationToken cancellationToken) => ValueTask.CompletedTask;
     public static ValueTask HandleOrderAsync<T>(T value) => ValueTask.CompletedTask;
     public static ValueTask HandleOrderAsync<T>(T value, CancellationToken cancellationToken) => ValueTask.CompletedTask;
-    public static void ProcessMessage<T>(T value) { }
+    public static void ProcessMessage<T>(T value)
+    {
+    }
     public static ValueTask ProcessMessageAsync<T>(T value) => ValueTask.CompletedTask;
-    public static void ProcessOrder<T>(T value) { }
+    public static void ProcessOrder<T>(T value)
+    {
+    }
     public static ValueTask BulkInsertAsync<T>(IEnumerable<T> values) => ValueTask.CompletedTask;
     public static ValueTask ProcessOrderAsync<T>(T value) => ValueTask.CompletedTask;
     public static ValueTask ProcessOrderAsync<T>(T value, CancellationToken cancellationToken) => ValueTask.CompletedTask;
@@ -168,7 +172,9 @@ public static class DocContext
     public static bool ShouldFlushOffset<T>(T value) => true;
     public static ValueTask<bool> IsAlreadyProcessedAsync<T>(T value) => new(false);
     public static DeserializedPayload ExpensiveDeserialization<T>(T value) => new();
-    public static void Process<T>(T value) { }
+    public static void Process<T>(T value)
+    {
+    }
     public static IReadOnlyList<TopicPartitionOffset> GetCompletedOffsets() => [];
     public static IReadOnlyList<TopicPartitionOffset> GetCompletedOffsets<T>(T value) => [];
     public static ValueTask<IReadOnlyList<TopicPartitionOffset>> LoadOffsetsFromDatabaseAsync() => new([]);
@@ -195,67 +201,132 @@ public static class DocContext
 [AvroRecord(Name = "Order", Namespace = "example.orders")]
 public partial record Order
 {
-    public string Id { get; init; } = "order-id";
-    public string CustomerId { get; init; } = "customer-id";
+    public string Id
+    {
+        get; init;
+    } = "order-id";
+    public string CustomerId
+    {
+        get; init;
+    } = "customer-id";
     [AvroField(Precision = 12, Scale = 2)]
-    public decimal Total { get; init; }
-    public List<string> Items { get; init; } = [];
+    public decimal Total
+    {
+        get; init;
+    }
+    public List<string> Items
+    {
+        get; init;
+    } = [];
 }
 
 public readonly record struct OrderKey(string Value)
 {
-    public string TenantId { get; init; } = "tenant-id";
-    public string OrderId { get; init; } = "order-id";
+    public string TenantId
+    {
+        get; init;
+    } = "tenant-id";
+    public string OrderId
+    {
+        get; init;
+    } = "order-id";
 }
 
 public record OrderEvent
 {
-    public string OrderId { get; init; } = "order-id";
-    public string Status { get; init; } = "created";
+    public string OrderId
+    {
+        get; init;
+    } = "order-id";
+    public string Status
+    {
+        get; init;
+    } = "created";
 }
 
 public record OrderCreated : OrderEvent
 {
-    public decimal Amount { get; init; }
+    public decimal Amount
+    {
+        get; init;
+    }
 }
 
 public record OrderCreatedEvent : OrderEvent;
+
 public record MyCustomType;
+
 public record MyType;
+
 public record User;
+
 public sealed record ProcessedMessage(string Key, string Value, DateTimeOffset Timestamp);
+
 public record LogEntry;
+
 public sealed record DeserializedPayload
 {
-    public string Type { get; init; } = "Order";
+    public string Type
+    {
+        get; init;
+    } = "Order";
 }
 
 public sealed record IdentityToken
 {
-    public string AccessToken { get; init; } = "token";
-    public DateTimeOffset ExpiresAt { get; init; } = DateTimeOffset.UtcNow.AddMinutes(5);
-    public string Subject { get; init; } = "subject";
+    public string AccessToken
+    {
+        get; init;
+    } = "token";
+    public DateTimeOffset ExpiresAt
+    {
+        get; init;
+    } = DateTimeOffset.UtcNow.AddMinutes(5);
+    public string Subject
+    {
+        get; init;
+    } = "subject";
 }
 
 public sealed record AwsCredentialSet
 {
-    public string AccessKeyId { get; init; } = "access-key";
-    public string SecretAccessKey { get; init; } = "secret-key";
-    public string? SessionToken { get; init; }
-    public DateTimeOffset? ExpiresAt { get; init; }
+    public string AccessKeyId
+    {
+        get; init;
+    } = "access-key";
+    public string SecretAccessKey
+    {
+        get; init;
+    } = "secret-key";
+    public string? SessionToken
+    {
+        get; init;
+    }
+    public DateTimeOffset? ExpiresAt
+    {
+        get; init;
+    }
 }
 
 public sealed record EventData
 {
-    public string Type { get; init; } = "event";
+    public string Type
+    {
+        get; init;
+    } = "event";
     public byte[] Serialize() => System.Text.Encoding.UTF8.GetBytes(Type);
 }
 
 public sealed record DownstreamHealth
 {
-    public bool IsHealthy { get; init; } = true;
+    public bool IsHealthy
+    {
+        get; init;
+    } = true;
 }
+
 public interface IEvent;
+
 public interface IOrderRepository
 {
     ValueTask SaveAsync(Order order, CancellationToken cancellationToken = default);
@@ -268,12 +339,18 @@ public interface ITokenService
 
 public interface IKafkaSettings
 {
-    string BootstrapServers { get; }
+    string BootstrapServers
+    {
+        get;
+    }
 }
 
 public sealed class KafkaSettings : IKafkaSettings
 {
-    public string BootstrapServers { get; init; } = "localhost:9092";
+    public string BootstrapServers
+    {
+        get; init;
+    } = "localhost:9092";
 }
 
 public sealed class OrderSerializer : ISerde<Order>
@@ -289,31 +366,41 @@ public sealed class OrderSerializer : ISerde<Order>
 public class TracingInterceptor<TKey, TValue> : IProducerInterceptor<TKey, TValue>
 {
     public ProducerMessage<TKey, TValue> OnSend(ProducerMessage<TKey, TValue> message) => message;
-    public void OnAcknowledgement(RecordMetadata metadata, Exception? exception) { }
+    public void OnAcknowledgement(RecordMetadata metadata, Exception? exception)
+    {
+    }
 }
 
 public class MetricsInterceptor<TKey, TValue> : IConsumerInterceptor<TKey, TValue>
 {
     public ConsumeResult<TKey, TValue> OnConsume(ConsumeResult<TKey, TValue> result) => result;
-    public void OnCommit(IReadOnlyList<TopicPartitionOffset> offsets) { }
+    public void OnCommit(IReadOnlyList<TopicPartitionOffset> offsets)
+    {
+    }
 }
 
 public sealed class AuditInterceptor : IProducerInterceptor<string, string>
 {
     public ProducerMessage<string, string> OnSend(ProducerMessage<string, string> message) => message;
-    public void OnAcknowledgement(RecordMetadata metadata, Exception? exception) { }
+    public void OnAcknowledgement(RecordMetadata metadata, Exception? exception)
+    {
+    }
 }
 
 public sealed class OrderProducerInterceptor : IProducerInterceptor<string, Order>
 {
     public ProducerMessage<string, Order> OnSend(ProducerMessage<string, Order> message) => message;
-    public void OnAcknowledgement(RecordMetadata metadata, Exception? exception) { }
+    public void OnAcknowledgement(RecordMetadata metadata, Exception? exception)
+    {
+    }
 }
 
 public sealed class OrderConsumerInterceptor : IConsumerInterceptor<string, Order>
 {
     public ConsumeResult<string, Order> OnConsume(ConsumeResult<string, Order> result) => result;
-    public void OnCommit(IReadOnlyList<TopicPartitionOffset> offsets) { }
+    public void OnCommit(IReadOnlyList<TopicPartitionOffset> offsets)
+    {
+    }
 }
 
 public class OrderConsumerService : KafkaConsumerService<string, string>
@@ -354,18 +441,25 @@ public sealed class PaymentService : KafkaConsumerService<string, string>
     protected override IEnumerable<string> Topics => ["payments"];
     protected override ValueTask ProcessAsync(ConsumeResult<string, string> result, CancellationToken cancellationToken) => ValueTask.CompletedTask;
 }
+
 public class OrderDbContext : DbContext
 {
     public DbSet<Order> Orders => Set<Order>();
 }
+
 public class OrdersContext : DbContext
 {
     public DbSet<Order> Orders => Set<Order>();
 }
+
 public class SecondContext : DbContext;
+
 public sealed class OrderValidationException : Exception;
+
 public sealed class TransientException : Exception;
+
 public sealed class PoisonMessageException : Exception;
+
 public class OrderProcessor : KafkaConsumerService<string, string>
 {
     public OrderProcessor() : base(null!, null!) { }

@@ -62,17 +62,23 @@ public sealed class PartitionedProcessingIntegrationTests(KafkaTestContainer kaf
 
                     var offsets = processed.GetOrAdd(message.Partition, static _ => []);
                     lock (offsets)
+                    {
                         offsets.Add(message.Offset);
+                    }
 
                     context.MarkProcessed(message);
 
                     if (message.Partition == 1 && !releaseFirstPartition.Task.IsCompleted)
+                    {
                         secondPartitionProcessedWhileFirstBlocked.TrySetResult();
+                    }
 
                     if (processed.Values.Sum(static values =>
                         {
                             lock (values)
+                            {
                                 return values.Count;
+                            }
                         }) >= 6)
                     {
                         await cts.CancelAsync().ConfigureAwait(false);
@@ -157,12 +163,16 @@ public sealed class PartitionedProcessingIntegrationTests(KafkaTestContainer kaf
                     // The fetch delivers every record at once, so the failure leaves the
                     // records after it queued in the lane.
                     if (firstAttempt && message.Offset == failingOffset)
+                    {
                         throw new InvalidOperationException("ignored failure");
+                    }
 
                     processed.Enqueue(message.Offset);
                     context.MarkProcessed(message);
                     if (message.Offset == recordCount - 1)
+                    {
                         await cts.CancelAsync().ConfigureAwait(false);
+                    }
                 }
             },
             new PartitionedProcessingOptions
@@ -232,7 +242,9 @@ public sealed class PartitionedProcessingIntegrationTests(KafkaTestContainer kaf
                     processed.Enqueue(message.Offset);
                     context.MarkProcessed(message);
                     if (processed.Count >= recordCount)
+                    {
                         await cts.CancelAsync().ConfigureAwait(false);
+                    }
                 }
             },
             new PartitionedProcessingOptions
@@ -263,9 +275,13 @@ public sealed class PartitionedProcessingIntegrationTests(KafkaTestContainer kaf
         int partition)
     {
         if (!processed.TryGetValue(partition, out var offsets))
+        {
             return [];
+        }
 
         lock (offsets)
+        {
             return offsets.ToArray();
+        }
     }
 }

@@ -24,9 +24,13 @@ internal static class GcSafeSpin
         for (var i = 0; i < iterations; i++)
         {
             if (X86Base.IsSupported)
+            {
                 X86Base.Pause();
+            }
             else if (ArmBase.IsSupported)
+            {
                 ArmBase.Yield();
+            }
         }
     }
 
@@ -36,9 +40,13 @@ internal static class GcSafeSpin
         while (Volatile.Read(ref location) < value)
         {
             if (X86Base.IsSupported)
+            {
                 X86Base.Pause();
+            }
             else if (ArmBase.IsSupported)
+            {
                 ArmBase.Yield();
+            }
         }
     }
 }

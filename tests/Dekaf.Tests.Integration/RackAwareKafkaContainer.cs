@@ -83,7 +83,9 @@ public class RackAwareKafkaContainer : IAsyncInitializer, IAsyncDisposable
             try
             {
                 if (broker is not null)
+                {
                     await broker.DisposeAsync().ConfigureAwait(false);
+                }
             }
             catch (Exception exception)
             {
@@ -94,7 +96,9 @@ public class RackAwareKafkaContainer : IAsyncInitializer, IAsyncDisposable
         try
         {
             if (network is not null)
+            {
                 await network.DisposeAsync().ConfigureAwait(false);
+            }
         }
         catch (Exception exception)
         {
@@ -102,7 +106,9 @@ public class RackAwareKafkaContainer : IAsyncInitializer, IAsyncDisposable
         }
 
         if (firstError is not null)
+        {
             throw firstError;
+        }
     }
 
     public IAdminClient CreateAdminClient()
@@ -188,7 +194,9 @@ public class RackAwareKafkaContainer : IAsyncInitializer, IAsyncDisposable
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(partitionCount, 1);
         if (excludedLeaderId is < 1 or > 3)
+        {
             throw new ArgumentOutOfRangeException(nameof(excludedLeaderId));
+        }
 
         var topic = $"distributed-{Guid.NewGuid():N}";
         var eligibleLeaders = Enumerable.Range(1, 3)
@@ -256,7 +264,9 @@ public class RackAwareKafkaContainer : IAsyncInitializer, IAsyncDisposable
         foreach (var nodeId in AllBrokerNodeIds)
         {
             if (GetBroker(nodeId).State != TestcontainersStates.Running)
+            {
                 continue;
+            }
 
             var port = _hostPorts[nodeId - 1];
             _ = await PollUntilAsync(
@@ -278,8 +288,7 @@ public class RackAwareKafkaContainer : IAsyncInitializer, IAsyncDisposable
                 isComplete: static visible => visible,
                 maxAttempts: 60,
                 delay: TimeSpan.FromMilliseconds(250),
-                timeoutMessage:
-                    $"Broker {nodeId} did not serve metadata for topic '{topic}' " +
+                timeoutMessage: $"Broker {nodeId} did not serve metadata for topic '{topic}' " +
                     $"with {expectedPartitionCount} led partitions.",
                 cancellationToken: cancellationToken).ConfigureAwait(false);
         }
@@ -349,14 +358,15 @@ public class RackAwareKafkaContainer : IAsyncInitializer, IAsyncDisposable
                         cancellationToken).ConfigureAwait(false);
                     var coordinator = response.Coordinators.SingleOrDefault();
                     if (coordinator is not null && coordinator.ErrorCode == ErrorCode.None)
+                    {
                         return coordinator.NodeId;
+                    }
 
                     lastFailure = new InvalidOperationException(
                         $"FindCoordinator failed for {keyType} key '{key}': " +
                         $"{coordinator?.ErrorCode.ToString() ?? "empty response"}.");
                 }
-                catch (Exception exception) when (
-                    exception is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
+                catch (Exception exception) when (exception is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
                 {
                     lastFailure = exception;
                 }
@@ -470,7 +480,9 @@ public class RackAwareKafkaContainer : IAsyncInitializer, IAsyncDisposable
     {
         var broker = GetBroker(nodeId);
         if (broker.State == TestcontainersStates.Running)
+        {
             return;
+        }
 
         await ContainerStartupRetry.RunAsync(
             () => GetBroker(nodeId).StartAsync(cancellationToken),
@@ -693,7 +705,9 @@ public class RackAwareKafkaContainer : IAsyncInitializer, IAsyncDisposable
             {
                 var result = await probeAsync(cancellationToken).ConfigureAwait(false);
                 if (isComplete(result))
+                {
                     return result;
+                }
             }
             catch (Exception ex) when (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
             {
@@ -704,7 +718,9 @@ public class RackAwareKafkaContainer : IAsyncInitializer, IAsyncDisposable
         }
 
         if (lastError is null)
+        {
             throw new InvalidOperationException(timeoutMessage);
+        }
 
         throw new InvalidOperationException($"{timeoutMessage} Last error: {lastError.Message}", lastError);
     }
@@ -712,7 +728,9 @@ public class RackAwareKafkaContainer : IAsyncInitializer, IAsyncDisposable
     private IContainer GetBroker(int nodeId)
     {
         if (nodeId < 1 || nodeId > _brokers.Length)
+        {
             throw new ArgumentOutOfRangeException(nameof(nodeId), nodeId, "Broker node ID must be between 1 and 3.");
+        }
 
         return _brokers[nodeId - 1]
             ?? throw new InvalidOperationException($"Broker {nodeId} has not been initialized.");
@@ -736,7 +754,9 @@ public class RackAwareKafkaContainer : IAsyncInitializer, IAsyncDisposable
         finally
         {
             foreach (var listener in listeners)
+            {
                 listener?.Stop();
+            }
         }
     }
 

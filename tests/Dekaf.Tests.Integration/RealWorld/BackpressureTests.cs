@@ -129,7 +129,10 @@ public sealed class BackpressureTests(KafkaTestContainer kafka) : KafkaIntegrati
         await foreach (var msg in consumer.ConsumeAsync(cts1.Token).ConfigureAwait(false))
         {
             consumed.Add(msg);
-            if (consumed.Count >= 3) break;
+            if (consumed.Count >= 3)
+            {
+                break;
+            }
         }
 
         await Assert.That(consumed).Count().IsEqualTo(3);
@@ -190,7 +193,10 @@ public sealed class BackpressureTests(KafkaTestContainer kafka) : KafkaIntegrati
         await foreach (var msg in consumer.ConsumeAsync(cts.Token).ConfigureAwait(false))
         {
             consumedCount++;
-            if (consumedCount >= messageCount) break;
+            if (consumedCount >= messageCount)
+            {
+                break;
+            }
         }
 
         // Assert - should consume all messages

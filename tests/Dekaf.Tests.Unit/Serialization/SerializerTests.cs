@@ -662,11 +662,20 @@ public class SerializerTests
     {
         private readonly byte[] _buffer = new byte[capacity];
 
-        public int GetSpanCallCount { get; private set; }
+        public int GetSpanCallCount
+        {
+            get; private set;
+        }
 
-        public int LastSizeHint { get; private set; }
+        public int LastSizeHint
+        {
+            get; private set;
+        }
 
-        public int WrittenCount { get; private set; }
+        public int WrittenCount
+        {
+            get; private set;
+        }
 
         public ReadOnlyMemory<byte> WrittenMemory => _buffer.AsMemory(0, WrittenCount);
 

@@ -40,7 +40,9 @@ internal static class OutboxMetrics
     internal static void Record(Counter<long> counter, OutboxMetricState state, long count)
     {
         if (count != 0 && counter.Enabled)
+        {
             Emit(counter, state, count);
+        }
     }
 
     private static void Emit(Counter<long> counter, OutboxMetricState state, long count)
@@ -104,7 +106,9 @@ internal static class OutboxMetrics
         foreach (var group in groups)
         {
             if (select(group.Value) is { } value)
+            {
                 yield return new Measurement<T>(value, new KeyValuePair<string, object?>("outbox.name", group.Key));
+            }
         }
     }
 
@@ -118,9 +122,18 @@ internal static class OutboxMetrics
 
 internal sealed class OutboxMetricState(string name, TimeProvider timeProvider) : IDisposable
 {
-    internal string Name { get; } = name;
-    internal TimeProvider TimeProvider { get; } = timeProvider;
-    internal KeyValuePair<string, object?>[] Tags { get; } = [new("outbox.name", name)];
+    internal string Name
+    {
+        get;
+    } = name;
+    internal TimeProvider TimeProvider
+    {
+        get;
+    } = timeProvider;
+    internal KeyValuePair<string, object?>[] Tags
+    {
+        get;
+    } = [new("outbox.name", name)];
     internal int OwnedBuckets;
     internal OutboxPendingMetrics? Pending;
 

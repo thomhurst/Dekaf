@@ -88,9 +88,13 @@ public sealed class HostedShareConsumerServiceNetworkFaultTests(ShareFaultKafkaC
         await service.StartAsync(cancellationToken);
         await SeedAsync(topic, "first", cancellationToken);
         if (hold)
+        {
             await service.HoldStarted.Task.WaitAsync(TimeSpan.FromSeconds(90), cancellationToken);
+        }
         else
+        {
             await service.WaitForAsync("first").WaitAsync(TimeSpan.FromSeconds(90), cancellationToken);
+        }
 
         // The handler is still running when the member expires, so the record's acknowledgement
         // (and any lock renewal) is sent for an acquisition the expired membership no longer owns.
@@ -103,7 +107,9 @@ public sealed class HostedShareConsumerServiceNetworkFaultTests(ShareFaultKafkaC
         await Task.WhenAny(second, service.ExecuteTask!).WaitAsync(TimeSpan.FromSeconds(90), cancellationToken);
         // Awaiting a faulted service rethrows the failure that stopped it.
         if (service.ExecuteTask!.IsCompleted)
+        {
             await service.ExecuteTask;
+        }
         await Assert.That(service.ExecuteTask.IsCompleted).IsFalse();
         await second;
 
@@ -132,9 +138,15 @@ public sealed class HostedShareConsumerServiceNetworkFaultTests(ShareFaultKafkaC
                 MaxPollRetryBackoff = TimeSpan.FromSeconds(1)
             })
     {
-        public TaskCompletionSource FailureObserved { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource FailureObserved
+        {
+            get;
+        } = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
-        public TaskCompletionSource<string?> Received { get; } =
+        public TaskCompletionSource<string?> Received
+        {
+            get;
+        } =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         protected override IEnumerable<string> Topics => [topic];
@@ -148,11 +160,20 @@ public sealed class HostedShareConsumerServiceNetworkFaultTests(ShareFaultKafkaC
             static _ => new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously));
 
         /// <summary>A record with this value blocks its handler until <see cref="ReleaseHold"/>.</summary>
-        public string? HoldValue { get; init; }
+        public string? HoldValue
+        {
+            get; init;
+        }
 
-        public TaskCompletionSource HoldStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource HoldStarted
+        {
+            get;
+        } = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
-        public TaskCompletionSource ReleaseHold { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource ReleaseHold
+        {
+            get;
+        } = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         protected override async ValueTask ProcessAsync(
             ShareConsumeResult<string, string> result,
@@ -160,9 +181,13 @@ public sealed class HostedShareConsumerServiceNetworkFaultTests(ShareFaultKafkaC
         {
             Received.TrySetResult(result.Value);
             if (result.Value is not null && result.Value == HoldValue && HoldStarted.TrySetResult())
+            {
                 await ReleaseHold.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
+            }
             if (result.Value is not null)
+            {
                 GetSignal(result.Value).TrySetResult();
+            }
         }
 
         protected override ValueTask OnErrorAsync(

@@ -15,14 +15,19 @@ public class BrokerSenderDiagnosticFormattingBenchmarks
     private ReadyBatch[] _batches = null!;
 
     [Params(16)]
-    public int BatchCount { get; set; }
+    public int BatchCount
+    {
+        get; set;
+    }
 
     [GlobalSetup]
     public void Setup()
     {
         _batches = new ReadyBatch[BatchCount];
         for (var i = 0; i < BatchCount; i++)
+        {
             _batches[i] = CreateBatch("benchmark-topic", i);
+        }
     }
 
     [Benchmark(Baseline = true)]
@@ -57,14 +62,19 @@ public class BrokerSenderDisabledDebugLoggingBenchmarks
     private string _sink = string.Empty;
 
     [Params(16)]
-    public int BatchCount { get; set; }
+    public int BatchCount
+    {
+        get; set;
+    }
 
     [GlobalSetup]
     public void Setup()
     {
         _batches = new ReadyBatch[BatchCount];
         for (var i = 0; i < BatchCount; i++)
+        {
             _batches[i] = CreateBatch("benchmark-topic", i);
+        }
     }
 
     [Benchmark(Baseline = true)]
@@ -91,7 +101,9 @@ public class BrokerSenderDisabledDebugLoggingBenchmarks
         var count = BatchCount;
 
         if (_logger.IsEnabled(LogLevel.Debug))
+        {
             _sink = BrokerSender.FormatBatchKeys(batches, count);
+        }
 
         return batches.Length + count + _sink.Length;
     }

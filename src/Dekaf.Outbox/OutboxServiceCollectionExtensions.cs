@@ -67,7 +67,9 @@ public static class OutboxServiceCollectionExtensions
         var builder = Kafka.CreateProducer<byte[]?, byte[]?>()
             .WithClientId("dekaf-outbox-relay");
         if (loggerFactory is not null)
+        {
             builder.WithLoggerFactory(loggerFactory);
+        }
         configureProducer(builder);
         // Applied after the caller's delegate so they cannot be downgraded: prefix
         // accounting is only truthful when every counted ack is durable (Acks.All) and

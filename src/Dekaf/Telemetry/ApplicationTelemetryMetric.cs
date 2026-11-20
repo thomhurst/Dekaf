@@ -41,10 +41,14 @@ public sealed class ApplicationTelemetryMetric
     {
 #if NETSTANDARD2_0
         if (string.IsNullOrWhiteSpace(name))
+        {
             throw new ArgumentException("Value cannot be null or whitespace.", nameof(name));
+        }
 
         if (observe is null)
+        {
             throw new ArgumentNullException(nameof(observe));
+        }
 #else
         ArgumentException.ThrowIfNullOrWhiteSpace(name);
         ArgumentNullException.ThrowIfNull(observe);
@@ -59,22 +63,34 @@ public sealed class ApplicationTelemetryMetric
     /// <summary>
     /// Metric name exposed to broker subscription prefixes.
     /// </summary>
-    public string Name { get; }
+    public string Name
+    {
+        get;
+    }
 
     /// <summary>
     /// Metric kind used for OpenTelemetry encoding.
     /// </summary>
-    public ApplicationTelemetryMetricKind Kind { get; }
+    public ApplicationTelemetryMetricKind Kind
+    {
+        get;
+    }
 
     /// <summary>
     /// Callback invoked when telemetry is collected. Keep it fast and non-blocking.
     /// </summary>
-    public Func<double> Observe { get; }
+    public Func<double> Observe
+    {
+        get;
+    }
 
     /// <summary>
     /// Optional metric attributes.
     /// </summary>
-    public IReadOnlyDictionary<string, string> Attributes { get; }
+    public IReadOnlyDictionary<string, string> Attributes
+    {
+        get;
+    }
 
     private static IReadOnlyDictionary<string, string> CopyAttributes(
         IReadOnlyDictionary<string, string>? attributes)

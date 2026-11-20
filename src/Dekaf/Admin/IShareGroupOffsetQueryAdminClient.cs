@@ -27,21 +27,39 @@ public static class AdminClientShareGroupOffsetQueryExtensions
 public sealed class ListShareGroupOffsetsSpec
 {
     /// <summary>Null selects all applicable partitions; an empty list selects none.</summary>
-    public IReadOnlyList<TopicPartition>? TopicPartitions { get; init; }
+    public IReadOnlyList<TopicPartition>? TopicPartitions
+    {
+        get; init;
+    }
 }
 
 /// <summary>Options for a batched share-group offset query.</summary>
 public sealed class ListShareGroupOffsetsOptions
 {
     /// <summary>Total operation budget in milliseconds, including discovery and retries.</summary>
-    public int TimeoutMs { get; init; } = 30000;
+    public int TimeoutMs
+    {
+        get; init;
+    } = 30000;
 }
 
 /// <summary>Group status and individual partition outcomes. Inspect both levels for errors.</summary>
 public sealed class ShareGroupOffsetsResult
 {
-    public required string GroupId { get; init; }
-    public Protocol.ErrorCode ErrorCode { get; init; }
-    public string? ErrorMessage { get; init; }
-    public required IReadOnlyDictionary<TopicPartition, ShareGroupOffsetDescription> Offsets { get; init; }
+    public required string GroupId
+    {
+        get; init;
+    }
+    public Protocol.ErrorCode ErrorCode
+    {
+        get; init;
+    }
+    public string? ErrorMessage
+    {
+        get; init;
+    }
+    public required IReadOnlyDictionary<TopicPartition, ShareGroupOffsetDescription> Offsets
+    {
+        get; init;
+    }
 }

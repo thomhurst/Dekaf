@@ -187,7 +187,9 @@ public sealed partial class PartitionedConsumerRuntimeTests
             (_, message, _) =>
             {
                 if (message.Offset == 4)
+                {
                     firstPass.TrySetResult();
+                }
                 return ValueTask.CompletedTask;
             },
             new PartitionedProcessingOptions
@@ -259,7 +261,9 @@ public sealed partial class PartitionedConsumerRuntimeTests
                     {
                         received.Add(message);
                         if (received.Count < GappedOffsets.Length)
+                        {
                             continue;
+                        }
 
                         // Complete the last record first, then the first, so ranges merge in the tree.
                         context.MarkProcessed(received[2]);
@@ -325,16 +329,22 @@ public sealed partial class PartitionedConsumerRuntimeTests
             {
                 var failing = Interlocked.Increment(ref attempts) == 1;
                 if (!failing)
+                {
                     restarted.TrySetResult();
+                }
 
                 await foreach (var message in context.Messages.WithCancellation(cancellationToken))
                 {
                     if (failing && message.Offset == 1)
+                    {
                         throw new InvalidOperationException("ignored failure");
+                    }
 
                     context.MarkProcessed(message);
                     if (message.Offset == 2)
+                    {
                         lastSeen.TrySetResult();
+                    }
                 }
             },
             new PartitionedProcessingOptions
@@ -377,7 +387,9 @@ public sealed partial class PartitionedConsumerRuntimeTests
             {
                 var failing = Interlocked.Increment(ref attempts) == 1;
                 if (!failing)
+                {
                     restarted.TrySetResult();
+                }
 
                 await foreach (var message in context.Messages.WithCancellation(cancellationToken))
                 {
@@ -394,7 +406,9 @@ public sealed partial class PartitionedConsumerRuntimeTests
 
                     context.MarkProcessed(message);
                     if (message.Offset == 2)
+                    {
                         lastSeen.TrySetResult();
+                    }
                 }
             },
             IgnoreRestartOptions(observer),
@@ -482,7 +496,9 @@ public sealed partial class PartitionedConsumerRuntimeTests
     private static ValueTask SignalLast(TaskCompletionSource lastSeen, ConsumeResult<string, string> message)
     {
         if (message.Offset == GappedOffsets[^1])
+        {
             lastSeen.TrySetResult();
+        }
         return ValueTask.CompletedTask;
     }
 
@@ -633,9 +649,15 @@ public sealed partial class PartitionedConsumerRuntimeTests
 
     private sealed class RecordingCommitObserver(TestConsumer consumer) : IOffsetCommitObserver
     {
-        public ConcurrentQueue<ObservedCommitStart> Started { get; } = new();
+        public ConcurrentQueue<ObservedCommitStart> Started
+        {
+            get;
+        } = new();
 
-        public TaskCompletionSource<ObservedCommitCompletion> Completed { get; } =
+        public TaskCompletionSource<ObservedCommitCompletion> Completed
+        {
+            get;
+        } =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         public object? OnCommitStarting(OffsetCommitObservation observation)
@@ -650,7 +672,10 @@ public sealed partial class PartitionedConsumerRuntimeTests
             return state;
         }
 
-        public ConcurrentQueue<ObservedCommitCompletion> Completions { get; } = new();
+        public ConcurrentQueue<ObservedCommitCompletion> Completions
+        {
+            get;
+        } = new();
 
         public void OnCommitCompleted(OffsetCommitObservation observation, object? state, Exception? exception)
         {
@@ -669,7 +694,10 @@ public sealed partial class PartitionedConsumerRuntimeTests
     {
         public Exception? WriteFailure;
 
-        public TaskCompletionSource Completed { get; } =
+        public TaskCompletionSource Completed
+        {
+            get;
+        } =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         public object? OnCommitStarting(OffsetCommitObservation observation)

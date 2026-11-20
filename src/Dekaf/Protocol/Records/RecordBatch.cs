@@ -68,7 +68,9 @@ internal sealed class PooledReusableBufferWriter : IBufferWriter<byte>, IDisposa
     {
         // Track peak usage since last shrink check
         if (_written > _highWaterMark)
+        {
             _highWaterMark = _written;
+        }
 
         _written = 0;
 
@@ -123,7 +125,9 @@ internal sealed class PooledReusableBufferWriter : IBufferWriter<byte>, IDisposa
     private void EnsureCapacity(int sizeHint)
     {
         if (sizeHint < 1)
+        {
             sizeHint = 1;
+        }
 
         if (_buffer.Length - _written < sizeHint)
         {
@@ -139,7 +143,9 @@ internal sealed class PooledReusableBufferWriter : IBufferWriter<byte>, IDisposa
         var newSize = (int)Math.Max(doubled, required);
 
         if (newSize <= _buffer.Length)
+        {
             throw new InvalidOperationException("Cannot grow buffer: maximum size reached.");
+        }
 
         // Rent from pool - not zero-initialized, avoiding Buffer.ZeroMemoryInternal overhead.
         var newBuffer = DekafPools.SerializationBuffers.Rent(newSize);
@@ -161,7 +167,9 @@ internal sealed class PooledReusableBufferWriter : IBufferWriter<byte>, IDisposa
         _written = 0;
 
         if (_buffer.Length >= minimumCapacity)
+        {
             return;
+        }
 
         // Return the old buffer and rent a larger one
         DekafPools.SerializationBuffers.Return(_buffer, clearArray: false);
@@ -177,7 +185,9 @@ internal sealed class PooledReusableBufferWriter : IBufferWriter<byte>, IDisposa
         _buffer = [];
         _written = 0;
         if (buf.Length > 0)
+        {
             DekafPools.SerializationBuffers.Return(buf, clearArray: false);
+        }
     }
 }
 
@@ -228,7 +238,9 @@ internal sealed class DetachableBufferWriter : IBufferWriter<byte>, IDisposable
     public void Advance(int count)
     {
         if ((uint)count > (uint)(_buffer.Length - _written))
+        {
             throw new InvalidOperationException("Advance called with count exceeding available space.");
+        }
         _written += count;
     }
 
@@ -258,7 +270,9 @@ internal sealed class DetachableBufferWriter : IBufferWriter<byte>, IDisposable
     public void Dispose()
     {
         if (_returnedToCache)
+        {
             return;
+        }
 
         var buf = _buffer;
         var arrayPool = _arrayPool!;
@@ -267,7 +281,9 @@ internal sealed class DetachableBufferWriter : IBufferWriter<byte>, IDisposable
         _arrayPool = null;
         _returnedToCache = true;
         if (buf.Length > 0)
+        {
             arrayPool.Return(buf, clearArray: false);
+        }
 
         t_cachedWriter ??= this;
     }
@@ -276,7 +292,9 @@ internal sealed class DetachableBufferWriter : IBufferWriter<byte>, IDisposable
     private void EnsureCapacity(int sizeHint)
     {
         if (sizeHint < 1)
+        {
             sizeHint = 1;
+        }
 
         if (_buffer.Length - _written < sizeHint)
         {
@@ -292,7 +310,9 @@ internal sealed class DetachableBufferWriter : IBufferWriter<byte>, IDisposable
         var newSize = (int)Math.Max(doubled, required);
 
         if (newSize <= _buffer.Length)
+        {
             throw new InvalidOperationException("Cannot grow buffer: maximum size reached.");
+        }
 
         var arrayPool = _arrayPool!;
         var newBuffer = arrayPool.Rent(newSize);
@@ -441,18 +461,54 @@ public sealed class RecordBatch : IReadOnlyList<Record>, IDisposable
     /// </summary>
     private int _disposed;
 
-    public long BaseOffset { get; internal set; }
-    public int BatchLength { get; internal set; }
-    public int PartitionLeaderEpoch { get; internal set; } = -1;
-    public byte Magic { get; internal set; } = 2;
-    public uint Crc { get; internal set; }
-    public RecordBatchAttributes Attributes { get; internal set; }
-    public int LastOffsetDelta { get; internal set; }
-    public long BaseTimestamp { get; internal set; }
-    public long MaxTimestamp { get; internal set; }
-    public long ProducerId { get; set; } = -1;
-    public short ProducerEpoch { get; set; } = -1;
-    public int BaseSequence { get; set; } = -1;
+    public long BaseOffset
+    {
+        get; internal set;
+    }
+    public int BatchLength
+    {
+        get; internal set;
+    }
+    public int PartitionLeaderEpoch
+    {
+        get; internal set;
+    } = -1;
+    public byte Magic
+    {
+        get; internal set;
+    } = 2;
+    public uint Crc
+    {
+        get; internal set;
+    }
+    public RecordBatchAttributes Attributes
+    {
+        get; internal set;
+    }
+    public int LastOffsetDelta
+    {
+        get; internal set;
+    }
+    public long BaseTimestamp
+    {
+        get; internal set;
+    }
+    public long MaxTimestamp
+    {
+        get; internal set;
+    }
+    public long ProducerId
+    {
+        get; set;
+    } = -1;
+    public short ProducerEpoch
+    {
+        get; set;
+    } = -1;
+    public int BaseSequence
+    {
+        get; set;
+    } = -1;
 
     /// <summary>
     /// The records in this batch. For batches created via Read(), records are parsed lazily
@@ -464,7 +520,9 @@ public sealed class RecordBatch : IReadOnlyList<Record>, IDisposable
         get
         {
             if (Volatile.Read(ref _disposed) != 0)
+            {
                 throw new ObjectDisposedException(nameof(RecordBatch));
+            }
             return _records;
         }
         internal set => _records = value;
@@ -505,7 +563,9 @@ public sealed class RecordBatch : IReadOnlyList<Record>, IDisposable
     {
         ThrowIfNotLazyRecordList();
         if (index < 0 || index >= _recordCount)
+        {
             throw new ArgumentOutOfRangeException(nameof(index));
+        }
 
         EnsureLazyRecordsParsedUpTo(index);
         ArgumentOutOfRangeException.ThrowIfGreaterThanOrEqual(index, _recordCount);
@@ -520,7 +580,9 @@ public sealed class RecordBatch : IReadOnlyList<Record>, IDisposable
             ThrowIfNotLazyRecordList();
             EnsureLazyRecordsParsedUpTo(i);
             if (i >= _recordCount)
+            {
                 yield break;
+            }
 
             yield return _parsedRecords![_parsedRecordsOffset + i];
         }
@@ -529,9 +591,13 @@ public sealed class RecordBatch : IReadOnlyList<Record>, IDisposable
     private void ThrowIfNotLazyRecordList()
     {
         if (Volatile.Read(ref _disposed) != 0)
+        {
             throw new ObjectDisposedException(nameof(RecordBatch));
+        }
         if (!ReferenceEquals(_records, this))
+        {
             throw new InvalidOperationException("This batch does not own a lazy record list.");
+        }
     }
 
     private void InitializeLazyRecords(ReadOnlyMemory<byte> rawData, byte[]? pooledArray, int count)
@@ -547,7 +613,9 @@ public sealed class RecordBatch : IReadOnlyList<Record>, IDisposable
     {
         ThrowIfNotLazyRecordList();
         if (_parsedRecords is not null)
+        {
             throw new InvalidOperationException("The batch records have already been materialized.");
+        }
         return _rawRecordData;
     }
 
@@ -575,9 +643,13 @@ public sealed class RecordBatch : IReadOnlyList<Record>, IDisposable
     internal void UseParsedRecordSlab(Record[] records, int offset)
     {
         if (!ReferenceEquals(_records, this) || _parsedRecords is not null)
+        {
             throw new InvalidOperationException("A parsed-record slab can only be attached to an unparsed lazy batch.");
+        }
         if ((uint)offset > (uint)records.Length || _recordCount > records.Length - offset)
+        {
             throw new ArgumentOutOfRangeException(nameof(offset));
+        }
 
         _parsedRecords = records;
         _parsedRecordsOffset = offset;
@@ -587,13 +659,17 @@ public sealed class RecordBatch : IReadOnlyList<Record>, IDisposable
     internal void ConfigureHeaderRouting(RecordHeaderRoutingPlan? headerRoutingPlan)
     {
         if (ReferenceEquals(_headerRoutingPlan, headerRoutingPlan))
+        {
             return;
+        }
 
         _headerRoutingPlan = headerRoutingPlan;
         if (headerRoutingPlan is not null && _records is Record[] records)
         {
             for (var index = 0; index < records.Length; index++)
+            {
                 records[index] = records[index].IndexHeaders(headerRoutingPlan);
+            }
         }
         if (headerRoutingPlan is not null
             && ReferenceEquals(_records, this)
@@ -606,7 +682,9 @@ public sealed class RecordBatch : IReadOnlyList<Record>, IDisposable
             }
         }
         if (_records is LazyRecordList lazyRecords)
+        {
             lazyRecords.ConfigureHeaderRouting(headerRoutingPlan);
+        }
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -668,7 +746,9 @@ public sealed class RecordBatch : IReadOnlyList<Record>, IDisposable
         }
 
         if (_parsedRecordCount > index || _parsedRecordCount >= _recordCount)
+        {
             return;
+        }
 
         var reader = new KafkaProtocolReader(_rawRecordData.Slice(_nextRecordParseOffset));
         var readerStartOffset = _nextRecordParseOffset;
@@ -677,7 +757,9 @@ public sealed class RecordBatch : IReadOnlyList<Record>, IDisposable
             if (_parsedRecordCount >= _parsedRecords.Length - _parsedRecordsOffset)
             {
                 if (!_ownsParsedRecords)
+                {
                     throw new InvalidOperationException("The shared parsed-record slab is smaller than the declared record count.");
+                }
 
                 var newArray = ArrayPool<Record>.Shared.Rent(_parsedRecords.Length * 2);
                 _parsedRecords.AsSpan(_parsedRecordsOffset, _parsedRecordCount).CopyTo(newArray);
@@ -711,7 +793,9 @@ public sealed class RecordBatch : IReadOnlyList<Record>, IDisposable
         var pooledArray = _pooledRecordData;
         _pooledRecordData = null;
         if (pooledArray is not null)
+        {
             (_recordDataPool ?? ArrayPool<byte>.Shared).Return(pooledArray, clearArray: false);
+        }
         _recordDataPool = null;
 
         var parsedRecords = _parsedRecords;
@@ -723,12 +807,16 @@ public sealed class RecordBatch : IReadOnlyList<Record>, IDisposable
             for (var i = 0; i < parsed.Length; i++)
             {
                 if (parsed[i].Headers is { } headers)
+                {
                     ArrayPool<Header>.Shared.Return(headers, clearArray: true);
+                }
             }
 
             // A shared slab is cleared by its PendingFetchData owner (see UseParsedRecordSlab).
             if (_ownsParsedRecords)
+            {
                 ArrayPool<Record>.Shared.Return(parsedRecords, clearArray: true);
+            }
         }
 
         _rawRecordData = default;
@@ -758,23 +846,35 @@ public sealed class RecordBatch : IReadOnlyList<Record>, IDisposable
     /// Set by <see cref="PreCompress"/> before send so <see cref="Write"/> can emit
     /// the compressed payload directly.
     /// </summary>
-    internal byte[]? PreCompressedRecords { get; private set; }
+    internal byte[]? PreCompressedRecords
+    {
+        get; private set;
+    }
 
     /// <summary>
     /// The valid length within <see cref="PreCompressedRecords"/>.
     /// </summary>
-    internal int PreCompressedLength { get; private set; }
+    internal int PreCompressedLength
+    {
+        get; private set;
+    }
 
     /// <summary>
     /// The compression type applied to <see cref="PreCompressedRecords"/>.
     /// </summary>
-    internal CompressionType PreCompressedType { get; private set; }
+    internal CompressionType PreCompressedType
+    {
+        get; private set;
+    }
 
     /// <summary>
     /// CRC32C of the bytes in <see cref="PreCompressedRecords"/>.
     /// Valid only while the pooled buffer remains retained for this batch and unmodified through Write().
     /// </summary>
-    internal uint PreCompressedRecordsCrc { get; private set; }
+    internal uint PreCompressedRecordsCrc
+    {
+        get; private set;
+    }
 
     internal bool HasPreCompressedRecords => PreCompressedRecords is not null;
 
@@ -792,10 +892,14 @@ public sealed class RecordBatch : IReadOnlyList<Record>, IDisposable
     internal IReadOnlyList<Record> GetRecordsForSplit()
     {
         if (_records is not ProducerRecordCountList countOnlyRecords)
+        {
             return Records;
+        }
 
         if (!_hasPreEncodedRecords)
+        {
             throw new InvalidOperationException("Producer records cannot be split without encoded data.");
+        }
 
         var encodedLength = GetPreEncodedRecordsLength();
         var encodedRecords = ArrayPool<byte>.Shared.Rent(encodedLength);
@@ -926,7 +1030,9 @@ public sealed class RecordBatch : IReadOnlyList<Record>, IDisposable
     {
         if (double.IsNaN(estimatedCompressionRatio) || double.IsInfinity(estimatedCompressionRatio)
             || estimatedCompressionRatio <= 0)
+        {
             estimatedCompressionRatio = 1.0;
+        }
 
         // Leave room for framing and estimation error, but do not preallocate for expansion.
         // The writer can grow when a batch compresses worse than the topic's recent history.
@@ -973,7 +1079,9 @@ public sealed class RecordBatch : IReadOnlyList<Record>, IDisposable
     public void Dispose()
     {
         if (Interlocked.Exchange(ref _disposed, 1) != 0)
+        {
             return;
+        }
 
         ReturnPreCompressedBuffer();
 
@@ -992,7 +1100,9 @@ public sealed class RecordBatch : IReadOnlyList<Record>, IDisposable
     internal void DisposeAndReturnConsumerBatch(PendingFetchData owner, int generation)
     {
         if (!ReferenceEquals(_consumerPoolOwner, owner) || _consumerPoolOwnerGeneration != generation)
+        {
             return;
+        }
 
         Dispose();
         ReturnToPool();
@@ -1001,7 +1111,9 @@ public sealed class RecordBatch : IReadOnlyList<Record>, IDisposable
     internal void DisposeAndReturnUnownedConsumerBatch()
     {
         if (_consumerPoolOwner is not null)
+        {
             return;
+        }
 
         Dispose();
         ReturnToPool();
@@ -1026,7 +1138,9 @@ public sealed class RecordBatch : IReadOnlyList<Record>, IDisposable
     internal static void BeginTrackingPoolReturnsForCurrentThread()
     {
         if (Interlocked.CompareExchange(ref s_trackedReturnThreadId, -1, 0) != 0)
+        {
             throw new InvalidOperationException("A RecordBatch pool return tracker is already active.");
+        }
 
         Volatile.Write(ref s_trackedReturnCount, 0);
         Volatile.Write(ref s_trackedReturnThreadId, Environment.CurrentManagedThreadId);
@@ -1037,7 +1151,9 @@ public sealed class RecordBatch : IReadOnlyList<Record>, IDisposable
     {
         var currentThreadId = Environment.CurrentManagedThreadId;
         if (Interlocked.CompareExchange(ref s_trackedReturnThreadId, -1, currentThreadId) != currentThreadId)
+        {
             throw new InvalidOperationException("RecordBatch pool return tracking must end on its starting thread.");
+        }
 
         var count = Interlocked.Exchange(ref s_trackedReturnCount, 0);
         Volatile.Write(ref s_trackedReturnThreadId, 0);
@@ -1115,12 +1231,16 @@ public sealed class RecordBatch : IReadOnlyList<Record>, IDisposable
         // Guard against double-return (e.g. multiple Dispose() calls).
         // Interlocked.Exchange ensures exactly one thread passes this gate.
         if (Interlocked.Exchange(ref _returnedToPoolFlag, 1) != 0)
+        {
             return;
+        }
 
         s_pool.Return(this);
         var trackedThreadId = Volatile.Read(ref s_trackedReturnThreadId);
         if (trackedThreadId != 0 && trackedThreadId == Environment.CurrentManagedThreadId)
+        {
             Interlocked.Increment(ref s_trackedReturnCount);
+        }
     }
 
     /// <summary>
@@ -1313,9 +1433,13 @@ public sealed class RecordBatch : IReadOnlyList<Record>, IDisposable
             offset += 4;
             var headerCrc = Crc32C.Compute(contentSpan[..CrcContentFixedSize]);
             if (recordsAreSegmented)
+            {
                 segmentedRecords.CopyTo(contentSpan[offset..]);
+            }
             else
+            {
                 compressedRecords.CopyTo(contentSpan[offset..]);
+            }
 
             var crc = Crc32C.Combine(headerCrc, compressedRecordsCrc, recordsLength);
 
@@ -1332,7 +1456,9 @@ public sealed class RecordBatch : IReadOnlyList<Record>, IDisposable
         finally
         {
             if (cache is not null)
+            {
                 ReturnSerializationCache(cache);
+            }
         }
     }
 
@@ -1373,7 +1499,9 @@ public sealed class RecordBatch : IReadOnlyList<Record>, IDisposable
         var contentSpan = crcAndContentSpan[sizeof(uint)..];
         var attributes = (short)Attributes;
         if (effectiveCompression != CompressionType.None)
+        {
             attributes = (short)((attributes & ~0x07) | (int)effectiveCompression);
+        }
 
         BinaryPrimitives.WriteInt16BigEndian(contentSpan, attributes);
         BinaryPrimitives.WriteInt32BigEndian(contentSpan[2..], LastOffsetDelta);
@@ -1404,13 +1532,19 @@ public sealed class RecordBatch : IReadOnlyList<Record>, IDisposable
     private int GetEncodedRecordsLength(CompressionType compression)
     {
         if (PreCompressedRecords is not null)
+        {
             return PreCompressedLength;
+        }
 
         if (compression != CompressionType.None)
+        {
             throw new InvalidOperationException("Compressed RecordBatch size requires pre-compressed records.");
+        }
 
         if (_hasPreEncodedRecords)
+        {
             return GetPreEncodedRecordsLength();
+        }
 
         return GetEncodedRecordsLength(Records);
     }
@@ -1436,7 +1570,9 @@ public sealed class RecordBatch : IReadOnlyList<Record>, IDisposable
                 lazyRecords.EnsureAllParsed();
                 var parsedRecords = lazyRecords.GetParsedArray();
                 if (parsedRecords is not null)
+                {
                     WriteRecordSpan(parsedRecords.AsSpan(0, lazyRecords.Count), ref writer);
+                }
                 return;
             default:
                 WriteRecordList(records, ref writer);
@@ -1774,7 +1910,9 @@ internal sealed class ProducerRecordCountList : IReadOnlyList<Record>, IDisposab
         protected override void Reset(ProducerRecordCountList item) => item._count = 0;
     }
 
-    private ProducerRecordCountList() { }
+    private ProducerRecordCountList()
+    {
+    }
 
     internal static ProducerRecordCountList Rent(int count)
     {
@@ -1799,7 +1937,9 @@ internal sealed class ProducerRecordCountList : IReadOnlyList<Record>, IDisposab
     public void Dispose()
     {
         if (Interlocked.Exchange(ref _disposed, 1) == 0)
+        {
             s_pool.Return(this);
+        }
     }
 }
 
@@ -1812,7 +1952,9 @@ internal sealed class LazyRecordList : IReadOnlyList<Record>, IDisposable
     private sealed class LazyRecordListPool() : ObjectPool<LazyRecordList>(DefaultMaxPooledInstances)
     {
         protected override LazyRecordList Create() => new();
-        protected override void Reset(LazyRecordList item) { }
+        protected override void Reset(LazyRecordList item)
+        {
+        }
     }
 
     internal static int MaxPoolSizeValue => s_instancePool.MaxPoolSize;
@@ -1829,7 +1971,9 @@ internal sealed class LazyRecordList : IReadOnlyList<Record>, IDisposable
     private int _disposed;
     private RecordHeaderRoutingPlan? _headerRoutingPlan;
 
-    private LazyRecordList() { }
+    private LazyRecordList()
+    {
+    }
 
     /// <summary>
     /// Rents a LazyRecordList from the pool or creates a new one.
@@ -1897,13 +2041,17 @@ internal sealed class LazyRecordList : IReadOnlyList<Record>, IDisposable
     internal void ConfigureHeaderRouting(RecordHeaderRoutingPlan? headerRoutingPlan)
     {
         if (ReferenceEquals(_headerRoutingPlan, headerRoutingPlan))
+        {
             return;
+        }
 
         _headerRoutingPlan = headerRoutingPlan;
         if (headerRoutingPlan is not null && _parsedRecords is { } parsedRecords)
         {
             for (var index = 0; index < _parsedCount; index++)
+            {
                 parsedRecords[index] = parsedRecords[index].IndexPooledHeaders(headerRoutingPlan);
+            }
         }
     }
 
@@ -1912,9 +2060,13 @@ internal sealed class LazyRecordList : IReadOnlyList<Record>, IDisposable
         get
         {
             if (Volatile.Read(ref _disposed) != 0)
+            {
                 throw new ObjectDisposedException(nameof(LazyRecordList));
+            }
             if (index < 0 || index >= _count)
+            {
                 throw new ArgumentOutOfRangeException(nameof(index));
+            }
 
             EnsureParsedUpTo(index);
 
@@ -1931,13 +2083,17 @@ internal sealed class LazyRecordList : IReadOnlyList<Record>, IDisposable
         for (var i = 0; i < _count; i++)
         {
             if (Volatile.Read(ref _disposed) != 0)
+            {
                 throw new ObjectDisposedException(nameof(LazyRecordList));
+            }
 
             EnsureParsedUpTo(i);
 
             // Re-check _count — EnsureParsedUpTo may have reduced it due to truncation.
             if (i >= _count)
+            {
                 yield break;
+            }
 
             yield return _parsedRecords![i];
         }
@@ -1963,7 +2119,9 @@ internal sealed class LazyRecordList : IReadOnlyList<Record>, IDisposable
         }
 
         if (_parsedCount > index || _parsedCount >= _count)
+        {
             return;
+        }
 
         // Create reader once for all records to parse in this call.
         // Reusing the reader across iterations avoids redundant Slice() + ReadOnlyMemory construction per record.
@@ -2011,7 +2169,9 @@ internal sealed class LazyRecordList : IReadOnlyList<Record>, IDisposable
     public void Dispose()
     {
         if (Interlocked.Exchange(ref _disposed, 1) != 0)
+        {
             return;
+        }
 
         // Return pooled byte array if we own one, and null out to prevent double-return.
         // Double-return would allow ArrayPool to hand the same array to two different

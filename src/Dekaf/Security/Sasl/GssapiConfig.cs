@@ -20,7 +20,10 @@ public sealed class GssapiConfig
     /// The Kerberos service principal name. Defaults to "kafka".
     /// The full SPN will be: {ServiceName}/{hostname}@{Realm}
     /// </summary>
-    public string ServiceName { get; init; } = "kafka";
+    public string ServiceName
+    {
+        get; init;
+    } = "kafka";
 
     /// <summary>
     /// The client principal name (e.g., "user@REALM.COM").
@@ -31,7 +34,10 @@ public sealed class GssapiConfig
     /// identity from its credential cache or configured client keytab; Dekaf does not store a
     /// Kerberos password.
     /// </remarks>
-    public string? Principal { get; init; }
+    public string? Principal
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Path to the keytab file for service authentication.
@@ -42,12 +48,18 @@ public sealed class GssapiConfig
     /// different keytabs in the same process are rejected. Windows keytab selection is not
     /// supported by <c>NegotiateAuthentication</c> and fails during build/initialization.
     /// </remarks>
-    public string? KeytabPath { get; init; }
+    public string? KeytabPath
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The Kerberos realm. If not specified, uses the default realm from the system configuration.
     /// </summary>
-    public string? Realm { get; init; }
+    public string? Realm
+    {
+        get; init;
+    }
 
     internal static void ValidateForBuild(SaslMechanism mechanism, GssapiConfig? config)
     {

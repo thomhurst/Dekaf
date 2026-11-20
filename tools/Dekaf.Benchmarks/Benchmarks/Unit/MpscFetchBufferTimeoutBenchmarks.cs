@@ -23,7 +23,10 @@ public class MpscFetchBufferTimeoutBenchmarks
     }
 
     [ParamsAllValues]
-    public CancellationMode Mode { get; set; }
+    public CancellationMode Mode
+    {
+        get; set;
+    }
 
     [GlobalSetup]
     public async Task Setup()
@@ -43,7 +46,9 @@ public class MpscFetchBufferTimeoutBenchmarks
         if (Mode is CancellationMode.ResetBetweenWaits)
         {
             if (!_cancellationSource!.TryReset())
+            {
                 throw new InvalidOperationException("Cancellation source could not be reset.");
+            }
             _cancellationToken = _cancellationSource.Token;
         }
 
@@ -90,30 +95,42 @@ public class MpscFetchBufferSignalBenchmarks
         _signaled = false;
         _pendingWait = _buffer.WaitToReadAsync(Timeout.Infinite, CancellationToken.None);
         if (_pendingWait.IsCompleted)
+        {
             throw new InvalidOperationException("Read wait did not park.");
+        }
 
         _pendingWait.GetAwaiter().UnsafeOnCompleted(_continuation);
 
         if (!_buffer.TryWrite(_item))
+        {
             throw new InvalidOperationException("Benchmark item could not be written.");
+        }
 
         var deadline = Stopwatch.GetTimestamp() + 5 * Stopwatch.Frequency;
         var spin = new SpinWait();
         while (Volatile.Read(ref _completionVersion) != expectedVersion)
         {
             if (Stopwatch.GetTimestamp() >= deadline)
+            {
                 throw new InvalidOperationException("Read wait did not complete within five seconds.");
+            }
             spin.SpinOnce();
         }
 
         if (_completionException is not null)
+        {
             throw new InvalidOperationException("Read wait failed.", _completionException);
+        }
 
         if (!_signaled)
+        {
             throw new InvalidOperationException("Read wait completed without a data signal.");
+        }
 
         if (!_buffer.TryRead(out var item) || !ReferenceEquals(item, _item))
+        {
             throw new InvalidOperationException("Benchmark item could not be read.");
+        }
 
         return _signaled;
     }

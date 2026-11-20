@@ -109,7 +109,9 @@ public class KafkaProducerFastPathTests
         {
             var innerProduce = producer.FireAsync(Topic, "inner", "inner-value");
             if (!innerProduce.IsCompletedSuccessfully)
+            {
                 throw new InvalidOperationException("Expected the reentrant hot path to complete synchronously.");
+            }
         };
 
         await producer.FireAsync(Topic, "outer", "outer-value");
@@ -209,7 +211,9 @@ public class KafkaProducerFastPathTests
             ActivityStarted = activity =>
             {
                 if (activity.OperationName == activityName)
+                {
                     startedActivityCount++;
+                }
             }
         };
         ActivitySource.AddActivityListener(listener);
@@ -251,7 +255,9 @@ public class KafkaProducerFastPathTests
                 Headers = headers
             });
             if (!innerProduce.IsCompletedSuccessfully)
+            {
                 throw new InvalidOperationException("Expected the reentrant hot path to complete synchronously.");
+            }
             restoredHeaderCount = headers.Count;
             restoredHeaderKey = headers.Count > 0 ? headers[0].Key : null;
         };
@@ -308,7 +314,9 @@ public class KafkaProducerFastPathTests
         {
             var innerProduce = producer.FireAsync(Topic, $"inner-{depth}", $"inner-value-{depth}");
             if (!innerProduce.IsCompletedSuccessfully)
+            {
                 throw new InvalidOperationException("Expected the nested reentrant hot path to complete synchronously.");
+            }
         };
 
         await producer.FireAsync(Topic, "outer", "outer-value");
@@ -518,7 +526,9 @@ public class KafkaProducerFastPathTests
                 if (Equals(activity.GetTagItem(DekafDiagnostics.MessagingClientId), clientId))
                 {
                     lock (sendSpans)
+                    {
                         sendSpans.Add(activity);
+                    }
                 }
             }
         };
@@ -586,7 +596,9 @@ public class KafkaProducerFastPathTests
                 if (Equals(activity.GetTagItem(DekafDiagnostics.MessagingClientId), clientId))
                 {
                     lock (sendSpans)
+                    {
                         sendSpans.Add(activity);
+                    }
                 }
             }
         };
@@ -643,7 +655,9 @@ public class KafkaProducerFastPathTests
                 if (Equals(activity.GetTagItem(DekafDiagnostics.MessagingClientId), clientId))
                 {
                     lock (sendSpans)
+                    {
                         sendSpans.Add(activity);
+                    }
                 }
             }
         };
@@ -1332,7 +1346,9 @@ public class KafkaProducerFastPathTests
         finally
         {
             if (syntheticReservationRemaining > 0)
+            {
                 accumulator.ReleaseMemory(syntheticReservationRemaining);
+            }
         }
     }
 
@@ -1389,7 +1405,9 @@ public class KafkaProducerFastPathTests
         finally
         {
             if (syntheticReservationRemaining > 0)
+            {
                 accumulator.ReleaseMemory(syntheticReservationRemaining);
+            }
         }
     }
 
@@ -1538,7 +1556,9 @@ public class KafkaProducerFastPathTests
             var key = $"key-{i}";
             var keyBytes = Encoding.UTF8.GetBytes(key);
             if (partitioner.Partition(Topic, keyBytes, keyIsNull: false, partitionCount) == targetPartition)
+            {
                 return key;
+            }
         }
 
         throw new InvalidOperationException($"Could not find a key for partition {targetPartition}.");
@@ -1619,7 +1639,9 @@ public class KafkaProducerFastPathTests
         var parameters = new object[] { topicPartition, null! };
         var found = (bool)tryGetValueMethod!.Invoke(deques, parameters)!;
         if (!found)
+        {
             throw new InvalidOperationException("Partition deque was not found.");
+        }
 
         var partitionDeque = parameters[1];
         var partitionBatch = GetInstanceField<object?>(partitionDeque!, "CurrentBatch");
@@ -1627,12 +1649,16 @@ public class KafkaProducerFastPathTests
         {
             var completeMethod = partitionBatch.GetType().GetMethod("Complete");
             if (completeMethod!.Invoke(partitionBatch, null) is ReadyBatch completedBatch)
+            {
                 return completedBatch;
+            }
         }
 
         var peekFirstMethod = partitionDeque.GetType().GetMethod("PeekFirst");
         if (peekFirstMethod!.Invoke(partitionDeque, null) is ReadyBatch readyBatch)
+        {
             return readyBatch;
+        }
 
         throw new InvalidOperationException("Partition deque did not contain a current or sealed batch.");
     }
@@ -1645,7 +1671,9 @@ public class KafkaProducerFastPathTests
         var tryGetValueMethod = deques.GetType().GetMethod("TryGetValue");
         var parameters = new object[] { topicPartition, null! };
         if (!(bool)tryGetValueMethod!.Invoke(deques, parameters)!)
+        {
             throw new InvalidOperationException("Partition deque was not found.");
+        }
 
         var partitionBatch = GetInstanceField<object?>(parameters[1]!, "CurrentBatch")
             ?? throw new InvalidOperationException("Current batch was not found.");
@@ -1660,11 +1688,15 @@ public class KafkaProducerFastPathTests
         var tryGetValueMethod = deques.GetType().GetMethod("TryGetValue");
         var parameters = new object[] { topicPartition, null! };
         if (!(bool)tryGetValueMethod!.Invoke(deques, parameters)!)
+        {
             return false;
+        }
 
         var partitionDeque = parameters[1]!;
         if (GetInstanceField<object?>(partitionDeque, "CurrentBatch") is not null)
+        {
             return true;
+        }
 
         return partitionDeque.GetType().GetMethod("PeekFirst")!.Invoke(partitionDeque, null) is ReadyBatch;
     }
@@ -1677,7 +1709,9 @@ public class KafkaProducerFastPathTests
         var tryGetValueMethod = deques.GetType().GetMethod("TryGetValue");
         var parameters = new object[] { topicPartition, null! };
         if (!(bool)tryGetValueMethod!.Invoke(deques, parameters)!)
+        {
             return 0;
+        }
 
         var partitionDeque = parameters[1]!;
         return GetInstanceField<int>(partitionDeque, "SlowPathAppendCount");
@@ -1728,9 +1762,13 @@ public class KafkaProducerFastPathTests
         for (var index = 0; index < record.HeaderCount; index++)
         {
             if (headers![index].Key != key)
+            {
                 continue;
+            }
             if (value is not null)
+            {
                 throw new InvalidOperationException($"Found duplicate '{key}' headers.");
+            }
 
             value = Encoding.UTF8.GetString(headers[index].Value.Span);
         }
@@ -1793,7 +1831,10 @@ public class KafkaProducerFastPathTests
         private static readonly object PreparedSchema = new();
 
         public bool ProducesRecordHeaders => true;
-        public int SerializePreparedCount { get; private set; }
+        public int SerializePreparedCount
+        {
+            get; private set;
+        }
 
         public ValueTask PrepareAsync(
             string value,
@@ -1958,7 +1999,10 @@ public class KafkaProducerFastPathTests
     {
         private bool _hasReentered;
 
-        public Action? OnFirstPartition { get; set; }
+        public Action? OnFirstPartition
+        {
+            get; set;
+        }
 
         public int Partition(string topic, ReadOnlySpan<byte> key, bool keyIsNull, int partitionCount)
         {
@@ -1977,12 +2021,17 @@ public class KafkaProducerFastPathTests
         private const int MaximumDepth = 2;
         private int _depth;
 
-        public Action<int>? OnPartition { get; set; }
+        public Action<int>? OnPartition
+        {
+            get; set;
+        }
 
         public int Partition(string topic, ReadOnlySpan<byte> key, bool keyIsNull, int partitionCount)
         {
             if (_depth == MaximumDepth)
+            {
                 return 0;
+            }
 
             var depth = ++_depth;
             try

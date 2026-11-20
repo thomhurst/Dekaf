@@ -101,7 +101,9 @@ public sealed partial class SchemaRegistryCsfleRuleTests
         {
             registrationEntered.TrySetResult();
             if (!releaseRegistration.Wait(TimeSpan.FromSeconds(15)))
+            {
                 throw new TimeoutException("Concurrent DEK registration was not released.");
+            }
         };
         var operations = Enumerable.Range(0, 8).Select(_ => Task.Factory.StartNew(() =>
         {
@@ -146,8 +148,10 @@ public sealed partial class SchemaRegistryCsfleRuleTests
         var client = CreateDekClient();
         client.AddKek(new Kek
         {
-            Name = "payments-kek", KmsType = LocalKmsProvider.DefaultType,
-            KmsKeyId = "local://payments", Shared = true
+            Name = "payments-kek",
+            KmsType = LocalKmsProvider.DefaultType,
+            KmsKeyId = "local://payments",
+            Shared = true
         });
         var keyLength = algorithm switch
         {
@@ -158,15 +162,22 @@ public sealed partial class SchemaRegistryCsfleRuleTests
         var serverKey = Enumerable.Repeat((byte)7, keyLength).ToArray();
         var serverDek = new Dek
         {
-            KekName = "payments-kek", Subject = "orders-value", Version = rotate ? 2 : 1,
-            Algorithm = algorithm, KeyMaterial = Convert.ToBase64String(serverKey),
+            KekName = "payments-kek",
+            Subject = "orders-value",
+            Version = rotate ? 2 : 1,
+            Algorithm = algorithm,
+            KeyMaterial = Convert.ToBase64String(serverKey),
             Timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
         };
         if (rotate)
+        {
             client.AddDek(TestDek(algorithm, new byte[keyLength], DateTimeOffset.UtcNow.AddDays(-2).ToUnixTimeMilliseconds()));
+        }
         client.RegisteredDekKeyMaterial = serverDek.KeyMaterial;
         if (conflict)
+        {
             client.BeforeRegisterDek = () => client.AddDek(serverDek);
+        }
         var writer = new SchemaRegistryCsfleRuleHandler(client, [new RejectingKmsProvider()]);
         var context = CreateHandlerContext(AlgorithmRule(algorithm, rotate));
         var payload = "server-managed key"u8.ToArray();
@@ -178,7 +189,9 @@ public sealed partial class SchemaRegistryCsfleRuleTests
         await Assert.That(client.LastRegisterDekRequest.Version).IsEqualTo(rotate ? (int?)2 : null);
         await Assert.That(client.LastRegisterDekRequest.Algorithm).IsEqualTo(algorithm);
         if (rotate)
+        {
             await Assert.That(BinaryPrimitives.ReadInt32BigEndian(ciphertext.AsSpan(1, 4))).IsEqualTo(2);
+        }
         // Use an independent registry and no KMS providers to prove that the returned key encrypted the payload.
         var readerClient = CreateDekClient();
         readerClient.AddDek(serverDek);
@@ -195,8 +208,10 @@ public sealed partial class SchemaRegistryCsfleRuleTests
         var client = CreateDekClient();
         client.AddKek(new Kek
         {
-            Name = "payments-kek", KmsType = LocalKmsProvider.DefaultType,
-            KmsKeyId = "local://payments", Shared = true
+            Name = "payments-kek",
+            KmsType = LocalKmsProvider.DefaultType,
+            KmsKeyId = "local://payments",
+            Shared = true
         });
         client.RegisteredDekKeyMaterial = keyMaterial;
         var writer = new SchemaRegistryCsfleRuleHandler(client, [new RejectingKmsProvider()]);
@@ -230,8 +245,11 @@ public sealed partial class SchemaRegistryCsfleRuleTests
         var key = new byte[algorithm == DekAlgorithm.Aes256Siv ? 64 : 32];
         client.AddDek(new Dek
         {
-            KekName = "payments-kek", Subject = "orders-value", Version = 2,
-            Algorithm = algorithm, KeyMaterial = Convert.ToBase64String(key),
+            KekName = "payments-kek",
+            Subject = "orders-value",
+            Version = 2,
+            Algorithm = algorithm,
+            KeyMaterial = Convert.ToBase64String(key),
             Timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
         });
         client.AddDek(TestDek(algorithm, key, DateTimeOffset.UtcNow.AddDays(-2).ToUnixTimeMilliseconds()));
@@ -269,8 +287,12 @@ public sealed partial class SchemaRegistryCsfleRuleTests
 
     private static Dek TestDek(DekAlgorithm algorithm, byte[] key, long? timestamp = null) => new()
     {
-        KekName = "payments-kek", Subject = "orders-value", Version = 1,
-        Algorithm = algorithm, KeyMaterial = Convert.ToBase64String(key), Timestamp = timestamp
+        KekName = "payments-kek",
+        Subject = "orders-value",
+        Version = 1,
+        Algorithm = algorithm,
+        KeyMaterial = Convert.ToBase64String(key),
+        Timestamp = timestamp
     };
 
     private static SchemaRule AlgorithmRule(DekAlgorithm algorithm, bool rotate = false) => CreateRule(

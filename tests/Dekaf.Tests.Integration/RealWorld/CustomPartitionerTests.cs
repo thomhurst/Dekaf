@@ -51,7 +51,10 @@ public sealed class CustomPartitionerTests(KafkaTestContainer kafka) : KafkaInte
     /// </summary>
     private sealed class RecordingPartitioner : IPartitioner
     {
-        public List<(string Topic, bool KeyIsNull, int PartitionCount)> Invocations { get; } = [];
+        public List<(string Topic, bool KeyIsNull, int PartitionCount)> Invocations
+        {
+            get;
+        } = [];
 
         public int Partition(string topic, ReadOnlySpan<byte> key, bool keyIsNull, int partitionCount)
         {

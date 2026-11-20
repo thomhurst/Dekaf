@@ -96,11 +96,16 @@ public sealed partial class AwsKmsProvider : ISchemaRegistryKmsProvider, IDispos
     {
         var config = (AmazonKeyManagementServiceConfig)client.Config;
         if (string.IsNullOrEmpty(config.ServiceURL))
+        {
             _regionalClients = new RegionalClientCache(config);
+        }
     }
 
     /// <inheritdoc />
-    public string Type { get; }
+    public string Type
+    {
+        get;
+    }
 
     /// <inheritdoc />
     public async ValueTask<byte[]> WrapKeyAsync(
@@ -113,7 +118,9 @@ public sealed partial class AwsKmsProvider : ISchemaRegistryKmsProvider, IDispos
         var operationToken = linkedCancellation?.Token ?? _disposeCancellation.Token;
         cancellationToken.ThrowIfCancellationRequested();
         if (keyMaterial.IsEmpty)
+        {
             throw new SchemaRegistryKmsException("AWS KMS wrap failed. Key material cannot be empty.");
+        }
 
         if (keyMaterial.Length > MaximumPlaintextLength)
         {
@@ -159,7 +166,9 @@ public sealed partial class AwsKmsProvider : ISchemaRegistryKmsProvider, IDispos
         var operationToken = linkedCancellation?.Token ?? _disposeCancellation.Token;
         cancellationToken.ThrowIfCancellationRequested();
         if (encryptedKeyMaterial.IsEmpty)
+        {
             throw new SchemaRegistryKmsException("AWS KMS unwrap failed. Encrypted key material cannot be empty.");
+        }
 
         var keyId = ResolveKeyId(keyReference);
         using var ciphertext = CreateInputStream(encryptedKeyMaterial, out var temporaryBuffer);
@@ -193,12 +202,16 @@ public sealed partial class AwsKmsProvider : ISchemaRegistryKmsProvider, IDispos
     {
         var previousState = Interlocked.Or(ref _operationState, DisposedMask);
         if ((previousState & DisposedMask) != 0)
+        {
             return;
+        }
 
         _ = CancelOperationsAsync();
 
         if ((previousState & ActiveOperationMask) != 0)
+        {
             WaitForOperationsToDrain();
+        }
 
         DisposeOwnedClient();
     }
@@ -209,20 +222,28 @@ public sealed partial class AwsKmsProvider : ISchemaRegistryKmsProvider, IDispos
         {
             var state = Volatile.Read(ref _operationState);
             if ((state & DisposedMask) != 0)
+            {
                 throw new ObjectDisposedException(nameof(AwsKmsProvider));
+            }
 
             if ((state & ActiveOperationMask) == ActiveOperationMask)
+            {
                 throw new InvalidOperationException("AWS KMS provider has too many active operations.");
+            }
 
             if (Interlocked.CompareExchange(ref _operationState, state + 1, state) == state)
+            {
                 return new OperationLease(this);
+            }
         }
     }
 
     private void ExitOperation()
     {
         if (Interlocked.Decrement(ref _operationState) == DisposedMask)
+        {
             TryDisposeCancellation();
+        }
     }
 
     private CancellationTokenSource? CreateLinkedCancellation(CancellationToken cancellationToken) =>
@@ -290,13 +311,19 @@ public sealed partial class AwsKmsProvider : ISchemaRegistryKmsProvider, IDispos
 
         var keyId = keyReference.KmsKeyId;
         if (string.IsNullOrWhiteSpace(keyId))
+        {
             throw new SchemaRegistryKmsException("AWS KMS key identifier cannot be null or whitespace.");
+        }
 
         if (keyId.StartsWith(KeyUriPrefix, StringComparison.OrdinalIgnoreCase))
+        {
             keyId = keyId[KeyUriPrefix.Length..];
+        }
 
         if (string.IsNullOrWhiteSpace(keyId))
+        {
             throw new SchemaRegistryKmsException("AWS KMS key identifier cannot be null or whitespace.");
+        }
 
         return keyId;
     }
@@ -316,7 +343,9 @@ public sealed partial class AwsKmsProvider : ISchemaRegistryKmsProvider, IDispos
     private static byte[] CopyResponse(MemoryStream? stream, string operation, bool clearSource)
     {
         if (stream is null)
+        {
             throw new SchemaRegistryKmsException($"AWS KMS {operation} failed. The service returned no key material.");
+        }
 
         using (stream)
         {
@@ -333,7 +362,9 @@ public sealed partial class AwsKmsProvider : ISchemaRegistryKmsProvider, IDispos
             finally
             {
                 if (clearSource)
+                {
                     ClearResponseStream(stream);
+                }
             }
         }
     }
@@ -347,7 +378,9 @@ public sealed partial class AwsKmsProvider : ISchemaRegistryKmsProvider, IDispos
         }
 
         if (!stream.CanWrite)
+        {
             return;
+        }
 
         stream.Position = 0;
         Span<byte> zeros = stackalloc byte[256];
@@ -363,7 +396,9 @@ public sealed partial class AwsKmsProvider : ISchemaRegistryKmsProvider, IDispos
     private static void ClearTemporaryBuffer(byte[]? temporaryBuffer)
     {
         if (temporaryBuffer is not null)
+        {
             CryptographicOperations.ZeroMemory(temporaryBuffer);
+        }
     }
 
     private static bool IsAwsFailure(Exception exception) => exception is
@@ -403,7 +438,9 @@ public sealed partial class AwsKmsProvider : ISchemaRegistryKmsProvider, IDispos
     private static void ValidateType(string type)
     {
         if (string.IsNullOrWhiteSpace(type))
+        {
             throw new ArgumentException("KMS provider type cannot be null or whitespace.", nameof(type));
+        }
     }
 
     private readonly struct OperationLease(AwsKmsProvider owner) : IDisposable

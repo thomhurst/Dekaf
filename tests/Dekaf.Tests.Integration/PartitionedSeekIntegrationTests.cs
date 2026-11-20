@@ -56,7 +56,9 @@ public sealed class PartitionedSeekIntegrationTests(KafkaTestContainer kafka) : 
                 {
                     var pass = Interlocked.Increment(ref lastRecordSeen) - 1;
                     if (pass < passes.Length)
+                    {
                         passes[pass].TrySetResult();
+                    }
                 }
 
                 return ValueTask.CompletedTask;
@@ -144,12 +146,18 @@ public sealed class PartitionedSeekIntegrationTests(KafkaTestContainer kafka) : 
             {
                 received.Enqueue(message.Offset);
                 if (message.Offset != 1)
+                {
                     return;
+                }
 
                 if (parked.TrySetResult())
+                {
                     await Task.Delay(Timeout.Infinite, context.StopRequestedToken).ConfigureAwait(false);
+                }
                 else
+                {
                     replayed.TrySetResult();
+                }
             },
             new PartitionedProcessingOptions
             {

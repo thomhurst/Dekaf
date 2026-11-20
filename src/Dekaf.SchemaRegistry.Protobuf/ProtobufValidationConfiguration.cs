@@ -16,7 +16,9 @@ internal static class ProtobufValidationConfiguration
                 "Unsupported inline validation execution mode.");
         }
         if (execution == ValidationRulesExecution.Disabled)
+        {
             return null;
+        }
         if (ruleExecutor is not null and not SchemaRegistryRuleExecutor &&
             !ReferenceEquals(ruleExecutor, SchemaRegistryMigrationRunner.MarkerRuleExecutor))
         {

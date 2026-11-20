@@ -10,12 +10,30 @@ public sealed class AddRaftVoterRequest : IKafkaRequest<AddRaftVoterResponse>
     public static short LowestSupportedVersion => 0;
     public static short HighestSupportedVersion => 1;
 
-    public string? ClusterId { get; init; }
-    public int TimeoutMs { get; init; } = 30000;
-    public int VoterId { get; init; }
-    public Guid VoterDirectoryId { get; init; }
-    public required IReadOnlyList<RaftVoterEndpointData> Listeners { get; init; }
-    public bool AckWhenCommitted { get; init; } = true;
+    public string? ClusterId
+    {
+        get; init;
+    }
+    public int TimeoutMs
+    {
+        get; init;
+    } = 30000;
+    public int VoterId
+    {
+        get; init;
+    }
+    public Guid VoterDirectoryId
+    {
+        get; init;
+    }
+    public required IReadOnlyList<RaftVoterEndpointData> Listeners
+    {
+        get; init;
+    }
+    public bool AckWhenCommitted
+    {
+        get; init;
+    } = true;
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {
@@ -45,9 +63,18 @@ public sealed class AddRaftVoterResponse : IKafkaResponse
     public static short LowestSupportedVersion => 0;
     public static short HighestSupportedVersion => 1;
 
-    public int ThrottleTimeMs { get; init; }
-    public ErrorCode ErrorCode { get; init; }
-    public string? ErrorMessage { get; init; }
+    public int ThrottleTimeMs
+    {
+        get; init;
+    }
+    public ErrorCode ErrorCode
+    {
+        get; init;
+    }
+    public string? ErrorMessage
+    {
+        get; init;
+    }
 
     public static IKafkaResponse Read(ref KafkaProtocolReader reader, short version)
     {
@@ -76,9 +103,18 @@ public sealed class RemoveRaftVoterRequest : IKafkaRequest<RemoveRaftVoterRespon
     public static short LowestSupportedVersion => 0;
     public static short HighestSupportedVersion => 0;
 
-    public string? ClusterId { get; init; }
-    public int VoterId { get; init; }
-    public Guid VoterDirectoryId { get; init; }
+    public string? ClusterId
+    {
+        get; init;
+    }
+    public int VoterId
+    {
+        get; init;
+    }
+    public Guid VoterDirectoryId
+    {
+        get; init;
+    }
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {
@@ -98,9 +134,18 @@ public sealed class RemoveRaftVoterResponse : IKafkaResponse
     public static short LowestSupportedVersion => 0;
     public static short HighestSupportedVersion => 0;
 
-    public int ThrottleTimeMs { get; init; }
-    public ErrorCode ErrorCode { get; init; }
-    public string? ErrorMessage { get; init; }
+    public int ThrottleTimeMs
+    {
+        get; init;
+    }
+    public ErrorCode ErrorCode
+    {
+        get; init;
+    }
+    public string? ErrorMessage
+    {
+        get; init;
+    }
 
     public static IKafkaResponse Read(ref KafkaProtocolReader reader, short version)
     {
@@ -121,9 +166,18 @@ public sealed class RemoveRaftVoterResponse : IKafkaResponse
 
 public sealed class RaftVoterEndpointData
 {
-    public required string Name { get; init; }
-    public required string Host { get; init; }
-    public ushort Port { get; init; }
+    public required string Name
+    {
+        get; init;
+    }
+    public required string Host
+    {
+        get; init;
+    }
+    public ushort Port
+    {
+        get; init;
+    }
 
     public void Write(ref KafkaProtocolWriter writer)
     {

@@ -19,7 +19,9 @@ public sealed partial class ShareConsumerRenewalTests
             {
                 // Partition 1 moves to broker 2 after the request that opens the session.
                 if (request.ShareSessionEpoch == 0)
+                {
                     fixture!.MetadataManager.Metadata.Update(SessionMetadata(partition1Leader: 2));
+                }
                 return new(CreateFetchResponse(0, oldLeaderOffset++));
             }
         };
@@ -57,7 +59,9 @@ public sealed partial class ShareConsumerRenewalTests
             {
                 // The group revokes partition 1 after the request that opens the session.
                 if (request.ShareSessionEpoch == 0)
+                {
                     PrepareForPoll(fixture!.Consumer, new TopicPartition("topic", 0));
+                }
                 return new(CreateFetchResponse(0, offset++));
             }
         };
@@ -105,7 +109,9 @@ public sealed partial class ShareConsumerRenewalTests
             {
                 await Assert.That(await poll.MoveNextAsync()).IsTrue();
                 if (mode == ShareAcknowledgementMode.Explicit)
+                {
                     fixture.Consumer.Acknowledge(poll.Current, AcknowledgeType.Accept);
+                }
             }
 
             PrepareForPoll(fixture.Consumer, new TopicPartition("topic", 0));
@@ -113,7 +119,9 @@ public sealed partial class ShareConsumerRenewalTests
             {
                 await Assert.That(await poll.MoveNextAsync()).IsTrue();
                 if (mode == ShareAcknowledgementMode.Explicit)
+                {
                     fixture.Consumer.Acknowledge(poll.Current, AcknowledgeType.Accept);
+                }
             }
         }
 
@@ -160,9 +168,13 @@ public sealed partial class ShareConsumerRenewalTests
             {
                 await Assert.That(await poll.MoveNextAsync()).IsTrue();
                 if (poll.Current.Partition == 1)
+                {
                     held = poll.Current;
+                }
                 else
+                {
                     fixture.Consumer.Acknowledge(poll.Current, AcknowledgeType.Accept);
+                }
             }
 
             await Assert.That(held).IsNotNull();
@@ -263,7 +275,9 @@ public sealed partial class ShareConsumerRenewalTests
             {
                 var requestNumber = ++requestCount;
                 if (requestNumber == 1)
+                {
                     fixture!.MetadataManager.Metadata.Update(SessionMetadata(partition1Leader: 2));
+                }
                 // The broker loses the session when the request that forgets partition 1 arrives.
                 if (requestNumber == 2)
                 {
@@ -391,9 +405,13 @@ public sealed partial class ShareConsumerRenewalTests
     private static async Task TeardownAsync(KafkaShareConsumer<string, string> consumer, string operation)
     {
         if (operation == "close")
+        {
             await consumer.CloseAsync();
+        }
         else if (operation == "dispose")
+        {
             await consumer.DisposeAsync();
+        }
         else
         {
             consumer.Unsubscribe();
@@ -405,11 +423,15 @@ public sealed partial class ShareConsumerRenewalTests
     private static async Task AssertSessionClosedAsync(CapturingConnection connection, string operation)
     {
         if (operation == "unsubscribe")
+        {
             await Assert.That(connection.ShareAcknowledgeRequests.Count(static request =>
                 request.ShareSessionEpoch == ShareSessionManager.CloseEpoch)).IsEqualTo(1);
+        }
         else
+        {
             await Assert.That(connection.ShareFetchRequests.Count(static request =>
                 request.ShareSessionEpoch == ShareSessionManager.CloseEpoch)).IsEqualTo(1);
+        }
     }
 
     private static async Task PollUntilFetchCountAsync(
@@ -420,7 +442,9 @@ public sealed partial class ShareConsumerRenewalTests
         using var stop = new CancellationTokenSource(TimeSpan.FromSeconds(10));
         await using var poll = consumer.PollAsync(stop.Token).GetAsyncEnumerator();
         while (connection.ShareFetchRequests.Count < fetchCount)
+        {
             await Assert.That(await poll.MoveNextAsync()).IsTrue();
+        }
     }
 
     private static int[] FetchedPartitions(ShareFetchRequest request)
@@ -448,13 +472,19 @@ public sealed partial class ShareConsumerRenewalTests
                 [
                     new PartitionMetadata
                     {
-                        ErrorCode = ErrorCode.None, PartitionIndex = 0, LeaderId = partition0Leader,
-                        ReplicaNodes = [partition0Leader], IsrNodes = [partition0Leader]
+                        ErrorCode = ErrorCode.None,
+                        PartitionIndex = 0,
+                        LeaderId = partition0Leader,
+                        ReplicaNodes = [partition0Leader],
+                        IsrNodes = [partition0Leader]
                     },
                     new PartitionMetadata
                     {
-                        ErrorCode = ErrorCode.None, PartitionIndex = 1, LeaderId = partition1Leader,
-                        ReplicaNodes = [partition1Leader], IsrNodes = [partition1Leader]
+                        ErrorCode = ErrorCode.None,
+                        PartitionIndex = 1,
+                        LeaderId = partition1Leader,
+                        ReplicaNodes = [partition1Leader],
+                        IsrNodes = [partition1Leader]
                     }
                 ]
             }

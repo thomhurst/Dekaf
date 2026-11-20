@@ -12,17 +12,26 @@ public sealed class SchemaRegistryKmsKeyReference
     /// <summary>
     /// KMS provider type, for example aws-kms, azure-kv, gcp-kms, or local-kms.
     /// </summary>
-    public required string KmsType { get; init; }
+    public required string KmsType
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Provider-specific key identifier or URL.
     /// </summary>
-    public required string KmsKeyId { get; init; }
+    public required string KmsKeyId
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Provider-specific KMS properties from Schema Registry.
     /// </summary>
-    public IReadOnlyDictionary<string, string>? KmsProps { get; init; }
+    public IReadOnlyDictionary<string, string>? KmsProps
+    {
+        get; init;
+    }
 }
 
 /// <summary>
@@ -33,7 +42,10 @@ public interface ISchemaRegistryKmsProvider
     /// <summary>
     /// KMS provider type handled by this provider.
     /// </summary>
-    string Type { get; }
+    string Type
+    {
+        get;
+    }
 
     /// <summary>
     /// Wraps raw data encryption key material.
@@ -68,7 +80,10 @@ public sealed class SchemaRegistryKmsOptions
     /// <summary>
     /// Providers available to Schema Registry rule handlers.
     /// </summary>
-    public IList<ISchemaRegistryKmsProvider> Providers { get; } = [];
+    public IList<ISchemaRegistryKmsProvider> Providers
+    {
+        get;
+    } = [];
 
     /// <summary>
     /// Creates a provider registry from the configured providers.
@@ -96,10 +111,14 @@ public sealed class SchemaRegistryKmsProviderRegistry
         {
             ArgumentNullException.ThrowIfNull(provider);
             if (string.IsNullOrWhiteSpace(provider.Type))
+            {
                 throw new ArgumentException("KMS provider type cannot be null or whitespace.", nameof(providers));
+            }
 
             if (!dictionary.TryAdd(provider.Type, provider))
+            {
                 throw new ArgumentException($"A KMS provider for type '{provider.Type}' is already registered.", nameof(providers));
+            }
         }
 
         _providers = dictionary;
@@ -127,7 +146,9 @@ public sealed class SchemaRegistryKmsProviderRegistry
     public ISchemaRegistryKmsProvider GetProvider(string kmsType)
     {
         if (TryGetProvider(kmsType, out var provider))
+        {
             return provider;
+        }
 
         throw new SchemaRegistryKmsException(
             $"No Schema Registry KMS provider is registered for KMS type '{kmsType}'.");
@@ -184,19 +205,27 @@ public sealed class LocalKmsProvider : ISchemaRegistryKmsProvider
     {
         ArgumentNullException.ThrowIfNull(keysById);
         if (string.IsNullOrWhiteSpace(type))
+        {
             throw new ArgumentException("KMS provider type cannot be null or whitespace.", nameof(type));
+        }
 
         var keys = new Dictionary<string, byte[]>(StringComparer.Ordinal);
         foreach (var entry in keysById)
         {
             if (string.IsNullOrWhiteSpace(entry.Key))
+            {
                 throw new ArgumentException("KMS key identifiers cannot be null or whitespace.", nameof(keysById));
+            }
 
             if (entry.Value is null)
+            {
                 throw new ArgumentException("KMS key material cannot be null.", nameof(keysById));
+            }
 
             if (!IsValidAesKeyLength(entry.Value.Length))
+            {
                 throw new ArgumentException("Local KMS KEK material must be 128, 192, or 256 bits.", nameof(keysById));
+            }
 
             keys.Add(entry.Key, entry.Value.ToArray());
         }
@@ -206,7 +235,10 @@ public sealed class LocalKmsProvider : ISchemaRegistryKmsProvider
     }
 
     /// <inheritdoc />
-    public string Type { get; }
+    public string Type
+    {
+        get;
+    }
 
     /// <inheritdoc />
     public ValueTask<byte[]> WrapKeyAsync(
@@ -217,7 +249,9 @@ public sealed class LocalKmsProvider : ISchemaRegistryKmsProvider
         cancellationToken.ThrowIfCancellationRequested();
         ArgumentNullException.ThrowIfNull(keyReference);
         if (keyMaterial.IsEmpty)
+        {
             throw new SchemaRegistryKmsException("Local KMS wrap failed. Key material cannot be empty.");
+        }
 
         var kek = ResolveKey(keyReference);
 
@@ -240,7 +274,9 @@ public sealed class LocalKmsProvider : ISchemaRegistryKmsProvider
         cancellationToken.ThrowIfCancellationRequested();
         ArgumentNullException.ThrowIfNull(keyReference);
         if (encryptedKeyMaterial.IsEmpty)
+        {
             throw new SchemaRegistryKmsException("Local KMS unwrap failed. Encrypted key material cannot be empty.");
+        }
 
         var kek = ResolveKey(keyReference);
 
@@ -265,7 +301,9 @@ public sealed class LocalKmsProvider : ISchemaRegistryKmsProvider
         }
 
         if (_keysById.TryGetValue(keyReference.KmsKeyId, out var kek))
+        {
             return kek;
+        }
 
         throw new SchemaRegistryKmsException(
             $"Local KMS key '{keyReference.KmsKeyId}' is not registered.");

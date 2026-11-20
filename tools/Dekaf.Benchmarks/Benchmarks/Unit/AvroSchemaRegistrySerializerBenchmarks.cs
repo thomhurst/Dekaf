@@ -212,20 +212,28 @@ public class AvroSchemaRegistrySerializerBenchmarks
 
         _equivalentRecords = new GenericRecord[256];
         for (var i = 0; i < _equivalentRecords.Length; i++)
+        {
             _equivalentRecords[i] = CreateRecord(i);
+        }
 
         _stableRecord = _equivalentRecords[0];
         _equivalentOverflowRecords = new GenericRecord[EquivalentOverflowSchemaCount];
         for (var i = 0; i < _equivalentOverflowRecords.Length; i++)
+        {
             _equivalentOverflowRecords[i] = CreateEquivalentOverflowRecord(i);
+        }
 
         _alternatingOverflowRecords = new GenericRecord[EquivalentOverflowSchemaCount];
         for (var i = 0; i < _alternatingOverflowRecords.Length; i++)
+        {
             _alternatingOverflowRecords[i] = CreateAlternatingOverflowRecord(i);
+        }
 
         _distinctRecords = new GenericRecord[DistinctSchemaCount];
         for (var i = 0; i < _distinctRecords.Length; i++)
+        {
             _distinctRecords[i] = CreateDistinctRecord(i);
+        }
 
         _overflowRecords =
         [
@@ -438,7 +446,9 @@ public class AvroSchemaRegistrySerializerBenchmarks
     public void PrepareDistinctSchemaMisses()
     {
         for (var i = 0; i < _distinctRecords.Length; i++)
+        {
             _missSerializer.PrepareAsync(_distinctRecords[i], _context).GetAwaiter().GetResult();
+        }
     }
 
     [Benchmark(Description = "Serialize prepared int-only generic Avro record")]
@@ -789,8 +799,14 @@ public class AvroSchemaRegistrySerializerBenchmarks
     {
         public static readonly AvroSchema _SCHEMA = AvroSchema.Parse(RecordSchema);
 
-        public int Id { get; init; }
-        public string Name { get; init; } = string.Empty;
+        public int Id
+        {
+            get; init;
+        }
+        public string Name
+        {
+            get; init;
+        } = string.Empty;
         public AvroSchema Schema => _SCHEMA;
 
         public object Get(int fieldPos) => fieldPos switch
@@ -876,6 +892,8 @@ public class AvroSchemaRegistrySerializerBenchmarks
             bool permanent = false,
             CancellationToken cancellationToken = default) => throw new NotSupportedException();
 
-        public void Dispose() { }
+        public void Dispose()
+        {
+        }
     }
 }

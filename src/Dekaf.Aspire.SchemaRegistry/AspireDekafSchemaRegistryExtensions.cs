@@ -90,14 +90,20 @@ public static class AspireDekafSchemaRegistryExtensions
         }
 
         if (serviceKey is null)
+        {
             builder.Services.AddSingleton(Create);
+        }
         else
+        {
             builder.Services.AddKeyedSingleton(serviceKey, (services, _) => Create(services));
+        }
 
         var healthCheckName = serviceKey is null ? "Dekaf_schema_registry" : $"Dekaf_schema_registry_{serviceKey}";
         var propertyKey = $"Dekaf.Aspire.HealthChecks.{healthCheckName}";
         if (settings.DisableHealthChecks || builder.Properties.ContainsKey(propertyKey))
+        {
             return;
+        }
 
         builder.Properties[propertyKey] = true;
         builder.Services.AddHealthChecks().Add(new HealthCheckRegistration(
@@ -131,7 +137,9 @@ public static class AspireDekafSchemaRegistryExtensions
             .AddInMemoryCollection(namedSection.AsEnumerable(makePathsRelative: true)
                 .Where(entry => connectionString is null || !IsUrlPath(entry.Key)));
         if (connectionString is not null)
+        {
             merged.AddInMemoryCollection([new("Config:Url", connectionString)]);
+        }
 
         return merged.Build().Get<DekafSchemaRegistrySettings>() ?? new DekafSchemaRegistrySettings();
     }

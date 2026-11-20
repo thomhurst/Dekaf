@@ -13,13 +13,22 @@ public interface IGroupListingAdminClient
 public sealed class ListGroupsOptions
 {
     /// <summary>Group states, compared without case. Null or empty includes all states. Requires ListGroups v4.</summary>
-    public IReadOnlyList<string>? States { get; init; }
+    public IReadOnlyList<string>? States
+    {
+        get; init;
+    }
 
     /// <summary>Group types, such as classic, consumer, share, or streams, compared without case. Null or empty includes all types. Requires ListGroups v5.</summary>
-    public IReadOnlyList<string>? Types { get; init; }
+    public IReadOnlyList<string>? Types
+    {
+        get; init;
+    }
 
     /// <summary>Exact protocol strings. An empty string selects offset-only simple groups; null or an empty list includes all protocols.</summary>
-    public IReadOnlyList<string>? ProtocolTypes { get; init; }
+    public IReadOnlyList<string>? ProtocolTypes
+    {
+        get; init;
+    }
 }
 
 /// <summary>Unified group listing for admin clients.</summary>

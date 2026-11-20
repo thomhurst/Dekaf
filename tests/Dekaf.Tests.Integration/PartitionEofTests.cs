@@ -185,7 +185,9 @@ public class PartitionEofTests(KafkaTestContainer kafka) : KafkaIntegrationTest(
                 {
                     eofCount++;
                     if (eofCount >= 2)
+                    {
                         break; // Got two EOF events
+                    }
                 }
                 else
                 {
@@ -475,7 +477,9 @@ public class PartitionEofTests(KafkaTestContainer kafka) : KafkaIntegrationTest(
             {
                 eofPartitions.Add(result.Partition);
                 if (eofPartitions.Count >= 3)
+                {
                     break; // Got EOF for all partitions
+                }
             }
             else
             {

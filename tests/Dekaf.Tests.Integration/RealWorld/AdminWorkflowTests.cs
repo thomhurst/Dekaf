@@ -66,7 +66,10 @@ public sealed class AdminWorkflowTests(KafkaTestContainer kafka) : KafkaIntegrat
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))
         {
             messages.Add(msg);
-            if (messages.Count >= 5) break;
+            if (messages.Count >= 5)
+            {
+                break;
+            }
         }
 
         await Assert.That(messages).Count().IsEqualTo(5);
@@ -215,8 +218,7 @@ public sealed class AdminWorkflowTests(KafkaTestContainer kafka) : KafkaIntegrat
             var ourGroup = groups.FirstOrDefault(g => g.GroupId == groupId);
             await Assert.That(ourGroup).IsNotNull();
         }
-        catch (Exception ex) when (
-            ex is TimeoutException ||
+        catch (Exception ex) when (ex is TimeoutException ||
             ex.Message.Contains("timed out") ||
             ex.InnerException is TimeoutException)
         {
@@ -274,8 +276,7 @@ public sealed class AdminWorkflowTests(KafkaTestContainer kafka) : KafkaIntegrat
             await Assert.That(group.AssignmentEpoch).IsNotNull();
             await Assert.That(group.Members.Count).IsGreaterThan(0);
         }
-        catch (Exception ex) when (
-            ex is TimeoutException ||
+        catch (Exception ex) when (ex is TimeoutException ||
             ex.Message.Contains("timed out") ||
             ex.InnerException is TimeoutException)
         {
@@ -345,8 +346,7 @@ public sealed class AdminWorkflowTests(KafkaTestContainer kafka) : KafkaIntegrat
             var existsAfter = groupsAfter.Any(g => g.GroupId == groupId);
             await Assert.That(existsAfter).IsFalse();
         }
-        catch (Exception ex) when (
-            ex is TimeoutException ||
+        catch (Exception ex) when (ex is TimeoutException ||
             ex is ArgumentNullException ||
             ex.Message.Contains("timed out") ||
             ex.Message.Contains("Broken pipe") ||
@@ -526,7 +526,9 @@ public sealed class AdminWorkflowTests(KafkaTestContainer kafka) : KafkaIntegrat
                 {
                     offsetsBefore = await admin.ListConsumerGroupOffsetsAsync(groupId).ConfigureAwait(false);
                     if (offsetsBefore.ContainsKey(tp))
+                    {
                         break;
+                    }
                 }
                 catch (Exception) when (i < 7)
                 {
@@ -550,8 +552,7 @@ public sealed class AdminWorkflowTests(KafkaTestContainer kafka) : KafkaIntegrat
                     ]).ConfigureAwait(false);
                     break;
                 }
-                catch (Errors.GroupException ex) when (
-                    (ex.Message.Contains("UnknownMemberId") || ex.Message.Contains("RebalanceInProgress")) && attempt < 7)
+                catch (Errors.GroupException ex) when ((ex.Message.Contains("UnknownMemberId") || ex.Message.Contains("RebalanceInProgress")) && attempt < 7)
                 {
                     await Task.Delay(2000).ConfigureAwait(false);
                 }
@@ -562,8 +563,7 @@ public sealed class AdminWorkflowTests(KafkaTestContainer kafka) : KafkaIntegrat
             await Assert.That(offsetsAfter).ContainsKey(tp);
             await Assert.That(offsetsAfter[tp]).IsEqualTo(0);
         }
-        catch (Exception ex) when (
-            ex is TimeoutException ||
+        catch (Exception ex) when (ex is TimeoutException ||
             ex is ArgumentNullException ||
             ex.Message.Contains("timed out") ||
             ex.Message.Contains("Broken pipe") ||
@@ -643,8 +643,7 @@ public sealed class AdminWorkflowTests(KafkaTestContainer kafka) : KafkaIntegrat
             var foundInNonMatching = nonMatchingGroups.Any(g => g.GroupId == groupId);
             await Assert.That(foundInNonMatching).IsFalse();
         }
-        catch (Exception ex) when (
-            ex is TimeoutException ||
+        catch (Exception ex) when (ex is TimeoutException ||
             ex.Message.Contains("timed out") ||
             ex.InnerException is TimeoutException)
         {
@@ -705,8 +704,7 @@ public sealed class AdminWorkflowTests(KafkaTestContainer kafka) : KafkaIntegrat
             await Assert.That(group.AssignmentEpoch).IsNotNull();
             await Assert.That(group.Members.Count).IsGreaterThan(0);
         }
-        catch (Exception ex) when (
-            ex is TimeoutException ||
+        catch (Exception ex) when (ex is TimeoutException ||
             ex.Message.Contains("timed out") ||
             ex.InnerException is TimeoutException)
         {
@@ -775,8 +773,7 @@ public sealed class AdminWorkflowTests(KafkaTestContainer kafka) : KafkaIntegrat
             await Assert.That(descriptions[groupId1].GroupEpoch).IsNotNull();
             await Assert.That(descriptions[groupId2].GroupEpoch).IsNotNull();
         }
-        catch (Exception ex) when (
-            ex is TimeoutException ||
+        catch (Exception ex) when (ex is TimeoutException ||
             ex.Message.Contains("timed out") ||
             ex.InnerException is TimeoutException)
         {
@@ -952,8 +949,7 @@ public sealed class AdminWorkflowTests(KafkaTestContainer kafka) : KafkaIntegrat
                     ]).ConfigureAwait(false);
                     break;
                 }
-                catch (Errors.GroupException ex) when (
-                    (ex.Message.Contains("UnknownMemberId") || ex.Message.Contains("RebalanceInProgress")) && attempt < 7)
+                catch (Errors.GroupException ex) when ((ex.Message.Contains("UnknownMemberId") || ex.Message.Contains("RebalanceInProgress")) && attempt < 7)
                 {
                     await Task.Delay(2000).ConfigureAwait(false);
                 }
@@ -973,7 +969,10 @@ public sealed class AdminWorkflowTests(KafkaTestContainer kafka) : KafkaIntegrat
                 await foreach (var msg in consumer2.ConsumeAsync(cts2.Token))
                 {
                     reconsumed.Add(msg);
-                    if (reconsumed.Count >= 3) break;
+                    if (reconsumed.Count >= 3)
+                    {
+                        break;
+                    }
                 }
 
                 await Assert.That(reconsumed.Count).IsEqualTo(3);
@@ -984,8 +983,7 @@ public sealed class AdminWorkflowTests(KafkaTestContainer kafka) : KafkaIntegrat
                 await Assert.That(reconsumed[2].Value).IsEqualTo("value-4");
             }
         }
-        catch (Exception ex) when (
-            ex is TimeoutException ||
+        catch (Exception ex) when (ex is TimeoutException ||
             ex is ArgumentNullException ||
             ex.Message.Contains("timed out") ||
             ex.Message.Contains("Broken pipe") ||
@@ -1069,7 +1067,10 @@ public sealed class AdminWorkflowTests(KafkaTestContainer kafka) : KafkaIntegrat
                 try
                 {
                     offsets = await admin.ListConsumerGroupOffsetsAsync(groupId).ConfigureAwait(false);
-                    if (offsets.ContainsKey(tp)) break;
+                    if (offsets.ContainsKey(tp))
+                    {
+                        break;
+                    }
                 }
                 catch (Exception) when (i < 4)
                 {
@@ -1092,8 +1093,7 @@ public sealed class AdminWorkflowTests(KafkaTestContainer kafka) : KafkaIntegrat
                     ]).ConfigureAwait(false);
                     break;
                 }
-                catch (Errors.GroupException ex) when (
-                    (ex.Message.Contains("UnknownMemberId") || ex.Message.Contains("RebalanceInProgress")) && attempt < 7)
+                catch (Errors.GroupException ex) when ((ex.Message.Contains("UnknownMemberId") || ex.Message.Contains("RebalanceInProgress")) && attempt < 7)
                 {
                     await Task.Delay(2000).ConfigureAwait(false);
                 }
@@ -1123,8 +1123,7 @@ public sealed class AdminWorkflowTests(KafkaTestContainer kafka) : KafkaIntegrat
             var stillExists = groupsAfter.Any(g => g.GroupId == groupId);
             await Assert.That(stillExists).IsFalse();
         }
-        catch (Exception ex) when (
-            ex is TimeoutException ||
+        catch (Exception ex) when (ex is TimeoutException ||
             ex is ArgumentNullException ||
             ex.Message.Contains("timed out") ||
             ex.Message.Contains("Broken pipe") ||

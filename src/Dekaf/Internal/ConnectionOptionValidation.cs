@@ -5,7 +5,9 @@ internal static class ConnectionOptionValidation
     public static TimeSpan ValidatePositiveTimeout(TimeSpan timeout, string paramName, string message)
     {
         if (timeout <= TimeSpan.Zero)
+        {
             throw new ArgumentOutOfRangeException(paramName, message);
+        }
 
         ArgumentOutOfRangeException.ThrowIfGreaterThan(timeout.TotalMilliseconds, int.MaxValue, paramName);
         return timeout;
@@ -14,7 +16,9 @@ internal static class ConnectionOptionValidation
     public static int ToNonNegativeMilliseconds(TimeSpan timeout, string paramName, string message)
     {
         if (timeout < TimeSpan.Zero)
+        {
             throw new ArgumentOutOfRangeException(paramName, message);
+        }
 
         ArgumentOutOfRangeException.ThrowIfGreaterThan(timeout.TotalMilliseconds, int.MaxValue, paramName);
         return (int)timeout.TotalMilliseconds;

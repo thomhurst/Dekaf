@@ -22,7 +22,10 @@ public class ClusterMetadataSnapshotRebuildBenchmarks
     private int _leaderEpoch;
 
     [Params(100, 1_000)]
-    public int PartitionsPerTopic { get; set; }
+    public int PartitionsPerTopic
+    {
+        get; set;
+    }
 
     [GlobalSetup]
     public void Setup()

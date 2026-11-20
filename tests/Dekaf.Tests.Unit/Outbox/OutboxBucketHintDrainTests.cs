@@ -52,7 +52,15 @@ public sealed class OutboxBucketHintDrainTests
         {
             var mask = 0;
             for (var index = 0; index < count; index++)
-                mask |= output[index] switch { 0 => 1, 65 => 2, 129 => 4, _ => 0 };
+            {
+                mask |= output[index] switch
+                {
+                    0 => 1,
+                    65 => 2,
+                    129 => 4,
+                    _ => 0
+                };
+            }
             return mask;
         }
     }
@@ -208,12 +216,27 @@ public sealed class OutboxBucketHintDrainTests
 
     private sealed class Fixture : IDisposable
     {
-        public FakeOutboxTimeProvider Time { get; } = new();
-        public Store Store { get; } = new();
-        public Publisher Publisher { get; } = new();
-        public OutboxNotifier Notifier { get; }
+        public FakeOutboxTimeProvider Time
+        {
+            get;
+        } = new();
+        public Store Store
+        {
+            get;
+        } = new();
+        public Publisher Publisher
+        {
+            get;
+        } = new();
+        public OutboxNotifier Notifier
+        {
+            get;
+        }
         private readonly OutboxRelayService _relay;
-        public Func<Task> Cycle { get; }
+        public Func<Task> Cycle
+        {
+            get;
+        }
         private long _id;
 
         public Fixture()
@@ -226,15 +249,29 @@ public sealed class OutboxBucketHintDrainTests
 
         public void Add(int bucket) => Store.Rows[bucket].Add(new OutboxMessage
         {
-            Id = ++_id, MessageId = Guid.NewGuid(), Bucket = bucket, Topic = "test", CreatedAtUtc = Time.GetUtcNow()
+            Id = ++_id,
+            MessageId = Guid.NewGuid(),
+            Bucket = bucket,
+            Topic = "test",
+            CreatedAtUtc = Time.GetUtcNow()
         });
-        public void Dispose() { _relay.Dispose(); Notifier.Dispose(); }
+        public void Dispose()
+        {
+            _relay.Dispose();
+            Notifier.Dispose();
+        }
     }
 
     private sealed class Store : IOutboxStore, IOutboxLeaseRenewalStore
     {
-        public List<OutboxMessage>[] Rows { get; } = [[], []];
-        public IReadOnlyList<int> Owned { get; set; } = new[] { 0, 1 };
+        public List<OutboxMessage>[] Rows
+        {
+            get;
+        } = [[], []];
+        public IReadOnlyList<int> Owned
+        {
+            get; set;
+        } = new[] { 0, 1 };
         public int Probes;
         public int Fetches;
         public int Deletes;

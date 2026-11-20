@@ -25,8 +25,14 @@ public class AspireClientRegistrationTests
             ("Aspire:Dekaf:Producer:Config:ClientId", "shared"),
             ("Aspire:Dekaf:Producer:Config:LingerMs", "7"),
             ("Aspire:Dekaf:Producer:messaging:Config:ClientId", "named"));
-        if (keyed) builder.AddKeyedDekafProducer<string, string>("messaging");
-        else builder.AddDekafProducer<string, string>("messaging");
+        if (keyed)
+        {
+            builder.AddKeyedDekafProducer<string, string>("messaging");
+        }
+        else
+        {
+            builder.AddDekafProducer<string, string>("messaging");
+        }
         await using var provider = builder.Services.BuildServiceProvider();
 
         var options = Options(keyed
@@ -47,11 +53,20 @@ public class AspireClientRegistrationTests
             ("ConnectionStrings:messaging", "connection:9092"),
             ("Aspire:Dekaf:Producer:Config:ClientId", "configured"));
         builder.Services.AddSingleton(new ClientName("from-services"));
+
         void Settings(DekafProducerSettings settings) => settings.ConnectionString = "settings:9092";
+
         void Configure(IServiceProvider services, ProducerBuilder<string, string> producer) =>
             producer.WithClientId(services.GetRequiredService<ClientName>().Value);
-        if (keyed) builder.AddKeyedDekafProducer<string, string>("messaging", Settings, Configure);
-        else builder.AddDekafProducer<string, string>("messaging", Settings, Configure);
+
+        if (keyed)
+        {
+            builder.AddKeyedDekafProducer<string, string>("messaging", Settings, Configure);
+        }
+        else
+        {
+            builder.AddDekafProducer<string, string>("messaging", Settings, Configure);
+        }
         await using var provider = builder.Services.BuildServiceProvider();
 
         var options = Options(keyed
@@ -158,8 +173,14 @@ public class AspireClientRegistrationTests
             ("Aspire:Dekaf:ShareConsumer:Config:SaslMechanism", "ScramSha512"),
             ("Aspire:Dekaf:ShareConsumer:Config:SaslUsername", "user"),
             ("Aspire:Dekaf:ShareConsumer:Config:SaslPassword", "secret"));
-        if (keyed) builder.AddKeyedDekafShareConsumer<string, string>("messaging");
-        else builder.AddDekafShareConsumer<string, string>("messaging");
+        if (keyed)
+        {
+            builder.AddKeyedDekafShareConsumer<string, string>("messaging");
+        }
+        else
+        {
+            builder.AddDekafShareConsumer<string, string>("messaging");
+        }
         await using var provider = builder.Services.BuildServiceProvider();
 
         var options = Options(keyed
@@ -211,8 +232,14 @@ public class AspireClientRegistrationTests
             ("ConnectionStrings:messaging", "broker:9092"),
             ("Aspire:Dekaf:AdminClient:Config:BootstrapControllers:0", "controller:9093"),
             ("Aspire:Dekaf:AdminClient:Config:ClientId", "admin"));
-        if (keyed) builder.AddKeyedDekafAdminClient("messaging");
-        else builder.AddDekafAdminClient("messaging");
+        if (keyed)
+        {
+            builder.AddKeyedDekafAdminClient("messaging");
+        }
+        else
+        {
+            builder.AddDekafAdminClient("messaging");
+        }
         await using var provider = builder.Services.BuildServiceProvider();
 
         var options = Options(keyed
@@ -245,8 +272,14 @@ public class AspireClientRegistrationTests
     public async Task RootClient_IsSingletonWithOwnHealthClient(bool keyed)
     {
         var builder = HostBuilder(("ConnectionStrings:messaging", "broker:9092"));
-        if (keyed) builder.AddKeyedDekafClient("messaging", configureBuilder: (_, client) => client.WithClientId("root"));
-        else builder.AddDekafClient("messaging", configureBuilder: (_, client) => client.WithClientId("root"));
+        if (keyed)
+        {
+            builder.AddKeyedDekafClient("messaging", configureBuilder: (_, client) => client.WithClientId("root"));
+        }
+        else
+        {
+            builder.AddDekafClient("messaging", configureBuilder: (_, client) => client.WithClientId("root"));
+        }
         await using var provider = builder.Services.BuildServiceProvider();
 
         var root = keyed
@@ -289,7 +322,10 @@ public class AspireClientRegistrationTests
     private sealed class Worker(IKafkaShareConsumer<string, string> consumer)
         : KafkaShareConsumerService<string, string>(consumer, NullLogger.Instance)
     {
-        public IKafkaShareConsumer<string, string> Consumer { get; } = consumer;
+        public IKafkaShareConsumer<string, string> Consumer
+        {
+            get;
+        } = consumer;
         protected override IEnumerable<string> Topics => ["tasks"];
         protected override ValueTask ProcessAsync(ShareConsumeResult<string, string> result, CancellationToken cancellationToken) => ValueTask.CompletedTask;
     }
@@ -297,7 +333,10 @@ public class AspireClientRegistrationTests
     private sealed class OtherWorker(IKafkaShareConsumer<string, string> consumer)
         : KafkaShareConsumerService<string, string>(consumer, NullLogger.Instance)
     {
-        public IKafkaShareConsumer<string, string> Consumer { get; } = consumer;
+        public IKafkaShareConsumer<string, string> Consumer
+        {
+            get;
+        } = consumer;
         protected override IEnumerable<string> Topics => ["tasks"];
         protected override ValueTask ProcessAsync(ShareConsumeResult<string, string> result, CancellationToken cancellationToken) => ValueTask.CompletedTask;
     }

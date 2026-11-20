@@ -25,7 +25,9 @@ public sealed partial class AdminClient : IShareGroupOffsetQueryAdminClient
         var opts = options ?? new ListShareGroupOffsetsOptions();
         ArgumentOutOfRangeException.ThrowIfNegative(opts.TimeoutMs);
         if (requests.Count == 0)
+        {
             return new(new Dictionary<string, ShareGroupOffsetsResult>(StringComparer.Ordinal));
+        }
         ThrowIfShareOffsetQueryDeadlineExpired(opts.TimeoutMs);
         return ExecuteWithTimeoutAsync(token => ListShareGroupOffsetsCoreAsync(requests, token),
             opts.TimeoutMs, nameof(ListShareGroupOffsetsAsync), cancellationToken);
@@ -50,19 +52,25 @@ public sealed partial class AdminClient : IShareGroupOffsetQueryAdminClient
                 foreach (var partition in partitions)
                 {
                     if (!byTopic.TryGetValue(partition.Topic, out var indexes))
+                    {
                         byTopic.Add(partition.Topic, indexes = []);
+                    }
                     indexes.Add(partition.Partition);
                 }
                 var topicList = new List<DescribeShareGroupOffsetsRequestTopic>(byTopic.Count);
                 foreach (var (topic, indexes) in byTopic)
+                {
                     topicList.Add(new() { TopicName = topic, Partitions = indexes });
+                }
                 topics = topicList;
             }
             requestGroups.Add(groupId, new() { GroupId = groupId, Topics = topics });
         }
         cancellationToken.ThrowIfCancellationRequested();
         if (requestGroups.Count == 0)
+        {
             return results;
+        }
 
         await InitializeUntilDeadlineAsync(nameof(ListShareGroupOffsetsAsync), cancellationToken).ConfigureAwait(false);
         var failures = new Dictionary<string, ShareGroupOffsetsResult>(StringComparer.Ordinal);
@@ -75,12 +83,16 @@ public sealed partial class AdminClient : IShareGroupOffsetQueryAdminClient
                 foreach (var (groupId, request) in requestGroups)
                 {
                     if (results.ContainsKey(groupId))
+                    {
                         continue;
+                    }
                     try
                     {
                         var coordinator = await FindGroupCoordinatorAsync(groupId, attemptToken).ConfigureAwait(false);
                         if (!byCoordinator.TryGetValue(coordinator, out var groups))
+                        {
                             byCoordinator.Add(coordinator, groups = []);
+                        }
                         groups.Add(request);
                     }
                     catch (Exception exception) when (IsShareOffsetQueryFailure(exception, attemptToken))
@@ -101,8 +113,12 @@ public sealed partial class AdminClient : IShareGroupOffsetQueryAdminClient
                         attemptToken.ThrowIfCancellationRequested();
                         var responseGroups = new Dictionary<string, DescribeShareGroupOffsetsResponseGroup?>(StringComparer.Ordinal);
                         foreach (var group in response.Groups)
+                        {
                             if (!responseGroups.TryAdd(group.GroupId, group))
+                            {
                                 responseGroups[group.GroupId] = null;
+                            }
+                        }
                         foreach (var request in groups)
                         {
                             if (!responseGroups.TryGetValue(request.GroupId, out var found) || found is null)
@@ -117,18 +133,26 @@ public sealed partial class AdminClient : IShareGroupOffsetQueryAdminClient
                                 retryFailure ??= new GroupException(found.ErrorCode, found.ErrorMessage ?? "Share-group offset query failed.") { GroupId = found.GroupId };
                             }
                             else
+                            {
                                 results[request.GroupId] = MapShareGroupOffsets(found, requests[request.GroupId], version);
+                            }
                         }
                     }
                     catch (Exception exception) when (IsShareOffsetQueryFailure(exception, attemptToken))
                     {
                         foreach (var request in groups)
+                        {
                             if (!results.ContainsKey(request.GroupId))
+                            {
                                 CaptureFailure(request.GroupId, exception);
+                            }
+                        }
                     }
                 }
                 if (retryFailure is not null)
+                {
                     throw retryFailure;
+                }
 
                 void CaptureFailure(string groupId, Exception exception)
                 {
@@ -139,7 +163,9 @@ public sealed partial class AdminClient : IShareGroupOffsetQueryAdminClient
                         retryFailure ??= exception;
                     }
                     else
+                    {
                         results[groupId] = error;
+                    }
                 }
             }, cancellationToken, Timeout.Infinite, nameof(ListShareGroupOffsetsAsync)).ConfigureAwait(false);
         }
@@ -151,14 +177,20 @@ public sealed partial class AdminClient : IShareGroupOffsetQueryAdminClient
         catch (Exception exception) when (IsShareOffsetQueryFailure(exception, cancellationToken))
         {
             foreach (var groupId in requests.Keys)
+            {
                 if (!results.ContainsKey(groupId))
+                {
                     results[groupId] = failures.TryGetValue(groupId, out var failure)
                         ? failure : ShareGroupOffsetsError(groupId, ShareOffsetQueryErrorCode(exception), exception.Message);
+                }
+            }
         }
         cancellationToken.ThrowIfCancellationRequested();
         var ordered = new Dictionary<string, ShareGroupOffsetsResult>(requests.Count, StringComparer.Ordinal);
         foreach (var groupId in requests.Keys)
+        {
             ordered.Add(groupId, results[groupId]);
+        }
         cancellationToken.ThrowIfCancellationRequested();
         return ordered;
     }
@@ -172,8 +204,10 @@ public sealed partial class AdminClient : IShareGroupOffsetQueryAdminClient
     internal static void ThrowIfShareOffsetQueryDeadlineExpired(int timeoutMs)
     {
         if (timeoutMs == 0)
+        {
             throw new KafkaTimeoutException(TimeoutKind.Api, TimeSpan.Zero, TimeSpan.Zero,
                 "ListShareGroupOffsetsAsync timed out before querying offsets.");
+        }
     }
 
     internal static ShareGroupOffsetsResult ShareGroupOffsetsError(string groupId, ErrorCode errorCode, string? message = null) =>
@@ -183,7 +217,9 @@ public sealed partial class AdminClient : IShareGroupOffsetQueryAdminClient
         IReadOnlyList<TopicPartition>? selected, short version)
     {
         if (group.ErrorCode != ErrorCode.None)
+        {
             return ShareGroupOffsetsError(group.GroupId, group.ErrorCode, group.ErrorMessage);
+        }
         var offsets = new Dictionary<TopicPartition, ShareGroupOffsetDescription>();
         var requested = selected is null ? null : new HashSet<TopicPartition>(selected);
         foreach (var topic in group.Topics)
@@ -192,25 +228,38 @@ public sealed partial class AdminClient : IShareGroupOffsetQueryAdminClient
             {
                 var key = new TopicPartition(topic.TopicName, partition.PartitionIndex);
                 if (requested is not null && !requested.Contains(key))
+                {
                     continue;
+                }
                 var duplicate = offsets.ContainsKey(key);
                 offsets[key] = new ShareGroupOffsetDescription
                 {
-                    TopicPartition = key, StartOffset = duplicate ? -1 : partition.StartOffset,
-                    LeaderEpoch = duplicate ? -1 : partition.LeaderEpoch, Lag = !duplicate && version >= 1 ? partition.Lag : -1,
+                    TopicPartition = key,
+                    StartOffset = duplicate ? -1 : partition.StartOffset,
+                    LeaderEpoch = duplicate ? -1 : partition.LeaderEpoch,
+                    Lag = !duplicate && version >= 1 ? partition.Lag : -1,
                     ErrorCode = duplicate ? ErrorCode.UnknownServerError : partition.ErrorCode,
                     ErrorMessage = duplicate ? "The broker returned duplicate partition outcomes." : partition.ErrorMessage
                 };
             }
         }
         if (selected is not null)
+        {
             foreach (var key in selected)
+            {
                 if (!offsets.ContainsKey(key))
+                {
                     offsets.Add(key, new ShareGroupOffsetDescription
                     {
-                        TopicPartition = key, StartOffset = -1, LeaderEpoch = -1, ErrorCode = ErrorCode.UnknownServerError,
+                        TopicPartition = key,
+                        StartOffset = -1,
+                        LeaderEpoch = -1,
+                        ErrorCode = ErrorCode.UnknownServerError,
                         ErrorMessage = "The broker omitted the requested partition."
                     });
+                }
+            }
+        }
         return new() { GroupId = group.GroupId, ErrorCode = group.ErrorCode, ErrorMessage = group.ErrorMessage, Offsets = offsets };
     }
 }

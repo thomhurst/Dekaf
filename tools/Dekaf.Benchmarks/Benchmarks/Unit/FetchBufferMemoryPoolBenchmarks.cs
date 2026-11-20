@@ -27,7 +27,9 @@ public class FetchBufferMemoryPoolBenchmarks
     {
         var reservation = _pool.ReserveAsync(1024, CancellationToken.None);
         if (!reservation.IsCompletedSuccessfully)
+        {
             throw new InvalidOperationException("Uncontended reservation did not complete synchronously");
+        }
 
         reservation.Result.Dispose();
         return _pool.UsedBytes;

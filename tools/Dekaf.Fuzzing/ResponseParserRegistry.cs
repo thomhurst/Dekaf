@@ -55,7 +55,10 @@ internal static class ResponseParserRegistry
             .ToDictionary();
     }
 
-    public static IReadOnlyList<ResponseParserRegistration> Registrations { get; }
+    public static IReadOnlyList<ResponseParserRegistration> Registrations
+    {
+        get;
+    }
 
     public static bool TryGet(
         ApiKey apiKey,

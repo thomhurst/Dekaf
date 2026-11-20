@@ -18,7 +18,9 @@ public class WaveCoalesceGateTests
         var gate = new WaveCoalesceGate();
 
         for (var i = 0; i < WaveCoalesceGate.FruitlessSpinSuppressThreshold - 1; i++)
+        {
             gate.OnSpinCompleted(coalescedAdditionalBatch: false, nowTicks: 0);
+        }
 
         await Assert.That(gate.ShouldSpin(nowTicks: 0)).IsTrue();
     }
@@ -29,7 +31,9 @@ public class WaveCoalesceGateTests
         var gate = new WaveCoalesceGate();
 
         for (var i = 0; i < WaveCoalesceGate.FruitlessSpinSuppressThreshold; i++)
+        {
             gate.OnSpinCompleted(coalescedAdditionalBatch: false, nowTicks: 0);
+        }
 
         await Assert.That(gate.ShouldSpin(nowTicks: 0)).IsFalse();
     }
@@ -39,7 +43,9 @@ public class WaveCoalesceGateTests
     {
         var gate = new WaveCoalesceGate();
         for (var i = 0; i < WaveCoalesceGate.FruitlessSpinSuppressThreshold - 1; i++)
+        {
             gate.OnSpinCompleted(coalescedAdditionalBatch: false, nowTicks: 0);
+        }
 
         gate.OnSpinCompleted(coalescedAdditionalBatch: true, nowTicks: 0);
         gate.OnSpinCompleted(coalescedAdditionalBatch: false, nowTicks: 0);
@@ -52,7 +58,9 @@ public class WaveCoalesceGateTests
     {
         var gate = new WaveCoalesceGate();
         for (var i = 0; i < WaveCoalesceGate.FruitlessSpinSuppressThreshold; i++)
+        {
             gate.OnSpinCompleted(coalescedAdditionalBatch: false, nowTicks: 0);
+        }
 
         await Assert.That(gate.ShouldSpin(WaveCoalesceGate.SuppressedReprobeIntervalTicks - 1)).IsFalse();
 
@@ -64,7 +72,9 @@ public class WaveCoalesceGateTests
     {
         var gate = new WaveCoalesceGate();
         for (var i = 0; i < WaveCoalesceGate.FruitlessSpinSuppressThreshold; i++)
+        {
             gate.OnSpinCompleted(coalescedAdditionalBatch: false, nowTicks: 0);
+        }
         var firstProbeAt = WaveCoalesceGate.SuppressedReprobeIntervalTicks;
 
         gate.OnSpinCompleted(coalescedAdditionalBatch: false, nowTicks: firstProbeAt);
@@ -81,7 +91,9 @@ public class WaveCoalesceGateTests
     {
         var gate = new WaveCoalesceGate();
         for (var i = 0; i < WaveCoalesceGate.FruitlessSpinSuppressThreshold; i++)
+        {
             gate.OnSpinCompleted(coalescedAdditionalBatch: false, nowTicks: 0);
+        }
 
         gate.OnSpinCompleted(
             coalescedAdditionalBatch: true,

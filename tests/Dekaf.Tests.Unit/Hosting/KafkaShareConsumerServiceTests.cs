@@ -1,25 +1,30 @@
 using System.Runtime.CompilerServices;
 using System.Threading.Tasks.Sources;
 using Dekaf.Consumer;
-using Dekaf.Errors;
-using Dekaf.Networking;
-using Dekaf.Protocol;
 using Dekaf.Consumer.DeadLetter;
+using Dekaf.Errors;
 using Dekaf.Extensions.Hosting;
+using Dekaf.Networking;
 using Dekaf.Producer;
+using Dekaf.Protocol;
 using Dekaf.Retry;
 using Dekaf.ShareConsumer;
 using Microsoft.Extensions.Logging.Abstractions;
 using NSubstitute;
-
-using StringSet = System.Collections.Generic.IReadOnlySet<string>;
 using PartitionSet = System.Collections.Generic.IReadOnlySet<Dekaf.TopicPartition>;
+using StringSet = System.Collections.Generic.IReadOnlySet<string>;
 
 namespace Dekaf.Tests.Unit.Hosting;
 
 public sealed class KafkaShareConsumerServiceTests
 {
-    public enum PollFailureKind { JoinTimeout, Retriable, Authorization, UnclassifiedTimeout }
+    public enum PollFailureKind
+    {
+        JoinTimeout,
+        Retriable,
+        Authorization,
+        UnclassifiedTimeout
+    }
 
     [Test]
     [Arguments(PollFailureKind.JoinTimeout, false)]
@@ -58,8 +63,11 @@ public sealed class KafkaShareConsumerServiceTests
     [Test]
     public async Task ShutdownDuringPollBackoff_CancelsDelayWithoutAnotherPoll()
     {
-        var consumer = new TestConsumer { PollFailure = new KafkaTimeoutException("join timed out")
-            { TimeoutKind = TimeoutKind.Rebalance } };
+        var consumer = new TestConsumer
+        {
+            PollFailure = new KafkaTimeoutException("join timed out")
+            { TimeoutKind = TimeoutKind.Rebalance }
+        };
         await using var service = new TestService(consumer,
             options: new KafkaShareConsumerServiceOptions
             {
@@ -191,7 +199,11 @@ public sealed class KafkaShareConsumerServiceTests
             ThrowCommitFailure = true
         };
         var processed = 0;
-        await using var service = new TestService(consumer, (_, _) => { processed++; return ValueTask.CompletedTask; });
+        await using var service = new TestService(consumer, (_, _) =>
+        {
+            processed++;
+            return ValueTask.CompletedTask;
+        });
         await RunAsync(service);
         await Assert.That(processed).IsEqualTo(2);
         await Assert.That(consumer.Acknowledgements.Select(x => x.Type)).IsEquivalentTo([AcknowledgeType.Accept, AcknowledgeType.Accept]);
@@ -271,8 +283,14 @@ public sealed class KafkaShareConsumerServiceTests
     {
         var consumer = new TestConsumer(Record(0), Record(1));
         var calls = 0;
-        await using (var service = new TestService(consumer, (_, _) => { calls++; return ValueTask.CompletedTask; }))
+        await using (var service = new TestService(consumer, (_, _) =>
+        {
+            calls++;
+            return ValueTask.CompletedTask;
+        }))
+        {
             await RunAsync(service);
+        }
         await Assert.That(calls).IsEqualTo(2);
         await Assert.That(consumer.Acknowledgements.Select(x => x.Type)).IsEquivalentTo([AcknowledgeType.Accept, AcknowledgeType.Accept]);
         await Assert.That(consumer.Events).IsEquivalentTo(["initialize", "subscribe", "commit", "close", "dispose"]);
@@ -376,9 +394,15 @@ public sealed class KafkaShareConsumerServiceTests
         var producer = Substitute.For<IKafkaProducer<byte[]?, byte[]?>>();
         ProducerMessage<byte[]?, byte[]?>? sent = null;
         producer.ProduceAsync(Arg.Any<ProducerMessage<byte[]?, byte[]?>>(), Arg.Any<CancellationToken>())
-            .Returns(call => { sent = call.ArgAt<ProducerMessage<byte[]?, byte[]?>>(0); routing.SetResult(); return new(delivered.Task); });
+            .Returns(call =>
+            {
+                sent = call.ArgAt<ProducerMessage<byte[]?, byte[]?>>(0);
+                routing.SetResult();
+                return new(delivered.Task);
+            });
         await using var service = new TestService(consumer, (_, _) => throw new InvalidOperationException("failed"),
-            deadLetterOptions: new DeadLetterOptions()) { Producer = producer };
+            deadLetterOptions: new DeadLetterOptions())
+        { Producer = producer };
         await service.StartAsync(default);
         await routing.Task.WaitAsync(TimeSpan.FromSeconds(10));
         await Assert.That(consumer.Acknowledgements).IsEmpty();
@@ -399,7 +423,8 @@ public sealed class KafkaShareConsumerServiceTests
         producer.ProduceAsync(Arg.Any<ProducerMessage<byte[]?, byte[]?>>(), Arg.Any<CancellationToken>())
             .Returns(ValueTask.FromException<RecordMetadata>(routingError));
         await using var service = new TestService(consumer, (_, _) => throw new InvalidOperationException("process failure"),
-            deadLetterOptions: new DeadLetterOptions()) { Producer = producer };
+            deadLetterOptions: new DeadLetterOptions())
+        { Producer = producer };
         await Assert.That(async () => await RunAsync(service)).Throws<InvalidOperationException>();
         await Assert.That(service.RoutingFailures).IsEqualTo(1);
         await Assert.That(service.FailureContext!.Value.RoutingException).IsSameReferenceAs(routingError);
@@ -418,7 +443,11 @@ public sealed class KafkaShareConsumerServiceTests
         var producer = Substitute.For<IKafkaProducer<byte[]?, byte[]?>>();
         var topics = new List<string>();
         producer.ProduceAsync(Arg.Any<ProducerMessage<byte[]?, byte[]?>>(), Arg.Any<CancellationToken>())
-            .Returns(call => { topics.Add(call.ArgAt<ProducerMessage<byte[]?, byte[]?>>(0).Topic!); return new(default(RecordMetadata)); });
+            .Returns(call =>
+            {
+                topics.Add(call.ArgAt<ProducerMessage<byte[]?, byte[]?>>(0).Topic!);
+                return new(default(RecordMetadata));
+            });
         await using var service = new TestService(consumer, (_, _) => throw new InvalidOperationException(),
             deadLetterOptions: new DeadLetterOptions { RetryTopics = new RetryTopicOptions { Delays = [TimeSpan.FromSeconds(1)] } })
         { Producer = producer };
@@ -472,12 +501,17 @@ public sealed class KafkaShareConsumerServiceTests
         var producer = Substitute.For<IKafkaProducer<byte[]?, byte[]?>>();
         ProducerMessage<byte[]?, byte[]?>? sent = null;
         producer.ProduceAsync(Arg.Any<ProducerMessage<byte[]?, byte[]?>>(), Arg.Any<CancellationToken>())
-            .Returns(call => { sent = call.ArgAt<ProducerMessage<byte[]?, byte[]?>>(0); return new(default(RecordMetadata)); });
+            .Returns(call =>
+            {
+                sent = call.ArgAt<ProducerMessage<byte[]?, byte[]?>>(0);
+                return new(default(RecordMetadata));
+            });
         await using var service = new TestService(consumer, (_, _) => throw new InvalidOperationException(),
             deadLetterOptions: new DeadLetterOptions
             {
                 RetryTopics = retryTopicsEnabled ? new RetryTopicOptions { Delays = [TimeSpan.FromSeconds(1)] } : null
-            }) { Producer = producer };
+            })
+        { Producer = producer };
 
         await RunAsync(service);
 
@@ -520,12 +554,14 @@ public sealed class KafkaShareConsumerServiceTests
         var producer = Substitute.For<IKafkaProducer<byte[]?, byte[]?>>();
         producer.ProduceAsync(Arg.Any<ProducerMessage<byte[]?, byte[]?>>(), Arg.Any<CancellationToken>())
             .Returns(call => new ValueTask<RecordMetadata>(WaitForRoutingCancellationAsync(call.ArgAt<CancellationToken>(1))));
+
         async Task<RecordMetadata> WaitForRoutingCancellationAsync(CancellationToken token)
         {
             entered.SetResult();
             await Task.Delay(Timeout.InfiniteTimeSpan, token);
             return default;
         }
+
         await using var service = new TestService(consumer, (_, _) => throw new InvalidOperationException(),
             options: new KafkaShareConsumerServiceOptions { DrainOnShutdown = false }, deadLetterOptions: new DeadLetterOptions())
         { Producer = producer };
@@ -719,7 +755,11 @@ public sealed class KafkaShareConsumerServiceTests
             AcquisitionLockTimeoutMs = 100
         };
         var processed = false;
-        await using var service = new TestService(consumer, (_, _) => { processed = true; return ValueTask.CompletedTask; });
+        await using var service = new TestService(consumer, (_, _) =>
+        {
+            processed = true;
+            return ValueTask.CompletedTask;
+        });
         await RunAsync(service);
         await Assert.That(processed).IsFalse();
         // Any acknowledgement would be rejected by the broker, which already redelivers the records.
@@ -740,7 +780,9 @@ public sealed class KafkaShareConsumerServiceTests
         await using var service = new TestService(consumer, async (record, token) =>
         {
             if (record.Offset == 0)
+            {
                 await Task.Delay(TimeSpan.FromMilliseconds(500), token);
+            }
         }, options: new KafkaShareConsumerServiceOptions { RenewalInterval = TimeSpan.FromMilliseconds(5) });
         await RunAsync(service);
         await Assert.That(consumer.Abandoned).IsEquivalentTo([0L]);
@@ -764,12 +806,16 @@ public sealed class KafkaShareConsumerServiceTests
         var calls = 0;
         await using var service = new TestService(consumer, async (record, token) =>
         {
-            if (record.Offset != 0) return;
+            if (record.Offset != 0)
+            {
+                return;
+            }
             calls++;
             await Task.Delay(TimeSpan.FromMilliseconds(500), token);
             throw new InvalidOperationException("failed after the lock lapsed");
         }, options: new KafkaShareConsumerServiceOptions { RenewalInterval = TimeSpan.FromMilliseconds(5) },
-            retryPolicy: retry, deadLetterOptions: new DeadLetterOptions()) { Producer = producer };
+            retryPolicy: retry, deadLetterOptions: new DeadLetterOptions())
+        { Producer = producer };
         await RunAsync(service);
         // The broker already redelivers the record: no in-place retry, no routed copy, no disposition.
         await Assert.That(calls).IsEqualTo(1);
@@ -791,14 +837,18 @@ public sealed class KafkaShareConsumerServiceTests
         var calls = 0;
         await using var service = new TestService(consumer, async (record, token) =>
         {
-            if (record.Offset != 0) return;
+            if (record.Offset != 0)
+            {
+                return;
+            }
             calls++;
             // The 30 second local deadline is far away; only the broker's rejection marks the lock lost.
             await consumer.Renewed.Task.WaitAsync(token);
             await Task.Delay(TimeSpan.FromMilliseconds(50), token);
             throw new InvalidOperationException("failed after the broker rejected the renewal");
         }, options: new KafkaShareConsumerServiceOptions { RenewalInterval = TimeSpan.FromMilliseconds(5) },
-            retryPolicy: retry, deadLetterOptions: new DeadLetterOptions()) { Producer = producer };
+            retryPolicy: retry, deadLetterOptions: new DeadLetterOptions())
+        { Producer = producer };
         await RunAsync(service);
         await Assert.That(calls).IsEqualTo(1);
         await producer.DidNotReceive().ProduceAsync(Arg.Any<ProducerMessage<byte[]?, byte[]?>>(), Arg.Any<CancellationToken>());
@@ -821,6 +871,7 @@ public sealed class KafkaShareConsumerServiceTests
                 topics.Add(call.ArgAt<ProducerMessage<byte[]?, byte[]?>>(0).Topic!);
                 return new ValueTask<RecordMetadata>(FailAfterRenewalAsync());
             });
+
         async Task<RecordMetadata> FailAfterRenewalAsync()
         {
             // The renewal during this write is rejected, so the broker is redelivering the record.
@@ -828,6 +879,7 @@ public sealed class KafkaShareConsumerServiceTests
             await Task.Delay(50);
             throw new InvalidOperationException("retry topic unavailable");
         }
+
         await using var service = new TestService(consumer, (_, _) => throw new InvalidOperationException("failed"),
             options: new KafkaShareConsumerServiceOptions { RenewalInterval = TimeSpan.FromMilliseconds(5) },
             deadLetterOptions: new DeadLetterOptions { RetryTopics = new RetryTopicOptions { Delays = [TimeSpan.FromSeconds(1)] } })
@@ -898,7 +950,11 @@ public sealed class KafkaShareConsumerServiceTests
             ThrowCommitFailure = true
         };
         var processed = false;
-        await using var service = new TestService(consumer, (_, _) => { processed = true; return ValueTask.CompletedTask; });
+        await using var service = new TestService(consumer, (_, _) =>
+        {
+            processed = true;
+            return ValueTask.CompletedTask;
+        });
         await RunAsync(service);
         await Assert.That(processed).IsTrue();
         await Assert.That(consumer.Acknowledgements.Single().Type).IsEqualTo(AcknowledgeType.Accept);
@@ -911,7 +967,11 @@ public sealed class KafkaShareConsumerServiceTests
     {
         var consumer = new TestConsumer(Record(0)) { InlineFailure = new InvalidOperationException("inline acknowledgement failed") };
         var processed = false;
-        await using var service = new TestService(consumer, (_, _) => { processed = true; return ValueTask.CompletedTask; });
+        await using var service = new TestService(consumer, (_, _) =>
+        {
+            processed = true;
+            return ValueTask.CompletedTask;
+        });
         await Assert.That(async () => await RunAsync(service)).Throws<InvalidOperationException>();
         await Assert.That(processed).IsFalse();
         await Assert.That(consumer.Acknowledgements.Any(x => x.Type == AcknowledgeType.Accept)).IsFalse();
@@ -924,7 +984,11 @@ public sealed class KafkaShareConsumerServiceTests
             DateTimeOffset.UtcNow.AddHours(1).ToUnixTimeMilliseconds().ToString(System.Globalization.CultureInfo.InvariantCulture));
         var consumer = new TestConsumer(Record(0, "orders-retry-1s", headers));
         var processed = false;
-        await using var service = new TestService(consumer, (_, _) => { processed = true; return ValueTask.CompletedTask; },
+        await using var service = new TestService(consumer, (_, _) =>
+        {
+            processed = true;
+            return ValueTask.CompletedTask;
+        },
             options: new KafkaShareConsumerServiceOptions { DrainOnShutdown = false, RenewalInterval = TimeSpan.FromMilliseconds(5) },
             deadLetterOptions: new DeadLetterOptions { RetryTopics = new RetryTopicOptions { Delays = [TimeSpan.FromSeconds(1)] } })
         { Producer = Substitute.For<IKafkaProducer<byte[]?, byte[]?>>() };
@@ -973,13 +1037,20 @@ public sealed class KafkaShareConsumerServiceTests
         await using var service = new TestService(consumer, (_, _) => pending.Operation,
             options: new KafkaShareConsumerServiceOptions
             {
-                DrainOnShutdown = !cancel, ShutdownTimeout = TimeSpan.FromMilliseconds(50),
+                DrainOnShutdown = !cancel,
+                ShutdownTimeout = TimeSpan.FromMilliseconds(50),
                 RenewalInterval = TimeSpan.FromMilliseconds(5)
             });
         await service.StartAsync(default);
         await pending.Registered.Task.WaitAsync(TimeSpan.FromSeconds(10));
-        if (cancel) await service.StopAsync(default).WaitAsync(TimeSpan.FromSeconds(10));
-        else await consumer.Renewed.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        if (cancel)
+        {
+            await service.StopAsync(default).WaitAsync(TimeSpan.FromSeconds(10));
+        }
+        else
+        {
+            await consumer.Renewed.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        }
         pending.Complete();
         await service.ExecuteTask!.WaitAsync(TimeSpan.FromSeconds(10));
         await Assert.That(pending.Registrations).IsEqualTo(1);
@@ -1013,11 +1084,18 @@ public sealed class KafkaShareConsumerServiceTests
         internal int Consumptions;
         internal ValueTask Operation => new(this, _source.Version);
         internal void Complete() => _source.SetResult(true);
-        public void GetResult(short token) { Consumptions++; _source.GetResult(token); }
+        public void GetResult(short token)
+        {
+            Consumptions++;
+            _source.GetResult(token);
+        }
         public ValueTaskSourceStatus GetStatus(short token) => _source.GetStatus(token);
         public void OnCompleted(Action<object?> continuation, object? state, short token, ValueTaskSourceOnCompletedFlags flags)
         {
-            if (++Registrations != 1) throw new InvalidOperationException("A second ValueTask continuation was registered.");
+            if (++Registrations != 1)
+            {
+                throw new InvalidOperationException("A second ValueTask continuation was registered.");
+            }
             _source.OnCompleted(continuation, state, token, flags);
             Registered.TrySetResult();
         }
@@ -1032,10 +1110,15 @@ public sealed class KafkaShareConsumerServiceTests
     internal static TaskCompletionSource Signal() => new(TaskCreationOptions.RunContinuationsAsynchronously);
     internal static ShareConsumeResult<string, string> Record(long offset, string topic = "orders",
         IReadOnlyList<Dekaf.Serialization.Header>? headers = null) => new()
-    {
-        Topic = topic, Partition = 0, Offset = offset, Key = "key", Value = "value", DeliveryCount = 1,
-        Headers = headers ?? []
-    };
+        {
+            Topic = topic,
+            Partition = 0,
+            Offset = offset,
+            Key = "key",
+            Value = "value",
+            DeliveryCount = 1,
+            Headers = headers ?? []
+        };
 
     internal sealed class TestConsumer(params ShareConsumeResult<string, string>[] records) :
         IKafkaShareConsumer<string, string>, IShareConsumerConfiguration, IRawShareRecordAccessor, IHostedShareConsumer
@@ -1044,32 +1127,92 @@ public sealed class KafkaShareConsumerServiceTests
         public readonly List<(ShareConsumeResult<string, string> Record, AcknowledgeType Type)> Acknowledgements = [];
         public readonly List<long> Abandoned = [];
         public readonly TaskCompletionSource Renewed = Signal();
-        public TaskCompletionSource? DisposalGate { get; init; }
-        public ShareAcknowledgementMode AcknowledgementMode { get; init; } = ShareAcknowledgementMode.Explicit;
-        public bool FailCommit { get; init; }
-        public Exception? CommitFailure { get; init; }
+        public TaskCompletionSource? DisposalGate
+        {
+            get; init;
+        }
+        public ShareAcknowledgementMode AcknowledgementMode
+        {
+            get; init;
+        } = ShareAcknowledgementMode.Explicit;
+        public bool FailCommit
+        {
+            get; init;
+        }
+        public Exception? CommitFailure
+        {
+            get; init;
+        }
         // Reports CommitFailure for these partitions through the acknowledgement observer, as the
         // built-in consumer does before CommitAsync throws; other partitions report success.
-        public int[]? CommitFailurePartitions { get; init; }
-        public int[] CommitSuccessPartitions { get; init; } = [];
-        public Exception? FinalCommitFailure { get; init; }
-        public bool ReportCommitFailure { get; init; }
-        public bool ThrowCommitFailure { get; init; }
-        public byte[]? RawValue { get; init; } = [1, 2, 3];
-        public Exception? PollFailure { get; init; }
-        public int FailPollAfterRecords { get; init; }
-        public int PollAttempts { get; private set; }
-        public int DisposedPolls { get; private set; }
-        public int Delivered { get; private set; }
-        public StringSet Subscription { get; private set; } = new HashSet<string>();
+        public int[]? CommitFailurePartitions
+        {
+            get; init;
+        }
+        public int[] CommitSuccessPartitions
+        {
+            get; init;
+        } = [];
+        public Exception? FinalCommitFailure
+        {
+            get; init;
+        }
+        public bool ReportCommitFailure
+        {
+            get; init;
+        }
+        public bool ThrowCommitFailure
+        {
+            get; init;
+        }
+        public byte[]? RawValue
+        {
+            get; init;
+        } = [1, 2, 3];
+        public Exception? PollFailure
+        {
+            get; init;
+        }
+        public int FailPollAfterRecords
+        {
+            get; init;
+        }
+        public int PollAttempts
+        {
+            get; private set;
+        }
+        public int DisposedPolls
+        {
+            get; private set;
+        }
+        public int Delivered
+        {
+            get; private set;
+        }
+        public StringSet Subscription
+        {
+            get; private set;
+        } = new HashSet<string>();
         public PartitionSet Assignment => new HashSet<TopicPartition>();
         public string? MemberId => "test-member";
-        public int? AcquisitionLockTimeoutMs { get; init; } = 30_000;
-        public long? AcquisitionTimestamp { get; init; }
+        public int? AcquisitionLockTimeoutMs
+        {
+            get; init;
+        } = 30_000;
+        public long? AcquisitionTimestamp
+        {
+            get; init;
+        }
         public long AcquisitionStartedTimestamp => AcquisitionTimestamp ?? System.Diagnostics.Stopwatch.GetTimestamp();
-        public Exception? InlineFailure { get; init; }
+        public Exception? InlineFailure
+        {
+            get; init;
+        }
         private ShareAcknowledgementCommitCallback? _observer;
-        public CancellationToken RequestCancellationToken { get; private set; }
+        public CancellationToken RequestCancellationToken
+        {
+            get; private set;
+        }
         public void ObserveAcknowledgements(ShareAcknowledgementCommitCallback observer)
             => ObserveAcknowledgements(observer, default);
         public void ObserveAcknowledgements(ShareAcknowledgementCommitCallback observer,
@@ -1080,13 +1223,21 @@ public sealed class KafkaShareConsumerServiceTests
         }
         internal void ReportAcknowledgementFailure(Exception exception)
             => _observer?.Invoke([new ShareAcknowledgementCommitResult(new TopicPartition("orders", 0), default, exception)]);
-        public Queue<Exception> InitializeFailures { get; init; } = new();
+        public Queue<Exception> InitializeFailures
+        {
+            get; init;
+        } = new();
         public ValueTask InitializeAsync(CancellationToken cancellationToken = default)
         {
             Events.Add("initialize");
             return InitializeFailures.TryDequeue(out var failure) ? ValueTask.FromException(failure) : ValueTask.CompletedTask;
         }
-        public IKafkaShareConsumer<string, string> Subscribe(params string[] topics) { Subscription = topics.ToHashSet(); Events.Add("subscribe"); return this; }
+        public IKafkaShareConsumer<string, string> Subscribe(params string[] topics)
+        {
+            Subscription = topics.ToHashSet();
+            Events.Add("subscribe");
+            return this;
+        }
         public IKafkaShareConsumer<string, string> Unsubscribe() => this;
         public async IAsyncEnumerable<ShareConsumeResult<string, string>> PollAsync([EnumeratorCancellation] CancellationToken cancellationToken = default)
         {
@@ -1095,13 +1246,20 @@ public sealed class KafkaShareConsumerServiceTests
             {
                 await Task.CompletedTask;
                 if (InlineFailure is not null)
+                {
                     _observer?.Invoke([new ShareAcknowledgementCommitResult(new TopicPartition("orders", 0), default, InlineFailure)]);
+                }
                 while (true)
                 {
                     cancellationToken.ThrowIfCancellationRequested();
                     if (PollAttempts == 1 && Delivered == FailPollAfterRecords && PollFailure is not null)
+                    {
                         throw PollFailure;
-                    if (Delivered == records.Length) yield break;
+                    }
+                    if (Delivered == records.Length)
+                    {
+                        yield break;
+                    }
                     yield return records[Delivered++];
                 }
             }
@@ -1114,7 +1272,10 @@ public sealed class KafkaShareConsumerServiceTests
         public void Acknowledge(ShareConsumeResult<string, string> record, AcknowledgeType type = AcknowledgeType.Accept)
         {
             Acknowledgements.Add((record, type));
-            if (type == AcknowledgeType.Renew) Renewed.TrySetResult();
+            if (type == AcknowledgeType.Renew)
+            {
+                Renewed.TrySetResult();
+            }
         }
         public void AbandonAcquisition(string topic, int partition, long offset) => Abandoned.Add(offset);
         public ValueTask CommitAsync(CancellationToken cancellationToken = default)
@@ -1122,8 +1283,14 @@ public sealed class KafkaShareConsumerServiceTests
             Events.Add("commit");
             if (FinalCommitFailure is { } failure)
             {
-                if (ReportCommitFailure) ReportAcknowledgementFailure(failure);
-                if (ThrowCommitFailure) return ValueTask.FromException(failure);
+                if (ReportCommitFailure)
+                {
+                    ReportAcknowledgementFailure(failure);
+                }
+                if (ThrowCommitFailure)
+                {
+                    return ValueTask.FromException(failure);
+                }
             }
             if (CommitFailure is not null)
             {
@@ -1131,19 +1298,41 @@ public sealed class KafkaShareConsumerServiceTests
                 {
                     var results = new List<ShareAcknowledgementCommitResult>();
                     foreach (var partition in failed)
+                    {
                         results.Add(new ShareAcknowledgementCommitResult(new TopicPartition("orders", partition), default, CommitFailure));
+                    }
                     foreach (var partition in CommitSuccessPartitions)
+                    {
                         results.Add(new ShareAcknowledgementCommitResult(new TopicPartition("orders", partition), default, null));
+                    }
                     _observer?.Invoke(results.ToArray());
                 }
                 return ValueTask.FromException(CommitFailure);
             }
             return FailCommit ? ValueTask.FromException(new InvalidOperationException("acknowledgement failed")) : ValueTask.CompletedTask;
         }
-        public ValueTask CloseAsync(CancellationToken cancellationToken = default) { Events.Add("close"); return ValueTask.CompletedTask; }
-        public async ValueTask DisposeAsync() { Events.Add("dispose"); if (DisposalGate is not null) await DisposalGate.Task; }
-        public void EnableRawRecordTracking() { }
-        public bool TryGetRawRecord(TopicPartitionOffset record, out byte[]? key, out byte[]? value) { key = []; value = RawValue; return true; }
+        public ValueTask CloseAsync(CancellationToken cancellationToken = default)
+        {
+            Events.Add("close");
+            return ValueTask.CompletedTask;
+        }
+        public async ValueTask DisposeAsync()
+        {
+            Events.Add("dispose");
+            if (DisposalGate is not null)
+            {
+                await DisposalGate.Task;
+            }
+        }
+        public void EnableRawRecordTracking()
+        {
+        }
+        public bool TryGetRawRecord(TopicPartitionOffset record, out byte[]? key, out byte[]? value)
+        {
+            key = [];
+            value = RawValue;
+            return true;
+        }
     }
 
     // Exposes only public capabilities, like an application decorator outside the Dekaf assembly.
@@ -1155,8 +1344,16 @@ public sealed class KafkaShareConsumerServiceTests
         public string? MemberId => inner.MemberId;
         public int? AcquisitionLockTimeoutMs => inner.AcquisitionLockTimeoutMs;
         public ValueTask InitializeAsync(CancellationToken cancellationToken = default) => inner.InitializeAsync(cancellationToken);
-        public IKafkaShareConsumer<string, string> Subscribe(params string[] topics) { inner.Subscribe(topics); return this; }
-        public IKafkaShareConsumer<string, string> Unsubscribe() { inner.Unsubscribe(); return this; }
+        public IKafkaShareConsumer<string, string> Subscribe(params string[] topics)
+        {
+            inner.Subscribe(topics);
+            return this;
+        }
+        public IKafkaShareConsumer<string, string> Unsubscribe()
+        {
+            inner.Unsubscribe();
+            return this;
+        }
         public IAsyncEnumerable<ShareConsumeResult<string, string>> PollAsync(CancellationToken cancellationToken = default)
             => inner.PollAsync(cancellationToken);
         public void Acknowledge(ShareConsumeResult<string, string> record, AcknowledgeType type = AcknowledgeType.Accept)
@@ -1173,15 +1370,40 @@ public sealed class KafkaShareConsumerServiceTests
         DeadLetterOptions? deadLetterOptions = null) : KafkaShareConsumerService<string, string>(consumer,
             NullLogger.Instance, deadLetterOptions, retryPolicy, options)
     {
-        public MessageFailureDisposition? Disposition { get; init; } = MessageFailureDisposition.Retry;
-        public ShareMessageFailureContext<string, string>? FailureContext { get; private set; }
-        public int RoutingFailures { get; private set; }
-        public List<Exception> Errors { get; } = [];
-        public TaskCompletionSource ErrorObserved { get; } = Signal();
+        public MessageFailureDisposition? Disposition
+        {
+            get; init;
+        } = MessageFailureDisposition.Retry;
+        public ShareMessageFailureContext<string, string>? FailureContext
+        {
+            get; private set;
+        }
+        public int RoutingFailures
+        {
+            get; private set;
+        }
+        public List<Exception> Errors
+        {
+            get;
+        } = [];
+        public TaskCompletionSource ErrorObserved
+        {
+            get;
+        } = Signal();
         protected override ValueTask OnErrorAsync(Exception exception, ShareConsumeResult<string, string>? result, CancellationToken token)
-        { Errors.Add(exception); ErrorObserved.TrySetResult(); return ValueTask.CompletedTask; }
-        public IKafkaProducer<byte[]?, byte[]?>? Producer { get; init; }
-        public string[] SourceTopics { get; init; } = ["orders"];
+        {
+            Errors.Add(exception);
+            ErrorObserved.TrySetResult();
+            return ValueTask.CompletedTask;
+        }
+        public IKafkaProducer<byte[]?, byte[]?>? Producer
+        {
+            get; init;
+        }
+        public string[] SourceTopics
+        {
+            get; init;
+        } = ["orders"];
         protected override IEnumerable<string> Topics => SourceTopics;
         protected override ValueTask ProcessAsync(ShareConsumeResult<string, string> result, CancellationToken token)
             => process?.Invoke(result, token) ?? ValueTask.CompletedTask;
@@ -1191,7 +1413,10 @@ public sealed class KafkaShareConsumerServiceTests
             return Disposition is { } disposition ? new(disposition) : base.GetFailureDispositionAsync(context, token);
         }
         protected override ValueTask OnDeadLetterRoutingFailedAsync(Exception exception, ShareConsumeResult<string, string> result, CancellationToken token)
-        { RoutingFailures++; return ValueTask.CompletedTask; }
+        {
+            RoutingFailures++;
+            return ValueTask.CompletedTask;
+        }
         protected override IKafkaProducer<byte[]?, byte[]?> CreateDeadLetterProducer() => Producer!;
     }
 }

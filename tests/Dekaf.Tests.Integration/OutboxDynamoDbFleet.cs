@@ -33,7 +33,9 @@ internal sealed class OutboxDynamoDbFleet : IDisposable
         _storeClient = dynamoDb.CreateClient(async request =>
         {
             if (BeforeStoreCall is { } beforeStoreCall)
+            {
                 await beforeStoreCall(request);
+            }
             return OutboxDynamoDbFault.None;
         });
         Options = options;
@@ -41,16 +43,25 @@ internal sealed class OutboxDynamoDbFleet : IDisposable
         _storeClient.ExceptionEvent += OnException;
     }
 
-    public DynamoDbOutboxOptions Options { get; }
+    public DynamoDbOutboxOptions Options
+    {
+        get;
+    }
 
     /// <summary>The true time. A relay's lease is valid on it, whatever its host clock says.</summary>
-    public ManualClock Clock { get; } = new();
+    public ManualClock Clock
+    {
+        get;
+    } = new();
 
     /// <summary>
     /// Runs before every request a store sends. A scenario uses it to land a write between
     /// two requests of one store call.
     /// </summary>
-    public Func<AmazonWebServiceRequest, Task>? BeforeStoreCall { get; set; }
+    public Func<AmazonWebServiceRequest, Task>? BeforeStoreCall
+    {
+        get; set;
+    }
 
     public IAmazonDynamoDB Client => _client;
 
@@ -74,7 +85,9 @@ internal sealed class OutboxDynamoDbFleet : IDisposable
     public DynamoDbOutboxStore Store(string relayId)
     {
         if (!_stores.TryGetValue(relayId, out var store))
+        {
             _stores[relayId] = store = new DynamoDbOutboxStore(_storeClient, Options, HostClockOf(relayId));
+        }
         return store;
     }
 
@@ -87,7 +100,9 @@ internal sealed class OutboxDynamoDbFleet : IDisposable
     private HostClock HostClockOf(string relayId)
     {
         if (!_hostClocks.TryGetValue(relayId, out var clock))
+        {
             _hostClocks[relayId] = clock = new HostClock(Clock);
+        }
         return clock;
     }
 
@@ -138,7 +153,9 @@ internal sealed class OutboxDynamoDbFleet : IDisposable
         var startedAt = Clock.GetUtcNow();
         var owned = await Store(relayId).AcquireBucketLeasesAsync(Request(relayId));
         lock (_holdings)
+        {
             _holdings[relayId] = new Holding(owned, startedAt + LeaseDuration);
+        }
         AssertSingleOwner();
         await AssertTableNamesAsync(relayId, owned);
         return owned;
@@ -169,7 +186,9 @@ internal sealed class OutboxDynamoDbFleet : IDisposable
         foreach (var bucket in owned)
         {
             if (!named.Contains(bucket))
+            {
                 Assert.Fail($"{relayId} was told it owns bucket {bucket}, but the table does not name it.");
+            }
         }
     }
 
@@ -177,7 +196,9 @@ internal sealed class OutboxDynamoDbFleet : IDisposable
     public async Task RoundAsync(params string[] relayIds)
     {
         foreach (var relayId in relayIds)
+        {
             await AcquireAsync(relayId);
+        }
         Clock.Advance(RenewInterval);
     }
 
@@ -186,7 +207,9 @@ internal sealed class OutboxDynamoDbFleet : IDisposable
     {
         // Created up front: the store map is not safe to grow from the racing tasks.
         foreach (var relayId in relayIds)
+        {
             Store(relayId);
+        }
         await Task.WhenAll(relayIds.Select(relayId => Task.Run(() => AcquireAsync(relayId))));
         Clock.Advance(RenewInterval);
     }
@@ -199,9 +222,13 @@ internal sealed class OutboxDynamoDbFleet : IDisposable
         lock (_holdings)
         {
             if (renewed)
+            {
                 _holdings[relayId] = new Holding(owned, startedAt + LeaseDuration);
+            }
             else
+            {
                 _holdings.Remove(relayId);
+            }
         }
 
         return renewed;
@@ -317,7 +344,9 @@ internal sealed class OutboxDynamoDbFleet : IDisposable
     public void Forget(string relayId)
     {
         lock (_holdings)
+        {
             _holdings.Remove(relayId);
+        }
         _stores.Remove(relayId);
     }
 
@@ -325,7 +354,9 @@ internal sealed class OutboxDynamoDbFleet : IDisposable
     public IReadOnlyList<int> Owned(string relayId)
     {
         lock (_holdings)
+        {
             return _holdings.TryGetValue(relayId, out var holding) ? holding.Buckets : [];
+        }
     }
 
     public string Describe(params string[] relayIds) =>
@@ -341,16 +372,22 @@ internal sealed class OutboxDynamoDbFleet : IDisposable
         var owners = new Dictionary<int, string>();
         List<(string RelayId, Holding Holding)> holdings;
         lock (_holdings)
+        {
             holdings = [.. _holdings.Select(pair => (pair.Key, pair.Value))];
+        }
 
         foreach (var (relayId, holding) in holdings)
         {
             if (holding.ValidUntil <= now)
+            {
                 continue;
+            }
             foreach (var bucket in holding.Buckets)
             {
                 if (owners.TryGetValue(bucket, out var other))
+                {
                     Assert.Fail($"Bucket {bucket} is owned by both {other} and {relayId}.");
+                }
                 owners[bucket] = relayId;
             }
         }
@@ -367,7 +404,9 @@ internal sealed class OutboxDynamoDbFleet : IDisposable
     private void OnException(object sender, ExceptionEventArgs args)
     {
         if (args is WebServiceExceptionEventArgs { Exception: ConditionalCheckFailedException })
+        {
             Interlocked.Increment(ref _refusedWrites);
+        }
     }
 
     private sealed record Holding(IReadOnlyList<int> Buckets, DateTimeOffset ValidUntil);

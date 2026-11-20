@@ -52,7 +52,9 @@ public class ResponseFrameDiscardPoolingBenchmarks
             var frame = await _reader.ReadBoundedFrameAsync(
                 static _ => ResponseFrameAdmission.Discarded).ConfigureAwait(false);
             if (!frame.IsDiscarded)
+            {
                 throw new InvalidOperationException();
+            }
         }
     }
 
@@ -91,7 +93,9 @@ public class ResponseFrameDiscardPoolingBenchmarks
             return count;
         }
 
-        public override void Flush() { }
+        public override void Flush()
+        {
+        }
         public override int Read(byte[] buffer, int offset, int count) => throw new NotSupportedException();
         public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
         public override void SetLength(long value) => throw new NotSupportedException();

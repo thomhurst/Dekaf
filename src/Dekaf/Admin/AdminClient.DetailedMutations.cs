@@ -27,14 +27,23 @@ public sealed partial class AdminClient
         where TResponse : IKafkaResponse
     {
         var results = new Dictionary<TKey, AdminMutationResult>(items.Count);
-        if (items.Count == 0) return results;
+        if (items.Count == 0)
+        {
+            return results;
+        }
 
         using var ownedDeadline = sharedDeadline is null ? CancellationTokenSource.CreateLinkedTokenSource(cancellationToken) : null;
         var deadline = sharedDeadline ?? ownedDeadline!;
         if (ownedDeadline is not null)
         {
-            if (timeoutMs == 0) deadline.Cancel();
-            else deadline.CancelAfter(timeoutMs);
+            if (timeoutMs == 0)
+            {
+                deadline.Cancel();
+            }
+            else
+            {
+                deadline.CancelAfter(timeoutMs);
+            }
         }
         var token = deadline.Token;
         var pending = items;
@@ -50,13 +59,21 @@ public sealed partial class AdminClient
                 try
                 {
                     if (leaseConnection is not null)
+                    {
                         acquiredLease = await leaseConnection(token).ConfigureAwait(false);
+                    }
                     else if (protocol.GroupId is { } groupId)
+                    {
                         acquiredLease = await LeaseDetailedGroupCoordinatorAsync(groupId, token).ConfigureAwait(false);
+                    }
                     else if (protocol.BrokerOrController)
+                    {
                         acquiredLease = await LeaseBrokerOrControllerConnectionAsync(protocol.ApiKey, token).ConfigureAwait(false);
+                    }
                     else
+                    {
                         acquiredLease = await LeaseDetailedControllerAsync(protocol.ApiKey, token).ConfigureAwait(false);
+                    }
                 }
                 catch (InvalidOperationException exception)
                 {
@@ -73,7 +90,9 @@ public sealed partial class AdminClient
                 // items. Only the remaining entities cross the ambiguous send boundary.
                 var request = createRequest(pending, version, results);
                 if (pending.Count == 0)
+                {
                     return;
+                }
                 token.ThrowIfCancellationRequested();
 
                 TResponse response;
@@ -88,8 +107,10 @@ public sealed partial class AdminClient
                     // Do not replay an ambiguous mutation or reinterpret a later "exists" as success.
                     var failure = MutationFailure(exception, deadline, timeoutMs, protocol.Operation, cancellationToken);
                     foreach (var item in pending)
+                    {
                         results[getKey(item)] = AdminMutationResult.Unconfirmed(
                             AdminMutationOutcome.Unknown, "The mutation may have applied; no definitive response was received.", failure);
+                    }
                     return;
                 }
 
@@ -132,20 +153,26 @@ public sealed partial class AdminClient
             var key = getKey(item);
             // Retain confirmed rejection even if discovery or cancellation prevents its retry.
             if (!results.ContainsKey(key))
+            {
                 results.Add(key, AdminMutationResult.Unconfirmed(
                     AdminMutationOutcome.NotAttempted, "The operation stopped before this mutation was sent.", failure));
+            }
         }
     }
 
     private ValueTask<KafkaConnectionLease> LeaseDetailedControllerAsync(ApiKey apiKey, CancellationToken cancellationToken)
     {
         if (_controllerMetadataManager is { } controllerMetadataManager)
+        {
             return controllerMetadataManager.LeaseActiveControllerAsync(apiKey, cancellationToken);
+        }
 
         // Capture one identity for validation and leasing.
         var controllerId = _metadataManager.Metadata.ControllerId;
         if (controllerId < 0)
+        {
             throw new ControllerUnavailableException();
+        }
         return _connectionPool.LeaseConnectionAsync(controllerId, cancellationToken);
     }
 
@@ -185,7 +212,9 @@ public sealed partial class AdminClient
     {
         var results = new Dictionary<TKey, AdminMutationResult>(responses.Count);
         foreach (var response in responses)
+        {
             AddMutationResult(results, key(response), AdminMutationResult.FromResponse(code(response), message(response)));
+        }
         return results;
     }
 
@@ -193,6 +222,8 @@ public sealed partial class AdminClient
         TKey key, AdminMutationResult result) where TKey : notnull
     {
         if (!results.TryAdd(key, result))
+        {
             results[key] = AdminMutationResult.Unconfirmed(AdminMutationOutcome.Unknown, "The response contained duplicate entity results.");
+        }
     }
 }

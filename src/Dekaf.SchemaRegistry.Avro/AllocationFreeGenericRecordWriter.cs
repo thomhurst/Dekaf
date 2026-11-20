@@ -24,49 +24,65 @@ internal sealed class AllocationFreeGenericRecordWriter(global::Avro.RecordSchem
         {
             case global::Avro.Schema.Type.Null:
                 if (value is not null)
+                {
                     throw TypeMismatch(value, "null");
+                }
                 encoder.WriteNull();
                 return;
 
             case global::Avro.Schema.Type.Boolean:
                 if (value is not bool boolean)
+                {
                     throw TypeMismatch(value, "boolean");
+                }
                 encoder.WriteBoolean(boolean);
                 return;
 
             case global::Avro.Schema.Type.Int:
                 if (value is not int integer)
+                {
                     throw TypeMismatch(value, "int");
+                }
                 encoder.WriteInt(integer);
                 return;
 
             case global::Avro.Schema.Type.Long:
                 if (value is not long longInteger)
+                {
                     throw TypeMismatch(value, "long");
+                }
                 encoder.WriteLong(longInteger);
                 return;
 
             case global::Avro.Schema.Type.Float:
                 if (value is not float single)
+                {
                     throw TypeMismatch(value, "float");
+                }
                 encoder.WriteFloat(single);
                 return;
 
             case global::Avro.Schema.Type.Double:
                 if (value is not double doubleValue)
+                {
                     throw TypeMismatch(value, "double");
+                }
                 encoder.WriteDouble(doubleValue);
                 return;
 
             case global::Avro.Schema.Type.String:
                 if (value is not string text)
+                {
                     throw TypeMismatch(value, "string");
+                }
                 encoder.WriteString(text);
                 return;
 
             case global::Avro.Schema.Type.Bytes:
                 if (value is not byte[] bytes)
+                {
                     throw TypeMismatch(value, "bytes");
+                }
                 encoder.WriteBytes(bytes);
                 return;
 
@@ -112,7 +128,9 @@ internal sealed class AllocationFreeGenericRecordWriter(global::Avro.RecordSchem
     {
         if (value is not GenericRecord record ||
             (validateSchema && !ReferenceEquals(record.Schema, schema) && !record.Schema.Equals(schema)))
+        {
             throw TypeMismatch(value, "record");
+        }
 
         var fields = schema.Fields;
         for (var i = 0; i < fields.Count; i++)
@@ -126,7 +144,9 @@ internal sealed class AllocationFreeGenericRecordWriter(global::Avro.RecordSchem
     {
         if (value is not GenericEnum genericEnum ||
             (!ReferenceEquals(genericEnum.Schema, schema) && !genericEnum.Schema.Equals(schema)))
+        {
             throw TypeMismatch(value, "enum");
+        }
 
         encoder.WriteEnum(schema.Ordinal(genericEnum.Value));
     }
@@ -135,7 +155,9 @@ internal sealed class AllocationFreeGenericRecordWriter(global::Avro.RecordSchem
     {
         if (value is not GenericFixed fixedValue ||
             (!ReferenceEquals(fixedValue.Schema, schema) && !fixedValue.Schema.Equals(schema)))
+        {
             throw TypeMismatch(value, "fixed");
+        }
 
         encoder.WriteFixed(fixedValue.Value);
     }
@@ -287,7 +309,9 @@ internal sealed class AllocationFreeGenericRecordWriter(global::Avro.RecordSchem
         if (itemSchema is global::Avro.UnionSchema unionSchema)
         {
             if (TryWriteValueTypeUnionList(unionSchema, list, encoder))
+            {
                 return;
+            }
 
             var union = _writerCache.GetUnion(unionSchema);
             if (union.HasConditionalValueTypeBranch &&
@@ -419,25 +443,62 @@ internal sealed class AllocationFreeGenericRecordWriter(global::Avro.RecordSchem
     {
         switch (array)
         {
-            case bool[] values: WriteUnionArray<bool, BooleanValueWriter>(schema, values, encoder); return true;
-            case bool?[] values: WriteNullableUnionArray<bool, BooleanValueWriter>(schema, values, encoder); return true;
-            case int[] values: WriteUnionArray<int, IntValueWriter>(schema, values, encoder); return true;
-            case int?[] values: WriteNullableUnionArray<int, IntValueWriter>(schema, values, encoder); return true;
-            case long[] values: WriteUnionArray<long, LongValueWriter>(schema, values, encoder); return true;
-            case long?[] values: WriteNullableUnionArray<long, LongValueWriter>(schema, values, encoder); return true;
-            case float[] values: WriteUnionArray<float, FloatValueWriter>(schema, values, encoder); return true;
-            case float?[] values: WriteNullableUnionArray<float, FloatValueWriter>(schema, values, encoder); return true;
-            case double[] values: WriteUnionArray<double, DoubleValueWriter>(schema, values, encoder); return true;
-            case double?[] values: WriteNullableUnionArray<double, DoubleValueWriter>(schema, values, encoder); return true;
-            case DateTime[] values: WriteUnionArray<DateTime, DateTimeValueWriter>(schema, values, encoder); return true;
-            case DateTime?[] values: WriteNullableUnionArray<DateTime, DateTimeValueWriter>(schema, values, encoder); return true;
-            case TimeSpan[] values: WriteUnionArray<TimeSpan, TimeSpanValueWriter>(schema, values, encoder); return true;
-            case TimeSpan?[] values: WriteNullableUnionArray<TimeSpan, TimeSpanValueWriter>(schema, values, encoder); return true;
-            case Guid[] values: WriteUnionArray<Guid, GuidValueWriter>(schema, values, encoder); return true;
-            case Guid?[] values: WriteNullableUnionArray<Guid, GuidValueWriter>(schema, values, encoder); return true;
-            case global::Avro.AvroDecimal[] values: WriteUnionArray<global::Avro.AvroDecimal, DecimalValueWriter>(schema, values, encoder); return true;
-            case global::Avro.AvroDecimal?[] values: WriteNullableUnionArray<global::Avro.AvroDecimal, DecimalValueWriter>(schema, values, encoder); return true;
-            default: return false;
+            case bool[] values:
+                WriteUnionArray<bool, BooleanValueWriter>(schema, values, encoder);
+                return true;
+            case bool?[] values:
+                WriteNullableUnionArray<bool, BooleanValueWriter>(schema, values, encoder);
+                return true;
+            case int[] values:
+                WriteUnionArray<int, IntValueWriter>(schema, values, encoder);
+                return true;
+            case int?[] values:
+                WriteNullableUnionArray<int, IntValueWriter>(schema, values, encoder);
+                return true;
+            case long[] values:
+                WriteUnionArray<long, LongValueWriter>(schema, values, encoder);
+                return true;
+            case long?[] values:
+                WriteNullableUnionArray<long, LongValueWriter>(schema, values, encoder);
+                return true;
+            case float[] values:
+                WriteUnionArray<float, FloatValueWriter>(schema, values, encoder);
+                return true;
+            case float?[] values:
+                WriteNullableUnionArray<float, FloatValueWriter>(schema, values, encoder);
+                return true;
+            case double[] values:
+                WriteUnionArray<double, DoubleValueWriter>(schema, values, encoder);
+                return true;
+            case double?[] values:
+                WriteNullableUnionArray<double, DoubleValueWriter>(schema, values, encoder);
+                return true;
+            case DateTime[] values:
+                WriteUnionArray<DateTime, DateTimeValueWriter>(schema, values, encoder);
+                return true;
+            case DateTime?[] values:
+                WriteNullableUnionArray<DateTime, DateTimeValueWriter>(schema, values, encoder);
+                return true;
+            case TimeSpan[] values:
+                WriteUnionArray<TimeSpan, TimeSpanValueWriter>(schema, values, encoder);
+                return true;
+            case TimeSpan?[] values:
+                WriteNullableUnionArray<TimeSpan, TimeSpanValueWriter>(schema, values, encoder);
+                return true;
+            case Guid[] values:
+                WriteUnionArray<Guid, GuidValueWriter>(schema, values, encoder);
+                return true;
+            case Guid?[] values:
+                WriteNullableUnionArray<Guid, GuidValueWriter>(schema, values, encoder);
+                return true;
+            case global::Avro.AvroDecimal[] values:
+                WriteUnionArray<global::Avro.AvroDecimal, DecimalValueWriter>(schema, values, encoder);
+                return true;
+            case global::Avro.AvroDecimal?[] values:
+                WriteNullableUnionArray<global::Avro.AvroDecimal, DecimalValueWriter>(schema, values, encoder);
+                return true;
+            default:
+                return false;
         }
     }
 
@@ -448,43 +509,116 @@ internal sealed class AllocationFreeGenericRecordWriter(global::Avro.RecordSchem
     {
         switch (list)
         {
-            case List<bool> values: WriteUnionList<bool, BooleanValueWriter>(schema, values, encoder); return true;
-            case List<bool?> values: WriteNullableUnionList<bool, BooleanValueWriter>(schema, values, encoder); return true;
-            case List<int> values: WriteUnionList<int, IntValueWriter>(schema, values, encoder); return true;
-            case List<int?> values: WriteNullableUnionList<int, IntValueWriter>(schema, values, encoder); return true;
-            case List<long> values: WriteUnionList<long, LongValueWriter>(schema, values, encoder); return true;
-            case List<long?> values: WriteNullableUnionList<long, LongValueWriter>(schema, values, encoder); return true;
-            case List<float> values: WriteUnionList<float, FloatValueWriter>(schema, values, encoder); return true;
-            case List<float?> values: WriteNullableUnionList<float, FloatValueWriter>(schema, values, encoder); return true;
-            case List<double> values: WriteUnionList<double, DoubleValueWriter>(schema, values, encoder); return true;
-            case List<double?> values: WriteNullableUnionList<double, DoubleValueWriter>(schema, values, encoder); return true;
-            case List<DateTime> values: WriteUnionList<DateTime, DateTimeValueWriter>(schema, values, encoder); return true;
-            case List<DateTime?> values: WriteNullableUnionList<DateTime, DateTimeValueWriter>(schema, values, encoder); return true;
-            case List<TimeSpan> values: WriteUnionList<TimeSpan, TimeSpanValueWriter>(schema, values, encoder); return true;
-            case List<TimeSpan?> values: WriteNullableUnionList<TimeSpan, TimeSpanValueWriter>(schema, values, encoder); return true;
-            case List<Guid> values: WriteUnionList<Guid, GuidValueWriter>(schema, values, encoder); return true;
-            case List<Guid?> values: WriteNullableUnionList<Guid, GuidValueWriter>(schema, values, encoder); return true;
-            case List<global::Avro.AvroDecimal> values: WriteUnionList<global::Avro.AvroDecimal, DecimalValueWriter>(schema, values, encoder); return true;
-            case List<global::Avro.AvroDecimal?> values: WriteNullableUnionList<global::Avro.AvroDecimal, DecimalValueWriter>(schema, values, encoder); return true;
-            case IList<bool> values: WriteUnionList<bool, BooleanValueWriter>(schema, values, encoder); return true;
-            case IList<bool?> values: WriteNullableUnionList<bool, BooleanValueWriter>(schema, values, encoder); return true;
-            case IList<int> values: WriteUnionList<int, IntValueWriter>(schema, values, encoder); return true;
-            case IList<int?> values: WriteNullableUnionList<int, IntValueWriter>(schema, values, encoder); return true;
-            case IList<long> values: WriteUnionList<long, LongValueWriter>(schema, values, encoder); return true;
-            case IList<long?> values: WriteNullableUnionList<long, LongValueWriter>(schema, values, encoder); return true;
-            case IList<float> values: WriteUnionList<float, FloatValueWriter>(schema, values, encoder); return true;
-            case IList<float?> values: WriteNullableUnionList<float, FloatValueWriter>(schema, values, encoder); return true;
-            case IList<double> values: WriteUnionList<double, DoubleValueWriter>(schema, values, encoder); return true;
-            case IList<double?> values: WriteNullableUnionList<double, DoubleValueWriter>(schema, values, encoder); return true;
-            case IList<DateTime> values: WriteUnionList<DateTime, DateTimeValueWriter>(schema, values, encoder); return true;
-            case IList<DateTime?> values: WriteNullableUnionList<DateTime, DateTimeValueWriter>(schema, values, encoder); return true;
-            case IList<TimeSpan> values: WriteUnionList<TimeSpan, TimeSpanValueWriter>(schema, values, encoder); return true;
-            case IList<TimeSpan?> values: WriteNullableUnionList<TimeSpan, TimeSpanValueWriter>(schema, values, encoder); return true;
-            case IList<Guid> values: WriteUnionList<Guid, GuidValueWriter>(schema, values, encoder); return true;
-            case IList<Guid?> values: WriteNullableUnionList<Guid, GuidValueWriter>(schema, values, encoder); return true;
-            case IList<global::Avro.AvroDecimal> values: WriteUnionList<global::Avro.AvroDecimal, DecimalValueWriter>(schema, values, encoder); return true;
-            case IList<global::Avro.AvroDecimal?> values: WriteNullableUnionList<global::Avro.AvroDecimal, DecimalValueWriter>(schema, values, encoder); return true;
-            default: return false;
+            case List<bool> values:
+                WriteUnionList<bool, BooleanValueWriter>(schema, values, encoder);
+                return true;
+            case List<bool?> values:
+                WriteNullableUnionList<bool, BooleanValueWriter>(schema, values, encoder);
+                return true;
+            case List<int> values:
+                WriteUnionList<int, IntValueWriter>(schema, values, encoder);
+                return true;
+            case List<int?> values:
+                WriteNullableUnionList<int, IntValueWriter>(schema, values, encoder);
+                return true;
+            case List<long> values:
+                WriteUnionList<long, LongValueWriter>(schema, values, encoder);
+                return true;
+            case List<long?> values:
+                WriteNullableUnionList<long, LongValueWriter>(schema, values, encoder);
+                return true;
+            case List<float> values:
+                WriteUnionList<float, FloatValueWriter>(schema, values, encoder);
+                return true;
+            case List<float?> values:
+                WriteNullableUnionList<float, FloatValueWriter>(schema, values, encoder);
+                return true;
+            case List<double> values:
+                WriteUnionList<double, DoubleValueWriter>(schema, values, encoder);
+                return true;
+            case List<double?> values:
+                WriteNullableUnionList<double, DoubleValueWriter>(schema, values, encoder);
+                return true;
+            case List<DateTime> values:
+                WriteUnionList<DateTime, DateTimeValueWriter>(schema, values, encoder);
+                return true;
+            case List<DateTime?> values:
+                WriteNullableUnionList<DateTime, DateTimeValueWriter>(schema, values, encoder);
+                return true;
+            case List<TimeSpan> values:
+                WriteUnionList<TimeSpan, TimeSpanValueWriter>(schema, values, encoder);
+                return true;
+            case List<TimeSpan?> values:
+                WriteNullableUnionList<TimeSpan, TimeSpanValueWriter>(schema, values, encoder);
+                return true;
+            case List<Guid> values:
+                WriteUnionList<Guid, GuidValueWriter>(schema, values, encoder);
+                return true;
+            case List<Guid?> values:
+                WriteNullableUnionList<Guid, GuidValueWriter>(schema, values, encoder);
+                return true;
+            case List<global::Avro.AvroDecimal> values:
+                WriteUnionList<global::Avro.AvroDecimal, DecimalValueWriter>(schema, values, encoder);
+                return true;
+            case List<global::Avro.AvroDecimal?> values:
+                WriteNullableUnionList<global::Avro.AvroDecimal, DecimalValueWriter>(schema, values, encoder);
+                return true;
+            case IList<bool> values:
+                WriteUnionList<bool, BooleanValueWriter>(schema, values, encoder);
+                return true;
+            case IList<bool?> values:
+                WriteNullableUnionList<bool, BooleanValueWriter>(schema, values, encoder);
+                return true;
+            case IList<int> values:
+                WriteUnionList<int, IntValueWriter>(schema, values, encoder);
+                return true;
+            case IList<int?> values:
+                WriteNullableUnionList<int, IntValueWriter>(schema, values, encoder);
+                return true;
+            case IList<long> values:
+                WriteUnionList<long, LongValueWriter>(schema, values, encoder);
+                return true;
+            case IList<long?> values:
+                WriteNullableUnionList<long, LongValueWriter>(schema, values, encoder);
+                return true;
+            case IList<float> values:
+                WriteUnionList<float, FloatValueWriter>(schema, values, encoder);
+                return true;
+            case IList<float?> values:
+                WriteNullableUnionList<float, FloatValueWriter>(schema, values, encoder);
+                return true;
+            case IList<double> values:
+                WriteUnionList<double, DoubleValueWriter>(schema, values, encoder);
+                return true;
+            case IList<double?> values:
+                WriteNullableUnionList<double, DoubleValueWriter>(schema, values, encoder);
+                return true;
+            case IList<DateTime> values:
+                WriteUnionList<DateTime, DateTimeValueWriter>(schema, values, encoder);
+                return true;
+            case IList<DateTime?> values:
+                WriteNullableUnionList<DateTime, DateTimeValueWriter>(schema, values, encoder);
+                return true;
+            case IList<TimeSpan> values:
+                WriteUnionList<TimeSpan, TimeSpanValueWriter>(schema, values, encoder);
+                return true;
+            case IList<TimeSpan?> values:
+                WriteNullableUnionList<TimeSpan, TimeSpanValueWriter>(schema, values, encoder);
+                return true;
+            case IList<Guid> values:
+                WriteUnionList<Guid, GuidValueWriter>(schema, values, encoder);
+                return true;
+            case IList<Guid?> values:
+                WriteNullableUnionList<Guid, GuidValueWriter>(schema, values, encoder);
+                return true;
+            case IList<global::Avro.AvroDecimal> values:
+                WriteUnionList<global::Avro.AvroDecimal, DecimalValueWriter>(schema, values, encoder);
+                return true;
+            case IList<global::Avro.AvroDecimal?> values:
+                WriteNullableUnionList<global::Avro.AvroDecimal, DecimalValueWriter>(schema, values, encoder);
+                return true;
+            default:
+                return false;
         }
     }
 
@@ -496,7 +630,9 @@ internal sealed class AllocationFreeGenericRecordWriter(global::Avro.RecordSchem
         where TWriter : struct, IValueWriter<T>
     {
         if (values.Length == 0)
+        {
             return;
+        }
 
         var branch = _writerCache.GetUnion(schema).GetValueBranch(typeof(T));
         for (var i = 0; i < values.Length; i++)
@@ -528,7 +664,9 @@ internal sealed class AllocationFreeGenericRecordWriter(global::Avro.RecordSchem
             if (!value.HasValue)
             {
                 if (union.NullIndex < 0)
+                {
                     throw TypeMismatch(null, "union");
+                }
                 encoder.WriteUnionIndex(union.NullIndex);
                 continue;
             }
@@ -545,7 +683,9 @@ internal sealed class AllocationFreeGenericRecordWriter(global::Avro.RecordSchem
         where TWriter : struct, IValueWriter<T>
     {
         if (values.Count == 0)
+        {
             return;
+        }
 
         var branch = _writerCache.GetUnion(schema).GetValueBranch(typeof(T));
         for (var i = 0; i < values.Count; i++)
@@ -577,7 +717,9 @@ internal sealed class AllocationFreeGenericRecordWriter(global::Avro.RecordSchem
             if (!value.HasValue)
             {
                 if (union.NullIndex < 0)
+                {
                     throw TypeMismatch(null, "union");
+                }
                 encoder.WriteUnionIndex(union.NullIndex);
                 continue;
             }
@@ -594,7 +736,9 @@ internal sealed class AllocationFreeGenericRecordWriter(global::Avro.RecordSchem
         where TWriter : struct, IValueWriter<T>
     {
         if (values.Count == 0)
+        {
             return;
+        }
 
         var branch = _writerCache.GetUnion(schema).GetValueBranch(typeof(T));
         for (var i = 0; i < values.Count; i++)
@@ -626,7 +770,9 @@ internal sealed class AllocationFreeGenericRecordWriter(global::Avro.RecordSchem
             if (!value.HasValue)
             {
                 if (union.NullIndex < 0)
+                {
                     throw TypeMismatch(null, "union");
+                }
                 encoder.WriteUnionIndex(union.NullIndex);
                 continue;
             }
@@ -645,9 +791,13 @@ internal sealed class AllocationFreeGenericRecordWriter(global::Avro.RecordSchem
         {
             encoder.StartItem();
             if (values[i].HasValue)
+            {
                 _ = union.GetValueBranch(typeof(T));
+            }
             if (union.NullIndex < 0)
+            {
                 throw TypeMismatch(null, "union");
+            }
             encoder.WriteUnionIndex(union.NullIndex);
         }
     }
@@ -662,9 +812,13 @@ internal sealed class AllocationFreeGenericRecordWriter(global::Avro.RecordSchem
         {
             encoder.StartItem();
             if (values[i].HasValue)
+            {
                 _ = union.GetValueBranch(typeof(T));
+            }
             if (union.NullIndex < 0)
+            {
                 throw TypeMismatch(null, "union");
+            }
             encoder.WriteUnionIndex(union.NullIndex);
         }
     }
@@ -773,25 +927,33 @@ internal sealed class AllocationFreeGenericRecordWriter(global::Avro.RecordSchem
             case Date or TimestampMillisecond or LocalTimestampMillisecond or
                 TimestampMicrosecond or LocalTimestampMicrosecond:
                 if (value is not DateTime date)
+                {
                     throw TypeMismatch(value, schema.LogicalTypeName);
+                }
                 WriteDateTime(schema, date, encoder);
                 return;
 
             case TimeMillisecond or TimeMicrosecond:
                 if (value is not TimeSpan time)
+                {
                     throw TypeMismatch(value, schema.LogicalTypeName);
+                }
                 WriteTimeSpan(schema, time, encoder);
                 return;
 
             case Uuid:
                 if (value is not Guid guid)
+                {
                     throw TypeMismatch(value, "uuid");
+                }
                 WriteUuid(schema, guid, encoder);
                 return;
 
             case global::Avro.Util.Decimal:
                 if (value is not global::Avro.AvroDecimal decimalValue)
+                {
                     throw TypeMismatch(value, "decimal");
+                }
                 WriteDecimal(schema, decimalValue, encoder);
                 return;
 
@@ -853,11 +1015,15 @@ internal sealed class AllocationFreeGenericRecordWriter(global::Avro.RecordSchem
         AllocationFreeBinaryEncoder encoder)
     {
         if (schema.LogicalType is not Uuid)
+        {
             throw TypeMismatch(value, schema.LogicalTypeName);
+        }
 
         Span<char> uuid = stackalloc char[36];
         if (!value.TryFormat(uuid, out var charsWritten, "D"))
+        {
             throw new InvalidOperationException("Unable to format an Avro UUID.");
+        }
         encoder.WriteString(uuid.Slice(0, charsWritten));
     }
 
@@ -890,7 +1056,9 @@ internal sealed class AllocationFreeGenericRecordWriter(global::Avro.RecordSchem
         {
             var raw = bytes.Slice(0, byteCount);
             if (!value.UnscaledValue.TryWriteBytes(raw, out var written, isUnsigned: false, isBigEndian: true))
+            {
                 throw new InvalidOperationException("Unable to encode an Avro decimal.");
+            }
 
             if (fixedSize == 0)
             {
@@ -915,7 +1083,9 @@ internal sealed class AllocationFreeGenericRecordWriter(global::Avro.RecordSchem
         finally
         {
             if (rented is not null)
+            {
                 ArrayPool<byte>.Shared.Return(rented);
+            }
         }
     }
 
@@ -925,7 +1095,9 @@ internal sealed class AllocationFreeGenericRecordWriter(global::Avro.RecordSchem
     private static void ValidateTime(TimeSpan value)
     {
         if (value < TimeSpan.Zero || value >= TimeSpan.FromDays(1))
+        {
             throw new ArgumentOutOfRangeException(nameof(value), "Avro time values must be within one day.");
+        }
     }
 
     private sealed class WriterCache
@@ -946,7 +1118,9 @@ internal sealed class AllocationFreeGenericRecordWriter(global::Avro.RecordSchem
         {
             var last = Volatile.Read(ref _lastUnion);
             if (last is not null && ReferenceEquals(last.Schema, schema))
+            {
                 return last;
+            }
 
             var union = _unions[schema];
             Volatile.Write(ref _lastUnion, union);
@@ -958,7 +1132,9 @@ internal sealed class AllocationFreeGenericRecordWriter(global::Avro.RecordSchem
             HashSet<global::Avro.Schema> visited)
         {
             if (!visited.Add(schema))
+            {
                 return;
+            }
 
             switch (schema.Tag)
             {
@@ -966,7 +1142,9 @@ internal sealed class AllocationFreeGenericRecordWriter(global::Avro.RecordSchem
                 case global::Avro.Schema.Type.Error:
                     var fields = ((global::Avro.RecordSchema)schema).Fields;
                     for (var i = 0; i < fields.Count; i++)
+                    {
                         AddSchema(fields[i].Schema, visited);
+                    }
                     break;
 
                 case global::Avro.Schema.Type.Array:
@@ -981,7 +1159,9 @@ internal sealed class AllocationFreeGenericRecordWriter(global::Avro.RecordSchem
                     var union = (global::Avro.UnionSchema)schema;
                     _unions.Add(union, new UnionBranchCache(union));
                     for (var i = 0; i < union.Count; i++)
+                    {
                         AddSchema(union[i], visited);
+                    }
                     break;
 
                 case global::Avro.Schema.Type.Logical:
@@ -1076,11 +1256,15 @@ internal sealed class AllocationFreeGenericRecordWriter(global::Avro.RecordSchem
                         break;
                     case global::Avro.Schema.Type.Array:
                         if (_arrayBranch.Schema is null)
+                        {
                             _arrayBranch = resolved;
+                        }
                         break;
                     case global::Avro.Schema.Type.Map:
                         if (_mapBranch.Schema is null)
+                        {
                             _mapBranch = resolved;
+                        }
                         break;
                     case global::Avro.Schema.Type.Logical:
                         var logical = (global::Avro.LogicalSchema)branch;
@@ -1172,7 +1356,10 @@ internal sealed class AllocationFreeGenericRecordWriter(global::Avro.RecordSchem
 
         public bool HasConditionalValueTypeBranch => _hasPotentialConditionalValueTypeBranch;
 
-        public int NullIndex { get; }
+        public int NullIndex
+        {
+            get;
+        }
 
         public bool TryGetValueBranch(Type type, out UnionBranch branch)
         {
@@ -1182,16 +1369,46 @@ internal sealed class AllocationFreeGenericRecordWriter(global::Avro.RecordSchem
                 return false;
             }
 
-            if (type == typeof(bool)) branch = _booleanBranch;
-            else if (type == typeof(int)) branch = _intBranch;
-            else if (type == typeof(long)) branch = _longBranch;
-            else if (type == typeof(float)) branch = _floatBranch;
-            else if (type == typeof(double)) branch = _doubleBranch;
-            else if (type == typeof(DateTime)) branch = _dateTimeBranch;
-            else if (type == typeof(TimeSpan)) branch = _timeSpanBranch;
-            else if (type == typeof(Guid)) branch = _guidBranch;
-            else if (type == typeof(global::Avro.AvroDecimal)) branch = _decimalBranch;
-            else if (!_typedBranches.TryGetValue(type, out branch)) branch = default;
+            if (type == typeof(bool))
+            {
+                branch = _booleanBranch;
+            }
+            else if (type == typeof(int))
+            {
+                branch = _intBranch;
+            }
+            else if (type == typeof(long))
+            {
+                branch = _longBranch;
+            }
+            else if (type == typeof(float))
+            {
+                branch = _floatBranch;
+            }
+            else if (type == typeof(double))
+            {
+                branch = _doubleBranch;
+            }
+            else if (type == typeof(DateTime))
+            {
+                branch = _dateTimeBranch;
+            }
+            else if (type == typeof(TimeSpan))
+            {
+                branch = _timeSpanBranch;
+            }
+            else if (type == typeof(Guid))
+            {
+                branch = _guidBranch;
+            }
+            else if (type == typeof(global::Avro.AvroDecimal))
+            {
+                branch = _decimalBranch;
+            }
+            else if (!_typedBranches.TryGetValue(type, out branch))
+            {
+                branch = default;
+            }
 
             return branch.Schema is not null;
         }
@@ -1201,19 +1418,51 @@ internal sealed class AllocationFreeGenericRecordWriter(global::Avro.RecordSchem
             ThrowIfConditionalValueBranch(type);
 
             UnionBranch branch;
-            if (type == typeof(bool)) branch = _booleanBranch;
-            else if (type == typeof(int)) branch = _intBranch;
-            else if (type == typeof(long)) branch = _longBranch;
-            else if (type == typeof(float)) branch = _floatBranch;
-            else if (type == typeof(double)) branch = _doubleBranch;
-            else if (type == typeof(DateTime)) branch = _dateTimeBranch;
-            else if (type == typeof(TimeSpan)) branch = _timeSpanBranch;
-            else if (type == typeof(Guid)) branch = _guidBranch;
-            else if (type == typeof(global::Avro.AvroDecimal)) branch = _decimalBranch;
-            else if (!_typedBranches.TryGetValue(type, out branch)) branch = default;
+            if (type == typeof(bool))
+            {
+                branch = _booleanBranch;
+            }
+            else if (type == typeof(int))
+            {
+                branch = _intBranch;
+            }
+            else if (type == typeof(long))
+            {
+                branch = _longBranch;
+            }
+            else if (type == typeof(float))
+            {
+                branch = _floatBranch;
+            }
+            else if (type == typeof(double))
+            {
+                branch = _doubleBranch;
+            }
+            else if (type == typeof(DateTime))
+            {
+                branch = _dateTimeBranch;
+            }
+            else if (type == typeof(TimeSpan))
+            {
+                branch = _timeSpanBranch;
+            }
+            else if (type == typeof(Guid))
+            {
+                branch = _guidBranch;
+            }
+            else if (type == typeof(global::Avro.AvroDecimal))
+            {
+                branch = _decimalBranch;
+            }
+            else if (!_typedBranches.TryGetValue(type, out branch))
+            {
+                branch = default;
+            }
 
             if (branch.Schema is not null)
+            {
                 return branch;
+            }
 
             throw new global::Avro.AvroTypeException($"Union {_schema} has no branch for {type}.");
         }
@@ -1223,23 +1472,36 @@ internal sealed class AllocationFreeGenericRecordWriter(global::Avro.RecordSchem
             if (value is null)
             {
                 if (NullIndex >= 0)
+                {
                     return new UnionBranch(NullIndex, _schema[NullIndex]);
+                }
                 throw NoMatch(value);
             }
 
             switch (value)
             {
-                case bool when _booleanBranch.Schema is not null: return _booleanBranch;
-                case int when _intBranch.Schema is not null: return _intBranch;
-                case long when _longBranch.Schema is not null: return _longBranch;
-                case float when _floatBranch.Schema is not null: return _floatBranch;
-                case double when _doubleBranch.Schema is not null: return _doubleBranch;
-                case byte[] when _bytesBranch.Schema is not null: return _bytesBranch;
-                case string when _stringBranch.Schema is not null: return _stringBranch;
-                case DateTime when _dateTimeBranch.Schema is not null: return _dateTimeBranch;
-                case TimeSpan when _timeSpanBranch.Schema is not null: return _timeSpanBranch;
-                case Guid when _guidBranch.Schema is not null: return _guidBranch;
-                case global::Avro.AvroDecimal when _decimalBranch.Schema is not null: return _decimalBranch;
+                case bool when _booleanBranch.Schema is not null:
+                    return _booleanBranch;
+                case int when _intBranch.Schema is not null:
+                    return _intBranch;
+                case long when _longBranch.Schema is not null:
+                    return _longBranch;
+                case float when _floatBranch.Schema is not null:
+                    return _floatBranch;
+                case double when _doubleBranch.Schema is not null:
+                    return _doubleBranch;
+                case byte[] when _bytesBranch.Schema is not null:
+                    return _bytesBranch;
+                case string when _stringBranch.Schema is not null:
+                    return _stringBranch;
+                case DateTime when _dateTimeBranch.Schema is not null:
+                    return _dateTimeBranch;
+                case TimeSpan when _timeSpanBranch.Schema is not null:
+                    return _timeSpanBranch;
+                case Guid when _guidBranch.Schema is not null:
+                    return _guidBranch;
+                case global::Avro.AvroDecimal when _decimalBranch.Schema is not null:
+                    return _decimalBranch;
                 case GenericRecord record when _recordBranches.TryGetValue(record.Schema.SchemaName, out var branch):
                     return FirstCompatibleTypedBranch(value.GetType(), branch);
                 case GenericEnum genericEnum when _enumBranches.TryGetValue(genericEnum.Schema.SchemaName, out var branch):
@@ -1266,13 +1528,19 @@ internal sealed class AllocationFreeGenericRecordWriter(global::Avro.RecordSchem
                 {
                     var fallback = GetConditionalFallback(value, conditional.Fallback);
                     if (fallback.Schema is not null && fallback.Index < conditional.Primary.Index)
+                    {
                         return fallback;
+                    }
 
                     if (conditional.LogicalSchema.LogicalType.IsInstanceOfLogicalType(value))
+                    {
                         return conditional.Primary;
+                    }
 
                     if (fallback.Schema is not null)
+                    {
                         return fallback;
+                    }
                     throw NoMatch(value);
                 }
             }
@@ -1327,7 +1595,9 @@ internal sealed class AllocationFreeGenericRecordWriter(global::Avro.RecordSchem
             if (conditionalBranchBuilders is null ||
                 !conditionalBranchBuilders.TryGetValue(type, out var existing) ||
                 existing.Fallback.Schema is not null)
+            {
                 return;
+            }
 
             if (conditional is not null)
             {
@@ -1343,7 +1613,9 @@ internal sealed class AllocationFreeGenericRecordWriter(global::Avro.RecordSchem
             global::Avro.UnionSchema schema)
         {
             if (builders is null)
+            {
                 return null;
+            }
 
             var branches = new Dictionary<Type, ConditionalUnionBranch>(builders.Count);
             foreach (var (type, builder) in builders)
@@ -1385,29 +1657,83 @@ internal sealed class AllocationFreeGenericRecordWriter(global::Avro.RecordSchem
         private static ValueTypeFlags GetAssignableValueTypes(Type type)
         {
             var flags = ValueTypeFlags.None;
-            if (type.IsAssignableFrom(typeof(bool))) flags |= ValueTypeFlags.Boolean;
-            if (type.IsAssignableFrom(typeof(int))) flags |= ValueTypeFlags.Int;
-            if (type.IsAssignableFrom(typeof(long))) flags |= ValueTypeFlags.Long;
-            if (type.IsAssignableFrom(typeof(float))) flags |= ValueTypeFlags.Float;
-            if (type.IsAssignableFrom(typeof(double))) flags |= ValueTypeFlags.Double;
-            if (type.IsAssignableFrom(typeof(DateTime))) flags |= ValueTypeFlags.DateTime;
-            if (type.IsAssignableFrom(typeof(TimeSpan))) flags |= ValueTypeFlags.TimeSpan;
-            if (type.IsAssignableFrom(typeof(Guid))) flags |= ValueTypeFlags.Guid;
-            if (type.IsAssignableFrom(typeof(global::Avro.AvroDecimal))) flags |= ValueTypeFlags.Decimal;
+            if (type.IsAssignableFrom(typeof(bool)))
+            {
+                flags |= ValueTypeFlags.Boolean;
+            }
+            if (type.IsAssignableFrom(typeof(int)))
+            {
+                flags |= ValueTypeFlags.Int;
+            }
+            if (type.IsAssignableFrom(typeof(long)))
+            {
+                flags |= ValueTypeFlags.Long;
+            }
+            if (type.IsAssignableFrom(typeof(float)))
+            {
+                flags |= ValueTypeFlags.Float;
+            }
+            if (type.IsAssignableFrom(typeof(double)))
+            {
+                flags |= ValueTypeFlags.Double;
+            }
+            if (type.IsAssignableFrom(typeof(DateTime)))
+            {
+                flags |= ValueTypeFlags.DateTime;
+            }
+            if (type.IsAssignableFrom(typeof(TimeSpan)))
+            {
+                flags |= ValueTypeFlags.TimeSpan;
+            }
+            if (type.IsAssignableFrom(typeof(Guid)))
+            {
+                flags |= ValueTypeFlags.Guid;
+            }
+            if (type.IsAssignableFrom(typeof(global::Avro.AvroDecimal)))
+            {
+                flags |= ValueTypeFlags.Decimal;
+            }
             return flags;
         }
 
         private static ValueTypeFlags GetValueType(Type type)
         {
-            if (type == typeof(bool)) return ValueTypeFlags.Boolean;
-            if (type == typeof(int)) return ValueTypeFlags.Int;
-            if (type == typeof(long)) return ValueTypeFlags.Long;
-            if (type == typeof(float)) return ValueTypeFlags.Float;
-            if (type == typeof(double)) return ValueTypeFlags.Double;
-            if (type == typeof(DateTime)) return ValueTypeFlags.DateTime;
-            if (type == typeof(TimeSpan)) return ValueTypeFlags.TimeSpan;
-            if (type == typeof(Guid)) return ValueTypeFlags.Guid;
-            if (type == typeof(global::Avro.AvroDecimal)) return ValueTypeFlags.Decimal;
+            if (type == typeof(bool))
+            {
+                return ValueTypeFlags.Boolean;
+            }
+            if (type == typeof(int))
+            {
+                return ValueTypeFlags.Int;
+            }
+            if (type == typeof(long))
+            {
+                return ValueTypeFlags.Long;
+            }
+            if (type == typeof(float))
+            {
+                return ValueTypeFlags.Float;
+            }
+            if (type == typeof(double))
+            {
+                return ValueTypeFlags.Double;
+            }
+            if (type == typeof(DateTime))
+            {
+                return ValueTypeFlags.DateTime;
+            }
+            if (type == typeof(TimeSpan))
+            {
+                return ValueTypeFlags.TimeSpan;
+            }
+            if (type == typeof(Guid))
+            {
+                return ValueTypeFlags.Guid;
+            }
+            if (type == typeof(global::Avro.AvroDecimal))
+            {
+                return ValueTypeFlags.Decimal;
+            }
             return ValueTypeFlags.None;
         }
 
@@ -1448,8 +1774,14 @@ internal sealed class AllocationFreeGenericRecordWriter(global::Avro.RecordSchem
 
     private sealed class ConditionalUnionBranchBuilder
     {
-        public List<ConditionalUnionCandidate> Candidates { get; } = [];
-        public UnionBranch Fallback { get; set; }
+        public List<ConditionalUnionCandidate> Candidates
+        {
+            get;
+        } = [];
+        public UnionBranch Fallback
+        {
+            get; set;
+        }
     }
 
     private sealed class ReferenceComparer<T> : IEqualityComparer<T>

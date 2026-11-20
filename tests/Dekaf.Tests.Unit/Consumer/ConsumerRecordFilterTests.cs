@@ -357,7 +357,9 @@ public sealed class ConsumerRecordFilterTests
 
         var results = new List<ConsumeResult<string, string>>();
         foreach (var result in batch)
+        {
             results.Add(result);
+        }
 
         await Assert.That(results).Count().IsEqualTo(1);
         await Assert.That(results[0].Offset).IsEqualTo(1L);
@@ -496,7 +498,9 @@ public sealed class ConsumerRecordFilterTests
             Serializers.String,
             recordFilter: filter);
 
-        foreach (var _ in batch) { }
+        foreach (var _ in batch)
+        {
+        }
 
         await Assert.That(filter.Topic).IsEqualTo("test-topic");
         await Assert.That(filter.Partition).IsEqualTo(2);
@@ -640,7 +644,10 @@ public sealed class ConsumerRecordFilterTests
 
     private sealed class HeaderValueFilter(string headerName, byte[] acceptedValue) : IConsumerRecordFilter
     {
-        public int CallCount { get; private set; }
+        public int CallCount
+        {
+            get; private set;
+        }
 
         public bool ShouldDeserialize(scoped in ConsumerRecordFilterContext context)
         {
@@ -650,7 +657,9 @@ public sealed class ConsumerRecordFilterTests
             {
                 ref readonly var header = ref headers[i];
                 if (header.Key == headerName)
+                {
                     return !header.IsValueNull && header.Value.Span.SequenceEqual(acceptedValue);
+                }
             }
 
             return false;
@@ -659,13 +668,34 @@ public sealed class ConsumerRecordFilterTests
 
     private sealed class InspectingFilter : IConsumerRecordFilter
     {
-        public string? Topic { get; private set; }
-        public int Partition { get; private set; }
-        public long Offset { get; private set; }
-        public bool IsKeyNull { get; private set; }
-        public bool IsValueNull { get; private set; }
-        public byte[]? Value { get; private set; }
-        public bool HeaderWasNull { get; private set; }
+        public string? Topic
+        {
+            get; private set;
+        }
+        public int Partition
+        {
+            get; private set;
+        }
+        public long Offset
+        {
+            get; private set;
+        }
+        public bool IsKeyNull
+        {
+            get; private set;
+        }
+        public bool IsValueNull
+        {
+            get; private set;
+        }
+        public byte[]? Value
+        {
+            get; private set;
+        }
+        public bool HeaderWasNull
+        {
+            get; private set;
+        }
 
         public bool ShouldDeserialize(scoped in ConsumerRecordFilterContext context)
         {
@@ -689,7 +719,10 @@ public sealed class ConsumerRecordFilterTests
         CancellationTokenSource cancellation,
         bool shouldDeserialize = false) : IConsumerRecordFilter
     {
-        public int CallCount { get; private set; }
+        public int CallCount
+        {
+            get; private set;
+        }
 
         public bool ShouldDeserialize(scoped in ConsumerRecordFilterContext context)
         {
@@ -701,7 +734,10 @@ public sealed class ConsumerRecordFilterTests
 
     private sealed class CountingStringDeserializer : IDeserializer<string>
     {
-        public int Count { get; private set; }
+        public int Count
+        {
+            get; private set;
+        }
 
         public string Deserialize(ReadOnlyMemory<byte> data, SerializationContext context)
         {
@@ -712,7 +748,10 @@ public sealed class ConsumerRecordFilterTests
 
     private sealed class CountingAsyncStringDeserializer : IAsyncDeserializer<string>
     {
-        public int Count { get; private set; }
+        public int Count
+        {
+            get; private set;
+        }
 
         public ValueTask<string> DeserializeAsync(
             ReadOnlyMemory<byte> data,

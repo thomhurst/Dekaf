@@ -479,17 +479,24 @@ public class AdminMessageEncodingTests
         data.Add(0x02);
         // Group entry:
         data.AddRange(new byte[] { 0x00, 0x00 }); // ErrorCode
-        data.Add(0x03); data.AddRange("g1"u8.ToArray()); // GroupId
-        data.Add(0x07); data.AddRange("Stable"u8.ToArray()); // GroupState
-        data.Add(0x09); data.AddRange("consumer"u8.ToArray()); // ProtocolType
-        data.Add(0x06); data.AddRange("range"u8.ToArray()); // ProtocolData
+        data.Add(0x03);
+        data.AddRange("g1"u8.ToArray()); // GroupId
+        data.Add(0x07);
+        data.AddRange("Stable"u8.ToArray()); // GroupState
+        data.Add(0x09);
+        data.AddRange("consumer"u8.ToArray()); // ProtocolType
+        data.Add(0x06);
+        data.AddRange("range"u8.ToArray()); // ProtocolData
         // Members COMPACT_ARRAY (1 member)
         data.Add(0x02);
         // Member:
-        data.Add(0x03); data.AddRange("m1"u8.ToArray()); // MemberId (COMPACT_STRING)
+        data.Add(0x03);
+        data.AddRange("m1"u8.ToArray()); // MemberId (COMPACT_STRING)
         data.Add(0x00); // GroupInstanceId: null (v4+)
-        data.Add(0x04); data.AddRange("cli"u8.ToArray()); // ClientId
-        data.Add(0x06); data.AddRange("host1"u8.ToArray()); // ClientHost
+        data.Add(0x04);
+        data.AddRange("cli"u8.ToArray()); // ClientId
+        data.Add(0x06);
+        data.AddRange("host1"u8.ToArray()); // ClientHost
         // MemberMetadata (COMPACT_BYTES: length+1)
         data.Add((byte)(metadataBytes.Length + 1));
         data.AddRange(metadataBytes);
@@ -529,7 +536,8 @@ public class AdminMessageEncodingTests
         // ErrorCode = GroupIdNotFound (69)
         data.AddRange(new byte[] { 0x00, 0x45 });
         // GroupId
-        data.Add(0x09); data.AddRange("bad-grp1"u8.ToArray());
+        data.Add(0x09);
+        data.AddRange("bad-grp1"u8.ToArray());
         // GroupState (empty)
         data.Add(0x01);
         // ProtocolType (empty)

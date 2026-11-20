@@ -202,6 +202,8 @@ public class SchemaRegistryTombstoneDeserializerBenchmarks
             bool permanent = false,
             CancellationToken cancellationToken = default) => throw new NotSupportedException();
 
-        public void Dispose() { }
+        public void Dispose()
+        {
+        }
     }
 }

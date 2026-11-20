@@ -34,13 +34,18 @@ public sealed class OutboxRelationalLeaseTests
         {
             DataSource = $"{database.Hostname},{database.GetMappedPublicPort(1433)}",
             InitialCatalog = "outbox_leases",
-            UserID = "sa", Password = password, TrustServerCertificate = true, Pooling = false
+            UserID = "sa",
+            Password = password,
+            TrustServerCertificate = true,
+            Pooling = false
         }.ConnectionString;
         var gate = new GatedStatement();
         var factory = new PooledDbContextFactory<Context>(
             new DbContextOptionsBuilder<Context>().UseSqlServer(connection).AddInterceptors(gate).Options);
         await using (var context = await factory.CreateDbContextAsync(timeout.Token))
+        {
             await context.Database.EnsureCreatedAsync(timeout.Token);
+        }
 
         // A claim: the owner guard cannot refuse it, because the lease it takes has no owner.
         var claimer = new EfCoreOutboxStore<Context>(factory);
@@ -105,7 +110,10 @@ public sealed class OutboxRelationalLeaseTests
 
         public Task Held => Volatile.Read(ref _held).Task;
 
-        public int? Affected { get; private set; }
+        public int? Affected
+        {
+            get; private set;
+        }
 
         public void Arm(Func<DbCommand, bool> match)
         {
@@ -137,7 +145,9 @@ public sealed class OutboxRelationalLeaseTests
             CancellationToken cancellationToken = default)
         {
             if (ReferenceEquals(command, _gated))
+            {
                 Affected = result;
+            }
             return new(result);
         }
     }

@@ -97,7 +97,9 @@ public sealed partial class KafkaConnectionTests
         var header = new byte[5];
         await stream.ReadExactlyAsync(header, cancellationToken);
         if (header[0] != 0x16)
+        {
             throw new InvalidOperationException($"Expected a TLS handshake record, got content type {header[0]}.");
+        }
 
         var body = new byte[System.Buffers.Binary.BinaryPrimitives.ReadUInt16BigEndian(header.AsSpan(3))];
         await stream.ReadExactlyAsync(body, cancellationToken);
@@ -122,7 +124,9 @@ public sealed partial class KafkaConnectionTests
         }
 
         if (fault == TlsHandshakeFault.ResetAfterClientHello)
+        {
             client.Client.LingerState = new LingerOption(enable: true, seconds: 0);
+        }
 
         client.Client.Close();
     }

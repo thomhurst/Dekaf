@@ -529,7 +529,9 @@ public class AvroInlineValidationBenchmarks
         for (var index = 0; index < 128; index++)
         {
             if (index != 0)
+            {
                 unionSchemaText.Append(',');
+            }
             unionSchemaText.Append("{\"name\":\"field").Append(index).Append("\",\"type\":\"int\"");
             if (index == 0)
             {
@@ -544,7 +546,9 @@ public class AvroInlineValidationBenchmarks
         var unionMemberNestedValueSchema = (RecordSchema)unionMemberNestedSchema[1];
         var unionMemberNestedValue = new GenericRecord(unionMemberNestedValueSchema);
         for (var index = 0; index < 128; index++)
+        {
             unionMemberNestedValue.Add($"field{index}", 1);
+        }
         using var unionMemberNestedStream = new MemoryStream();
         var unionMemberNestedEncoder = new BinaryEncoder(unionMemberNestedStream);
         new GenericDatumWriter<object>(unionMemberNestedSchema).Write(
@@ -740,7 +744,9 @@ public class AvroInlineValidationBenchmarks
         var unionMapSchema = (RecordSchema)AvroSchema.Parse(unionMapFieldMemberNestedSchemaText);
         var unionMapValues = new Dictionary<string, object>(1024);
         for (var index = 0; index < 1023; index++)
+        {
             unionMapValues.Add($"item-{index}", 1);
+        }
         unionMapValues.Add("selected", 1);
         var unionMapRecord = new GenericRecord(unionMapSchema);
         unionMapRecord.Add("value", unionMapValues);
@@ -853,7 +859,9 @@ public class AvroInlineValidationBenchmarks
         var schema = AvroSchema.Parse(schemaText);
         var payload = new byte[16];
         for (var index = 0; index < 7; index++)
+        {
             payload[index * 2 + 1] = 2;
+        }
         _recursiveValidationPayload = payload;
         _recursiveValidationValidator = new AvroInlineRuleValidator(schema);
         _recursiveValidationValidator.Validate(

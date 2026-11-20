@@ -37,14 +37,18 @@ internal sealed class ShareRecordBufferPool(int maximumRetainedBytes) : ArrayPoo
     {
         ArgumentNullException.ThrowIfNull(array);
         if (array.Length == 0)
+        {
             return;
+        }
         if (_disposed || array.Length > maximumRetainedBytes - _retainedBytes || array.Length > 1 << 30)
         {
             Shared.Return(array, clearArray);
             return;
         }
         if (clearArray)
+        {
             Array.Clear(array, 0, array.Length);
+        }
         var bucket = BitOperations.Log2((uint)array.Length);
         (_buckets[bucket] ??= new Stack<byte[]>()).Push(array);
         _retainedBytes += array.Length;
@@ -53,14 +57,20 @@ internal sealed class ShareRecordBufferPool(int maximumRetainedBytes) : ArrayPoo
     public void Dispose()
     {
         if (_disposed)
+        {
             return;
+        }
         _disposed = true;
         foreach (var arrays in _buckets)
         {
             if (arrays is null)
+            {
                 continue;
+            }
             while (arrays.Count != 0)
+            {
                 Shared.Return(arrays.Pop());
+            }
         }
         Array.Clear(_buckets, 0, _buckets.Length);
         _retainedBytes = 0;

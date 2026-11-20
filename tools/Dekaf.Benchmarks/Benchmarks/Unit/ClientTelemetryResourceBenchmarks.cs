@@ -16,16 +16,21 @@ public class ClientTelemetryResourceBenchmarks
     private ClientTelemetryMetricSnapshot _snapshot = null!;
 
     [Params(false, true)]
-    public bool ResourceLabels { get; set; }
+    public bool ResourceLabels
+    {
+        get; set;
+    }
 
     [GlobalSetup]
     public void Setup()
     {
         _collector = new(ClientTelemetryClientRole.Consumer);
         if (ResourceLabels)
+        {
             _collector.ResourceAttributesProvider = static () => new(
                 ClientRack: "rack-1", GroupId: "orders", GroupInstanceId: "worker-1",
                 GroupMemberId: "11111111-1111-1111-1111-111111111111");
+        }
         _collector.RegisterMetricForSubscription(new("com.example.depth", ApplicationTelemetryMetricKind.Gauge, static () => 42));
         _collector.RecordConnectionCreated();
         _collector.RecordRequestLatency(1, TimeSpan.FromMilliseconds(1));

@@ -23,12 +23,18 @@ public sealed partial class AdminClient : IDetailedShareGroupOffsetAdminClient
             static (pending, response) =>
             {
                 if (response.ErrorCode != ErrorCode.None)
+                {
                     return MapGroupMutationError(pending, static item => item.TopicPartition, response.ErrorCode, response.ErrorMessage);
+                }
                 var results = new Dictionary<TopicPartition, AdminMutationResult>(pending.Count);
                 foreach (var topic in response.Responses)
+                {
                     foreach (var partition in topic.Partitions)
+                    {
                         AddMutationResult(results, new(topic.TopicName, partition.PartitionIndex),
                             AdminMutationResult.FromResponse(partition.ErrorCode, partition.ErrorMessage));
+                    }
+                }
                 return results;
             }, cancellationToken);
     }
@@ -63,7 +69,10 @@ public sealed partial class AdminClient : IDetailedShareGroupOffsetAdminClient
         {
             ArgumentNullException.ThrowIfNull(item);
             ValidateTopicPartition(item.TopicPartition);
-            if (!keys.Add(item.TopicPartition)) throw new ArgumentException("Topic partitions must be distinct.", nameof(offsets));
+            if (!keys.Add(item.TopicPartition))
+            {
+                throw new ArgumentException("Topic partitions must be distinct.", nameof(offsets));
+            }
             items.Add(item);
         }
         return items;
@@ -75,11 +84,16 @@ public sealed partial class AdminClient : IDetailedShareGroupOffsetAdminClient
         foreach (var item in items)
         {
             if (!topics.TryGetValue(item.TopicPartition.Topic, out var partitions))
+            {
                 topics.Add(item.TopicPartition.Topic, partitions = new());
+            }
             partitions.Add(new() { PartitionIndex = item.TopicPartition.Partition, StartOffset = item.StartOffset });
         }
         var requests = new List<AlterShareGroupOffsetsRequestTopic>(topics.Count);
-        foreach (var topic in topics) requests.Add(new() { TopicName = topic.Key, Partitions = topic.Value });
+        foreach (var topic in topics)
+        {
+            requests.Add(new() { TopicName = topic.Key, Partitions = topic.Value });
+        }
         return new() { GroupId = groupId, Topics = requests };
     }
 
@@ -87,7 +101,10 @@ public sealed partial class AdminClient : IDetailedShareGroupOffsetAdminClient
         Func<TItem, TKey> key, ErrorCode error, string? message) where TKey : notnull
     {
         var results = new Dictionary<TKey, AdminMutationResult>(items.Count);
-        foreach (var item in items) results.Add(key(item), AdminMutationResult.FromResponse(error, message));
+        foreach (var item in items)
+        {
+            results.Add(key(item), AdminMutationResult.FromResponse(error, message));
+        }
         return results;
     }
 }

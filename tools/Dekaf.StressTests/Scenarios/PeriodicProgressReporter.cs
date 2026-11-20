@@ -19,7 +19,9 @@ internal sealed class PeriodicProgressReporter(ThroughputTracker throughput)
     {
         var now = DateTime.UtcNow;
         if ((now - _lastStatusTime).TotalSeconds >= ReportIntervalSeconds)
+        {
             TryLogProgress(now);
+        }
     }
 
     private void TryLogProgress(DateTime now)

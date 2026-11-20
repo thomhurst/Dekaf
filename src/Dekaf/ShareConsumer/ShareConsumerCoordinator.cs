@@ -133,14 +133,20 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
     internal Task GetAssignmentChangeTask()
     {
         if (Volatile.Read(ref _disposed) != 0)
+        {
             return Task.CompletedTask;
+        }
         var pending = Volatile.Read(ref _assignmentChanged);
         if (pending is not null)
+        {
             return pending.Task;
+        }
         var created = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         pending = Interlocked.CompareExchange(ref _assignmentChanged, created, null) ?? created;
         if (Volatile.Read(ref _disposed) != 0)
+        {
             NotifyAssignmentChange();
+        }
         return pending.Task;
     }
 
@@ -193,10 +199,14 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
         CancellationToken cancellationToken)
     {
         if (Volatile.Read(ref _disposed) != 0)
+        {
             throw new ObjectDisposedException(nameof(ShareConsumerCoordinator));
+        }
 
         if (_state == CoordinatorState.Stable)
+        {
             return;
+        }
 
         await EnsureActiveGroupCoreAsync(cancellationToken).ConfigureAwait(false);
     }
@@ -311,7 +321,9 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
                 errorCode == ErrorCode.CoordinatorLoadInProgress)
             {
                 if (attempt == maxRetries - 1)
+                {
                     break;
+                }
 
                 var retryDelayMs = CalculateRequestRetryBackoff(attempt + 1);
                 LogCoordinatorNotAvailableRetry(attempt + 1, maxRetries, retryDelayMs);
@@ -388,7 +400,9 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
             // A leave that took the coordination lock after this join released it left Stable
             // before stopping the heartbeat loop. Starting one now would outlive the membership.
             if (_state != CoordinatorState.Stable)
+            {
                 return;
+            }
 
             oldCts = _heartbeatCts;
             oldTask = _heartbeatTask;
@@ -456,7 +470,9 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
         // Unsubscribe may race coordinator discovery or an in-flight join. Kafka rejects
         // an empty epoch-zero subscription, so let the polling loop observe unsubscribe.
         if (memberEpoch == 0 && subscription is not { Count: > 0 })
+        {
             return;
+        }
 
         // Share groups always use client-generated UUID v4 member IDs.
         // Generate once when _memberId is null; subsequent heartbeats reuse the stored ID.
@@ -488,8 +504,7 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
                 request, version, cancellationToken).ConfigureAwait(false);
             _telemetryMetrics?.HeartbeatCompleted(heartbeatStarted);
         }
-        catch (Exception ex) when (
-            ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
+        catch (Exception ex) when (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
         {
             Volatile.Write(ref _lastHeartbeatFailure, ex.Message);
             throw;
@@ -514,7 +529,9 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
         Volatile.Write(ref _lastHeartbeatFailure, null);
 
         if (response.MemberId is not null)
+        {
             _memberId = response.MemberId;
+        }
 
         if (response.MemberEpoch != _memberEpoch)
         {
@@ -523,7 +540,9 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
         }
 
         if (response.HeartbeatIntervalMs > 0)
+        {
             _heartbeatIntervalMs = response.HeartbeatIntervalMs;
+        }
 
         // The broker sends an assignment only when it changes. One that names a topic this
         // client's metadata does not know yet (created after the last refresh) is published
@@ -534,11 +553,15 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
         if (assignment is null)
         {
             if (_unresolvedAssignment is null)
+            {
                 return;
+            }
 
             assignment = GetPendingAssignmentToRetry();
             if (assignment is null)
+            {
                 return;
+            }
         }
 
         ProcessShareGroupAssignment(assignment);
@@ -554,7 +577,9 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
     {
         var pending = _unresolvedAssignment;
         if (pending is null)
+        {
             return null;
+        }
 
         if (ReferenceEquals(_metadataManager.Metadata.CaptureSnapshot(), Volatile.Read(ref _unresolvedSnapshot)))
         {
@@ -578,7 +603,9 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
         for (var i = 0; i < topics.Count; i++)
         {
             if (PendingAssignmentTopics.TryResolve(snapshot, resolvedNames, topics[i].TopicId, out var name))
+            {
                 names[topics[i].TopicId] = name;
+            }
         }
 
         return names;
@@ -638,8 +665,7 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
 
             return connectionLease;
         }
-        catch (Exception ex) when (
-            ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
+        catch (Exception ex) when (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
         {
             connectionLease.Dispose();
             Volatile.Write(ref _lastHeartbeatFailure, ex.Message);
@@ -677,7 +703,9 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
         // An unchanged empty assignment (an idle member's steady state) stays a few field reads:
         // the resolution work lives in a separate method so this path pays none of its frame setup.
         if (assignment.TopicPartitions.Count == 0 && _assignedPartitions.Count == 0 && _unresolvedAssignment is null)
+        {
             return;
+        }
 
         ProcessShareGroupAssignmentCore(assignment);
     }
@@ -701,7 +729,9 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
             {
                 // Warn once per assignment; the retries on later heartbeats stay quiet.
                 if (!retry)
+                {
                     LogUnknownTopicIdInAssignment(tp.TopicId);
+                }
                 unknownTopics++;
                 continue;
             }
@@ -725,7 +755,9 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
         {
             // A new assignment refreshes without the backoff an earlier unresolved one built up.
             if (!retry)
+            {
                 _unresolvedRefresher.Reset();
+            }
             _unresolvedRefresher.Request();
         }
 
@@ -736,7 +768,9 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
             // A rejoin can complete with the existing assignment. Repeated assignment
             // payloads while stable are not new rebalances and do not notify waiters.
             if (_state == CoordinatorState.Joining && newAssignment.Count > 0)
+            {
                 RecordRebalance(counted);
+            }
             return;
         }
 
@@ -757,7 +791,9 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
     {
         _unresolvedAssignmentCounted = _unresolvedAssignment is not null;
         if (counted)
+        {
             return;
+        }
 
         _joinRebalanceRecorded = true;
         _telemetryMetrics?.Rebalanced();
@@ -772,7 +808,9 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
     {
         _state = CoordinatorState.Stable;
         if (_joinRebalanceRecorded)
+        {
             return;
+        }
 
         _joinRebalanceRecorded = true;
         _unresolvedAssignmentCounted = _unresolvedAssignment is not null;
@@ -789,7 +827,9 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
         try
         {
             if (_state == CoordinatorState.Stable)
+            {
                 return;
+            }
 
             LogEnsureActiveGroupStarted(_options.GroupId, _state);
             var startedAt = Stopwatch.GetTimestamp();
@@ -804,7 +844,9 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
             while (_state != CoordinatorState.Stable)
             {
                 if (_subscribedTopics is not { Count: > 0 } && _memberEpoch <= 0)
+                {
                     return;
+                }
 
                 if (Stopwatch.GetElapsedTime(startedAt) > timeout)
                 {
@@ -911,11 +953,17 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
                     cancellationToken.ThrowIfCancellationRequested();
 
                     if (ex is ObjectDisposedException)
+                    {
                         LogCoordinatorConnectionDisposed();
+                    }
                     else if (lastJoinFailure is null)
+                    {
                         LogCoordinatorUnreachableDuringJoin(ex, _coordinatorId, _options.GroupId);
+                    }
                     else
+                    {
                         LogCoordinatorStillUnreachableDuringJoin(ex, _coordinatorId, _options.GroupId, retryFailureCount + 1);
+                    }
 
                     lastJoinFailure = ex;
                     MarkCoordinatorUnknown();
@@ -962,7 +1010,9 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
 
                 // A foreground rejoin owns the membership once it left Stable.
                 if (transientFailureCount > 0 && _state != CoordinatorState.Stable)
+                {
                     break;
+                }
 
                 heartbeatCoordinatorId = _coordinatorId;
                 if (heartbeatCoordinatorId < 0)
@@ -990,9 +1040,13 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
             catch (Exception ex)
             {
                 if (transientFailureCount == 0)
+                {
                     LogHeartbeatFailed(ex);
+                }
                 else
+                {
                     LogHeartbeatStillFailing(ex, transientFailureCount + 1);
+                }
 
                 if (TryKeepHeartbeating(ex, heartbeatCoordinatorId))
                 {
@@ -1059,15 +1113,21 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
             ? IsRetriableCoordinatorError(groupException.ErrorCode)
             : IsRetriableJoinFailure(exception);
         if (!transient || _state != CoordinatorState.Stable)
+        {
             return false;
+        }
 
         var sinceLastSuccess = Stopwatch.GetElapsedTime(Volatile.Read(ref _lastSuccessfulHeartbeatTimestamp));
         if (sinceLastSuccess >= TimeSpan.FromMilliseconds(_options.SessionTimeoutMs))
+        {
             return false;
+        }
 
         // Invalidate only the coordinator this heartbeat used. Membership state is untouched.
         if (_coordinatorId == heartbeatCoordinatorId)
+        {
             _coordinatorId = -1;
+        }
 
         return true;
     }
@@ -1088,17 +1148,23 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
     public async ValueTask LeaveGroupAsync(CancellationToken cancellationToken = default)
     {
         if (Volatile.Read(ref _disposed) != 0)
+        {
             return;
+        }
 
         // An uncontended lock is taken even with a cancelled token, so a cancelled close still
         // stops the heartbeat loop; the -1 heartbeat below is best effort.
         if (!_lock.Wait(0, CancellationToken.None))
+        {
             await _lock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        }
         try
         {
             var memberId = _memberId;
             if (memberId is not { Length: > 0 } || _leftGroup)
+            {
                 return;
+            }
 
             // Leave Stable before stopping the loop: a join that completed before this took the
             // lock starts its loop only while Stable, so no heartbeat follows the -1 heartbeat.
@@ -1125,7 +1191,9 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
             // A transient heartbeat failure can invalidate the coordinator while the broker
             // still holds this membership. Rediscover it before attempting the best-effort leave.
             if (_coordinatorId < 0)
+            {
                 await FindCoordinatorAsync(cancellationToken).ConfigureAwait(false);
+            }
 
             using var connectionLease = await _connectionPool.LeaseConnectionByIndexAsync(
                 _coordinatorId, _getCoordinationConnectionIndex(), cancellationToken)
@@ -1209,7 +1277,9 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
     public async ValueTask DisposeAsync()
     {
         if (Interlocked.Exchange(ref _disposed, 1) != 0)
+        {
             return;
+        }
         NotifyAssignmentChange();
         LogCoordinatorDisposing();
 

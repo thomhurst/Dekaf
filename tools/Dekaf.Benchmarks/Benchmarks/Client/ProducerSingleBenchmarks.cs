@@ -28,7 +28,10 @@ public class ProducerSingleBenchmarks
     private string _messageValue = null!;
 
     [Params(100, 1000)]
-    public int MessageSize { get; set; }
+    public int MessageSize
+    {
+        get; set;
+    }
 
     [GlobalSetup(Targets = new[]
     {

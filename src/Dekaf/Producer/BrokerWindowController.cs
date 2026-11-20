@@ -215,8 +215,14 @@ internal sealed class BrokerWindowController
     internal long TargetDelayTicks => _targetDelayTicks;
     internal bool DelayOverTargetForTest => DelayOverTarget;
     internal double WindowScale => _capBytes == 0 ? 1 : (double)_windowBytes / _capBytes;
-    internal long CapacityProbeSuccessCount { get; private set; }
-    internal long CapacityProbeFailureCount { get; private set; }
+    internal long CapacityProbeSuccessCount
+    {
+        get; private set;
+    }
+    internal long CapacityProbeFailureCount
+    {
+        get; private set;
+    }
 
     /// <summary>The delay the governor regulates against the target: post-seal pipeline delay
     /// plus the admission-block wait blocked appends actually paid. Without the admission
@@ -236,9 +242,13 @@ internal sealed class BrokerWindowController
             _generation++;
         }
         if (_probeBaselineWindow > _capBytes)
+        {
             _probeBaselineWindow = _capBytes;
+        }
         if (_probeCandidateWindow > _capBytes)
+        {
             _probeCandidateWindow = _capBytes;
+        }
 
         return CurrentDecision();
     }
@@ -252,7 +262,9 @@ internal sealed class BrokerWindowController
     internal BrokerWindowDecision NoteColdStartWave(long waveBytes)
     {
         if (_slowStartActive)
+        {
             SetWindow(Math.Max(_windowBytes, waveBytes));
+        }
 
         return CurrentDecision();
     }
@@ -270,10 +282,14 @@ internal sealed class BrokerWindowController
         long nowTicks)
     {
         if (logicalBytes <= 0 || rttTicks <= 0)
+        {
             return;
+        }
 
         if (_epochStartedAt == 0)
+        {
             _epochStartedAt = nowTicks;
+        }
 
         UpdateMinimumRtt(logicalBytes, rttTicks, nowTicks);
 
@@ -305,7 +321,9 @@ internal sealed class BrokerWindowController
         // Called once per response pass that carried at least one full acknowledgement, so
         // each doubling follows a proven drain of the previous window within one round trip.
         if (_slowStartActive)
+        {
             AdvanceSlowStart();
+        }
 
         if (_epochStartedAt == 0)
         {
@@ -316,11 +334,15 @@ internal sealed class BrokerWindowController
 
         var elapsedTicks = nowTicks - _epochStartedAt;
         if (elapsedTicks < ControlIntervalTicks)
+        {
             return CurrentDecision();
+        }
 
         var goodput = _epochBytes * (double)Stopwatch.Frequency / elapsedTicks;
         if (goodput > 0)
+        {
             _maximumGoodputBytesPerSecond = Math.Max(_maximumGoodputBytesPerSecond, goodput);
+        }
 
         var generationQualified = _epochCurrentGenerationBytes > 0
             && _epochCurrentGenerationBytes >= _epochBytes / 2 + _epochBytes % 2;
@@ -346,13 +368,17 @@ internal sealed class BrokerWindowController
             >= _windowBytes - _windowBytes / 4;
         var demand = admissionPressure || occupancyPressure || _epochLoaded;
         if (_phase != BrokerWindowPhase.Steady && admissionPressure)
+        {
             _probeSawAdmissionPressure = true;
+        }
 
         _lastAdmissionBlockEvents = admissionBlockEvents;
         ResetEpoch(nowTicks);
 
         if (goodput <= 0)
+        {
             return CurrentDecision();
+        }
 
         if (!generationQualified)
         {
@@ -396,7 +422,9 @@ internal sealed class BrokerWindowController
         var optimisticWindow = OptimisticWindowBytes;
         SetWindow(Math.Min(SaturatingMultiply(_windowBytes, 2), optimisticWindow));
         if (_windowBytes >= optimisticWindow)
+        {
             _slowStartActive = false;
+        }
     }
 
     private long OptimisticWindowBytes => Math.Min(
@@ -406,14 +434,20 @@ internal sealed class BrokerWindowController
     private BrokerWindowDecision UpdateSteady(bool demand)
     {
         if (!demand)
+        {
             return CurrentDecision();
+        }
 
         if (--_epochsUntilProbe > 0)
+        {
             return CurrentDecision();
+        }
 
         var descentBias = DelayOverTarget;
         if ((_probeDownNext || descentBias) && _windowBytes > ProbeFloorBytes(descentBias))
+        {
             return StartDownProbe(descentBias);
+        }
 
         if (descentBias)
         {
@@ -585,7 +619,9 @@ internal sealed class BrokerWindowController
                 _consecutiveProbeFailures + 1,
                 MaximumProbeBackoffShift);
             if (!probingUp && _probeUsedAcceleratedDescent)
+            {
                 _rejectedAcceleratedDescentBaseline = _probeBaselineWindow;
+            }
             SetWindow(_probeBaselineWindow);
         }
 
@@ -685,7 +721,9 @@ internal sealed class BrokerWindowController
         {
             var value = _minimumRttBySizeTicks[i];
             if (value > 0)
+            {
                 minimum = Math.Min(minimum, value);
+            }
         }
 
         return minimum == long.MaxValue ? 0 : minimum;
@@ -702,7 +740,9 @@ internal sealed class BrokerWindowController
     {
         var next = NormalizeWindow(requestedBytes);
         if (next == _windowBytes)
+        {
             return;
+        }
 
         _windowBytes = next;
         _generation++;

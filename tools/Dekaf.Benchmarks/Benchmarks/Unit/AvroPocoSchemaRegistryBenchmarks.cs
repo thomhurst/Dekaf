@@ -121,8 +121,14 @@ public class AvroPocoSchemaRegistryBenchmarks
     {
         public static readonly AvroSchema _SCHEMA = AvroSchema.Parse(SchemaJson);
 
-        public int id { get; init; }
-        public string name { get; init; } = string.Empty;
+        public int id
+        {
+            get; init;
+        }
+        public string name
+        {
+            get; init;
+        } = string.Empty;
         public AvroSchema Schema => _SCHEMA;
 
         public object Get(int fieldPos) => fieldPos switch
@@ -436,7 +442,9 @@ public class AvroPocoSchemaRegistryDeserializationBenchmarks
     public PocoBenchmarkRecord PrepareThenDeserializePoco()
     {
         if (!_pocoPreparer.TryDeserialize(_wireData, _context, out var value))
+        {
             throw new InvalidOperationException("Benchmark deserializer was not prepared.");
+        }
 
         return value;
     }
@@ -537,7 +545,10 @@ public class AvroPocoSchemaRegistryDeserializationBenchmarks
 
     private sealed class PassThroughRuleExecutor : ISchemaRegistryRuleExecutor
     {
-        internal static PassThroughRuleExecutor Instance { get; } = new();
+        internal static PassThroughRuleExecutor Instance
+        {
+            get;
+        } = new();
 
         public ReadOnlyMemory<byte> TransformSerializedPayload(
             ReadOnlyMemory<byte> payload,
@@ -600,7 +611,9 @@ public class AvroPocoSchemaRegistryDeserializationBenchmarks
             bool permanent = false,
             CancellationToken cancellationToken = default) => throw new NotSupportedException();
 
-        public void Dispose() { }
+        public void Dispose()
+        {
+        }
     }
 
     internal sealed class BenchmarkSchemaRegistryClient(global::Dekaf.SchemaRegistry.Schema schema)
@@ -666,7 +679,9 @@ public class AvroPocoSchemaRegistryDeserializationBenchmarks
             bool permanent = false,
             CancellationToken cancellationToken = default) => throw new NotSupportedException();
 
-        public void Dispose() { }
+        public void Dispose()
+        {
+        }
 
         private global::Dekaf.SchemaRegistry.RegisteredSchema CreateRegisteredSchema(string subject) => new()
         {
@@ -812,10 +827,16 @@ public class AvroPocoPreparedConsumerBenchmarks
 public sealed partial class PocoBenchmarkRecord
 {
     [AvroField(Name = "id", Order = 0)]
-    public int Id { get; init; }
+    public int Id
+    {
+        get; init;
+    }
 
     [AvroField(Name = "name", Order = 1)]
-    public required string Name { get; init; }
+    public required string Name
+    {
+        get; init;
+    }
 }
 
 /// <summary>Guards generated POCO rule serialization against per-message overhead and allocations.</summary>
@@ -855,7 +876,10 @@ public class AvroPocoRuleSerializationBenchmarks
 
     private sealed class PassThroughRuleExecutor : ISchemaRegistryRuleExecutor
     {
-        internal static PassThroughRuleExecutor Instance { get; } = new();
+        internal static PassThroughRuleExecutor Instance
+        {
+            get;
+        } = new();
 
         public ReadOnlyMemory<byte> TransformSerializedPayload(
             ReadOnlyMemory<byte> payload,
@@ -917,14 +941,19 @@ public class AvroPocoReentrantRuleSerializationBenchmarks
     {
         private bool _isReentrant;
 
-        internal Action? Reenter { get; set; }
+        internal Action? Reenter
+        {
+            get; set;
+        }
 
         public ReadOnlyMemory<byte> TransformSerializedPayload(
             ReadOnlyMemory<byte> payload,
             SchemaRegistryRuleContext context)
         {
             if (_isReentrant)
+            {
                 return payload;
+            }
 
             _isReentrant = true;
             try
@@ -1003,7 +1032,10 @@ public class AvroPocoLargePayloadSerializationBenchmarks
 
     private sealed class PassThroughRuleExecutor : ISchemaRegistryRuleExecutor
     {
-        internal static PassThroughRuleExecutor Instance { get; } = new();
+        internal static PassThroughRuleExecutor Instance
+        {
+            get;
+        } = new();
 
         public ReadOnlyMemory<byte> TransformSerializedPayload(
             ReadOnlyMemory<byte> payload,
@@ -1095,7 +1127,10 @@ public class AvroPocoMixedPayloadSerializationBenchmarks
 
     private sealed class PassThroughRuleExecutor : ISchemaRegistryRuleExecutor
     {
-        internal static PassThroughRuleExecutor Instance { get; } = new();
+        internal static PassThroughRuleExecutor Instance
+        {
+            get;
+        } = new();
 
         public ReadOnlyMemory<byte> TransformSerializedPayload(
             ReadOnlyMemory<byte> payload,
@@ -1146,32 +1181,47 @@ public class AvroPocoTimeSpanSerializationBenchmarks
 public sealed partial class PocoBenchmarkDecimalRecord
 {
     [AvroField(Name = "amount", Precision = 9, Scale = 2)]
-    public decimal Amount { get; init; }
+    public decimal Amount
+    {
+        get; init;
+    }
 }
 
 [AvroRecord(Name = "PocoWriterUnionBenchmarkRecord", Namespace = "Dekaf.Benchmarks.Benchmarks.Unit")]
 public readonly partial record struct PocoWriterUnionBenchmarkRecord
 {
     [AvroField(Name = "value")]
-    public long Value { get; init; }
+    public long Value
+    {
+        get; init;
+    }
 }
 
 [AvroRecord(Name = "PocoCollectionBenchmarkRecord", Namespace = "Dekaf.Benchmarks.Benchmarks.Unit")]
 public sealed partial class PocoCollectionBenchmarkRecord
 {
-    public required int[] Values { get; init; }
+    public required int[] Values
+    {
+        get; init;
+    }
 }
 
 [AvroRecord(Name = "PocoReferenceCollectionBenchmarkRecord", Namespace = "Dekaf.Benchmarks.Benchmarks.Unit")]
 public sealed partial class PocoReferenceCollectionBenchmarkRecord
 {
-    public required string[] Values { get; init; }
+    public required string[] Values
+    {
+        get; init;
+    }
 }
 
 [AvroRecord(Name = "PocoSkipBenchmarkRecord", Namespace = "Dekaf.Benchmarks.Benchmarks.Unit")]
 public sealed partial class PocoSkipBenchmarkRecord
 {
-    public int Id { get; init; }
+    public int Id
+    {
+        get; init;
+    }
 }
 
 public sealed class PocoBenchmarkSpecificRecord : ISpecificRecord
@@ -1179,8 +1229,14 @@ public sealed class PocoBenchmarkSpecificRecord : ISpecificRecord
     public static readonly AvroSchema _SCHEMA =
         AvroSchema.Parse(AvroPocoSchemaRegistryDeserializationBenchmarks.SchemaJson);
 
-    public int id { get; private set; }
-    public string name { get; private set; } = string.Empty;
+    public int id
+    {
+        get; private set;
+    }
+    public string name
+    {
+        get; private set;
+    } = string.Empty;
     public AvroSchema Schema => _SCHEMA;
 
     public object Get(int fieldPos) => fieldPos switch
@@ -1209,40 +1265,82 @@ public sealed class PocoBenchmarkSpecificRecord : ISpecificRecord
 [AvroRecord(Name = "RepresentativePocoRecord", Namespace = "Dekaf.Benchmarks")]
 public sealed partial class RepresentativePocoRecord
 {
-    public int Id { get; init; }
-    public required string Name { get; init; }
+    public int Id
+    {
+        get; init;
+    }
+    public required string Name
+    {
+        get; init;
+    }
 
     [AvroField(DefaultJson = "null")]
-    public string? Note { get; init; }
+    public string? Note
+    {
+        get; init;
+    }
 
-    public RepresentativePocoStatus Status { get; init; }
-    public required int[] Scores { get; init; }
-    public required List<string> Tags { get; init; }
-    public required Dictionary<string, long> Totals { get; init; }
-    public required RepresentativePocoAddress Address { get; init; }
-    public DateTime Created { get; init; }
-    public Guid CorrelationId { get; init; }
+    public RepresentativePocoStatus Status
+    {
+        get; init;
+    }
+    public required int[] Scores
+    {
+        get; init;
+    }
+    public required List<string> Tags
+    {
+        get; init;
+    }
+    public required Dictionary<string, long> Totals
+    {
+        get; init;
+    }
+    public required RepresentativePocoAddress Address
+    {
+        get; init;
+    }
+    public DateTime Created
+    {
+        get; init;
+    }
+    public Guid CorrelationId
+    {
+        get; init;
+    }
 
     [AvroField(Precision = 10, Scale = 2)]
-    public decimal Amount { get; init; }
+    public decimal Amount
+    {
+        get; init;
+    }
 }
 
 [AvroRecord(Name = "RepresentativePocoAddress", Namespace = "Dekaf.Benchmarks")]
 public sealed partial class RepresentativePocoAddress
 {
-    public required string City { get; init; }
+    public required string City
+    {
+        get; init;
+    }
 }
 
 [AvroRecord(Name = "PocoLargeBenchmarkRecord", Namespace = "Dekaf.Benchmarks")]
 public sealed partial class PocoLargeBenchmarkRecord
 {
-    public required int[] Values { get; init; }
+    public required int[] Values
+    {
+        get; init;
+    }
 }
 
 [AvroRecord(Name = "PocoTimeSpanBenchmarkRecord", Namespace = "Dekaf.Benchmarks")]
 public readonly partial record struct PocoTimeSpanBenchmarkRecord
 {
-    public TimeSpan Value { get; init; }
+    public TimeSpan Value
+    {
+        get; init;
+    }
 }
 
 /// <summary>Guards generated collection writers against traversing after buffer overflow.</summary>
@@ -1298,13 +1396,19 @@ public class AvroPocoCollectionOverflowBenchmarks
 [AvroRecord(Name = "PocoOverflowArrayRecord", Namespace = "Dekaf.Benchmarks.Benchmarks.Unit")]
 public sealed partial class PocoOverflowArrayRecord
 {
-    public required int[] Values { get; init; }
+    public required int[] Values
+    {
+        get; init;
+    }
 }
 
 [AvroRecord(Name = "PocoOverflowMapRecord", Namespace = "Dekaf.Benchmarks.Benchmarks.Unit")]
 public sealed partial class PocoOverflowMapRecord
 {
-    public required Dictionary<string, int> Values { get; init; }
+    public required Dictionary<string, int> Values
+    {
+        get; init;
+    }
 }
 
 /// <summary>Guards skipped zero-width Avro collections against per-item scans.</summary>
@@ -1350,7 +1454,10 @@ public class AvroPocoZeroWidthSkipBenchmarks
 [AvroRecord(Name = "PocoZeroWidthSkipBenchmarkRecord", Namespace = "Dekaf.Benchmarks.Benchmarks.Unit")]
 public readonly partial record struct PocoZeroWidthSkipBenchmarkRecord
 {
-    public int Id { get; init; }
+    public int Id
+    {
+        get; init;
+    }
 }
 
 public enum RepresentativePocoStatus

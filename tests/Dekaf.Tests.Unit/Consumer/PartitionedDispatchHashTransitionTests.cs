@@ -16,7 +16,11 @@ public class PartitionedDispatchHashTransitionTests
     {
         var count = unrelatedCount + 9;
         var input = new PartitionLane<ReadOnlyMemory<byte>, int>(new TopicPartition("dispatch", 0), count,
-            static (_, _) => default, static _ => { }, static (_, _) => { });
+            static (_, _) => default, static _ =>
+            {
+            }, static (_, _) =>
+            {
+            });
         var memory = new CountingMemory[count];
         for (var offset = 0; offset < count; offset++)
         {
@@ -34,7 +38,10 @@ public class PartitionedDispatchHashTransitionTests
         // Observe the transition itself without counting their initial lookup work.
         memory[unrelatedCount].FirstRead = () =>
         {
-            for (var index = 0; index < unrelatedCount; index++) memory[index].Reads = 0;
+            for (var index = 0; index < unrelatedCount; index++)
+            {
+                memory[index].Reads = 0;
+            }
         };
         var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var processed = 0;
@@ -50,7 +57,9 @@ public class PartitionedDispatchHashTransitionTests
         {
             await Assert.That(dispatcher.LaneCount).IsEqualTo(count);
             for (var index = 0; index < unrelatedCount; index++)
+            {
                 await Assert.That(memory[index].Reads).IsEqualTo(0);
+            }
         }
         finally
         {
@@ -70,18 +79,28 @@ public class PartitionedDispatchHashTransitionTests
     {
         const int recordCount = 12;
         var input = new PartitionLane<ReadOnlyMemory<byte>, int>(new TopicPartition("dispatch", 0), recordCount,
-            static (_, _) => default, static _ => { }, static (_, _) => { });
+            static (_, _) => default, static _ =>
+            {
+            }, static (_, _) =>
+            {
+            });
         var probe = new CountingMemory(1024);
         probe.Bytes[0] = 0x80;
         for (var offset = 0; offset < recordCount; offset++)
         {
             ReadOnlyMemory<byte> key;
             if (offset == 0)
+            {
                 key = new byte[Math.Max(0, heldKeySize)];
+            }
             else if (offset == 1)
+            {
                 key = new byte[] { 1 };
+            }
             else if (offset == recordCount - 1)
+            {
                 key = probe.Memory;
+            }
             else
             {
                 var bytes = new byte[1024];
@@ -143,14 +162,20 @@ public class PartitionedDispatchHashTransitionTests
         var keyCount = collisionCount + 4;
         var recordCount = keyCount * 2;
         var input = new PartitionLane<TKey, int>(new TopicPartition("dispatch", 0), recordCount,
-            static (_, _) => default, static _ => { }, static (_, _) => { });
+            static (_, _) => default, static _ =>
+            {
+            }, static (_, _) =>
+            {
+            });
         for (var offset = 0; offset < recordCount; offset++)
         {
             var identity = offset % keyCount;
             var isNull = identity == keyCount - 1;
             var key = identity >= keyCount - 2 ? [] : new byte[1024];
             if (key.Length != 0)
+            {
                 BinaryPrimitives.WriteInt32LittleEndian(key.AsSpan(identity < 2 ? 1020 : 992), identity + 1);
+            }
             var value = new byte[sizeof(int)];
             var record = new ConsumeResult<TKey, int>("dispatch", 0, offset,
                 key, isNull, value, false, null, 0, TimestampType.CreateTime, null,
@@ -168,10 +193,15 @@ public class PartitionedDispatchHashTransitionTests
                 var record = records[0];
                 var identity = checked((int)(record.Offset % keyCount));
                 if (Interlocked.Increment(ref active[identity]) != 1 || completed[identity] != record.Offset / keyCount)
+                {
                     throw new InvalidOperationException("Equal keys overlapped or arrived out of order.");
+                }
                 try
                 {
-                    if (record.Offset < 2) await release.Task;
+                    if (record.Offset < 2)
+                    {
+                        await release.Task;
+                    }
                     completed[identity]++;
                 }
                 finally
@@ -191,7 +221,10 @@ public class PartitionedDispatchHashTransitionTests
             release.TrySetResult();
             await running.WaitAsync(TimeSpan.FromSeconds(10));
         }
-        foreach (var count in completed) await Assert.That(count).IsEqualTo(2);
+        foreach (var count in completed)
+        {
+            await Assert.That(count).IsEqualTo(2);
+        }
         await Assert.That(dispatcher.LaneCount).IsEqualTo(0);
         await Assert.That(input.GetCommitOffset()?.Offset).IsEqualTo(recordCount);
     }
@@ -210,9 +243,18 @@ public class PartitionedDispatchHashTransitionTests
 
     private sealed class CountingMemory(int length) : MemoryManager<byte>
     {
-        internal byte[] Bytes { get; } = new byte[length];
-        internal int Reads { get; set; }
-        internal Action? FirstRead { get; set; }
+        internal byte[] Bytes
+        {
+            get;
+        } = new byte[length];
+        internal int Reads
+        {
+            get; set;
+        }
+        internal Action? FirstRead
+        {
+            get; set;
+        }
 
         public override Span<byte> GetSpan()
         {
@@ -224,7 +266,11 @@ public class PartitionedDispatchHashTransitionTests
         }
 
         public override MemoryHandle Pin(int elementIndex = 0) => throw new NotSupportedException();
-        public override void Unpin() { }
-        protected override void Dispose(bool disposing) { }
+        public override void Unpin()
+        {
+        }
+        protected override void Dispose(bool disposing)
+        {
+        }
     }
 }

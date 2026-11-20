@@ -9,21 +9,34 @@ public class ShareConsumerTelemetryParsingBenchmarks
 {
     private static readonly string[] MetricPrefixes = ["org.apache.kafka.consumer.share."];
     private ShareConsumerParsingBenchmarks _parsing = null!;
-    private Action _resetSynchronous = static () => { };
-    private Action _resetPrepared = static () => { };
+    private Action _resetSynchronous = static () =>
+    {
+    };
+    private Action _resetPrepared = static () =>
+    {
+    };
 
     [Params(64, 1024)]
-    public int RecordCount { get; set; }
+    public int RecordCount
+    {
+        get; set;
+    }
 
     [Params(false, true)]
-    public bool Subscribed { get; set; }
+    public bool Subscribed
+    {
+        get; set;
+    }
 
     [GlobalSetup]
     public async ValueTask Setup()
     {
         _parsing = new ShareConsumerParsingBenchmarks { RecordCount = RecordCount, HeaderCount = 0 };
         await _parsing.Setup();
-        if (!Subscribed) return;
+        if (!Subscribed)
+        {
+            return;
+        }
 
         // Bind only during setup so this fixture also builds against the pre-feature
         // baseline, which has no built-in recorder. Timed methods use the same parsers.
@@ -35,7 +48,10 @@ public class ShareConsumerTelemetryParsingBenchmarks
                 BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(consumer)!;
             var metrics = collector.GetType().GetProperty("ShareConsumerMetrics",
                 BindingFlags.Instance | BindingFlags.NonPublic)?.GetValue(collector);
-            if (metrics is null) continue;
+            if (metrics is null)
+            {
+                continue;
+            }
             metrics.GetType().GetMethod("Subscribe", BindingFlags.Instance | BindingFlags.NonPublic)!
                 .Invoke(metrics, [MetricPrefixes]);
             metrics.GetType().GetMethod("FetchStarted", BindingFlags.Instance | BindingFlags.NonPublic)!
@@ -46,8 +62,14 @@ public class ShareConsumerTelemetryParsingBenchmarks
                 .SetValue(consumer, sample);
             var reset = sample!.GetType().GetMethod("Reset", BindingFlags.Instance | BindingFlags.NonPublic)!
                 .CreateDelegate<Action>(sample);
-            if (name == "_synchronousConsumer") _resetSynchronous = reset;
-            else _resetPrepared = reset;
+            if (name == "_synchronousConsumer")
+            {
+                _resetSynchronous = reset;
+            }
+            else
+            {
+                _resetPrepared = reset;
+            }
         }
     }
 

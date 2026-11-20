@@ -8,23 +8,35 @@ public sealed class OAuthBearerToken
     /// <summary>
     /// The raw JWT or opaque access token value.
     /// </summary>
-    public required string TokenValue { get; init; }
+    public required string TokenValue
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The time at which this token expires.
     /// </summary>
-    public required DateTimeOffset Expiration { get; init; }
+    public required DateTimeOffset Expiration
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The principal name associated with the token (typically the subject claim).
     /// </summary>
-    public required string PrincipalName { get; init; }
+    public required string PrincipalName
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Optional SASL extensions to include in the authentication request.
     /// These are sent as key=value pairs in the initial client response.
     /// </summary>
-    public IReadOnlyDictionary<string, string>? Extensions { get; init; }
+    public IReadOnlyDictionary<string, string>? Extensions
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Returns true if the token has expired or is about to expire within the specified buffer.

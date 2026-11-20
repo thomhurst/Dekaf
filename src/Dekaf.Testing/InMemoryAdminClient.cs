@@ -40,7 +40,10 @@ public sealed partial class InMemoryAdminClient :
             StringComparer.Ordinal);
     }
 
-    public ClusterMetadata Metadata { get; } = new();
+    public ClusterMetadata Metadata
+    {
+        get;
+    } = new();
 
     public void RegisterMetricForSubscription(ApplicationTelemetryMetric metric)
     {
@@ -85,7 +88,9 @@ public sealed partial class InMemoryAdminClient :
 
         var topicList = AdminClient.SnapshotDetailedTopics(topics);
         if (topicList.Count == 0)
+        {
             await ApplyAdminFaultAsync(cancellationToken).ConfigureAwait(false);
+        }
 
         KafkaException? failure = null;
         for (var index = 0; index < topicList.Count; index++)
@@ -97,11 +102,15 @@ public sealed partial class InMemoryAdminClient :
 
             var error = _cluster.CreateTopicDetailed(topic, options?.ValidateOnly == true);
             if (error != ErrorCode.None)
+            {
                 failure ??= new KafkaException(error, $"Topic '{topic.Name}' could not be created: {error}.");
+            }
         }
 
         if (failure is not null)
+        {
             throw failure;
+        }
     }
 
     public async ValueTask DeleteTopicsAsync(
@@ -116,7 +125,9 @@ public sealed partial class InMemoryAdminClient :
         var names = topicNames.Distinct(StringComparer.Ordinal).ToArray();
         ValidateNames(names, nameof(topicNames), requireDistinct: false);
         if (names.Length == 0)
+        {
             await ApplyAdminFaultAsync(cancellationToken).ConfigureAwait(false);
+        }
         KafkaException? failure = null;
         for (var index = 0; index < names.Length; index++)
         {
@@ -125,11 +136,15 @@ public sealed partial class InMemoryAdminClient :
                 cancellationToken,
                 topic: topicName).ConfigureAwait(false);
             if (!_cluster.DeleteTopic(topicName))
+            {
                 failure ??= new KafkaException(ErrorCode.UnknownTopicOrPartition, $"Topic '{topicName}' does not exist.");
+            }
         }
 
         if (failure is not null)
+        {
             throw failure;
+        }
     }
 
     public async ValueTask DeleteTopicsAsync(
@@ -143,18 +158,26 @@ public sealed partial class InMemoryAdminClient :
 
         var ids = topicIds.Distinct().ToArray();
         foreach (var topicId in ids)
+        {
             if (topicId == Guid.Empty)
+            {
                 throw new ArgumentException("Topic IDs cannot contain the empty UUID.", nameof(topicIds));
+            }
+        }
 
         if (ids.Length == 0)
+        {
             await ApplyAdminFaultAsync(cancellationToken).ConfigureAwait(false);
+        }
         foreach (var topicId in ids)
         {
             await ApplyAdminFaultAsync(
                 cancellationToken,
                 topic: _cluster.GetTopicName(topicId)).ConfigureAwait(false);
             if (!_cluster.DeleteTopic(topicId))
+            {
                 throw new KafkaException(ErrorCode.UnknownTopicId, $"Topic ID '{topicId}' does not exist.");
+            }
         }
     }
 
@@ -178,9 +201,13 @@ public sealed partial class InMemoryAdminClient :
         var names = topicNames.ToArray();
         ValidateNames(names, nameof(topicNames), requireDistinct: true);
         if (names.Length == 0)
+        {
             await ApplyAdminFaultAsync(cancellationToken).ConfigureAwait(false);
+        }
         for (var index = 0; index < names.Length; index++)
+        {
             await ApplyAdminFaultAsync(cancellationToken, topic: names[index]).ConfigureAwait(false);
+        }
         return _cluster.DescribeTopics(names);
     }
 
@@ -195,11 +222,15 @@ public sealed partial class InMemoryAdminClient :
         for (var index = 0; index < ids.Length; index++)
         {
             if (ids[index] == Guid.Empty)
+            {
                 throw new ArgumentException("Topic IDs cannot contain the empty UUID.", nameof(topicIds));
+            }
         }
 
         if (ids.Length == 0)
+        {
             await ApplyAdminFaultAsync(cancellationToken).ConfigureAwait(false);
+        }
         for (var index = 0; index < ids.Length; index++)
         {
             await ApplyAdminFaultAsync(
@@ -229,9 +260,13 @@ public sealed partial class InMemoryAdminClient :
         var names = topicNames.ToArray();
         ValidateNames(names, nameof(topicNames), requireDistinct: true);
         if (names.Length == 0)
+        {
             await ApplyAdminFaultAsync(cancellationToken).ConfigureAwait(false);
+        }
         for (var index = 0; index < names.Length; index++)
+        {
             await ApplyAdminFaultAsync(cancellationToken, topic: names[index]).ConfigureAwait(false);
+        }
         return new DescribeTopicPartitionsPage
         {
             Topics = _cluster.DescribeTopics(names),
@@ -326,9 +361,13 @@ public sealed partial class InMemoryAdminClient :
         var groups = groupIds.ToArray();
         ValidateNames(groups, nameof(groupIds), requireDistinct: true);
         if (groups.Length == 0)
+        {
             await ApplyAdminFaultAsync(cancellationToken).ConfigureAwait(false);
+        }
         for (var index = 0; index < groups.Length; index++)
+        {
             await ApplyAdminFaultAsync(cancellationToken, groupId: groups[index]).ConfigureAwait(false);
+        }
         var result = groups.ToDictionary(
             static groupId => groupId,
             _cluster.DescribeConsumerGroup,
@@ -353,14 +392,18 @@ public sealed partial class InMemoryAdminClient :
         var groups = groupIds.ToArray();
         ValidateNames(groups, nameof(groupIds), requireDistinct: false);
         if (groups.Length == 0)
+        {
             await ApplyAdminFaultAsync(cancellationToken).ConfigureAwait(false);
+        }
         var processedGroups = new HashSet<string>(StringComparer.Ordinal);
         GroupException? firstError = null;
         for (var index = 0; index < groups.Length; index++)
         {
             var groupId = groups[index];
             if (!processedGroups.Add(groupId))
+            {
                 continue;
+            }
 
             await ApplyAdminFaultAsync(cancellationToken, groupId: groupId).ConfigureAwait(false);
             var errorCode = _cluster.DeleteGroup(groupId);
@@ -376,7 +419,9 @@ public sealed partial class InMemoryAdminClient :
         }
 
         if (firstError is not null)
+        {
             throw firstError;
+        }
     }
 
     public async ValueTask<RemoveMembersFromConsumerGroupResult> RemoveMembersFromConsumerGroupAsync(
@@ -410,7 +455,9 @@ public sealed partial class InMemoryAdminClient :
         {
             var instanceId = memberList[index].GroupInstanceId;
             if (instanceIds is not null && !instanceIds.Add(instanceId))
+            {
                 throw new ArgumentException("Static member group.instance.id values must be unique.", nameof(members));
+            }
             identities[index] = new ConsumerGroupMemberIdentity { GroupInstanceId = instanceId };
         }
         await ApplyAdminFaultAsync(cancellationToken, groupId: groupId).ConfigureAwait(false);
@@ -441,10 +488,14 @@ public sealed partial class InMemoryAdminClient :
 
         var offsetList = offsets.ToArray();
         foreach (var offset in offsetList)
+        {
             ValidateTopicPartition(new TopicPartition(offset.Topic, offset.Partition));
+        }
 
         if (offsetList.Length == 0)
+        {
             await ApplyAdminFaultAsync(cancellationToken, groupId: groupId).ConfigureAwait(false);
+        }
         GroupException? firstError = null;
         for (var index = 0; index < offsetList.Length; index++)
         {
@@ -465,7 +516,9 @@ public sealed partial class InMemoryAdminClient :
             }
         }
         if (firstError is not null)
+        {
             throw firstError;
+        }
     }
 
     public async ValueTask<IReadOnlyDictionary<TopicPartition, long>> DeleteRecordsAsync(
@@ -477,11 +530,15 @@ public sealed partial class InMemoryAdminClient :
         ThrowIfDisposed();
         var offsetSnapshot = new Dictionary<TopicPartition, long>(offsets);
         foreach (var partition in offsetSnapshot.Keys)
+        {
             ValidateTopicPartition(partition);
+        }
 
         var result = new Dictionary<TopicPartition, long>(offsetSnapshot.Count);
         if (offsetSnapshot.Count == 0)
+        {
             await ApplyAdminFaultAsync(cancellationToken).ConfigureAwait(false);
+        }
         foreach (var (partition, offset) in offsetSnapshot)
         {
             await ApplyAdminFaultAsync(
@@ -506,7 +563,9 @@ public sealed partial class InMemoryAdminClient :
 
         var partitionCounts = newPartitionCounts.ToArray();
         if (partitionCounts.Length == 0)
+        {
             await ApplyAdminFaultAsync(cancellationToken).ConfigureAwait(false);
+        }
         foreach (var (topicName, partitionCount) in partitionCounts)
         {
             ArgumentException.ThrowIfNullOrWhiteSpace(topicName);
@@ -530,14 +589,18 @@ public sealed partial class InMemoryAdminClient :
 
         var reassignmentList = reassignments.ToArray();
         if (reassignmentList.Length == 0)
+        {
             await ApplyAdminFaultAsync(cancellationToken).ConfigureAwait(false);
+        }
         foreach (var (topicPartition, reassignment) in reassignmentList)
         {
             ValidateTopicPartition(topicPartition);
             if (reassignment.HasValue)
             {
                 foreach (var replica in reassignment.Value.TargetReplicas)
+                {
                     ArgumentOutOfRangeException.ThrowIfNegative(replica);
+                }
             }
         }
 
@@ -562,9 +625,13 @@ public sealed partial class InMemoryAdminClient :
         if (partitionList is not null)
         {
             if (partitionList.Length == 0)
+            {
                 await ApplyAdminFaultAsync(cancellationToken).ConfigureAwait(false);
+            }
             foreach (var partition in partitionList)
+            {
                 ValidateTopicPartition(partition);
+            }
 
             foreach (var partition in partitionList)
             {
@@ -644,7 +711,9 @@ public sealed partial class InMemoryAdminClient :
         };
 
         lock (_delegationTokenGate)
+        {
             _delegationTokens[DelegationTokenKey(hmac)] = CloneDelegationToken(token);
+        }
 
         return token;
     }
@@ -719,7 +788,9 @@ public sealed partial class InMemoryAdminClient :
         var resourceList = resources.ToArray();
         ValidateConfigResources(resourceList, nameof(resources), requireDistinct: true);
         if (resourceList.Length == 0)
+        {
             await ApplyAdminFaultAsync(cancellationToken).ConfigureAwait(false);
+        }
         var result = new Dictionary<ConfigResource, IReadOnlyList<ConfigEntry>>(resourceList.Length);
         foreach (var resource in resourceList)
         {
@@ -741,7 +812,9 @@ public sealed partial class InMemoryAdminClient :
         ThrowIfDisposed();
         var items = AdminClient.SnapshotDetailedConfigs(configs, static entry => ConfigAlter.Set(entry.Name, entry.Value));
         if (items.Count == 0)
+        {
             await ApplyAdminFaultAsync(cancellationToken).ConfigureAwait(false);
+        }
         KafkaException? failure = null;
         foreach (var item in items)
         {
@@ -749,11 +822,15 @@ public sealed partial class InMemoryAdminClient :
             cancellationToken.ThrowIfCancellationRequested();
             var error = _cluster.ReplaceConfigs(item.Resource, item.Changes, options?.ValidateOnly ?? false);
             if (error != ErrorCode.None)
+            {
                 failure ??= KafkaException.FromErrorCode(error, $"Failed to alter configs for {item.Resource}.");
+            }
         }
 
         if (failure is not null)
+        {
             throw failure;
+        }
     }
 
     public async ValueTask IncrementalAlterConfigsAsync(
@@ -765,9 +842,11 @@ public sealed partial class InMemoryAdminClient :
         cancellationToken.ThrowIfCancellationRequested();
         ThrowIfDisposed();
         var items = AdminClient.SnapshotDetailedConfigs(configs, static change => new ConfigAlter
-            { Name = change.Name, Value = change.Value, Operation = change.Operation });
+        { Name = change.Name, Value = change.Value, Operation = change.Operation });
         if (items.Count == 0)
+        {
             await ApplyAdminFaultAsync(cancellationToken).ConfigureAwait(false);
+        }
         KafkaException? failure = null;
         foreach (var item in items)
         {
@@ -775,11 +854,15 @@ public sealed partial class InMemoryAdminClient :
             cancellationToken.ThrowIfCancellationRequested();
             var error = _cluster.IncrementallyAlterConfigs(item.Resource, item.Changes, options?.ValidateOnly ?? false);
             if (error != ErrorCode.None)
+            {
                 failure ??= KafkaException.FromErrorCode(error, $"Failed to incrementally alter configs for {item.Resource}.");
+            }
         }
 
         if (failure is not null)
+        {
             throw failure;
+        }
     }
 
     public async ValueTask CreateAclsAsync(
@@ -792,7 +875,9 @@ public sealed partial class InMemoryAdminClient :
         ThrowIfDisposed();
         var bindings = aclBindings.ToArray();
         if (bindings.Length == 0)
+        {
             await ApplyAdminFaultAsync(cancellationToken).ConfigureAwait(false);
+        }
         foreach (var binding in bindings)
         {
             await ApplyAdminAclResourceFaultAsync(
@@ -812,7 +897,9 @@ public sealed partial class InMemoryAdminClient :
         ThrowIfDisposed();
         var filterList = filters.ToArray();
         if (filterList.Length == 0)
+        {
             await ApplyAdminFaultAsync(cancellationToken).ConfigureAwait(false);
+        }
         foreach (var filter in filterList)
         {
             await ApplyAdminAclResourceFaultAsync(
@@ -851,10 +938,14 @@ public sealed partial class InMemoryAdminClient :
 
         var partitionList = partitions.ToArray();
         foreach (var partition in partitionList)
+        {
             ValidateTopicPartition(partition);
+        }
 
         if (partitionList.Length == 0)
+        {
             await ApplyAdminFaultAsync(cancellationToken, groupId: groupId).ConfigureAwait(false);
+        }
         for (var index = 0; index < partitionList.Length; index++)
         {
             var partition = partitionList[index];
@@ -890,11 +981,15 @@ public sealed partial class InMemoryAdminClient :
         {
             ValidateTopicPartition(spec.TopicPartition);
             if (seenPartitions is not null && !seenPartitions.Add(spec.TopicPartition))
+            {
                 throw new ArgumentException("Partition specifications must be unique.", nameof(specs));
+            }
         }
 
         if (specList.Length == 0)
+        {
             await ApplyAdminFaultAsync(cancellationToken).ConfigureAwait(false);
+        }
         for (var index = 0; index < specList.Length; index++)
         {
             var partition = specList[index].TopicPartition;
@@ -938,11 +1033,15 @@ public sealed partial class InMemoryAdminClient :
 
         var partitionList = partitions?.ToArray() ?? [];
         foreach (var partition in partitionList)
+        {
             ValidateTopicPartition(partition);
+        }
         ValidateDistinct(partitionList, nameof(partitions));
 
         if (partitionList.Length == 0)
+        {
             await ApplyAdminFaultAsync(cancellationToken).ConfigureAwait(false);
+        }
         for (var index = 0; index < partitionList.Length; index++)
         {
             var partition = partitionList[index];
@@ -1056,7 +1155,9 @@ public sealed partial class InMemoryAdminClient :
         ThrowIfDisposed();
 
         if (filter.Components is null)
+        {
             throw new ArgumentException("Client quota filter components must not be null.", nameof(filter));
+        }
 
         foreach (var component in filter.Components)
         {
@@ -1096,14 +1197,20 @@ public sealed partial class InMemoryAdminClient :
 
         await ApplyAdminFaultAsync(cancellationToken).ConfigureAwait(false);
         if (materialized.Length == 0)
+        {
             return;
+        }
         if (options?.ValidateOnly == true)
+        {
             return;
+        }
 
         lock (_clientQuotas)
         {
             foreach (var alteration in materialized)
+            {
                 ApplyClientQuotaAlteration(alteration);
+            }
         }
 
     }
@@ -1163,11 +1270,15 @@ public sealed partial class InMemoryAdminClient :
 
         var partitionList = partitions.ToArray();
         for (var index = 0; index < partitionList.Length; index++)
+        {
             ValidateTopicPartition(partitionList[index]);
+        }
         ValidateDistinct(partitionList, nameof(partitions));
 
         if (partitionList.Length == 0)
+        {
             await ApplyAdminFaultAsync(cancellationToken).ConfigureAwait(false);
+        }
         for (var index = 0; index < partitionList.Length; index++)
         {
             var partition = partitionList[index];
@@ -1220,7 +1331,9 @@ public sealed partial class InMemoryAdminClient :
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(transactionalId);
         if (options?.TimeoutMs is { } timeoutMs)
+        {
             ArgumentOutOfRangeException.ThrowIfNegativeOrZero(timeoutMs);
+        }
         cancellationToken.ThrowIfCancellationRequested();
         ThrowIfDisposed();
         await ApplyAdminFaultAsync(cancellationToken).ConfigureAwait(false);
@@ -1269,9 +1382,13 @@ public sealed partial class InMemoryAdminClient :
             _cluster.ListTopics().SelectMany(_cluster.GetTopicPartitions).ToArray();
         var targetBrokerIds = brokerIds.Distinct().Order().ToArray();
         for (var index = 0; index < targetBrokerIds.Length; index++)
+        {
             ArgumentOutOfRangeException.ThrowIfNegative(targetBrokerIds[index]);
+        }
         foreach (var partition in targetPartitions)
+        {
             ValidateTopicPartition(partition);
+        }
         foreach (var partition in targetPartitions)
         {
             await ApplyAdminFaultAsync(
@@ -1280,9 +1397,13 @@ public sealed partial class InMemoryAdminClient :
                 partition.Partition).ConfigureAwait(false);
         }
         if (targetPartitions.Length == 0)
+        {
             await ApplyAdminFaultAsync(cancellationToken).ConfigureAwait(false);
+        }
         if (targetBrokerIds.Length == 0)
+        {
             return new Dictionary<int, IReadOnlyDictionary<string, LogDirDescription>>();
+        }
 
         var result = new Dictionary<int, IReadOnlyDictionary<string, LogDirDescription>>();
         foreach (var brokerId in targetBrokerIds)
@@ -1337,7 +1458,9 @@ public sealed partial class InMemoryAdminClient :
 
         var result = new Dictionary<TopicPartitionReplica, AlterReplicaLogDirResultInfo>(assignments.Length);
         if (assignments.Length == 0)
+        {
             await ApplyAdminFaultAsync(cancellationToken).ConfigureAwait(false);
+        }
         foreach (var (replica, _) in assignments)
         {
             await ApplyAdminFaultAsync(
@@ -1372,7 +1495,9 @@ public sealed partial class InMemoryAdminClient :
 
         var result = new Dictionary<TopicPartitionReplica, DescribeReplicaLogDirResultInfo>(replicaList.Length);
         if (replicaList.Length == 0)
+        {
             await ApplyAdminFaultAsync(cancellationToken).ConfigureAwait(false);
+        }
         foreach (var replica in replicaList)
         {
             await ApplyAdminFaultAsync(
@@ -1416,9 +1541,13 @@ public sealed partial class InMemoryAdminClient :
         var groups = groupIds.ToArray();
         ValidateNames(groups, nameof(groupIds), requireDistinct: true);
         if (groups.Length == 0)
+        {
             await ApplyAdminFaultAsync(cancellationToken).ConfigureAwait(false);
+        }
         for (var index = 0; index < groups.Length; index++)
+        {
             await ApplyAdminFaultAsync(cancellationToken, groupId: groups[index]).ConfigureAwait(false);
+        }
         var topologyDescriptionStatus = options?.IncludeTopologyDescription == true
             ? StreamsGroupTopologyDescriptionStatus.NotStored
             : StreamsGroupTopologyDescriptionStatus.NotRequested;
@@ -1452,9 +1581,13 @@ public sealed partial class InMemoryAdminClient :
         var groups = groupIds.ToArray();
         ValidateNames(groups, nameof(groupIds), requireDistinct: true);
         if (groups.Length == 0)
+        {
             await ApplyAdminFaultAsync(cancellationToken).ConfigureAwait(false);
+        }
         for (var index = 0; index < groups.Length; index++)
+        {
             await ApplyAdminFaultAsync(cancellationToken, groupId: groups[index]).ConfigureAwait(false);
+        }
         var listedGroups = _cluster.ListShareGroups().ToDictionary(
             static group => group.GroupId,
             static group => group.HasActiveMembers,
@@ -1493,12 +1626,16 @@ public sealed partial class InMemoryAdminClient :
         {
             ArgumentException.ThrowIfNullOrWhiteSpace(groupId);
             if (!uniqueGroupIds.Add(groupId))
+            {
                 throw new ArgumentException($"Share group ID '{groupId}' is duplicated.", nameof(groupIds));
+            }
         }
 
         var results = new Dictionary<string, DeleteShareGroupResult>(groupIdList.Length, StringComparer.Ordinal);
         if (groupIdList.Length == 0)
+        {
             await ApplyAdminFaultAsync(cancellationToken).ConfigureAwait(false);
+        }
         foreach (var groupId in groupIdList)
         {
             await ApplyAdminFaultAsync(cancellationToken, groupId: groupId).ConfigureAwait(false);
@@ -1524,10 +1661,14 @@ public sealed partial class InMemoryAdminClient :
         var groupOffsets = _cluster.GetShareGroupOffsets(groupId);
         var targetPartitions = partitions?.ToArray() ?? groupOffsets.Keys.ToArray();
         foreach (var partition in targetPartitions)
+        {
             ValidateTopicPartition(partition);
+        }
 
         if (targetPartitions.Length == 0)
+        {
             await ApplyAdminFaultAsync(cancellationToken, groupId: groupId).ConfigureAwait(false);
+        }
         for (var index = 0; index < targetPartitions.Length; index++)
         {
             var partition = targetPartitions[index];
@@ -1570,10 +1711,14 @@ public sealed partial class InMemoryAdminClient :
 
         var offsetList = offsets.ToArray();
         foreach (var offset in offsetList)
+        {
             ValidateTopicPartition(offset.TopicPartition);
+        }
 
         if (offsetList.Length == 0)
+        {
             await ApplyAdminFaultAsync(cancellationToken, groupId: groupId).ConfigureAwait(false);
+        }
         GroupException? firstError = null;
         for (var index = 0; index < offsetList.Length; index++)
         {
@@ -1595,7 +1740,9 @@ public sealed partial class InMemoryAdminClient :
             }
         }
         if (firstError is not null)
+        {
             throw firstError;
+        }
     }
 
     public async ValueTask DeleteShareGroupOffsetsAsync(
@@ -1610,10 +1757,14 @@ public sealed partial class InMemoryAdminClient :
 
         var topicSet = topics.ToHashSet(StringComparer.Ordinal);
         foreach (var topic in topicSet)
+        {
             ArgumentException.ThrowIfNullOrWhiteSpace(topic);
+        }
 
         if (topicSet.Count == 0)
+        {
             await ApplyAdminFaultAsync(cancellationToken, groupId: groupId).ConfigureAwait(false);
+        }
         GroupException? firstError = null;
         foreach (var topic in topicSet)
         {
@@ -1629,7 +1780,9 @@ public sealed partial class InMemoryAdminClient :
             }
         }
         if (firstError is not null)
+        {
             throw firstError;
+        }
     }
 
     public ValueTask DisposeAsync()
@@ -1682,7 +1835,9 @@ public sealed partial class InMemoryAdminClient :
         if (!_clientQuotas.TryGetValue(alteration.Entity, out var quotas))
         {
             if (alteration.Operations.All(operation => operation.Remove))
+            {
                 return;
+            }
 
             quotas = new Dictionary<string, double>(StringComparer.Ordinal);
             _clientQuotas[CloneClientQuotaEntity(alteration.Entity)] = quotas;
@@ -1701,13 +1856,17 @@ public sealed partial class InMemoryAdminClient :
         }
 
         if (quotas.Count == 0)
+        {
             _clientQuotas.Remove(alteration.Entity);
+        }
     }
 
     private static bool MatchesClientQuotaFilter(ClientQuotaEntity entity, ClientQuotaFilter filter)
     {
         if (filter.Strict && entity.Components.Count != filter.Components.Count)
+        {
             return false;
+        }
 
         return filter.Components.All(component => MatchesClientQuotaFilterComponent(entity, component));
     }
@@ -1746,7 +1905,9 @@ public sealed partial class InMemoryAdminClient :
         {
             ArgumentException.ThrowIfNullOrWhiteSpace(names[index], parameterName);
             if (seen is not null && !seen.Add(names[index]))
+            {
                 throw new ArgumentException("Values must be unique.", parameterName);
+            }
         }
     }
 
@@ -1754,14 +1915,18 @@ public sealed partial class InMemoryAdminClient :
         where T : notnull
     {
         if (values.Count < 2)
+        {
             return;
+        }
 
         var seen = new HashSet<T>();
         for (var index = 0; index < values.Count; index++)
         {
             ArgumentNullException.ThrowIfNull(values[index], parameterName);
             if (!seen.Add(values[index]))
+            {
                 throw new ArgumentException("Values must be unique.", parameterName);
+            }
         }
     }
 
@@ -1777,9 +1942,13 @@ public sealed partial class InMemoryAdminClient :
             ArgumentNullException.ThrowIfNull(resource, parameterName);
             ArgumentNullException.ThrowIfNull(resource.Name, parameterName);
             if (resource.Type is ConfigResourceType.Topic or ConfigResourceType.Group)
+            {
                 ArgumentException.ThrowIfNullOrWhiteSpace(resource.Name, parameterName);
+            }
             if (seen is not null && !seen.Add(resource))
+            {
                 throw new ArgumentException("Values must be unique.", parameterName);
+            }
         }
     }
 
@@ -1818,10 +1987,14 @@ public sealed partial class InMemoryAdminClient :
         TimeSpan defaultValue)
     {
         if (value is null)
+        {
             return defaultValue;
+        }
 
         if (value.Value < TimeSpan.Zero)
+        {
             throw new ArgumentOutOfRangeException(parameterName, "Duration cannot be negative.");
+        }
 
         return value.Value;
     }
@@ -1831,13 +2004,17 @@ public sealed partial class InMemoryAdminClient :
         lock (_delegationTokenGate)
         {
             if (!_delegationTokens.TryGetValue(key, out var token))
+            {
                 throw KafkaException.FromErrorCode(
                     ErrorCode.DelegationTokenNotFound,
                     "Delegation token was not found.");
+            }
 
             var expiry = DateTimeOffset.UtcNow + period;
             if (expiry > token.MaxTimestamp)
+            {
                 expiry = token.MaxTimestamp;
+            }
 
             _delegationTokens[key] = CloneDelegationToken(token, expiry);
             return expiry;

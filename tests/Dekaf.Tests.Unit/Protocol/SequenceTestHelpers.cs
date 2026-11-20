@@ -7,7 +7,9 @@ internal static class SequenceTestHelpers
     public static ReadOnlySequence<byte> CreateMultiSegmentSequence(byte[] data, int splitAt)
     {
         if (splitAt <= 0 || splitAt >= data.Length)
+        {
             throw new ArgumentException("Split position must be within data bounds", nameof(splitAt));
+        }
 
         var first = new TestSegment(data.AsMemory(0, splitAt));
         var second = new TestSegment(data.AsMemory(splitAt));

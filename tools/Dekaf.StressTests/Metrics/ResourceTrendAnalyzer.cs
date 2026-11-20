@@ -2,35 +2,98 @@ namespace Dekaf.StressTests.Metrics;
 
 internal sealed record ResourceSample
 {
-    public required double ElapsedMinutes { get; init; }
-    public required long WorkingSetBytes { get; init; }
-    public required long GcHeapBytes { get; init; }
-    public required long LohSizeBytes { get; init; }
-    public required int Gen2Collections { get; init; }
-    public required int ThreadCount { get; init; }
-    public required double ProducedMessagesPerSecond { get; init; }
-    public required double ConsumedMessagesPerSecond { get; init; }
+    public required double ElapsedMinutes
+    {
+        get; init;
+    }
+    public required long WorkingSetBytes
+    {
+        get; init;
+    }
+    public required long GcHeapBytes
+    {
+        get; init;
+    }
+    public required long LohSizeBytes
+    {
+        get; init;
+    }
+    public required int Gen2Collections
+    {
+        get; init;
+    }
+    public required int ThreadCount
+    {
+        get; init;
+    }
+    public required double ProducedMessagesPerSecond
+    {
+        get; init;
+    }
+    public required double ConsumedMessagesPerSecond
+    {
+        get; init;
+    }
 }
 
 internal sealed record ResourceTrendThresholds
 {
-    public required double WarmupMinutes { get; init; }
-    public required int MinimumSampleCount { get; init; }
-    public required double MaxWorkingSetSlopeMibPerHour { get; init; }
-    public required double MaxGcHeapSlopeMibPerHour { get; init; }
-    public required double MaxLohSlopeMibPerHour { get; init; }
-    public required double MaxThroughputDecayPercentPerHour { get; init; }
+    public required double WarmupMinutes
+    {
+        get; init;
+    }
+    public required int MinimumSampleCount
+    {
+        get; init;
+    }
+    public required double MaxWorkingSetSlopeMibPerHour
+    {
+        get; init;
+    }
+    public required double MaxGcHeapSlopeMibPerHour
+    {
+        get; init;
+    }
+    public required double MaxLohSlopeMibPerHour
+    {
+        get; init;
+    }
+    public required double MaxThroughputDecayPercentPerHour
+    {
+        get; init;
+    }
 }
 
 internal sealed class ResourceTrendAnalysis
 {
-    public required int SampleCount { get; init; }
-    public required double WorkingSetSlopeMibPerHour { get; init; }
-    public required double GcHeapSlopeMibPerHour { get; init; }
-    public required double LohSlopeMibPerHour { get; init; }
-    public required double ProducedThroughputSlopePercentPerHour { get; init; }
-    public required double ConsumedThroughputSlopePercentPerHour { get; init; }
-    public required List<string> Failures { get; init; }
+    public required int SampleCount
+    {
+        get; init;
+    }
+    public required double WorkingSetSlopeMibPerHour
+    {
+        get; init;
+    }
+    public required double GcHeapSlopeMibPerHour
+    {
+        get; init;
+    }
+    public required double LohSlopeMibPerHour
+    {
+        get; init;
+    }
+    public required double ProducedThroughputSlopePercentPerHour
+    {
+        get; init;
+    }
+    public required double ConsumedThroughputSlopePercentPerHour
+    {
+        get; init;
+    }
+    public required List<string> Failures
+    {
+        get; init;
+    }
 
     public bool Passed => Failures.Count == 0;
 }

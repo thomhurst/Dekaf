@@ -368,7 +368,9 @@ public sealed class SchemaIdentityFramingIntegrationTests(
             out T value)
         {
             if (inner is IAsyncDeserializerPreparer<T> preparer)
+            {
                 return preparer.TryDeserialize(data, context, out value);
+            }
 
             value = inner.Deserialize(data, context);
             return true;
@@ -390,7 +392,9 @@ public sealed class SchemaIdentityFramingIntegrationTests(
         var polling = PollUntilCanceledAsync(consumer, cancellation.Token);
 
         while (consumer.MemberId is null || consumer.Assignment.Count == 0)
+        {
             await Task.Delay(100, cancellation.Token);
+        }
 
         await Task.Delay(TimeSpan.FromMilliseconds(500), cancellation.Token);
         await cancellation.CancelAsync();
@@ -436,15 +440,24 @@ public sealed class SchemaIdentityFramingIntegrationTests(
 internal sealed partial class BatchIdentityRecord
 {
     [AvroField(Name = "id", Order = 0)]
-    public int Id { get; init; }
+    public int Id
+    {
+        get; init;
+    }
 
     [AvroField(Name = "name", Order = 1)]
-    public required string Name { get; init; }
+    public required string Name
+    {
+        get; init;
+    }
 }
 
 internal sealed class TopicComponentAsyncSubjectNameStrategy : IAsyncSubjectNameStrategy
 {
-    internal static TopicComponentAsyncSubjectNameStrategy Instance { get; } = new();
+    internal static TopicComponentAsyncSubjectNameStrategy Instance
+    {
+        get;
+    } = new();
 
     public ValueTask<string> GetSubjectNameAsync(
         string topic,
@@ -456,7 +469,10 @@ internal sealed class TopicComponentAsyncSubjectNameStrategy : IAsyncSubjectName
 
 internal sealed class PassThroughSchemaRegistryRuleExecutor : ISchemaRegistryRuleExecutor
 {
-    internal static PassThroughSchemaRegistryRuleExecutor Instance { get; } = new();
+    internal static PassThroughSchemaRegistryRuleExecutor Instance
+    {
+        get;
+    } = new();
 
     public ReadOnlyMemory<byte> TransformSerializedPayload(
         ReadOnlyMemory<byte> payload,

@@ -17,18 +17,24 @@ public static class AvroDecimalCodec
         while (valueScale < scale)
         {
             if (!magnitude.TryMultiplyBy10())
+            {
                 throw new OverflowException("Decimal cannot be represented at the configured Avro scale.");
+            }
             valueScale++;
         }
         while (valueScale > scale)
         {
             if (magnitude.DivideBy10() != 0)
+            {
                 throw new InvalidOperationException("Decimal has more fractional digits than the configured Avro scale.");
+            }
             valueScale--;
         }
 
         if (magnitude.CountDigits() > precision)
+        {
             throw new OverflowException("Decimal exceeds the configured Avro precision.");
+        }
 
         Span<byte> encoded = stackalloc byte[13];
         encoded[0] = 0;
@@ -85,7 +91,9 @@ public static class AvroDecimalCodec
     private static decimal Decode(ReadOnlySpan<byte> encoded, int precision, int scale)
     {
         if (encoded.IsEmpty)
+        {
             throw new InvalidDataException("Avro decimal byte sequence cannot be empty.");
+        }
 
         var negative = (encoded[0] & 0x80) != 0;
         while (encoded.Length > 13 && encoded[0] == (negative ? (byte)0xFF : (byte)0) &&
@@ -94,7 +102,9 @@ public static class AvroDecimalCodec
             encoded = encoded.Slice(1);
         }
         if (encoded.Length > 13)
+        {
             throw new OverflowException("Avro decimal exceeds CLR decimal range.");
+        }
 
         Span<byte> normalized = stackalloc byte[13];
         normalized.Fill(negative ? (byte)0xFF : (byte)0);
@@ -111,14 +121,18 @@ public static class AvroDecimalCodec
         }
 
         if (normalized[0] != 0)
+        {
             throw new OverflowException("Avro decimal exceeds CLR decimal range.");
+        }
 
         var magnitude = new UInt96(
             BinaryPrimitives.ReadUInt32BigEndian(normalized.Slice(9, 4)),
             BinaryPrimitives.ReadUInt32BigEndian(normalized.Slice(5, 4)),
             BinaryPrimitives.ReadUInt32BigEndian(normalized.Slice(1, 4)));
         if (magnitude.CountDigits() > precision)
+        {
             throw new OverflowException("Avro decimal exceeds the configured precision.");
+        }
 
         return new decimal((int)magnitude.Low, (int)magnitude.Middle, (int)magnitude.High, negative, (byte)scale);
     }
@@ -126,9 +140,13 @@ public static class AvroDecimalCodec
     private static void Validate(int precision, int scale)
     {
         if (precision is < 1 or > 29)
+        {
             throw new ArgumentOutOfRangeException(nameof(precision), "CLR decimal precision must be between 1 and 29.");
+        }
         if (scale < 0 || scale > 28 || scale > precision)
+        {
             throw new ArgumentOutOfRangeException(nameof(scale), "CLR decimal scale must be between 0 and 28 and no greater than precision.");
+        }
     }
 
     private struct UInt96(uint low, uint middle, uint high)
@@ -166,7 +184,9 @@ public static class AvroDecimalCodec
         internal readonly int CountDigits()
         {
             if (IsZero)
+            {
                 return 1;
+            }
             var copy = this;
             var digits = 0;
             while (!copy.IsZero)

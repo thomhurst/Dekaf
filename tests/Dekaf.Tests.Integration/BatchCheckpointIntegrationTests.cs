@@ -71,8 +71,10 @@ public sealed class BatchCheckpointIntegrationTests(KafkaTestContainer kafka) : 
                 await sink.InitTransactionsAsync(cancellationToken);
                 await using var transaction = sink.BeginTransaction();
                 foreach (var value in values)
+                {
                     await transaction.ProduceAsync(new ProducerMessage<string, string>
                     { Topic = output, Key = "key", Value = $"processed-{value}" }, cancellationToken);
+                }
                 await transaction.SendOffsetsToTransactionAsync([checkpoint], group, cancellationToken);
                 await transaction.CommitAsync(cancellationToken);
             }
@@ -166,7 +168,9 @@ public sealed class BatchCheckpointIntegrationTests(KafkaTestContainer kafka) : 
             {
                 last = batch;
                 foreach (var record in batch)
+                {
                     values.Add(Encoding.UTF8.GetString(record.Value.Span));
+                }
                 if (batch.TryGetNextOffset(out var checkpoint) && checkpoint.Offset == end)
                 {
                     captured = checkpoint;
@@ -174,7 +178,9 @@ public sealed class BatchCheckpointIntegrationTests(KafkaTestContainer kafka) : 
                 }
             }
             if (last is not null && last.TryGetNextOffset(out _))
+            {
                 throw new InvalidOperationException("Outer disposal must invalidate raw batch checkpoint access.");
+            }
         }
         else
         {
@@ -183,7 +189,9 @@ public sealed class BatchCheckpointIntegrationTests(KafkaTestContainer kafka) : 
             {
                 last = batch;
                 foreach (var record in batch)
+                {
                     values.Add(record.Value);
+                }
                 if (batch.TryGetNextOffset(out var checkpoint) && checkpoint.Offset == end)
                 {
                     captured = checkpoint;
@@ -191,7 +199,9 @@ public sealed class BatchCheckpointIntegrationTests(KafkaTestContainer kafka) : 
                 }
             }
             if (last is not null && last.TryGetNextOffset(out _))
+            {
                 throw new InvalidOperationException("Outer disposal must invalidate typed batch checkpoint access.");
+            }
         }
         return captured ?? throw new InvalidOperationException(
             "The batch stream ended before its checkpoint reached the stable end offset.");

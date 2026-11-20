@@ -50,10 +50,14 @@ internal struct WaveCoalesceGate
         else
         {
             if (!IsSuppressed)
+            {
                 _consecutiveFruitlessSpins++;
+            }
 
             if (IsSuppressed)
+            {
                 _nextProbeTimestamp = nowTicks + SuppressedReprobeIntervalTicks;
+            }
         }
     }
 }

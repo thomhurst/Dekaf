@@ -18,9 +18,13 @@ internal sealed class ConsumerFetchBufferStateSource(
     {
         TagList tags = default;
         if (clientId is not null)
+        {
             tags.Add(DekafDiagnostics.MessagingClientId, clientId);
+        }
         if (groupId is not null)
+        {
             tags.Add(DekafDiagnostics.MessagingConsumerGroupName, groupId);
+        }
         return tags;
     }
 }

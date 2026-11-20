@@ -18,7 +18,9 @@ public sealed class InMemoryConsumerOffsetResetTests
         var cluster = new InMemoryKafkaCluster();
         cluster.CreateTopic("events");
         if (!empty)
+        {
             await ProduceAsync(cluster, DateTimeOffset.UtcNow.AddDays(-1));
+        }
         await using var consumer = CreateConsumer(cluster, AutoOffsetReset.ByDuration);
         var partition = new TopicPartition("events", 0);
         consumer.Assign(partition);
@@ -88,7 +90,9 @@ public sealed class InMemoryConsumerOffsetResetTests
         consumer.Subscribe("events");
 
         if (policy == AutoOffsetReset.None)
+        {
             await AssertResetExceptionAsync(consumer, snapshot: false);
+        }
         else
         {
             await Assert.That(await consumer.ConsumeOneAsync(TimeSpan.Zero)).IsNull();
@@ -111,9 +115,15 @@ public sealed class InMemoryConsumerOffsetResetTests
         var partition = new TopicPartition("events", 0);
         switch (assignment)
         {
-            case "assign": consumer.Assign(partition); break;
-            case "incremental": consumer.IncrementalAssign([new TopicPartitionOffset(partition.Topic, partition.Partition, -1)]); break;
-            case "subscribe": consumer.Subscribe("events"); break;
+            case "assign":
+                consumer.Assign(partition);
+                break;
+            case "incremental":
+                consumer.IncrementalAssign([new TopicPartitionOffset(partition.Topic, partition.Partition, -1)]);
+                break;
+            case "subscribe":
+                consumer.Subscribe("events");
+                break;
         }
 
         await Assert.That(consumer.Assignment).Contains(partition);
@@ -143,7 +153,9 @@ public sealed class InMemoryConsumerOffsetResetTests
             await Assert.That(consumer.GetPosition(new TopicPartition("events", 0))).IsEqualTo(10L);
         }
         else
+        {
             await AssertResetExceptionAsync(consumer, snapshot);
+        }
     }
 
     [Test]
@@ -202,9 +214,13 @@ public sealed class InMemoryConsumerOffsetResetTests
         var result = await consumer.ConsumeOneAsync(TimeSpan.Zero);
 
         if (sentinel == TopicPartitionTimestamp.Earliest)
+        {
             await Assert.That(result!.Value.Offset).IsEqualTo(expectedPosition);
+        }
         else
+        {
             await Assert.That(result).IsNull();
+        }
         await Assert.That(consumer.GetPosition(partition)).IsEqualTo(1L);
     }
 
@@ -255,9 +271,13 @@ public sealed class InMemoryConsumerOffsetResetTests
         await using var consumer = CreateConsumer(cluster, AutoOffsetReset.Earliest);
         var partition = new TopicPartition("events", 0);
         if (incremental)
+        {
             consumer.IncrementalAssign([new TopicPartitionOffset("events", 0, -1)]);
+        }
         else
+        {
             consumer.Assign(partition);
+        }
         await ProduceAsync(cluster, DateTimeOffset.UtcNow);
 
         var result = await ReadAsync(consumer, snapshot);
@@ -315,21 +335,30 @@ public sealed class InMemoryConsumerOffsetResetTests
         await using var producer = new InMemoryProducer<string, string>(cluster);
         await producer.ProduceAsync(new ProducerMessage<string, string>
         {
-            Topic = "events", Partition = 0, Key = "key", Value = "value", Timestamp = timestamp
+            Topic = "events",
+            Partition = 0,
+            Key = "key",
+            Value = "value",
+            Timestamp = timestamp
         });
     }
 
     private static async Task<ConsumeResult<string, string>?> ReadAsync(InMemoryConsumer<string, string> consumer, bool snapshot)
     {
         if (!snapshot)
+        {
             return await consumer.ConsumeOneAsync(TimeSpan.Zero);
+        }
         await using var enumerator = consumer.ConsumeSnapshotAsync().GetAsyncEnumerator();
         return await enumerator.MoveNextAsync() ? enumerator.Current : null;
     }
 
     private static async Task AssertResetExceptionAsync(InMemoryConsumer<string, string> consumer, bool snapshot)
     {
-        var exception = await Assert.ThrowsAsync<KafkaException>(async () => { _ = await ReadAsync(consumer, snapshot); });
+        var exception = await Assert.ThrowsAsync<KafkaException>(async () =>
+        {
+            _ = await ReadAsync(consumer, snapshot);
+        });
         var expected = Assert.Throws<KafkaException>(() => AutoOffsetResetStrategy.GetListOffsetsTimestamp(
             new ConsumerOptions { BootstrapServers = [], GroupId = "group", AutoOffsetReset = AutoOffsetReset.None },
             DateTimeOffset.UtcNow, new TopicPartition("events", 0)));

@@ -16,7 +16,10 @@ public readonly struct Optional<T>
     /// <summary>
     /// True when this optional contains a value.
     /// </summary>
-    public bool HasValue { get; }
+    public bool HasValue
+    {
+        get;
+    }
 
     /// <summary>
     /// The contained value.
@@ -57,7 +60,10 @@ public sealed class NewPartitionReassignment
     /// <summary>
     /// The target replica broker IDs. An empty list cancels an in-progress reassignment.
     /// </summary>
-    public required IReadOnlyList<int> TargetReplicas { get; init; }
+    public required IReadOnlyList<int> TargetReplicas
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Creates a reassignment to the specified target replicas.
@@ -74,17 +80,26 @@ public sealed class PartitionReassignment
     /// <summary>
     /// The current replica set.
     /// </summary>
-    public required IReadOnlyList<int> Replicas { get; init; }
+    public required IReadOnlyList<int> Replicas
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Replicas currently being added.
     /// </summary>
-    public required IReadOnlyList<int> AddingReplicas { get; init; }
+    public required IReadOnlyList<int> AddingReplicas
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Replicas currently being removed.
     /// </summary>
-    public required IReadOnlyList<int> RemovingReplicas { get; init; }
+    public required IReadOnlyList<int> RemovingReplicas
+    {
+        get; init;
+    }
 }
 
 /// <summary>
@@ -95,12 +110,18 @@ public sealed class AlterPartitionReassignmentsOptions
     /// <summary>
     /// How long to wait in milliseconds before timing out the request.
     /// </summary>
-    public int TimeoutMs { get; init; } = 60000;
+    public int TimeoutMs
+    {
+        get; init;
+    } = 60000;
 
     /// <summary>
     /// Whether changing a partition replication factor is allowed.
     /// </summary>
-    public bool AllowReplicationFactorChange { get; init; } = true;
+    public bool AllowReplicationFactorChange
+    {
+        get; init;
+    } = true;
 }
 
 /// <summary>
@@ -111,5 +132,8 @@ public sealed class ListPartitionReassignmentsOptions
     /// <summary>
     /// How long to wait in milliseconds before timing out the request.
     /// </summary>
-    public int TimeoutMs { get; init; } = 60000;
+    public int TimeoutMs
+    {
+        get; init;
+    } = 60000;
 }

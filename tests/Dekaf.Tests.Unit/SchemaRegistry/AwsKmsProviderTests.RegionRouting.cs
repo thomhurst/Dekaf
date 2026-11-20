@@ -51,7 +51,9 @@ public partial class AwsKmsProviderTests
         await provider.UnwrapKeyAsync(new byte[] { 4 }, CreateKeyReference());
 
         foreach (var request in transport.Requests)
+        {
             await Assert.That(request.Host).IsEqualTo("localstack.example");
+        }
         await Assert.That(transport.Configurations.Count).IsEqualTo(1);
     }
 
@@ -94,7 +96,9 @@ public partial class AwsKmsProviderTests
         await provider.UnwrapKeyAsync(new byte[] { 4 }, CreateKeyReference());
 
         foreach (var request in transport.Requests)
+        {
             await Assert.That(request.Host).IsEqualTo("kms.us-east-1.amazonaws.com");
+        }
         await Assert.That(transport.Configurations.Count).IsEqualTo(1);
     }
 
@@ -125,7 +129,9 @@ public partial class AwsKmsProviderTests
         provider.Dispose();
 
         foreach (var handler in transport.Configurations.Values)
+        {
             await Assert.That(handler.DisposeCount).IsEqualTo(1);
+        }
     }
 
     [Test]
@@ -158,7 +164,9 @@ public partial class AwsKmsProviderTests
             // The transport ignores cancellation so the overflow lease is still active here.
             await Assert.That(operation.IsCompleted).IsFalse();
             foreach (var handler in transport.Configurations.Values)
+            {
                 await Assert.That(handler.DisposeCount).IsEqualTo(1);
+            }
         }
         finally
         {
@@ -169,7 +177,9 @@ public partial class AwsKmsProviderTests
 
         provider.Dispose();
         foreach (var handler in transport.Configurations.Values)
+        {
             await Assert.That(handler.DisposeCount).IsEqualTo(1);
+        }
     }
 
     [Test]
@@ -193,9 +203,13 @@ public partial class AwsKmsProviderTests
         await started.Task.WaitAsync(TimeSpan.FromSeconds(5));
 
         if (dispose)
+        {
             provider.Dispose();
+        }
         else
+        {
             await cancellation.CancelAsync();
+        }
 
         await Assert.That(async () => await operation.WaitAsync(TimeSpan.FromSeconds(5)))
             .Throws<OperationCanceledException>();
@@ -226,10 +240,19 @@ public partial class AwsKmsProviderTests
 
     private sealed class KmsHttpClientFactory : HttpClientFactory
     {
-        public Func<CancellationToken, Task<HttpResponseMessage>>? RespondAsync { get; set; }
+        public Func<CancellationToken, Task<HttpResponseMessage>>? RespondAsync
+        {
+            get; set;
+        }
 
-        public ConcurrentDictionary<AmazonKeyManagementServiceConfig, KmsHttpHandler> Configurations { get; } = new();
-        public ConcurrentQueue<(string Host, string Authorization, string Body)> Requests { get; } = new();
+        public ConcurrentDictionary<AmazonKeyManagementServiceConfig, KmsHttpHandler> Configurations
+        {
+            get;
+        } = new();
+        public ConcurrentQueue<(string Host, string Authorization, string Body)> Requests
+        {
+            get;
+        } = new();
 
         public override HttpClient CreateHttpClient(IClientConfig clientConfig)
         {
@@ -251,7 +274,9 @@ public partial class AwsKmsProviderTests
             protected override void Dispose(bool disposing)
             {
                 if (disposing)
+                {
                     Interlocked.Increment(ref _disposeCount);
+                }
                 base.Dispose(disposing);
             }
 
@@ -260,7 +285,9 @@ public partial class AwsKmsProviderTests
                 var body = await request.Content!.ReadAsStringAsync(cancellationToken);
                 owner.Requests.Enqueue((request.RequestUri!.Host, string.Join(",", request.Headers.GetValues("Authorization")), body));
                 if (owner.RespondAsync is not null)
+                {
                     return await owner.RespondAsync(cancellationToken);
+                }
                 return new HttpResponseMessage(HttpStatusCode.OK)
                 {
                     Content = new StringContent("{\"CiphertextBlob\":\"BAUG\",\"Plaintext\":\"AQID\"}", Encoding.UTF8, "application/x-amz-json-1.1")

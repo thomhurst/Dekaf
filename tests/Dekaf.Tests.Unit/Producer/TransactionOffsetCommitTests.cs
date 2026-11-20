@@ -338,7 +338,9 @@ public sealed class TransactionOffsetCommitTests
         {
             enumerationCount++;
             if (enumerationCount > 1)
+            {
                 throw new InvalidOperationException("Offsets were re-enumerated");
+            }
 
             yield return new TopicPartitionOffset("orders", 0, 42);
         }
@@ -706,8 +708,14 @@ public sealed class TransactionOffsetCommitTests
         MetadataManager metadataManager,
         RecordingConnection connection) : IAsyncDisposable
     {
-        internal KafkaProducer<string, string> Producer { get; } = producer;
-        internal RecordingConnection Connection { get; } = connection;
+        internal KafkaProducer<string, string> Producer
+        {
+            get;
+        } = producer;
+        internal RecordingConnection Connection
+        {
+            get;
+        } = connection;
 
         internal bool IsBrokerRegistered(int brokerId)
         {
@@ -771,7 +779,10 @@ public sealed class TransactionOffsetCommitTests
         public string Host => "localhost";
         public int Port => 9092;
         public bool IsConnected => true;
-        public KafkaConnectionCapabilities Capabilities { get; } =
+        public KafkaConnectionCapabilities Capabilities
+        {
+            get;
+        } =
             KafkaConnectionCapabilities.Create(new ApiVersionsResponse
             {
                 ErrorCode = ErrorCode.None,
@@ -785,9 +796,18 @@ public sealed class TransactionOffsetCommitTests
                     new ApiVersion(ApiKey.TxnOffsetCommit, 3, txnOffsetCommitMaxVersion)
                 ]
             });
-        internal List<RecordedRequest> Requests { get; } = [];
-        internal List<TxnOffsetCommitRequest> CommitRequests { get; } = [];
-        internal List<EndTxnRequest> EndTxnRequests { get; } = [];
+        internal List<RecordedRequest> Requests
+        {
+            get;
+        } = [];
+        internal List<TxnOffsetCommitRequest> CommitRequests
+        {
+            get;
+        } = [];
+        internal List<EndTxnRequest> EndTxnRequests
+        {
+            get;
+        } = [];
 
         public ValueTask<TResponse> SendAsync<TRequest, TResponse>(
             TRequest request,
@@ -810,15 +830,21 @@ public sealed class TransactionOffsetCommitTests
             }
 
             if (request is FindCoordinatorRequest && TryTakeTransportFailure(findCoordinatorFailures, out var findCoordinatorFailure))
+            {
                 return ValueTask.FromException<TResponse>(findCoordinatorFailure);
+            }
 
             if (request is AddOffsetsToTxnRequest && TryTakeTransportFailure(addOffsetsFailures, out var addOffsetsFailure))
+            {
                 return ValueTask.FromException<TResponse>(addOffsetsFailure);
+            }
 
             // Not a transport failure: the metadata manager wraps it in its own
             // InvalidOperationException, which no retry filter classifies as transient.
             if (request is MetadataRequest && failMetadataRefresh)
+            {
                 return ValueTask.FromException<TResponse>(new NotSupportedException("metadata refresh rejected"));
+            }
 
             IKafkaResponse response = request switch
             {

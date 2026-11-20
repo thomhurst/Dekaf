@@ -17,18 +17,39 @@ public sealed class MetadataResponse : IKafkaResponse
     public static short LowestSupportedVersion => 5;
     public static short HighestSupportedVersion => 13;
 
-    public int ThrottleTimeMs { get; init; }
-    public required IReadOnlyList<BrokerMetadata> Brokers { get; init; }
-    public string? ClusterId { get; init; }
-    public int ControllerId { get; init; } = -1;
-    public required IReadOnlyList<TopicMetadata> Topics { get; init; }
-    public int ClusterAuthorizedOperations { get; init; } = int.MinValue;
+    public int ThrottleTimeMs
+    {
+        get; init;
+    }
+    public required IReadOnlyList<BrokerMetadata> Brokers
+    {
+        get; init;
+    }
+    public string? ClusterId
+    {
+        get; init;
+    }
+    public int ControllerId
+    {
+        get; init;
+    } = -1;
+    public required IReadOnlyList<TopicMetadata> Topics
+    {
+        get; init;
+    }
+    public int ClusterAuthorizedOperations
+    {
+        get; init;
+    } = int.MinValue;
 
     /// <summary>
     /// Top-level error code (v13+, KIP-1102). When set to <see cref="Protocol.ErrorCode.RebootstrapRequired"/>,
     /// the client should immediately trigger a rebootstrap.
     /// </summary>
-    public ErrorCode ErrorCode { get; init; }
+    public ErrorCode ErrorCode
+    {
+        get; init;
+    }
 
     public static IKafkaResponse Read(ref KafkaProtocolReader reader, short version)
     {
@@ -75,7 +96,9 @@ public sealed class MetadataResponse : IKafkaResponse
         }
 
         if (version >= 9)
+        {
             reader.SkipTaggedFields();
+        }
 
         return new MetadataResponse
         {
@@ -95,10 +118,22 @@ public sealed class MetadataResponse : IKafkaResponse
 /// </summary>
 public sealed class BrokerMetadata
 {
-    public required int NodeId { get; init; }
-    public required string Host { get; init; }
-    public required int Port { get; init; }
-    public string? Rack { get; init; }
+    public required int NodeId
+    {
+        get; init;
+    }
+    public required string Host
+    {
+        get; init;
+    }
+    public required int Port
+    {
+        get; init;
+    }
+    public string? Rack
+    {
+        get; init;
+    }
 
     public static BrokerMetadata Read(ref KafkaProtocolReader reader, short version)
     {
@@ -110,7 +145,9 @@ public sealed class BrokerMetadata
         var rack = version >= 9 ? reader.ReadCompactString() : reader.ReadString();
 
         if (version >= 9)
+        {
             reader.SkipTaggedFields();
+        }
 
         return new BrokerMetadata
         {
@@ -127,12 +164,30 @@ public sealed class BrokerMetadata
 /// </summary>
 public sealed class TopicMetadata
 {
-    public required ErrorCode ErrorCode { get; init; }
-    public required string Name { get; init; }
-    public Guid TopicId { get; init; }
-    public bool IsInternal { get; init; }
-    public required IReadOnlyList<PartitionMetadata> Partitions { get; init; }
-    public int TopicAuthorizedOperations { get; init; } = int.MinValue;
+    public required ErrorCode ErrorCode
+    {
+        get; init;
+    }
+    public required string Name
+    {
+        get; init;
+    }
+    public Guid TopicId
+    {
+        get; init;
+    }
+    public bool IsInternal
+    {
+        get; init;
+    }
+    public required IReadOnlyList<PartitionMetadata> Partitions
+    {
+        get; init;
+    }
+    public int TopicAuthorizedOperations
+    {
+        get; init;
+    } = int.MinValue;
 
     public static TopicMetadata Read(ref KafkaProtocolReader reader, short version)
     {
@@ -164,7 +219,9 @@ public sealed class TopicMetadata
         var topicAuthorizedOperations = version >= 8 ? reader.ReadInt32() : int.MinValue;
 
         if (version >= 9)
+        {
             reader.SkipTaggedFields();
+        }
 
         return new TopicMetadata
         {
@@ -183,13 +240,34 @@ public sealed class TopicMetadata
 /// </summary>
 public sealed class PartitionMetadata
 {
-    public required ErrorCode ErrorCode { get; init; }
-    public required int PartitionIndex { get; init; }
-    public required int LeaderId { get; init; }
-    public int LeaderEpoch { get; init; } = -1;
-    public required IReadOnlyList<int> ReplicaNodes { get; init; }
-    public required IReadOnlyList<int> IsrNodes { get; init; }
-    public IReadOnlyList<int>? OfflineReplicas { get; init; }
+    public required ErrorCode ErrorCode
+    {
+        get; init;
+    }
+    public required int PartitionIndex
+    {
+        get; init;
+    }
+    public required int LeaderId
+    {
+        get; init;
+    }
+    public int LeaderEpoch
+    {
+        get; init;
+    } = -1;
+    public required IReadOnlyList<int> ReplicaNodes
+    {
+        get; init;
+    }
+    public required IReadOnlyList<int> IsrNodes
+    {
+        get; init;
+    }
+    public IReadOnlyList<int>? OfflineReplicas
+    {
+        get; init;
+    }
 
     public static PartitionMetadata Read(ref KafkaProtocolReader reader, short version)
     {
@@ -203,7 +281,9 @@ public sealed class PartitionMetadata
         var offlineReplicas = version >= 5 ? ReadBrokerIds(ref reader, version) : null;
 
         if (version >= 9)
+        {
             reader.SkipTaggedFields();
+        }
 
         return new PartitionMetadata
         {

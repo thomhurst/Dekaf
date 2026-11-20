@@ -41,11 +41,15 @@ public class PendingAppendDrainCycleBenchmarks
         _ = _accumulator.EnterBulkProduceScope();
 
         if (!_accumulator.TryReserveMemoryForTest((int)BufferMemory))
+        {
             throw new InvalidOperationException("Could not fill BufferMemory.");
+        }
 
         // Warm the PendingAppend pool, partition deque and batch pools.
         for (var i = 0; i < 8; i++)
+        {
             DrainCycle();
+        }
     }
 
     [GlobalCleanup]
@@ -60,7 +64,9 @@ public class PendingAppendDrainCycleBenchmarks
             // back so every append meets a full buffer.
             var free = BufferMemory - _accumulator.BufferedBytes;
             if (free > 0 && !_accumulator.TryReserveMemoryForTest((int)free))
+            {
                 throw new InvalidOperationException("Could not refill BufferMemory.");
+            }
 
             var append = _accumulator.AppendAsync(
                 Topic,
@@ -74,12 +80,16 @@ public class PendingAppendDrainCycleBenchmarks
                 null,
                 CancellationToken.None);
             if (append.IsCompleted)
+            {
                 throw new InvalidOperationException("Append bypassed BufferMemory backpressure.");
+            }
 
             // Frees exactly one record; the drain reserves it again for the queued append.
             _accumulator.ReleaseMemory(_recordSize);
             if (!append.IsCompleted || !append.GetAwaiter().GetResult())
+            {
                 throw new InvalidOperationException("Drain did not serve the queued append.");
+            }
         }
 
         // Retire sealed batches through the sender's ack sequence (delivery mark, CompleteSend,

@@ -117,7 +117,10 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
     /// <summary>
     /// Gets the topics to subscribe to.
     /// </summary>
-    protected abstract IEnumerable<string> Topics { get; }
+    protected abstract IEnumerable<string> Topics
+    {
+        get;
+    }
 
     /// <summary>
     /// Processes a consumed message.
@@ -225,7 +228,9 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
             catch (Exception ex) when (ServiceRestartPolicy.CanRestartAfter(ex))
             {
                 if (!await DelayBeforeRestartAsync(ex, ++restartAttempt, stoppingToken).ConfigureAwait(false))
+                {
                     return;
+                }
             }
             catch (Exception ex)
             {
@@ -272,7 +277,9 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
             catch (Exception ex) when (!_hasInDoubtFailedRecord && ServiceRestartPolicy.CanRestartAfter(ex))
             {
                 if (!await DelayBeforeRestartAsync(ex, ++restartAttempt, stoppingToken).ConfigureAwait(false))
+                {
                     return;
+                }
             }
             catch (Exception ex)
             {
@@ -374,7 +381,9 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
         // Stopped before initialization succeeded: nothing was consumed, so there is nothing
         // to drain or commit, and both would fail against an uninitialized consumer.
         if (!_consumerInitialized)
+        {
             return;
+        }
 
         // The base stop also returns when the caller's stop token expires while the consume loop
         // still runs, for example inside a handler that ignores cancellation. That record is
@@ -572,7 +581,9 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
     private async ValueTask WaitForProcessingLoopAsync()
     {
         if (ExecuteTask is not { IsCompleted: false } executeTask)
+        {
             return;
+        }
 
         // Disposal can follow a stop whose wait expired, or run without a stop. Cancel the loop
         // (BackgroundService.Dispose only cancels the stopping token) so a cooperative handler ends.
@@ -601,7 +612,9 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
         if (TryGetRetrySourceTopic(result.Topic, out _))
         {
             if (PostponeRetryTopicMessageIfNeeded(result, stoppingToken))
+            {
                 return;
+            }
 
             previousFailureCount = RetryTopicHeaders.GetFailureCount(result.Headers);
         }
@@ -706,14 +719,18 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
         }
 
         if (retryTopicOutcome.Result == RetryTopicRouteResult.OwnershipEnded)
+        {
             return false;
+        }
 
         if (ShouldRouteToDeadLetter(routingResult, ex, deadLetterFailureCount, retryTopicOutcome.Result))
         {
             // The partition's next owner routes the record itself; a copy from here
             // would be a duplicate.
             if (AbandonIfOwnershipChanged(result))
+            {
                 return false;
+            }
 
             var deadLetterException = await RouteToDeadLetterAsync(
                     result,
@@ -744,7 +761,9 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
         }
 
         if (_retryPolicy is null && attempt < maxAttemptsWithoutPolicy)
+        {
             return !AbandonIfOwnershipChanged(result);
+        }
 
         await ResolveUnhandledFailureAsync(
                 result,
@@ -848,7 +867,9 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
     private RecordOwnership GetOwnership(in ConsumeResult<TKey, TValue> result)
     {
         if (_recordOwnership is { } recordOwnership)
+        {
             return recordOwnership.GetRecordOwnership(in result);
+        }
 
         return _consumer.Assignment is { } assignment
                && !AssignmentContains(assignment, new TopicPartition(result.Topic, result.Partition))
@@ -860,13 +881,12 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
     /// Asks the assignment itself: before .NET 9 it is typed as a read-only collection, whose
     /// LINQ <c>Contains</c> would enumerate it rather than use a set's own lookup.
     /// </summary>
-    private static bool AssignmentContains(IEnumerable<TopicPartition> assignment, TopicPartition partition)
-        => assignment switch
-        {
-            IReadOnlySet<TopicPartition> set => set.Contains(partition),
-            ICollection<TopicPartition> collection => collection.Contains(partition),
-            _ => assignment.Contains(partition)
-        };
+    private static bool AssignmentContains(IEnumerable<TopicPartition> assignment, TopicPartition partition) => assignment switch
+    {
+        IReadOnlySet<TopicPartition> set => set.Contains(partition),
+        ICollection<TopicPartition> collection => collection.Contains(partition),
+        _ => assignment.Contains(partition)
+    };
 
     /// <summary>
     /// Ends the in-flight record's local handling when its partition was revoked, lost or
@@ -886,7 +906,9 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
                 return false;
             case RecordOwnership.RevocationPending:
                 lock (_postponementsLock)
+                {
                     RewindForPendingRevocation(result);
+                }
                 break;
         }
 
@@ -938,7 +960,9 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
         ConsumeResult<TKey, TValue> result, TimeSpan delay, CancellationToken stoppingToken)
     {
         if (AbandonIfOwnershipChanged(result))
+        {
             return false;
+        }
 
         // Completed by the rebalance callback; continuations never run on its thread.
         var ownershipChanged = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -947,7 +971,9 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
         {
             // A callback between the check above and this registration cannot wake the backoff.
             if (GetOwnership(result) != RecordOwnership.Owned)
+            {
                 ownershipChanged.TrySetResult();
+            }
 
             _retryBackoff = new RetryBackoff(partition, ownershipChanged);
         }
@@ -969,7 +995,9 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
         finally
         {
             lock (_postponementsLock)
+            {
                 _retryBackoff = null;
+            }
         }
 
         return !AbandonIfOwnershipChanged(result);
@@ -1002,7 +1030,9 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
         RetryTopicRouteResult retryTopicResult)
     {
         if (_deadLetterPolicy is null)
+        {
             return false;
+        }
 
         return retryTopicResult == RetryTopicRouteResult.Exhausted ||
             _deadLetterPolicy.ShouldDeadLetter(result, exception, failureCount);
@@ -1012,7 +1042,9 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
     {
         var sourceTopics = Topics.ToArray();
         if (_retryTopicOptions?.IsEnabled != true)
+        {
             return sourceTopics;
+        }
 
         var explicitTopics = new HashSet<string>(sourceTopics, StringComparer.Ordinal);
         var topics = new HashSet<string>(sourceTopics, StringComparer.Ordinal);
@@ -1024,7 +1056,9 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
                 topics.Add(retryTopic);
                 // Explicit source topics never inherit retry-control semantics from their names.
                 if (explicitTopics.Contains(retryTopic))
+                {
                     continue;
+                }
                 if (retrySourceTopics.TryGetValue(retryTopic, out var existingSource) &&
                     !string.Equals(existingSource, sourceTopic, StringComparison.Ordinal))
                 {
@@ -1054,7 +1088,9 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
 
         // ExecuteAsync builds the map before the first record; this covers direct processing.
         if (_retrySourceTopics is null)
+        {
             BuildSubscriptionTopics();
+        }
 
         return _retrySourceTopics!.TryGetValue(topic, out sourceTopic);
     }
@@ -1084,7 +1120,9 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
         }
 
         if (retrySourceTopic is not null)
+        {
             headers.Add(RetryTopicHeaders.SourceTopicKey, retrySourceTopic);
+        }
 
         return new ConsumeResult<TKey, TValue>(
             result.Topic,
@@ -1104,14 +1142,20 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
         CancellationToken cancellationToken)
     {
         if (!RetryTopicHeaders.TryGetDueAt(result.Headers, out var dueAt))
+        {
             return false;
+        }
 
         var delay = dueAt - DateTimeOffset.UtcNow;
         if (delay <= TimeSpan.Zero)
+        {
             return false;
+        }
 
         if (PostponePartition(result, dueAt, delay, cancellationToken))
+        {
             LogRetryTopicDelay(result.Topic, result.Partition, result.Offset, delay);
+        }
         return true;
     }
 
@@ -1141,7 +1185,9 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
         // An earlier postponement already covers the partition: this attempt was not scheduled,
         // so it neither counts toward the backoff nor is logged as a redelivery.
         if (!PostponePartition(result, DateTimeOffset.UtcNow + delay, delay, cancellationToken))
+        {
             return;
+        }
 
         lock (_postponementsLock)
         {
@@ -1159,11 +1205,15 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
     private void PruneUnassignedRedeliveries(TopicPartition current)
     {
         if (_redeliveries.Count == 0 || _redeliveries.Count == 1 && _redeliveries.ContainsKey(current))
+        {
             return;
+        }
 
         var assignment = _consumer.Assignment;
         if (assignment is null)
+        {
             return;
+        }
 
         IReadOnlySet<TopicPartition> assigned = assignment as IReadOnlySet<TopicPartition>
             ?? new HashSet<TopicPartition>(assignment);
@@ -1172,14 +1222,20 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
         {
             // The current record was just delivered, so its partition is assigned.
             if (partition != current && !assigned.Contains(partition))
+            {
                 (unassigned ??= []).Add(partition);
+            }
         }
 
         if (unassigned is null)
+        {
             return;
+        }
 
         foreach (var partition in unassigned)
+        {
             _redeliveries.Remove(partition);
+        }
     }
 
     /// <summary>
@@ -1226,7 +1282,9 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
                 // consumer cannot forward rebalance events). Returning without a seek would let
                 // the loop move past both records; rewind to the earlier one and keep its schedule.
                 if (!TryRewind(result, pending.Offset, pending.LeaderEpoch, whileRevocationPending: false))
+                {
                     _postponements.Remove(partition);
+                }
                 return false;
             }
 
@@ -1262,7 +1320,9 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
     private bool UndoPauseIfOwnershipEndedDuringPauseAndSeek(ConsumeResult<TKey, TValue> result)
     {
         if (GetOwnership(result) != RecordOwnership.Ended)
+        {
             return false;
+        }
 
         _consumer.Partitions.Resume(new TopicPartition(result.Topic, result.Partition));
         return true;
@@ -1282,7 +1342,9 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
             foreach (var partition in partitions)
             {
                 if (_retryBackoff is { } backoff && backoff.Partition == partition)
+                {
                     backoff.OwnershipChanged.TrySetResult();
+                }
 
                 _postponements.Remove(partition);
                 _redeliveries.Remove(partition);
@@ -1336,7 +1398,9 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
     {
         // Partition order wins over due time; seeking to a later offset can skip an earlier postponed record.
         if (candidate.Offset != pending.Offset)
+        {
             return candidate.Offset < pending.Offset;
+        }
 
         return candidate.DueAt < pending.DueAt;
     }
@@ -1350,7 +1414,9 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
         {
             await DelayUntilDueAsync(postponement.DueAt, cancellationToken).ConfigureAwait(false);
             if (!TryCompletePartitionPostponement(partition, postponement))
+            {
                 return;
+            }
 
             LogPartitionResumed(partition.Topic, partition.Partition, postponement.Delay);
         }
@@ -1371,7 +1437,9 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
         {
             var remaining = dueAt - DateTimeOffset.UtcNow;
             if (remaining <= TimeSpan.Zero)
+            {
                 return;
+            }
 
             var delay = remaining <= MaxPostponementDelayChunk
                 ? remaining
@@ -1463,11 +1531,15 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
         }
 
         if (!_retryTopicOptions.TryGetRetryTopic(sourceTopic, failureCount, out var retryTopic, out var delay))
+        {
             return new RetryTopicRouteOutcome(RetryTopicRouteResult.Exhausted, null);
+        }
 
         // The partition's next owner routes the record itself; a copy from here would be a duplicate.
         if (AbandonIfOwnershipChanged(result))
+        {
             return new RetryTopicRouteOutcome(RetryTopicRouteResult.OwnershipEnded, null);
+        }
 
         try
         {

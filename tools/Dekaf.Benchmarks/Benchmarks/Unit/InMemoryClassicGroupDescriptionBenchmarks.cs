@@ -11,10 +11,16 @@ namespace Dekaf.Benchmarks.Benchmarks.Unit;
 public class InMemoryClassicGroupDescriptionBenchmarks
 {
     [Params(1, 16)]
-    public int Groups { get; set; }
+    public int Groups
+    {
+        get; set;
+    }
 
     [Params(false, true)]
-    public bool MixedOutcomes { get; set; }
+    public bool MixedOutcomes
+    {
+        get; set;
+    }
 
     private InMemoryAdminClient _admin = null!;
     private string[] _groups = null!;
@@ -40,23 +46,33 @@ public class InMemoryClassicGroupDescriptionBenchmarks
             var id = $"group-{i}";
             _groups[i] = id;
             if (MixedOutcomes && i == Groups - 1)
+            {
                 continue;
+            }
             cluster.SetClassicGroupDescription(new()
             {
-                GroupId = id, State = "Stable", CoordinatorId = 1,
-                ProtocolType = MixedOutcomes ? "connect" : "consumer", ProtocolData = "range",
+                GroupId = id,
+                State = "Stable",
+                CoordinatorId = 1,
+                ProtocolType = MixedOutcomes ? "connect" : "consumer",
+                ProtocolData = "range",
                 AuthorizedOperations = 123,
                 Members = [new()
                 {
-                    MemberId = id, ClientId = "client", ClientHost = "host",
-                    Metadata = assignment, AssignmentData = assignment
+                    MemberId = id,
+                    ClientId = "client",
+                    ClientHost = "host",
+                    Metadata = assignment,
+                    AssignmentData = assignment
                 }]
             });
         }
 
         var results = await Describe();
         if (results.Count != Groups)
+        {
             throw new InvalidOperationException("A result is required for every group.");
+        }
         for (var i = 0; i < Groups; i++)
         {
             var result = results[_groups[i]];
@@ -65,7 +81,9 @@ public class InMemoryClassicGroupDescriptionBenchmarks
                 (!missing && (result.Description?.Members.Count != 1 ||
                     result.Description.AuthorizedOperations != 123 ||
                     (result.Description.Members[0].Assignment is not null) == MixedOutcomes)))
+            {
                 throw new InvalidOperationException("Invalid snapshot mapping or per-group outcome.");
+            }
         }
     }
 

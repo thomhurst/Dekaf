@@ -92,7 +92,9 @@ public sealed class ConsumerRecordFilterIntegrationTests(KafkaTestContainer kafk
         {
             committed = await consumer.GetCommittedOffsetAsync(partition, timeout.Token);
             if (committed >= 2)
+            {
                 break;
+            }
 
             await Task.Delay(100, timeout.Token);
         }
@@ -190,7 +192,9 @@ public sealed class ConsumerRecordFilterIntegrationTests(KafkaTestContainer kafk
             {
                 ref readonly var header = ref headers[i];
                 if (header.Key == "route")
+                {
                     return !header.IsValueNull && header.Value.Span.SequenceEqual("keep"u8);
+                }
             }
 
             return false;

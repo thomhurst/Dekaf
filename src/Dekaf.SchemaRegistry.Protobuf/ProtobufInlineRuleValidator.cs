@@ -55,14 +55,18 @@ internal sealed class ProtobufInlineRuleExecutor(
 
         var resolved = ResolveSchema(schemaId, subject, schema);
         if (resolved is null)
+        {
             _validator.Validate(payload, schemaId, failFast);
+        }
         else
+        {
             ((IInlineValidationRuleExecutor)_validator).Validate(
                 payload,
                 schemaId,
                 subject,
                 resolved,
                 failFast);
+        }
     }
 
     void IInlineValidationRuleExecutor.Validate(
@@ -76,7 +80,9 @@ internal sealed class ProtobufInlineRuleExecutor(
     {
         var cached = Volatile.Read(ref _lastSchema);
         if (cached is { SchemaId: var cachedSchemaId } && cachedSchemaId == schemaId)
+        {
             return cached.Schema;
+        }
 
         if (_resolvedSchemas.TryGetValue(schemaId, out cached))
         {
@@ -105,7 +111,9 @@ internal sealed class ProtobufInlineRuleExecutor(
             ? candidate
             : null;
         if (resolved is null)
+        {
             return null;
+        }
 
         cached = _resolvedSchemas.GetOrAdd(
             schemaId,
@@ -193,7 +201,9 @@ internal sealed class ProtobufInlineRuleValidator : IInlineValidationRuleExecuto
         }
 
         if (violations is not null)
+        {
             throw new ValidationRulesFailedException(violations);
+        }
     }
 
     internal static bool IsSerializedDescriptor(ReadOnlySpan<char> schema)
@@ -251,7 +261,9 @@ internal sealed class ProtobufInlineRuleValidator : IInlineValidationRuleExecuto
     {
         if (schema.References is not { Count: > 0 } &&
             string.Equals(schema.SchemaString, _rootSchema, StringComparison.Ordinal))
+        {
             return this;
+        }
 
         ByteString rootData;
         FileDescriptorProto rootProto;
@@ -314,9 +326,13 @@ internal sealed class ProtobufInlineRuleValidator : IInlineValidationRuleExecuto
         {
             var name = file.Dependency[index];
             if (!added.Add(name))
+            {
                 continue;
+            }
             if (registeredFiles is null || !registeredFiles.TryGetValue(name, out var data))
+            {
                 _knownFiles.TryGetValue(name, out data);
+            }
             if (data is null)
             {
                 throw new SchemaRegistryRuleException(
@@ -332,7 +348,9 @@ internal sealed class ProtobufInlineRuleValidator : IInlineValidationRuleExecuto
     private Dictionary<string, ByteString>? ResolveReferences(Schema schema)
     {
         if (schema.References is not { Count: > 0 } references)
+        {
             return null;
+        }
         if (_schemaRegistry is null)
         {
             throw new SchemaRegistryRuleException(
@@ -413,7 +431,9 @@ internal sealed class ProtobufInlineRuleValidator : IInlineValidationRuleExecuto
             }
             files[reference.Name] = resolvedReference.Data;
             if (expanded.Add(key) && resolvedReference.Schema.References is { Count: > 0 } nested)
+            {
                 ResolveReferences(nested, schemaRegistry, files, resolved, expanded);
+            }
         }
     }
 
@@ -428,9 +448,13 @@ internal sealed class ProtobufInlineRuleValidator : IInlineValidationRuleExecuto
         static void AddFile(FileDescriptor file, Dictionary<string, ByteString> files)
         {
             if (!files.TryAdd(file.Name, file.SerializedData))
+            {
                 return;
+            }
             for (var index = 0; index < file.Dependencies.Count; index++)
+            {
                 AddFile(file.Dependencies[index], files);
+            }
         }
     }
 
@@ -442,10 +466,14 @@ internal sealed class ProtobufInlineRuleValidator : IInlineValidationRuleExecuto
         {
             var message = messages[index];
             if (message.FullName == fullName)
+            {
                 return message;
+            }
             var nested = FindMessage(message.NestedTypes, fullName);
             if (nested is not null)
+            {
                 return nested;
+            }
         }
         return null;
     }
@@ -470,7 +498,10 @@ internal sealed class ProtobufMessageRulePlan
     private bool _hasCollectionChildren;
     private bool _requiresRuleSnapshots;
 
-    internal bool HasAnyRules { get; private set; }
+    internal bool HasAnyRules
+    {
+        get; private set;
+    }
 
     private ProtobufMessageRulePlan(MessageDescriptor descriptor) => _descriptor = descriptor;
 
@@ -479,7 +510,9 @@ internal sealed class ProtobufMessageRulePlan
         Dictionary<MessageDescriptor, ProtobufMessageRulePlan> plans)
     {
         if (plans.TryGetValue(descriptor, out var existing))
+        {
             return existing;
+        }
 
         var plan = new ProtobufMessageRulePlan(descriptor);
         plans.Add(descriptor, plan);
@@ -529,10 +562,14 @@ internal sealed class ProtobufMessageRulePlan
             _fields.Add(descriptor.FieldNumber, field);
             allFields[index] = field;
             if (!rules.IsEmpty)
+            {
                 (ruleFields ??= []).Add(field);
+            }
             _usesSizes |= descriptor.IsRepeated || rules.UsesSize;
             if (!descriptor.HasPresence)
+            {
                 _implicitRootSize++;
+            }
             _hasMaps |= descriptor.IsMap;
             _requiresRuleSnapshots |= rules.RequiresMemberResolution;
         }
@@ -554,12 +591,16 @@ internal sealed class ProtobufMessageRulePlan
             foreach (var plan in plans.Values)
             {
                 if (plan.HasAnyRules)
+                {
                     continue;
+                }
 
                 for (var index = 0; index < plan._allFields.Length; index++)
                 {
                     if (plan._allFields[index].Child is not { HasAnyRules: true })
+                    {
                         continue;
+                    }
 
                     plan.HasAnyRules = true;
                     changed = true;
@@ -593,7 +634,9 @@ internal sealed class ProtobufMessageRulePlan
         int remainingDepth)
     {
         if (!HasAnyRules)
+        {
             return;
+        }
         if (remainingDepth == 0)
         {
             throw new SchemaRegistryRuleException(
@@ -611,7 +654,9 @@ internal sealed class ProtobufMessageRulePlan
                 ref violations,
                 ref path);
             if (failFast && violations is not null)
+            {
                 return;
+            }
         }
 
         if (_fields.Count == 0)
@@ -645,10 +690,14 @@ internal sealed class ProtobufMessageRulePlan
             {
                 if (!_fields.TryGetValue(wireField.Number, out var field) ||
                     !field.Matches(wireField))
+                {
                     continue;
+                }
 
                 if (rootSize >= 0 && field.AddsPresentRootMember(values, sizes, oneofOffset))
+                {
                     rootSize++;
+                }
                 field.Observe(wireField, values, sizes, oneofOffset, ref mergedMessages);
             }
 
@@ -664,7 +713,9 @@ internal sealed class ProtobufMessageRulePlan
                     ref path,
                     rootSize);
                 if (failFast && violations is not null)
+                {
                     return;
+                }
             }
 
             var singularChildren = new ProtobufSingularChildEntries(_allFields.Length);
@@ -721,7 +772,9 @@ internal sealed class ProtobufMessageRulePlan
                             collectionSize);
                         path.Truncate(mark);
                         if (failFast && violations is not null)
+                        {
                             return;
+                        }
                     }
                 }
                 finally
@@ -745,7 +798,9 @@ internal sealed class ProtobufMessageRulePlan
                         remainingDepth - 1);
                     path.Truncate(mark);
                     if (failFast && violations is not null)
+                    {
                         return;
+                    }
                 }
 
                 if (_hasCollectionChildren)
@@ -776,13 +831,17 @@ internal sealed class ProtobufMessageRulePlan
     private int GetMapEntryCount(ValidationCelSizeValues sizes)
     {
         if (!_hasMaps)
+        {
             return 0;
+        }
         var count = 0;
         for (var index = 0; index < _allFields.Length; index++)
         {
             var field = _allFields[index];
             if (field.Descriptor.IsMap && sizes.TryGet(field.RuntimeIndex + 1, out var fieldCount))
+            {
                 count = checked(count + fieldCount);
+            }
         }
         return count;
     }
@@ -826,14 +885,18 @@ internal sealed class ProtobufMessageRulePlan
                     remainingDepth - 1);
                 path.Truncate(mark);
                 if (failFast && violations is not null)
+                {
                     return;
+                }
             }
 
             for (var index = 0; index < mapEntries.Count; index++)
             {
                 ref readonly var entry = ref mapEntries[index];
                 if (entry.Field.Child is not { HasAnyRules: true } child)
+                {
                     continue;
+                }
                 var mark = path.Length;
                 path.AppendField(entry.Field.Descriptor.Name);
                 path.AppendMapKey(entry.Key);
@@ -847,7 +910,9 @@ internal sealed class ProtobufMessageRulePlan
                     remainingDepth - 1);
                 path.Truncate(mark);
                 if (failFast && violations is not null)
+                {
                     return;
+                }
             }
         }
         finally
@@ -871,10 +936,22 @@ internal sealed class ProtobufFieldRulePlan(
     private readonly bool _isClosedEnum = descriptor.FieldType == FieldType.Enum &&
         ProtobufValidationValueDecoder.IsClosedEnum(descriptor);
 
-    internal FieldDescriptor Descriptor { get; } = descriptor;
-    internal ProtobufCompiledRuleSet Rules { get; } = rules;
-    internal ProtobufMessageRulePlan? Child { get; } = child;
-    internal int RuntimeIndex { get; } = runtimeIndex;
+    internal FieldDescriptor Descriptor
+    {
+        get;
+    } = descriptor;
+    internal ProtobufCompiledRuleSet Rules
+    {
+        get;
+    } = rules;
+    internal ProtobufMessageRulePlan? Child
+    {
+        get;
+    } = child;
+    internal int RuntimeIndex
+    {
+        get;
+    } = runtimeIndex;
 
     internal bool AddsPresentRootMember(
         ValidationCelMemberValues values,
@@ -944,7 +1021,9 @@ internal sealed class ProtobufFieldRulePlan(
         catch
         {
             if (rentedValuePayload is not null)
+            {
                 ArrayPool<byte>.Shared.Return(rentedValuePayload);
+            }
             rentedValuePayload = null;
             throw;
         }
@@ -964,7 +1043,9 @@ internal sealed class ProtobufFieldRulePlan(
                 ? ProtobufValidationValueDecoder.CountPacked(Descriptor, field.Payload, _isClosedEnum)
                 : 1;
             if (!sizes.TryGet(RuntimeIndex + 1, out var current))
+            {
                 current = 0;
+            }
             sizes.Set(RuntimeIndex + 1, checked(current + count));
             values.SetValue(
                 RuntimeIndex,
@@ -996,15 +1077,21 @@ internal sealed class ProtobufFieldRulePlan(
                 ref mergedMessages);
         }
         if (ProtobufValidationValueDecoder.IsImplicitDefault(Descriptor, decoded))
+        {
             values.SetDefaultValue(RuntimeIndex, decoded);
+        }
         else
+        {
             values.SetValue(RuntimeIndex, decoded);
+        }
     }
 
     internal void ApplyDefault(ValidationCelMemberValues values, ValidationCelSizeValues sizes)
     {
         if (values.IsSet(RuntimeIndex))
+        {
             return;
+        }
         if (Descriptor.IsRepeated)
         {
             sizes.Set(RuntimeIndex + 1, 0);
@@ -1041,7 +1128,9 @@ internal sealed class ProtobufFieldRulePlan(
     internal int GetCollectionSize(ValidationCelSizeValues sizes)
     {
         if (!Descriptor.IsRepeated)
+        {
             return -1;
+        }
         return sizes.TryGet(RuntimeIndex + 1, out var count) ? count : 0;
     }
 }
@@ -1094,7 +1183,9 @@ internal ref struct ProtobufMergedMessageBuffers
     internal void Clear(int fieldIndex)
     {
         if (_buffers?[fieldIndex] is not { } buffer)
+        {
             return;
+        }
         ArrayPool<byte>.Shared.Return(buffer);
         _buffers[fieldIndex] = null!;
         _lengths![fieldIndex] = 0;
@@ -1103,7 +1194,9 @@ internal ref struct ProtobufMergedMessageBuffers
     private void EnsureSlots()
     {
         if (_buffers is not null)
+        {
             return;
+        }
         _buffers = ArrayPool<byte[]>.Shared.Rent(_fieldCount);
         Array.Clear(_buffers, 0, _fieldCount);
         _lengths = ArrayPool<int>.Shared.Rent(_fieldCount);
@@ -1113,11 +1206,15 @@ internal ref struct ProtobufMergedMessageBuffers
     public void Dispose()
     {
         if (_buffers is null)
+        {
             return;
+        }
         for (var index = 0; index < _fieldCount; index++)
         {
             if (_buffers[index] is { } buffer)
+            {
                 ArrayPool<byte>.Shared.Return(buffer);
+            }
         }
         ArrayPool<byte[]>.Shared.Return(_buffers, clearArray: true);
         ArrayPool<int>.Shared.Return(_lengths!);
@@ -1167,9 +1264,13 @@ internal ref struct ProtobufRuleFieldEntries
         ValidationCelSizeValues sizes)
     {
         for (var index = 0; index < fields.Length; index++)
+        {
             fields[index].ApplyDefault(values, sizes);
+        }
         if (!_capture)
+        {
             return;
+        }
 
         _capture = false;
         for (var index = 0; index < fields.Length; index++)
@@ -1182,7 +1283,9 @@ internal ref struct ProtobufRuleFieldEntries
             }
         }
         if (!_capture)
+        {
             return;
+        }
 
         _entries = ArrayPool<ProtobufRuleFieldEntry>.Shared.Rent(_count);
         for (var index = 0; index < fields.Length; index++)
@@ -1191,7 +1294,9 @@ internal ref struct ProtobufRuleFieldEntries
             ref var entry = ref _entries[index];
             entry.IsSet = field.ShouldValidate(values);
             if (!entry.IsSet)
+            {
                 continue;
+            }
             entry.Value = field.GetRuleValue(values);
             entry.MessagePayload = field.GetMessagePayload(values);
             entry.CollectionSize = field.GetCollectionSize(sizes);
@@ -1232,7 +1337,9 @@ internal ref struct ProtobufRuleFieldEntries
     public void Dispose()
     {
         if (_entries is not null)
+        {
             ArrayPool<ProtobufRuleFieldEntry>.Shared.Return(_entries, clearArray: true);
+        }
         _entries = null;
     }
 }
@@ -1249,7 +1356,10 @@ internal ref struct ProtobufSingularChildEntries
         Count = 0;
     }
 
-    internal int Count { get; private set; }
+    internal int Count
+    {
+        get; private set;
+    }
 
     internal ref readonly ProtobufSingularChildEntry this[int index] => ref _entries![index];
 
@@ -1277,7 +1387,9 @@ internal ref struct ProtobufSingularChildEntries
     public void Dispose()
     {
         if (_entries is not null)
+        {
             ArrayPool<ProtobufSingularChildEntry>.Shared.Return(_entries, clearArray: true);
+        }
         _entries = null;
         Count = 0;
     }
@@ -1307,13 +1419,18 @@ internal ref struct ProtobufMapEntries
         _entries = ArrayPool<ProtobufMapEntry>.Shared.Rent(capacity);
         var bucketCount = 4;
         while (bucketCount < capacity * 2)
+        {
             bucketCount <<= 1;
+        }
         _buckets = ArrayPool<int>.Shared.Rent(bucketCount);
         _bucketCount = bucketCount;
         Array.Clear(_buckets, 0, _bucketCount);
     }
 
-    internal int Count { get; private set; }
+    internal int Count
+    {
+        get; private set;
+    }
 
     internal ref readonly ProtobufMapEntry this[int index] => ref _entries![index];
 
@@ -1324,7 +1441,9 @@ internal ref struct ProtobufMapEntries
         byte[]? rentedPayload)
     {
         if (rentedPayload is not null)
+        {
             TrackRentedPayload(rentedPayload);
+        }
         EnsureCapacity(Count + 1);
         var buckets = _buckets!;
         var bucket = (int)(Hash(field.RuntimeIndex, key) & (uint)(_bucketCount - 1));
@@ -1357,7 +1476,9 @@ internal ref struct ProtobufMapEntries
             {
                 ref readonly var existing = ref _entries![_buckets[existingBucket] - 1];
                 if (existing.FieldIndex == fieldIndex && KeysEqual(existing.Key, key))
+                {
                     return false;
+                }
                 existingBucket = (existingBucket + 1) & (_bucketCount - 1);
             }
         }
@@ -1366,7 +1487,9 @@ internal ref struct ProtobufMapEntries
         var buckets = _buckets!;
         var bucket = (int)(Hash(fieldIndex, key) & (uint)(_bucketCount - 1));
         while (buckets[bucket] != 0)
+        {
             bucket = (bucket + 1) & (_bucketCount - 1);
+        }
 
         ref var entry = ref _entries![Count];
         entry.FieldIndex = fieldIndex;
@@ -1403,10 +1526,14 @@ internal ref struct ProtobufMapEntries
 
         var entries = ArrayPool<ProtobufMapEntry>.Shared.Rent(requiredCount);
         if (_entries is not null)
+        {
             _entries.AsSpan(0, Count).CopyTo(entries);
+        }
         var bucketCount = 4;
         while (bucketCount < requiredCount * 2)
+        {
             bucketCount <<= 1;
+        }
         var buckets = ArrayPool<int>.Shared.Rent(bucketCount);
         Array.Clear(buckets, 0, bucketCount);
         for (var index = 0; index < Count; index++)
@@ -1414,14 +1541,20 @@ internal ref struct ProtobufMapEntries
             ref readonly var entry = ref entries[index];
             var bucket = (int)(Hash(entry.FieldIndex, entry.Key) & (uint)(bucketCount - 1));
             while (buckets[bucket] != 0)
+            {
                 bucket = (bucket + 1) & (bucketCount - 1);
+            }
             buckets[bucket] = index + 1;
         }
 
         if (_entries is not null)
+        {
             ArrayPool<ProtobufMapEntry>.Shared.Return(_entries, clearArray: true);
+        }
         if (_buckets is not null)
+        {
             ArrayPool<int>.Shared.Return(_buckets);
+        }
         _entries = entries;
         _buckets = buckets;
         _bucketCount = bucketCount;
@@ -1435,7 +1568,9 @@ internal ref struct ProtobufMapEntries
         {
             var field = fields[index];
             if (field.Descriptor.IsMap)
+            {
                 sizes.Set(field.RuntimeIndex + 1, 0);
+            }
         }
         for (var index = 0; index < Count; index++)
         {
@@ -1449,19 +1584,27 @@ internal ref struct ProtobufMapEntries
     {
         var hash = unchecked((uint)fieldIndex * 16777619u) ^ (uint)key.Kind;
         if (key.Kind == ValidationCelValueKind.Boolean)
+        {
             return (hash ^ (key.Boolean ? 1u : 0u)) * 16777619u;
+        }
         if (key.Kind == ValidationCelValueKind.Number)
+        {
             return (hash ^ unchecked((uint)key.Number.GetHashCode())) * 16777619u;
+        }
         var bytes = key.Utf8Literal.Span;
         for (var index = 0; index < bytes.Length; index++)
+        {
             hash = (hash ^ bytes[index]) * 16777619u;
+        }
         return hash;
     }
 
     private static bool KeysEqual(ValidationCelValue left, ValidationCelValue right)
     {
         if (left.Kind != right.Kind)
+        {
             return false;
+        }
         return left.Kind switch
         {
             ValidationCelValueKind.Boolean => left.Boolean == right.Boolean,
@@ -1477,13 +1620,19 @@ internal ref struct ProtobufMapEntries
         if (_rentedPayloads is not null)
         {
             for (var index = 0; index < _rentedPayloadCount; index++)
+            {
                 ArrayPool<byte>.Shared.Return(_rentedPayloads[index]);
+            }
             ArrayPool<byte[]>.Shared.Return(_rentedPayloads, clearArray: true);
         }
         if (_entries is not null)
+        {
             ArrayPool<ProtobufMapEntry>.Shared.Return(_entries, clearArray: true);
+        }
         if (_buckets is not null)
+        {
             ArrayPool<int>.Shared.Return(_buckets);
+        }
         _entries = null;
         _buckets = null;
         _rentedPayloads = null;
@@ -1495,7 +1644,10 @@ internal ref struct ProtobufMapEntries
 
 internal sealed class ProtobufCompiledRuleSet
 {
-    internal static ProtobufCompiledRuleSet Empty { get; } = new([], null, null, null, false, false, false, 0);
+    internal static ProtobufCompiledRuleSet Empty
+    {
+        get;
+    } = new([], null, null, null, false, false, false, 0);
 
     private readonly CompiledValidationRule[] _rules;
     private readonly ProtobufMemberResolver? _members;
@@ -1525,8 +1677,14 @@ internal sealed class ProtobufCompiledRuleSet
     }
 
     internal bool IsEmpty => _rules.Length == 0;
-    internal bool UsesSize { get; }
-    internal bool UsesRootSize { get; }
+    internal bool UsesSize
+    {
+        get;
+    }
+    internal bool UsesRootSize
+    {
+        get;
+    }
     internal bool RequiresMemberResolution => _members is not null;
 
     internal static ProtobufCompiledRuleSet Compile(
@@ -1535,7 +1693,9 @@ internal sealed class ProtobufCompiledRuleSet
         FieldDescriptor? valueFieldDescriptor = null)
     {
         if (rules.Count == 0)
+        {
             return Empty;
+        }
 
         var memberIndexes = new Dictionary<string, int>(StringComparer.Ordinal);
         var memberPaths = new List<byte[][]>();
@@ -1588,7 +1748,9 @@ internal sealed class ProtobufCompiledRuleSet
         int rootSize = -1)
     {
         if (_valueFieldDescriptor is { IsRepeated: true } && value.Kind == ValidationCelValueKind.Array)
+        {
             value = value with { Utf8Literal = messagePayload };
+        }
 
         var memberValues = _memberCount == 0
             ? default
@@ -1597,9 +1759,13 @@ internal sealed class ProtobufCompiledRuleSet
             ? CompiledValidationRule.GetSizeValues(_memberCount + 1)
             : default;
         if (rootSize >= 0 && UsesSize)
+        {
             sizes.Set(0, rootSize);
+        }
         if (_members is not null)
+        {
             _members.Resolve(messagePayload, memberValues, sizes);
+        }
         var equalityGeneration = _usesCachedEquality
             ? CompiledValidationRule.BeginEqualityResolution()
             : 0;
@@ -1615,7 +1781,9 @@ internal sealed class ProtobufCompiledRuleSet
                     PrepareMessageEqualities(rule, value, memberValues, equalityGeneration);
                     var result = rule.Evaluate(value, now, memberValues, sizes, equalityGeneration);
                     if (result.Kind == ValidationResultKind.Boolean ? result.Boolean : result.String!.Length == 0)
+                    {
                         continue;
+                    }
                     (violations ??= []).Add(new ValidationRuleError(
                         rule.Rule,
                         path.ToString(),
@@ -1630,7 +1798,9 @@ internal sealed class ProtobufCompiledRuleSet
                 }
 
                 if (failFast && violations is not null)
+                {
                     return;
+                }
             }
         }
         finally
@@ -1749,7 +1919,9 @@ internal sealed class ProtobufMemberResolver
         var memberDescriptors = new FieldDescriptor?[paths.Count];
         var resolver = new ProtobufMemberResolver(descriptor, memberDescriptors);
         foreach (var memberIndex in usedIndexes)
+        {
             resolver.Add(descriptor, paths[memberIndex], memberIndex, depth: 0);
+        }
         resolver.Freeze();
         return resolver;
     }
@@ -1840,11 +2012,15 @@ internal sealed class ProtobufMemberResolver
             {
                 if (!_fields.TryGetValue(field.Number, out var node) ||
                     !node.Matches(field))
+                {
                     continue;
+                }
 
                 var previous = oneofs.Select(node.OneofIndex, node.RuntimeIndex);
                 if (previous >= 0 && previous != node.RuntimeIndex)
+                {
                     _nodes[previous].Clear(values, ref nestedPayloads);
+                }
 
                 node.Observe(field, values, sizes, ref nestedPayloads);
             }
@@ -1884,11 +2060,15 @@ internal sealed class ProtobufMemberResolver
             {
                 if (!_fields.TryGetValue(field.Number, out var node) ||
                     !node.Matches(field))
+                {
                     continue;
+                }
 
                 var previous = oneofs.Select(node.OneofIndex, node.RuntimeIndex);
                 if (previous >= 0 && previous != node.RuntimeIndex)
+                {
                     _nodes[previous].Clear(values, ref nestedPayloads);
+                }
 
                 node.ObserveWithMaps(field, values, sizes, ref nestedPayloads, ref mapKeys);
             }
@@ -1924,10 +2104,22 @@ internal sealed class ProtobufMemberNode(FieldDescriptor descriptor)
         : null;
 
     internal FieldDescriptor Descriptor => descriptor;
-    internal int MemberIndex { get; set; } = -1;
-    internal int RuntimeIndex { get; set; }
-    internal int OneofIndex { get; } = descriptor.ContainingOneof?.Index ?? -1;
-    internal ProtobufMemberResolver? Child { get; set; }
+    internal int MemberIndex
+    {
+        get; set;
+    } = -1;
+    internal int RuntimeIndex
+    {
+        get; set;
+    }
+    internal int OneofIndex
+    {
+        get;
+    } = descriptor.ContainingOneof?.Index ?? -1;
+    internal ProtobufMemberResolver? Child
+    {
+        get; set;
+    }
 
     internal bool Matches(ProtobufValidationWireField field) =>
         ProtobufValidationValueDecoder.MatchesField(descriptor, field, _isClosedEnum);
@@ -1947,7 +2139,9 @@ internal sealed class ProtobufMemberNode(FieldDescriptor descriptor)
                     ? ProtobufValidationValueDecoder.CountPacked(descriptor, field.Payload, _isClosedEnum)
                     : 1;
                 if (!sizes.TryGet(MemberIndex + 1, out var current))
+                {
                     current = 0;
+                }
                 sizes.Set(MemberIndex + 1, checked(current + count));
                 values.SetValue(
                     MemberIndex,
@@ -1968,15 +2162,21 @@ internal sealed class ProtobufMemberNode(FieldDescriptor descriptor)
                         ref nestedPayloads);
                 }
                 if (ProtobufValidationValueDecoder.IsImplicitDefault(descriptor, decoded))
+                {
                     values.SetDefaultValue(MemberIndex, decoded);
+                }
                 else
+                {
                     values.SetValue(MemberIndex, decoded);
+                }
             }
         }
 
         if (Child is not null &&
             field.WireType is ProtobufWireType.LengthDelimited or ProtobufWireType.StartGroup)
+        {
             nestedPayloads.Observe(RuntimeIndex, field.Payload);
+        }
     }
 
     internal void ApplyDefault(
@@ -1985,11 +2185,15 @@ internal sealed class ProtobufMemberNode(FieldDescriptor descriptor)
         ValidationCelSizeValues sizes)
     {
         if (MemberIndex < 0)
+        {
             return;
+        }
         if (descriptor.IsRepeated)
         {
             if (!values.IsSet(MemberIndex))
+            {
                 sizes.Set(MemberIndex + 1, 0);
+            }
             values.SetValue(
                 MemberIndex,
                 ValidationCelValue.FromCollection(
@@ -2019,7 +2223,9 @@ internal sealed class ProtobufMemberNode(FieldDescriptor descriptor)
         if (mapKeys.AddKey(RuntimeIndex, ReadMapKey(field.Payload)))
         {
             if (!sizes.TryGet(MemberIndex + 1, out var current))
+            {
                 current = 0;
+            }
             sizes.Set(MemberIndex + 1, checked(current + 1));
         }
         values.SetValue(
@@ -2032,7 +2238,9 @@ internal sealed class ProtobufMemberNode(FieldDescriptor descriptor)
         ref ProtobufNestedMemberPayloads nestedPayloads)
     {
         if (MemberIndex >= 0)
+        {
             values.Clear(MemberIndex);
+        }
         nestedPayloads.Clear(RuntimeIndex);
     }
 
@@ -2077,7 +2285,9 @@ internal ref struct ProtobufOneofSelections
     internal int Select(int oneofIndex, int runtimeIndex)
     {
         if (oneofIndex < 0)
+        {
             return -1;
+        }
         ref var selected = ref _selections[oneofIndex];
         var previous = selected;
         selected = runtimeIndex;
@@ -2087,7 +2297,9 @@ internal ref struct ProtobufOneofSelections
     public void Dispose()
     {
         if (_rented is not null)
+        {
             ArrayPool<int>.Shared.Return(_rented);
+        }
         _rented = null;
         _selections = default;
     }
@@ -2150,7 +2362,9 @@ internal ref struct ProtobufNestedMemberPayloads
     private void EnsurePayloads()
     {
         if (_payloads is not null)
+        {
             return;
+        }
         _payloads = ArrayPool<ReadOnlyMemory<byte>>.Shared.Rent(_count);
         Array.Clear(_payloads, 0, _count);
         _observed = ArrayPool<byte>.Shared.Rent(_count);
@@ -2162,9 +2376,13 @@ internal ref struct ProtobufNestedMemberPayloads
         _childMerged.Dispose();
         _memberMerged.Dispose();
         if (_payloads is not null)
+        {
             ArrayPool<ReadOnlyMemory<byte>>.Shared.Return(_payloads, clearArray: true);
+        }
         if (_observed is not null)
+        {
             ArrayPool<byte>.Shared.Return(_observed);
+        }
         _payloads = null;
         _observed = null;
     }
@@ -2183,7 +2401,9 @@ internal static class ProtobufValidationValueDecoder
         ref ProtobufMergedMessageBuffers mergedMessages)
     {
         if (IsWrapper(descriptor.MessageType.FullName))
+        {
             return HasWrapperValue(descriptor.MessageType, field.Payload) ? current : previous;
+        }
 
         var mergedPayload = mergedMessages.Merge(
             runtimeIndex,
@@ -2201,7 +2421,9 @@ internal static class ProtobufValidationValueDecoder
         ref ProtobufNestedMemberPayloads mergedMessages)
     {
         if (IsWrapper(descriptor.MessageType.FullName))
+        {
             return HasWrapperValue(descriptor.MessageType, field.Payload) ? current : previous;
+        }
 
         var mergedPayload = mergedMessages.Merge(
             runtimeIndex,
@@ -2223,7 +2445,9 @@ internal static class ProtobufValidationValueDecoder
         ProtobufValidationWireField field)
     {
         if (descriptor.FieldType is FieldType.Message or FieldType.Group)
+        {
             return DecodeMessage(descriptor.MessageType, field.Payload);
+        }
         return descriptor.FieldType switch
         {
             FieldType.Double => ValidationCelValue.FromFloating(
@@ -2265,7 +2489,9 @@ internal static class ProtobufValidationValueDecoder
         ValidationCelValue value)
     {
         if (descriptor.HasPresence)
+        {
             return false;
+        }
 
         return descriptor.FieldType switch
         {
@@ -2282,15 +2508,21 @@ internal static class ProtobufValidationValueDecoder
     internal static ValidationCelValue DeclaredDefault(FieldDescriptor descriptor)
     {
         if (descriptor.IsRepeated)
+        {
             return Default(descriptor);
+        }
         if (descriptor.FieldType is FieldType.Message or FieldType.Group)
+        {
             return IsWrapper(descriptor.MessageType.FullName)
                 ? ValidationCelValue.Null
                 : DecodeMessage(descriptor.MessageType, default);
+        }
 
         var proto = descriptor.ToProto();
         if (!proto.HasDefaultValue)
+        {
             return Default(descriptor);
+        }
 
         var value = proto.DefaultValue;
         return descriptor.FieldType switch
@@ -2329,9 +2561,13 @@ internal static class ProtobufValidationValueDecoder
             _ => ProtobufWireType.Varint
         };
         if (wireType == ProtobufWireType.Fixed64)
+        {
             return payload.Length / sizeof(ulong);
+        }
         if (wireType == ProtobufWireType.Fixed32)
+        {
             return payload.Length / sizeof(uint);
+        }
 
         var count = 0;
         var span = payload.Span;
@@ -2342,7 +2578,9 @@ internal static class ProtobufValidationValueDecoder
             {
                 var value = ProtobufValidationWireReader.ReadVarint(span, ref offset);
                 if (descriptor.EnumType.FindValueByNumber(unchecked((int)value)) is not null)
+                {
                     count++;
+                }
             }
             return count;
         }
@@ -2419,7 +2657,9 @@ internal static class ProtobufValidationValueDecoder
 #pragma warning disable CS0618 // Google.Protobuf exposes no public inherited enum-feature API.
         var syntax = descriptor.EnumType.File.Syntax;
         if (syntax != Syntax.Editions)
+        {
             return syntax == Syntax.Proto2;
+        }
 #pragma warning restore CS0618
 
         return EditionEnumClosures.GetValue(
@@ -2431,7 +2671,9 @@ internal static class ProtobufValidationValueDecoder
     {
         var features = descriptor.ToProto().Options?.Features;
         if (features is { HasEnumType: true })
+        {
             return features.EnumType == FeatureSet.Types.EnumType.Closed;
+        }
 
         features = descriptor.File.ToProto().Options?.Features;
         return features is
@@ -2443,7 +2685,10 @@ internal static class ProtobufValidationValueDecoder
 
     private sealed class EnumClosure(bool isClosed)
     {
-        internal bool IsClosed { get; } = isClosed;
+        internal bool IsClosed
+        {
+            get;
+        } = isClosed;
     }
 
     private static ValidationCelValue DecodeMessage(
@@ -2451,10 +2696,12 @@ internal static class ProtobufValidationValueDecoder
         ReadOnlyMemory<byte> payload)
     {
         if (descriptor.FullName is "google.protobuf.Timestamp" or "google.protobuf.Duration")
+        {
             return ValidationCelValue.FromNumber(ReadSecondsAndNanos(payload)) with
             {
                 Utf8Literal = payload
             };
+        }
         if (IsWrapper(descriptor.FullName) && descriptor.FindFieldByNumber(1) is { } valueField)
         {
             var reader = new ProtobufValidationWireReader(payload);
@@ -2462,7 +2709,9 @@ internal static class ProtobufValidationValueDecoder
             while (reader.TryRead(out var field))
             {
                 if (field.Number == 1 && MatchesWireType(valueField, field.WireType))
+                {
                     value = Decode(valueField, field);
+                }
             }
             return value;
         }
@@ -2485,7 +2734,9 @@ internal static class ProtobufValidationValueDecoder
         while (reader.TryRead(out var field))
         {
             if (field.Number == 1 && MatchesWireType(valueField, field.WireType))
+            {
                 return true;
+            }
         }
         return false;
     }
@@ -2512,14 +2763,18 @@ internal static class ProtobufValidationValueDecoder
     private static ulong ParseUnsignedIntegerMagnitude(ReadOnlySpan<char> value)
     {
         if (value.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
+        {
             return ulong.Parse(value[2..], NumberStyles.HexNumber, CultureInfo.InvariantCulture);
+        }
         if (value.Length > 1 && value[0] == '0')
         {
             ulong result = 0;
             for (var index = 1; index < value.Length; index++)
             {
                 if (value[index] is not (>= '0' and <= '7'))
+                {
                     throw new SchemaRegistryRuleException($"Invalid octal Protobuf default '{value.ToString()}'.");
+                }
                 result = checked(result * 8 + (uint)(value[index] - '0'));
             }
             return result;
@@ -2540,7 +2795,9 @@ internal static class ProtobufValidationValueDecoder
             }
 
             if (++index == value.Length)
+            {
                 throw new SchemaRegistryRuleException("Protobuf bytes default ends with an escape prefix.");
+            }
             current = value[index];
             if (current is >= '0' and <= '7')
             {
@@ -2557,7 +2814,9 @@ internal static class ProtobufValidationValueDecoder
             if (current is 'x' or 'X')
             {
                 if (++index == value.Length || !TryParseHex(value[index], out var parsed))
+                {
                     throw new SchemaRegistryRuleException("Protobuf bytes default has an invalid hexadecimal escape.");
+                }
                 if (index + 1 < value.Length && TryParseHex(value[index + 1], out var low))
                 {
                     parsed = parsed * 16 + low;
@@ -2606,9 +2865,13 @@ internal static class ProtobufValidationValueDecoder
         while (reader.TryRead(out var field))
         {
             if (field is { Number: 1, WireType: ProtobufWireType.Varint })
+            {
                 seconds = unchecked((long)field.Varint);
+            }
             else if (field is { Number: 2, WireType: ProtobufWireType.Varint })
+            {
                 nanos = unchecked((int)field.Varint);
+            }
         }
         return seconds * 1_000m + nanos / 1_000_000m;
     }
@@ -2649,7 +2912,9 @@ internal static class ProtobufSemanticEquality
         ReadOnlyMemory<byte> right)
     {
         if (!AreRepeatedDescriptorsCompatible(leftDescriptor, rightDescriptor))
+        {
             return false;
+        }
         if (leftDescriptor.IsMap)
         {
             return AreMapValuesEqual(
@@ -2681,9 +2946,13 @@ internal static class ProtobufSemanticEquality
         FieldDescriptor right)
     {
         if (!left.IsRepeated || !right.IsRepeated || left.IsMap != right.IsMap)
+        {
             return false;
+        }
         if (!left.IsMap)
+        {
             return AreValueDescriptorsCompatible(left, right);
+        }
 
         return AreValueDescriptorsCompatible(
                 left.MessageType.FindFieldByNumber(1),
@@ -2698,7 +2967,9 @@ internal static class ProtobufSemanticEquality
         FieldDescriptor right)
     {
         if (left.FieldType != right.FieldType)
+        {
             return false;
+        }
         return left.FieldType switch
         {
             FieldType.Message or FieldType.Group =>
@@ -2724,7 +2995,9 @@ internal static class ProtobufSemanticEquality
         int remainingDepth)
     {
         if (left.Span.SequenceEqual(right.Span))
+        {
             return true;
+        }
         if (remainingDepth <= 0)
         {
             throw new SchemaRegistryRuleException(
@@ -2759,7 +3032,9 @@ internal static class ProtobufSemanticEquality
         int remainingDepth)
     {
         if (left.Span.SequenceEqual(right.Span))
+        {
             return true;
+        }
         if (remainingDepth == 0)
         {
             throw new SchemaRegistryRuleException(
@@ -2774,7 +3049,9 @@ internal static class ProtobufSemanticEquality
             {
                 if ((leftState.HasUnknownFields || rightState.HasUnknownFields) &&
                     !AreUnknownFieldsEqual(descriptor, left, right, remainingDepth))
+                {
                     return false;
+                }
 
                 if (IsProto2(descriptor))
                 {
@@ -2800,14 +3077,18 @@ internal static class ProtobufSemanticEquality
                                 ? AreClosedEnumRepeatedValuesEqual(field, left, right)
                                 : AreRepeatedValuesEqual(field, left, right, remainingDepth);
                         if (!areEqual)
+                        {
                             return false;
+                        }
                         continue;
                     }
 
                     ref readonly var leftField = ref leftState[field.Index];
                     ref readonly var rightField = ref rightState[field.Index];
                     if (!AreSingularValuesEqual(field, leftField, rightField, remainingDepth))
+                    {
                         return false;
+                    }
                 }
                 return true;
             }
@@ -2842,14 +3123,18 @@ internal static class ProtobufSemanticEquality
                         ? AreClosedEnumRepeatedValuesEqual(field, left, right)
                         : AreRepeatedValuesEqual(field, left, right, remainingDepth);
                 if (!areEqual)
+                {
                     return false;
+                }
                 continue;
             }
 
             ref readonly var leftField = ref leftState[field.Index];
             ref readonly var rightField = ref rightState[field.Index];
             if (!AreSingularValuesEqual(field, leftField, rightField, remainingDepth))
+            {
                 return false;
+            }
         }
         return true;
     }
@@ -2882,13 +3167,17 @@ internal static class ProtobufSemanticEquality
         if (left.IsSet != right.IsSet)
         {
             if (leftDescriptor.HasPresence || rightDescriptor.HasPresence)
+            {
                 return false;
+            }
             var present = left.IsSet ? left.Field : right.Field;
             var presentDescriptor = left.IsSet ? leftDescriptor : rightDescriptor;
             return IsScalarDefaultValue(presentDescriptor, present);
         }
         if (!left.IsSet)
+        {
             return true;
+        }
         if (leftDescriptor.FieldType is FieldType.Message or FieldType.Group)
         {
             return AreEqual(
@@ -2929,7 +3218,9 @@ internal static class ProtobufSemanticEquality
             var hasLeft = leftReader.TryRead(out var leftField);
             var hasRight = rightReader.TryRead(out var rightField);
             if (!hasLeft || !hasRight)
+            {
                 return hasLeft == hasRight;
+            }
             if (leftDescriptor.FieldType is FieldType.Message or FieldType.Group)
             {
                 if (!AreEqual(
@@ -2937,7 +3228,9 @@ internal static class ProtobufSemanticEquality
                         leftField.Payload,
                         rightField.Payload,
                         remainingDepth - 1))
+                {
                     return false;
+                }
             }
             else if (!AreScalarFieldsEqual(
                          leftDescriptor,
@@ -2972,9 +3265,13 @@ internal static class ProtobufSemanticEquality
             var hasLeft = leftReader.TryRead(out var leftField);
             var hasRight = rightReader.TryRead(out var rightField);
             if (!hasLeft || !hasRight)
+            {
                 return hasLeft == hasRight;
+            }
             if (unchecked((int)leftField.Varint) != unchecked((int)rightField.Varint))
+            {
                 return false;
+            }
         }
     }
 
@@ -3003,7 +3300,9 @@ internal static class ProtobufSemanticEquality
             try
             {
                 if (leftMap.Count != rightMap.Count)
+                {
                     return false;
+                }
                 var leftValueDescriptor = leftDescriptor.MessageType.FindFieldByNumber(2);
                 var rightValueDescriptor = rightDescriptor.MessageType.FindFieldByNumber(2);
                 for (var index = 0; index < leftMap.Count; index++)
@@ -3036,13 +3335,13 @@ internal static class ProtobufSemanticEquality
     private static bool IsScalarDefaultValue(
         FieldDescriptor descriptor,
         ProtobufValidationWireField field) => descriptor.FieldType switch
-    {
-        FieldType.Double => field.Fixed64 == 0,
-        FieldType.Float => field.Fixed32 == 0,
-        _ => AreScalarValuesEqual(
-            ProtobufValidationValueDecoder.Decode(descriptor, field),
-            ProtobufValidationValueDecoder.Default(descriptor))
-    };
+        {
+            FieldType.Double => field.Fixed64 == 0,
+            FieldType.Float => field.Fixed32 == 0,
+            _ => AreScalarValuesEqual(
+                ProtobufValidationValueDecoder.Decode(descriptor, field),
+                ProtobufValidationValueDecoder.Default(descriptor))
+        };
 
     private static bool AreScalarFieldsEqual(
         FieldDescriptor descriptor,
@@ -3058,18 +3357,20 @@ internal static class ProtobufSemanticEquality
         ProtobufValidationWireField left,
         FieldDescriptor rightDescriptor,
         ProtobufValidationWireField right) => leftDescriptor.FieldType switch
-    {
-        FieldType.Double => left.Fixed64 == right.Fixed64,
-        FieldType.Float => left.Fixed32 == right.Fixed32,
-        _ => AreScalarValuesEqual(
-            ProtobufValidationValueDecoder.Decode(leftDescriptor, left),
-            ProtobufValidationValueDecoder.Decode(rightDescriptor, right))
-    };
+        {
+            FieldType.Double => left.Fixed64 == right.Fixed64,
+            FieldType.Float => left.Fixed32 == right.Fixed32,
+            _ => AreScalarValuesEqual(
+                ProtobufValidationValueDecoder.Decode(leftDescriptor, left),
+                ProtobufValidationValueDecoder.Decode(rightDescriptor, right))
+        };
 
     private static bool AreScalarValuesEqual(ValidationCelValue left, ValidationCelValue right)
     {
         if (left.Kind != right.Kind)
+        {
             return false;
+        }
         return left.Kind switch
         {
             ValidationCelValueKind.Boolean => left.Boolean == right.Boolean,
@@ -3129,7 +3430,9 @@ internal ref struct ProtobufSemanticMessageState
                         HasUnknownFields = true;
                     }
                     if (field.IsRepeated)
+                    {
                         continue;
+                    }
 
                     var previous = oneofs.Select(field.ContainingOneof?.Index ?? -1, field.Index);
                     if (previous >= 0 && previous != field.Index)
@@ -3166,7 +3469,10 @@ internal ref struct ProtobufSemanticMessageState
         }
     }
 
-    internal bool HasUnknownFields { get; }
+    internal bool HasUnknownFields
+    {
+        get;
+    }
 
     internal ref readonly ProtobufSemanticFieldState this[int index] =>
         ref _fields![index];
@@ -3181,7 +3487,9 @@ internal ref struct ProtobufSemanticMessageState
         {
             var value = ProtobufValidationWireReader.ReadVarint(span, ref offset);
             if (descriptor.EnumType.FindValueByNumber(unchecked((int)value)) is null)
+            {
                 return true;
+            }
         }
         return false;
     }
@@ -3190,7 +3498,9 @@ internal ref struct ProtobufSemanticMessageState
     {
         _mergedMessages.Dispose();
         if (_fields is not null)
+        {
             ProtobufSemanticFieldBuffers.Return(_fields, _fieldCount, _bufferDepth);
+        }
         _fields = null;
     }
 }
@@ -3208,7 +3518,9 @@ internal static class ProtobufSemanticFieldBuffers
         depth = t_depth++;
         var buffers = t_buffers;
         if (buffers is null)
+        {
             t_buffers = buffers = new ProtobufSemanticFieldState[4][];
+        }
         else if (depth >= buffers.Length)
         {
             Array.Resize(ref buffers, buffers.Length * 2);
@@ -3217,9 +3529,13 @@ internal static class ProtobufSemanticFieldBuffers
 
         var fields = buffers[depth];
         if (fields is null || fields.Length < count)
+        {
             buffers[depth] = fields = new ProtobufSemanticFieldState[Math.Max(count, 8)];
+        }
         else
+        {
             Array.Clear(fields, 0, count);
+        }
         return fields;
     }
 
@@ -3227,7 +3543,9 @@ internal static class ProtobufSemanticFieldBuffers
     {
         Array.Clear(fields, 0, count);
         if (depth != --t_depth)
+        {
             throw new InvalidOperationException("Protobuf semantic equality buffers were returned out of order.");
+        }
     }
 }
 
@@ -3391,7 +3709,9 @@ internal ref struct ProtobufUnknownFieldSetState
         int remainingDepth)
     {
         if (_entryCount != other._entryCount || _valueCount != other._valueCount)
+        {
             return false;
+        }
 
         for (var index = 0; index < _entryCount; index++)
         {
@@ -3409,12 +3729,16 @@ internal ref struct ProtobufUnknownFieldSetState
                 var left = GetValue(leftValue);
                 var right = other.GetValue(rightValue);
                 if (!ValuesEqual(left.Field, right.Field, remainingDepth))
+                {
                     return false;
+                }
                 leftValue = left.Next;
                 rightValue = right.Next;
             }
             if (leftValue >= 0 || rightValue >= 0)
+            {
                 return false;
+            }
         }
         return true;
     }
@@ -3441,7 +3765,9 @@ internal ref struct ProtobufUnknownFieldSetState
         {
             var entry = GetEntry(entryIndex);
             if (entry.Number == number && entry.WireType == wireType)
+            {
                 return bucket;
+            }
             bucket = (bucket + 1) & (_bucketCapacity - 1);
         }
         return bucket;
@@ -3458,13 +3784,17 @@ internal ref struct ProtobufUnknownFieldSetState
     private void EnsureEntryCapacity(int requiredCount)
     {
         if (requiredCount <= _entryCapacity)
+        {
             return;
+        }
 
         var entryCapacity = Math.Max(requiredCount, _entryCapacity * 2);
         var bucketCapacity = entryCapacity * 2;
         var entries = ArrayPool<Entry>.Shared.Rent(entryCapacity);
         for (var index = 0; index < _entryCount; index++)
+        {
             entries[index] = GetEntry(index);
+        }
         var buckets = ArrayPool<int>.Shared.Rent(bucketCapacity);
         buckets.AsSpan(0, bucketCapacity).Fill(-1);
         for (var index = 0; index < _entryCount; index++)
@@ -3472,14 +3802,20 @@ internal ref struct ProtobufUnknownFieldSetState
             var entry = entries[index];
             var bucket = (int)(Hash(entry.Number, entry.WireType) & (uint)(bucketCapacity - 1));
             while (buckets[bucket] >= 0)
+            {
                 bucket = (bucket + 1) & (bucketCapacity - 1);
+            }
             buckets[bucket] = index;
         }
 
         if (_rentedEntries is not null)
+        {
             ArrayPool<Entry>.Shared.Return(_rentedEntries);
+        }
         if (_rentedBuckets is not null)
+        {
             ArrayPool<int>.Shared.Return(_rentedBuckets);
+        }
         _rentedEntries = entries;
         _rentedBuckets = buckets;
         _entryCapacity = entryCapacity;
@@ -3489,14 +3825,20 @@ internal ref struct ProtobufUnknownFieldSetState
     private void EnsureValueCapacity(int requiredCount)
     {
         if (requiredCount <= _valueCapacity)
+        {
             return;
+        }
 
         var valueCapacity = Math.Max(requiredCount, _valueCapacity * 2);
         var values = ArrayPool<Value>.Shared.Rent(valueCapacity);
         for (var index = 0; index < _valueCount; index++)
+        {
             values[index] = GetValue(index);
+        }
         if (_rentedValues is not null)
+        {
             ArrayPool<Value>.Shared.Return(_rentedValues, clearArray: true);
+        }
         _rentedValues = values;
         _valueCapacity = valueCapacity;
     }
@@ -3507,9 +3849,13 @@ internal ref struct ProtobufUnknownFieldSetState
     private void SetEntry(int index, Entry entry)
     {
         if (_rentedEntries is null)
+        {
             _initialEntries[index] = entry;
+        }
         else
+        {
             _rentedEntries[index] = entry;
+        }
     }
 
     private readonly int GetBucket(int index) =>
@@ -3518,9 +3864,13 @@ internal ref struct ProtobufUnknownFieldSetState
     private void SetBucket(int index, int value)
     {
         if (_rentedBuckets is null)
+        {
             _initialBuckets[index] = value;
+        }
         else
+        {
             _rentedBuckets[index] = value;
+        }
     }
 
     private readonly Value GetValue(int index) =>
@@ -3529,26 +3879,30 @@ internal ref struct ProtobufUnknownFieldSetState
     private void SetValue(int index, Value value)
     {
         if (_rentedValues is null)
+        {
             _initialValues[index] = value;
+        }
         else
+        {
             _rentedValues[index] = value;
+        }
     }
 
     private static bool ValuesEqual(
         ProtobufValidationWireField left,
         ProtobufValidationWireField right,
         int remainingDepth) => left.WireType switch
-    {
-        ProtobufWireType.Varint => left.Varint == right.Varint,
-        ProtobufWireType.Fixed64 => left.Fixed64 == right.Fixed64,
-        ProtobufWireType.LengthDelimited => left.Payload.Span.SequenceEqual(right.Payload.Span),
-        ProtobufWireType.StartGroup => ProtobufSemanticEquality.AreUnknownFieldsEqual(
-            left.Payload,
-            right.Payload,
-            remainingDepth - 1),
-        ProtobufWireType.Fixed32 => left.Fixed32 == right.Fixed32,
-        _ => false
-    };
+        {
+            ProtobufWireType.Varint => left.Varint == right.Varint,
+            ProtobufWireType.Fixed64 => left.Fixed64 == right.Fixed64,
+            ProtobufWireType.LengthDelimited => left.Payload.Span.SequenceEqual(right.Payload.Span),
+            ProtobufWireType.StartGroup => ProtobufSemanticEquality.AreUnknownFieldsEqual(
+                left.Payload,
+                right.Payload,
+                remainingDepth - 1),
+            ProtobufWireType.Fixed32 => left.Fixed32 == right.Fixed32,
+            _ => false
+        };
 
     private static uint Hash(int number, ProtobufWireType wireType) =>
         unchecked((uint)number * 16777619u ^ (uint)wireType);
@@ -3556,11 +3910,17 @@ internal ref struct ProtobufUnknownFieldSetState
     public void Dispose()
     {
         if (_rentedEntries is not null)
+        {
             ArrayPool<Entry>.Shared.Return(_rentedEntries);
+        }
         if (_rentedBuckets is not null)
+        {
             ArrayPool<int>.Shared.Return(_rentedBuckets);
+        }
         if (_rentedValues is not null)
+        {
             ArrayPool<Value>.Shared.Return(_rentedValues, clearArray: true);
+        }
         _rentedEntries = null;
         _rentedBuckets = null;
         _rentedValues = null;
@@ -3694,7 +4054,9 @@ internal ref struct ProtobufSemanticMapState
                 finally
                 {
                     if (rentedValuePayload is not null)
+                    {
                         ArrayPool<byte>.Shared.Return(rentedValuePayload);
+                    }
                 }
             }
         }
@@ -3705,7 +4067,10 @@ internal ref struct ProtobufSemanticMapState
         }
     }
 
-    internal int Count { get; private set; }
+    internal int Count
+    {
+        get; private set;
+    }
 
     internal readonly ProtobufSemanticMapEntry this[int index] =>
         _rentedEntries is null ? _initialEntries[index] : _rentedEntries[index];
@@ -3750,7 +4115,9 @@ internal ref struct ProtobufSemanticMapState
                 existing.Value = value;
                 existing.RentedValuePayload = rentedValuePayload;
                 if (rentedValuePayload is not null)
+                {
                     _rentedValuePayloadCount++;
+                }
                 SetEntry(entryIndex, existing);
                 return;
             }
@@ -3764,34 +4131,46 @@ internal ref struct ProtobufSemanticMapState
             RentedValuePayload = rentedValuePayload
         });
         if (rentedValuePayload is not null)
+        {
             _rentedValuePayloadCount++;
+        }
         SetBucket(bucket, Count++);
     }
 
     private void EnsureCapacity(int requiredCount)
     {
         if (requiredCount <= _entryCapacity)
+        {
             return;
+        }
 
         var entryCapacity = Math.Max(requiredCount, _entryCapacity * 2);
         var bucketCount = entryCapacity * 2;
         var entries = ArrayPool<ProtobufSemanticMapEntry>.Shared.Rent(entryCapacity);
         for (var index = 0; index < Count; index++)
+        {
             entries[index] = this[index];
+        }
         var buckets = ArrayPool<int>.Shared.Rent(bucketCount);
         buckets.AsSpan(0, bucketCount).Fill(-1);
         for (var index = 0; index < Count; index++)
         {
             var bucket = (int)(Hash(entries[index].Key) & (uint)(bucketCount - 1));
             while (buckets[bucket] >= 0)
+            {
                 bucket = (bucket + 1) & (bucketCount - 1);
+            }
             buckets[bucket] = index;
         }
 
         if (_rentedEntries is not null)
+        {
             ArrayPool<ProtobufSemanticMapEntry>.Shared.Return(_rentedEntries, clearArray: true);
+        }
         if (_rentedBuckets is not null)
+        {
             ArrayPool<int>.Shared.Return(_rentedBuckets);
+        }
         _rentedEntries = entries;
         _rentedBuckets = buckets;
         _entryCapacity = entryCapacity;
@@ -3801,9 +4180,13 @@ internal ref struct ProtobufSemanticMapState
     private void SetEntry(int index, ProtobufSemanticMapEntry entry)
     {
         if (_rentedEntries is null)
+        {
             _initialEntries[index] = entry;
+        }
         else
+        {
             _rentedEntries[index] = entry;
+        }
     }
 
     private readonly int GetBucket(int index) => _rentedBuckets is null
@@ -3813,28 +4196,40 @@ internal ref struct ProtobufSemanticMapState
     private void SetBucket(int index, int value)
     {
         if (_rentedBuckets is null)
+        {
             _initialBuckets[index] = value;
+        }
         else
+        {
             _rentedBuckets[index] = value;
+        }
     }
 
     private static uint Hash(ValidationCelValue key)
     {
         var hash = 2166136261u ^ (uint)key.Kind;
         if (key.Kind == ValidationCelValueKind.Boolean)
+        {
             return (hash ^ (key.Boolean ? 1u : 0u)) * 16777619u;
+        }
         if (key.Kind == ValidationCelValueKind.Number)
+        {
             return (hash ^ unchecked((uint)key.Number.GetHashCode())) * 16777619u;
+        }
         var bytes = key.Utf8Literal.Span;
         for (var index = 0; index < bytes.Length; index++)
+        {
             hash = (hash ^ bytes[index]) * 16777619u;
+        }
         return hash;
     }
 
     private static bool KeysEqual(ValidationCelValue left, ValidationCelValue right)
     {
         if (left.Kind != right.Kind)
+        {
             return false;
+        }
         return left.Kind switch
         {
             ValidationCelValueKind.Boolean => left.Boolean == right.Boolean,
@@ -3852,14 +4247,20 @@ internal ref struct ProtobufSemanticMapState
             {
                 var entry = this[index];
                 if (entry.RentedValuePayload is not null)
+                {
                     ArrayPool<byte>.Shared.Return(entry.RentedValuePayload);
+                }
                 SetEntry(index, default);
             }
         }
         if (_rentedEntries is not null)
+        {
             ArrayPool<ProtobufSemanticMapEntry>.Shared.Return(_rentedEntries, clearArray: true);
+        }
         if (_rentedBuckets is not null)
+        {
             ArrayPool<int>.Shared.Return(_rentedBuckets);
+        }
         _rentedEntries = null;
         _rentedBuckets = null;
         _entryCapacity = InitialEntryCapacity;
@@ -3893,9 +4294,13 @@ internal ref struct ProtobufRepeatedValueReader(
                 return false;
             }
             if (field.Number != descriptor.FieldNumber)
+            {
                 continue;
+            }
             if (!ProtobufValidationValueDecoder.MatchesField(descriptor, field))
+            {
                 continue;
+            }
             if (field.WireType != ProtobufWireType.LengthDelimited ||
                 !ProtobufValidationValueDecoder.IsPackable(descriptor))
             {
@@ -3953,7 +4358,9 @@ internal ref struct ProtobufClosedEnumRepeatedValueReader(
         while (_reader.TryRead(out field))
         {
             if (!ProtobufValidationValueDecoder.IsUnknownClosedEnumValue(descriptor, field))
+            {
                 return true;
+            }
         }
         return false;
     }
@@ -3966,14 +4373,18 @@ internal static class ProtobufMetaRuleParser
     internal static IReadOnlyList<ValidationRule> ReadRules(IMessage? options)
     {
         if (options is null)
+        {
             return [];
+        }
         var data = options.ToByteArray();
         var reader = new ProtobufValidationWireReader(data);
         List<ValidationRule>? rules = null;
         while (reader.TryRead(out var field))
         {
             if (field is { Number: MetaExtensionNumber, WireType: ProtobufWireType.LengthDelimited })
+            {
                 ReadMeta(field.Payload, ref rules);
+            }
         }
         return rules ?? [];
     }
@@ -3984,7 +4395,9 @@ internal static class ProtobufMetaRuleParser
         while (reader.TryRead(out var field))
         {
             if (field is { Number: 4, WireType: ProtobufWireType.LengthDelimited })
+            {
                 (rules ??= []).Add(ReadRule(field.Payload));
+            }
         }
     }
 
@@ -3998,7 +4411,9 @@ internal static class ProtobufMetaRuleParser
         while (reader.TryRead(out var field))
         {
             if (field.WireType != ProtobufWireType.LengthDelimited)
+            {
                 continue;
+            }
             var value = Encoding.UTF8.GetString(field.Payload.Span);
             switch (field.Number)
             {
@@ -4063,7 +4478,9 @@ internal ref struct ProtobufValidationWireReader
         var number = ReadFieldNumber(tag);
         var wireType = (ProtobufWireType)(tag & 7);
         if (number == 0)
+        {
             throw InvalidPayload("field number 0");
+        }
 
         switch (wireType)
         {
@@ -4079,7 +4496,9 @@ internal ref struct ProtobufValidationWireReader
             case ProtobufWireType.LengthDelimited:
                 var length = ReadVarint(span, ref _offset);
                 if (length > int.MaxValue)
+                {
                     throw InvalidPayload("length exceeds Int32.MaxValue");
+                }
                 EnsureRemaining(span, (int)length);
                 var payload = _source.Slice(_offset, (int)length);
                 _offset += (int)length;
@@ -4113,11 +4532,15 @@ internal ref struct ProtobufValidationWireReader
         for (var shift = 0; shift < 64; shift += 7)
         {
             if ((uint)offset >= (uint)source.Length)
+            {
                 throw InvalidPayload("truncated varint");
+            }
             var current = source[offset++];
             value |= (ulong)(current & 0x7f) << shift;
             if ((current & 0x80) == 0)
+            {
                 return value;
+            }
         }
         throw InvalidPayload("varint exceeds 10 bytes");
     }
@@ -4143,7 +4566,9 @@ internal ref struct ProtobufValidationWireReader
             if (wireType == ProtobufWireType.EndGroup)
             {
                 if (number != groupNumber)
+                {
                     throw InvalidPayload("mismatched end-group tag");
+                }
                 return _source.Slice(payloadStart, tagStart - payloadStart);
             }
 
@@ -4170,7 +4595,9 @@ internal ref struct ProtobufValidationWireReader
             case ProtobufWireType.LengthDelimited:
                 var length = ReadVarint(source, ref _offset);
                 if (length > int.MaxValue)
+                {
                     throw InvalidPayload("length exceeds Int32.MaxValue");
+                }
                 EnsureRemaining(source, (int)length);
                 _offset += (int)length;
                 break;
@@ -4189,7 +4616,9 @@ internal ref struct ProtobufValidationWireReader
     private void EnsureRemaining(ReadOnlySpan<byte> source, int length)
     {
         if (length < 0 || _offset > source.Length - length)
+        {
             throw InvalidPayload("truncated field");
+        }
     }
 
     private static SchemaRegistryRuleException InvalidPayload(string reason) =>
@@ -4210,14 +4639,19 @@ internal ref struct ProtobufValidationPath
         Length = 0;
     }
 
-    internal int Length { get; private set; }
+    internal int Length
+    {
+        get; private set;
+    }
 
     internal void AppendField(string name)
     {
         var separatorLength = Length == 0 ? 0 : 1;
         EnsureCapacity(separatorLength + name.Length);
         if (separatorLength != 0)
+        {
             _buffer[Length++] = '.';
+        }
         name.AsSpan().CopyTo(_buffer[Length..]);
         Length += name.Length;
     }
@@ -4226,7 +4660,9 @@ internal ref struct ProtobufValidationPath
     {
         Span<char> digits = stackalloc char[11];
         if (!index.TryFormat(digits, out var written, provider: CultureInfo.InvariantCulture))
+        {
             throw new InvalidOperationException("Could not format Protobuf validation path index.");
+        }
         EnsureCapacity(written + 2);
         _buffer[Length++] = '[';
         digits[..written].CopyTo(_buffer[Length..]);
@@ -4260,7 +4696,9 @@ internal ref struct ProtobufValidationPath
                 provider: CultureInfo.InvariantCulture);
         }
         if (!success)
+        {
             throw new InvalidOperationException("Could not format Protobuf validation map key.");
+        }
 
         EnsureCapacity(written + 2);
         _buffer[Length++] = '[';
@@ -4281,7 +4719,9 @@ internal ref struct ProtobufValidationPath
         for (var index = 0; index < decoded; index++)
         {
             if (_buffer[start + index] is '"' or '\\')
+            {
                 escapes++;
+            }
         }
 
         var source = start + decoded - 1;
@@ -4291,7 +4731,9 @@ internal ref struct ProtobufValidationPath
             var character = _buffer[source--];
             _buffer[destination--] = character;
             if (character is '"' or '\\')
+            {
                 _buffer[destination--] = '\\';
+            }
         }
         Length = start + decoded + escapes;
         _buffer[Length++] = '"';
@@ -4305,7 +4747,9 @@ internal ref struct ProtobufValidationPath
     internal void Dispose()
     {
         if (_rented is not null)
+        {
             ArrayPool<char>.Shared.Return(_rented);
+        }
         _rented = null;
         _buffer = default;
     }
@@ -4314,11 +4758,15 @@ internal ref struct ProtobufValidationPath
     {
         var required = checked(Length + additionalLength);
         if (required <= _buffer.Length)
+        {
             return;
+        }
         var replacement = ArrayPool<char>.Shared.Rent(Math.Max(required, _buffer.Length * 2));
         _buffer[..Length].CopyTo(replacement);
         if (_rented is not null)
+        {
             ArrayPool<char>.Shared.Return(_rented);
+        }
         _rented = replacement;
         _buffer = replacement;
     }
@@ -4345,7 +4793,9 @@ internal ref struct ProtobufRepeatedIndexes
     internal void Dispose()
     {
         if (_rented is not null)
+        {
             ArrayPool<int>.Shared.Return(_rented, clearArray: true);
+        }
         _rented = null;
         _indexes = default;
     }
@@ -4353,12 +4803,16 @@ internal ref struct ProtobufRepeatedIndexes
     private void EnsureCapacity(int required)
     {
         if (required <= _indexes.Length)
+        {
             return;
+        }
         var replacement = ArrayPool<int>.Shared.Rent(Math.Max(required, _indexes.Length * 2));
         replacement.AsSpan().Clear();
         _indexes.CopyTo(replacement);
         if (_rented is not null)
+        {
             ArrayPool<int>.Shared.Return(_rented, clearArray: true);
+        }
         _rented = replacement;
         _indexes = replacement;
     }

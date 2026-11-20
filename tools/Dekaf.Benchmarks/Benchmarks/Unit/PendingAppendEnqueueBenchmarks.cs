@@ -37,7 +37,9 @@ public class PendingAppendEnqueueBenchmarks
 
         _warmupAppend = Enqueue();
         if (_warmupAppend.IsCompleted)
+        {
             throw new InvalidOperationException("Warmup append bypassed BufferMemory backpressure.");
+        }
     }
 
     [IterationCleanup]
@@ -55,7 +57,9 @@ public class PendingAppendEnqueueBenchmarks
         _pendingAppend = Enqueue();
 
         if (_pendingAppend.IsCompleted)
+        {
             throw new InvalidOperationException("Append bypassed BufferMemory backpressure.");
+        }
     }
 
     private ValueTask<bool> Enqueue() =>

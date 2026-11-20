@@ -13,7 +13,10 @@ public sealed class DescribeUserScramCredentialsRequest : IKafkaRequest<Describe
     /// <summary>
     /// The users to describe, or null/empty to describe all users.
     /// </summary>
-    public IReadOnlyList<UserName>? Users { get; init; }
+    public IReadOnlyList<UserName>? Users
+    {
+        get; init;
+    }
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {
@@ -35,7 +38,10 @@ public sealed class UserName
     /// <summary>
     /// The user name.
     /// </summary>
-    public required string Name { get; init; }
+    public required string Name
+    {
+        get; init;
+    }
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {

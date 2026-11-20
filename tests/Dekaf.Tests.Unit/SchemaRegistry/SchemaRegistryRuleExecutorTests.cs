@@ -105,8 +105,7 @@ public sealed class SchemaRegistryRuleExecutorTests
             new AppendingRuleHandler("ENCODING", calls)
         ]);
         var schema = CreateSchema(
-            domainRules:
-            [
+            domainRules: [
                 CreateRule("domain-a", "DOMAIN", SchemaRuleMode.WriteRead),
                 CreateRule("disabled", "missing", SchemaRuleMode.WriteRead, disabled: true)
             ],
@@ -133,8 +132,7 @@ public sealed class SchemaRegistryRuleExecutorTests
             new AppendingRuleHandler("ENCODING", calls)
         ]);
         var schema = CreateSchema(
-            domainRules:
-            [
+            domainRules: [
                 CreateRule("domain-a", "DOMAIN-A", SchemaRuleMode.WriteRead),
                 CreateRule("domain-b", "DOMAIN-B", SchemaRuleMode.Read)
             ],
@@ -550,7 +548,10 @@ public sealed class SchemaRegistryRuleExecutorTests
 
     private sealed class PassthroughTaggedFieldTransformer : ISchemaRegistryTaggedFieldTransformer
     {
-        internal static PassthroughTaggedFieldTransformer Instance { get; } = new();
+        internal static PassthroughTaggedFieldTransformer Instance
+        {
+            get;
+        } = new();
 
         public ReadOnlyMemory<byte> Transform<TState>(
             ReadOnlyMemory<byte> payload,

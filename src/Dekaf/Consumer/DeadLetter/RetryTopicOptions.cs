@@ -10,13 +10,19 @@ public sealed class RetryTopicOptions
     /// <summary>
     /// Ordered retry delays. Attempt 1 uses the first delay, attempt 2 uses the second delay, and so on.
     /// </summary>
-    public IReadOnlyList<TimeSpan> Delays { get; init; } = [];
+    public IReadOnlyList<TimeSpan> Delays
+    {
+        get; init;
+    } = [];
 
     /// <summary>
     /// Suffix format appended to the source topic. The <c>{0}</c> placeholder receives a compact delay label.
     /// Default: <c>-retry-{0}</c>, e.g. <c>orders-retry-5s</c>.
     /// </summary>
-    public string TopicSuffixFormat { get; init; } = "-retry-{0}";
+    public string TopicSuffixFormat
+    {
+        get; init;
+    } = "-retry-{0}";
 
     /// <summary>
     /// Whether at least one retry tier is configured.
@@ -68,28 +74,42 @@ public sealed class RetryTopicOptions
     internal static void ValidateDelay(TimeSpan delay)
     {
         if (delay <= TimeSpan.Zero)
+        {
             throw new ArgumentOutOfRangeException(nameof(delay), delay, "Retry topic delays must be greater than zero.");
+        }
         if (delay.Ticks < TimeSpan.TicksPerMillisecond)
+        {
             throw new ArgumentOutOfRangeException(nameof(delay), delay, "Retry topic delays must be at least one millisecond.");
+        }
     }
 
     internal static void ValidateTopicSuffixFormat(string suffixFormat)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(suffixFormat);
         if (!suffixFormat.Contains("{0}", StringComparison.Ordinal))
+        {
             throw new ArgumentException("Retry topic suffix format must contain the {0} delay placeholder.", nameof(suffixFormat));
+        }
     }
 
     private static string FormatDelayLabel(TimeSpan delay)
     {
         if (delay.Ticks % TimeSpan.TicksPerDay == 0)
+        {
             return $"{delay.Ticks / TimeSpan.TicksPerDay}d";
+        }
         if (delay.Ticks % TimeSpan.TicksPerHour == 0)
+        {
             return $"{delay.Ticks / TimeSpan.TicksPerHour}h";
+        }
         if (delay.Ticks % TimeSpan.TicksPerMinute == 0)
+        {
             return $"{delay.Ticks / TimeSpan.TicksPerMinute}m";
+        }
         if (delay.Ticks % TimeSpan.TicksPerSecond == 0)
+        {
             return $"{delay.Ticks / TimeSpan.TicksPerSecond}s";
+        }
 
         return $"{delay.Ticks / TimeSpan.TicksPerMillisecond}ms";
     }

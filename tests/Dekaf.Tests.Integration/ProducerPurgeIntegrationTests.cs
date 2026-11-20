@@ -35,7 +35,9 @@ public sealed class ProducerPurgeIntegrationTests(ProducerHealthKafkaContainer k
         {
             await producer.FireAsync(new ProducerMessage<string, string>
             {
-                Topic = topic, Key = "purged", Value = "purged"
+                Topic = topic,
+                Key = "purged",
+                Value = "purged"
             }, (_, exception) =>
             {
                 Interlocked.Increment(ref callbackCount);
@@ -70,7 +72,9 @@ public sealed class ProducerPurgeIntegrationTests(ProducerHealthKafkaContainer k
         {
             await kafka.SetPausedAsync(false);
             if (flush is not null)
+            {
                 await flush.WaitAsync(cancellationToken);
+            }
         }
 
         // A later acknowledgement for the purged batch must not complete its callback again
@@ -95,7 +99,9 @@ public sealed class ProducerPurgeIntegrationTests(ProducerHealthKafkaContainer k
         }
         await Assert.That(values.Count(value => value == "after")).IsEqualTo(1);
         if (options == PurgeOptions.Queue)
+        {
             await Assert.That(values).IsEquivalentTo(["warmup", "after"]);
+        }
     }
 }
 
@@ -117,7 +123,9 @@ public sealed class TransactionalPurgeIntegrationTests(KafkaTestContainer kafka)
         await using var transaction = producer.BeginTransaction();
         await transaction.ProduceAsync(new ProducerMessage<string, string>
         {
-            Topic = topic, Key = "key", Value = "committed"
+            Topic = topic,
+            Key = "key",
+            Value = "committed"
         }, cancellationToken);
         await Assert.That(async () => await producer.PurgeAsync(options, cancellationToken))
             .Throws<InvalidOperationException>();

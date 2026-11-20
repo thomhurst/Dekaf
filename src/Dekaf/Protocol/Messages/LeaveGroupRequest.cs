@@ -9,8 +9,14 @@ public sealed class LeaveGroupRequest : IKafkaRequest<LeaveGroupResponse>
     public static short LowestSupportedVersion => 3;
     public static short HighestSupportedVersion => 5;
 
-    public required string GroupId { get; init; }
-    public required IReadOnlyList<LeaveGroupRequestMember> Members { get; init; }
+    public required string GroupId
+    {
+        get; init;
+    }
+    public required IReadOnlyList<LeaveGroupRequestMember> Members
+    {
+        get; init;
+    }
 
     public static bool IsFlexibleVersion(short version) => version >= 4;
     public static short GetRequestHeaderVersion(short version) => IsFlexibleVersion(version) ? (short)2 : (short)1;
@@ -42,9 +48,18 @@ public sealed class LeaveGroupRequest : IKafkaRequest<LeaveGroupResponse>
 /// </summary>
 public sealed class LeaveGroupRequestMember
 {
-    public string MemberId { get; init; } = string.Empty;
-    public required string? GroupInstanceId { get; init; }
-    public string? Reason { get; init; }
+    public string MemberId
+    {
+        get; init;
+    } = string.Empty;
+    public required string? GroupInstanceId
+    {
+        get; init;
+    }
+    public string? Reason
+    {
+        get; init;
+    }
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {

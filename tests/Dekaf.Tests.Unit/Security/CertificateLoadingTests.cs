@@ -26,9 +26,17 @@ public class CertificateLoadingTests : IDisposable
     {
         foreach (var file in _tempFiles)
         {
-            try { File.Delete(file); } catch { /* ignore */ }
+            try
+            {
+                File.Delete(file);
+            }
+            catch { /* ignore */ }
         }
-        try { Directory.Delete(_tempDir, recursive: true); } catch { /* ignore */ }
+        try
+        {
+            Directory.Delete(_tempDir, recursive: true);
+        }
+        catch { /* ignore */ }
         GC.SuppressFinalize(this);
     }
 

@@ -443,7 +443,10 @@ internal sealed class RoundTripCompletionTracker
         }
     }
 
-    public int RemainingPartitions { get; private set; }
+    public int RemainingPartitions
+    {
+        get; private set;
+    }
 
     public bool IsComplete => RemainingPartitions == 0;
 
@@ -470,15 +473,42 @@ internal sealed class RoundTripCompletionTracker
 
 internal sealed class RoundTripValidationSnapshot
 {
-    public required long ExpectedMessages { get; init; }
-    public required long ConsumedMessages { get; init; }
-    public required long MissingMessages { get; init; }
-    public required long DuplicateMessages { get; init; }
-    public required long CorruptMessages { get; init; }
-    public required long OutOfOrderMessages { get; init; }
-    public required long MispartitionedMessages { get; init; }
-    public required long UnexpectedMessages { get; init; }
-    public required bool TimedOut { get; init; }
+    public required long ExpectedMessages
+    {
+        get; init;
+    }
+    public required long ConsumedMessages
+    {
+        get; init;
+    }
+    public required long MissingMessages
+    {
+        get; init;
+    }
+    public required long DuplicateMessages
+    {
+        get; init;
+    }
+    public required long CorruptMessages
+    {
+        get; init;
+    }
+    public required long OutOfOrderMessages
+    {
+        get; init;
+    }
+    public required long MispartitionedMessages
+    {
+        get; init;
+    }
+    public required long UnexpectedMessages
+    {
+        get; init;
+    }
+    public required bool TimedOut
+    {
+        get; init;
+    }
 
     public bool IsSuccess =>
         !TimedOut &&

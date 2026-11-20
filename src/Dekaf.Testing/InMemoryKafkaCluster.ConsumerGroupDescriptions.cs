@@ -42,7 +42,9 @@ public sealed partial class InMemoryKafkaCluster
             if (_consumerGroupMembers.TryGetValue(groupId, out var members))
             {
                 if (members.Count > 0)
+                {
                     state = "Stable";
+                }
                 var assignments = BuildConsumerGroupAssignments(groupId);
                 foreach (var (memberId, member) in members)
                 {

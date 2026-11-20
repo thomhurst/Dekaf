@@ -62,7 +62,9 @@ internal sealed class TransactionalSequenceOracle
     internal void Observe(string? key)
     {
         if (key is null || !key.StartsWith(_keyPrefix, StringComparison.Ordinal))
+        {
             return;
+        }
 
         var payload = key.AsSpan(_keyPrefix.Length);
         if (payload.Length < 3 || payload[1] != ':')
@@ -104,13 +106,17 @@ internal sealed class TransactionalSequenceOracle
             for (var index = 0; index < _seenCommitted.Length && samples.Count < MaxFailureSamples; index++)
             {
                 if (!_seenCommitted[index])
+                {
                     samples.Add($"Missing committed index {index:N0}.");
+                }
             }
 
             for (var partition = 0; partition < _seenSentinels.Length && samples.Count < MaxFailureSamples; partition++)
             {
                 if (!_seenSentinels[partition])
+                {
                     samples.Add($"Missing terminal sentinel for partition {partition}.");
+                }
             }
         }
 
@@ -209,6 +215,8 @@ internal sealed class TransactionalSequenceOracle
     private void AddFailure(string sample)
     {
         if (_failureSamples.Count < MaxFailureSamples)
+        {
             _failureSamples.Add(sample);
+        }
     }
 }

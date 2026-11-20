@@ -67,12 +67,21 @@ public sealed partial class DynamoDbOutboxStore : IOutboxStore, IOutboxLeaseRene
     /// <param name="since">When the round ran, in UTC ticks.</param>
     private sealed class DistantStandby(string relayId, long since)
     {
-        public string RelayId { get; } = relayId;
+        public string RelayId
+        {
+            get;
+        } = relayId;
 
-        public long Since { get; } = since;
+        public long Since
+        {
+            get;
+        } = since;
 
         /// <summary>The latest acquisition, answered or not, in UTC ticks.</summary>
-        public long LastCall { get; set; } = since;
+        public long LastCall
+        {
+            get; set;
+        } = since;
     }
 
     /// <summary>
@@ -113,7 +122,9 @@ public sealed partial class DynamoDbOutboxStore : IOutboxStore, IOutboxLeaseRene
         // lapse on the same tick, so a dead relay's share and buckets free up together.
         var now = _timeProvider.GetUtcNow().UtcTicks;
         if (IsRestingStandby(request, now))
+        {
             return [];
+        }
 
         // A round that fails proves nothing about the queue, so the next one runs in full.
         var wasDistantStandby = _distantStandby?.RelayId == request.RelayId;
@@ -130,6 +141,7 @@ public sealed partial class DynamoDbOutboxStore : IOutboxStore, IOutboxLeaseRene
 
         var owned = new List<int>(plan.Keep.Count + plan.Claim.Count);
         var write = new LeaseWrite(request.RelayId, now, expiry);
+
         long SeenExpiry(int bucket) => coordination.SeenExpiry[bucket];
 
         // Renew first: these leases are the ones being published and the closest to expiry.
@@ -159,7 +171,9 @@ public sealed partial class DynamoDbOutboxStore : IOutboxStore, IOutboxLeaseRene
 
         // Pruning is housekeeping, not correctness; run it occasionally instead of per round.
         if (++_acquisitionRound % HeartbeatPruneFactor == 0)
+        {
             await PruneHeartbeatsAsync(coordination.StaleRelayIds, now, request, cancellationToken).ConfigureAwait(false);
+        }
 
         // Not after a refused heartbeat: peers may not count this relay at all, so what it
         // read about its place in the queue is not what they plan with.
@@ -167,7 +181,9 @@ public sealed partial class DynamoDbOutboxStore : IOutboxStore, IOutboxLeaseRene
         {
             _distantStandby = new DistantStandby(request.RelayId, now);
             if (!wasDistantStandby)
+            {
                 LogDistantStandby(request.RelayId, plan.StandbyRank);
+            }
         }
 
         owned.Sort();
@@ -186,7 +202,9 @@ public sealed partial class DynamoDbOutboxStore : IOutboxStore, IOutboxLeaseRene
     private bool IsRestingStandby(OutboxLeaseRequest request, long now)
     {
         if (_distantStandby is not { } standby || standby.RelayId != request.RelayId)
+        {
             return false;
+        }
 
         var rested = now - standby.Since;
         var sinceLastCall = now - standby.LastCall;
@@ -211,12 +229,16 @@ public sealed partial class DynamoDbOutboxStore : IOutboxStore, IOutboxLeaseRene
         ArgumentNullException.ThrowIfNull(request);
         ArgumentNullException.ThrowIfNull(buckets);
         if (buckets.Count == 0)
+        {
             return true;
+        }
 
         for (var index = 0; index < buckets.Count; index++)
         {
             if ((uint)buckets[index] >= (uint)request.BucketCount)
+            {
                 return false;
+            }
         }
 
         var now = _timeProvider.GetUtcNow().UtcTicks;
@@ -229,7 +251,9 @@ public sealed partial class DynamoDbOutboxStore : IOutboxStore, IOutboxLeaseRene
         // its local ownership and reacquires valid buckets on the next cycle, rather than
         // continuing publication on a partially renewed set.
         if (Array.IndexOf(renewed, false) >= 0)
+        {
             return false;
+        }
 
         await RecordHeartbeatAsync(request.RelayId, now, cancellationToken).ConfigureAwait(false);
         return true;
@@ -263,8 +287,10 @@ public sealed partial class DynamoDbOutboxStore : IOutboxStore, IOutboxLeaseRene
             // costs. The other order leaves freed buckets next to a live heartbeat, and peers
             // keep those reserved for a relay that is gone until the heartbeat ages out.
             if (attempt == 0)
+            {
                 await WriteRelayRecordAsync(request.RelayId, StoppedTimestamp(now), stopped: true, cancellationToken)
                     .ConfigureAwait(false);
+            }
 
             // Released by owner, not by previousBuckets: the read also finds leases that an
             // acquisition claimed before it failed, and stale lease items beyond the bucket count.
@@ -281,7 +307,9 @@ public sealed partial class DynamoDbOutboxStore : IOutboxStore, IOutboxLeaseRene
             }
 
             if (attempt > 0 && owned.Count == 0)
+            {
                 return;
+            }
 
             // The owner guard leaves a lease alone that a peer took over after it expired.
             await WriteLeasesAsync(
@@ -304,7 +332,9 @@ public sealed partial class DynamoDbOutboxStore : IOutboxStore, IOutboxLeaseRene
     {
         ArgumentNullException.ThrowIfNull(buckets);
         if (buckets.Count == 0)
+        {
             return [];
+        }
 
         var hasPending = new bool[buckets.Count];
         await BoundedConcurrency.ForAsync(buckets.Count, _options.MaxConcurrency, async (index, token) =>
@@ -318,7 +348,9 @@ public sealed partial class DynamoDbOutboxStore : IOutboxStore, IOutboxLeaseRene
         for (var index = 0; index < buckets.Count; index++)
         {
             if (hasPending[index])
+            {
                 pending.Add(buckets[index]);
+            }
         }
 
         pending.Sort();
@@ -348,7 +380,9 @@ public sealed partial class DynamoDbOutboxStore : IOutboxStore, IOutboxLeaseRene
         // Only the rows in front of the first gap that is unprobed or holds a late arrival.
         // The next fetch probes that gap again, from the baseline the marked prefix leaves.
         if (inOrder < messages.Count)
+        {
             messages.RemoveRange(inOrder, messages.Count - inOrder);
+        }
 
         return messages;
     }
@@ -425,9 +459,13 @@ public sealed partial class DynamoDbOutboxStore : IOutboxStore, IOutboxLeaseRene
                 // The first gap is always within budget, so a batch keeps at least one row
                 // unless a probe finds a late arrival in front of all of them.
                 if (++probes > MaxGapProbes)
+                {
                     return (index, false);
+                }
                 if (await ExistsBetweenAsync(bucket, expected, message.Id - 1, cancellationToken).ConfigureAwait(false))
+                {
                     return (index, true);
+                }
             }
 
             expected = Math.Max(expected, message.Id + 1);
@@ -486,7 +524,9 @@ public sealed partial class DynamoDbOutboxStore : IOutboxStore, IOutboxLeaseRene
 
             // Per chunk: what a failed later chunk leaves behind is read again from here.
             if ((uint)bucket < (uint)_lastSequence.Length)
+            {
                 _lastSequence[bucket] = Math.Max(_lastSequence[bucket], publishedMessages[offset + count - 1].Id);
+            }
         }
     }
 
@@ -504,10 +544,14 @@ public sealed partial class DynamoDbOutboxStore : IOutboxStore, IOutboxLeaseRene
             var head = await _client.QueryAsync(HeadQuery(bucket, DynamoDbOutboxSchema.CreatedAtUtc), token)
                 .ConfigureAwait(false);
             if (head.Items is not { Count: > 0 } items)
+            {
                 return;
+            }
 
             if (DynamoDbOutboxSchema.TryReadNumber(items[0], DynamoDbOutboxSchema.CreatedAtUtc, out var createdAt))
+            {
                 oldest[bucket] = createdAt;
+            }
             counts[bucket] = await CountBucketAsync(bucket, token).ConfigureAwait(false);
         }, cancellationToken).ConfigureAwait(false);
 
@@ -517,7 +561,9 @@ public sealed partial class DynamoDbOutboxStore : IOutboxStore, IOutboxLeaseRene
         {
             pendingCount += counts[bucket];
             if (oldest[bucket] != 0 && (oldestTicks == 0 || oldest[bucket] < oldestTicks))
+            {
                 oldestTicks = oldest[bucket];
+            }
         }
 
         return new OutboxPendingMetrics(

@@ -33,7 +33,10 @@ public class ProducerModeBenchmarks
     private static readonly string[] PreAllocatedKeys = BenchmarkData.CreateKeys(BatchCount);
 
     [Params(100, 1000)]
-    public int MessageSize { get; set; }
+    public int MessageSize
+    {
+        get; set;
+    }
 
     [GlobalSetup]
     public async Task Setup()
@@ -98,9 +101,21 @@ public class ProducerModeBenchmarks
     public async Task Cleanup()
     {
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-        try { await _nonIdempotentLeader.FlushAsync(cts.Token).ConfigureAwait(false); } catch { }
-        try { await _nonIdempotentAll.FlushAsync(cts.Token).ConfigureAwait(false); } catch { }
-        try { await _idempotentAll.FlushAsync(cts.Token).ConfigureAwait(false); } catch { }
+        try
+        {
+            await _nonIdempotentLeader.FlushAsync(cts.Token).ConfigureAwait(false);
+        }
+        catch { }
+        try
+        {
+            await _nonIdempotentAll.FlushAsync(cts.Token).ConfigureAwait(false);
+        }
+        catch { }
+        try
+        {
+            await _idempotentAll.FlushAsync(cts.Token).ConfigureAwait(false);
+        }
+        catch { }
 
         await _nonIdempotentLeader.DisposeAsync().ConfigureAwait(false);
         await _nonIdempotentAll.DisposeAsync().ConfigureAwait(false);

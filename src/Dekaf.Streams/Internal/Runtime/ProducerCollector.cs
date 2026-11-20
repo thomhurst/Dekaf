@@ -7,7 +7,10 @@ namespace Dekaf.Streams.Internal.Runtime;
 /// <summary>Serde for byte payloads where null and empty are different values.</summary>
 internal sealed class NullableBytesSerde : ISerializer<ReadOnlyMemory<byte>?>, IDeserializer<ReadOnlyMemory<byte>?>
 {
-    public static NullableBytesSerde Instance { get; } = new();
+    public static NullableBytesSerde Instance
+    {
+        get;
+    } = new();
 
     public void Serialize<TWriter>(ReadOnlyMemory<byte>? value, ref TWriter destination, SerializationContext context)
         where TWriter : IBufferWriter<byte>, allows ref struct

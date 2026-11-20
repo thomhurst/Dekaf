@@ -200,7 +200,9 @@ public static class DekafBuilderShareConsumerExtensions
             var consumerBuilder = new ShareConsumerBuilder<TKey, TValue>();
             var loggerFactory = provider.GetService<ILoggerFactory>();
             if (loggerFactory is not null)
+            {
                 consumerBuilder.WithLoggerFactory(loggerFactory);
+            }
             configure(provider, consumerBuilder);
             DeadLetterOptions? options = null;
             if (configureDeadLetterQueue is not null)
@@ -208,7 +210,9 @@ public static class DekafBuilderShareConsumerExtensions
                 var deadLetterBuilder = new DeadLetterQueueBuilder();
                 configureDeadLetterQueue(deadLetterBuilder);
                 if (consumerBuilder.BootstrapServersString is { } servers)
+                {
                     deadLetterBuilder.WithDefaultBootstrapServers(servers);
+                }
                 options = deadLetterBuilder.Build();
             }
             return new Registration<TKey, TValue>(consumerBuilder, options);
@@ -226,8 +230,10 @@ public static class DekafBuilderShareConsumerExtensions
                 .GetRequiredKeyedService<IKafkaShareConsumer<TKey, TValue>>(serviceKey));
         }
         if (configureDeadLetterQueue is not null)
+        {
             builder.Services.AddKeyedSingleton<DeadLetterOptions>(DeadLetterOptionsKey<TKey, TValue>(serviceKey),
                 (provider, _) => provider.GetRequiredKeyedService<Registration<TKey, TValue>>(stateKey).DeadLetterOptions!);
+        }
         return builder;
     }
 

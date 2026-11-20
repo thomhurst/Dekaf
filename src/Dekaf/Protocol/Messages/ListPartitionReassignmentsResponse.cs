@@ -17,22 +17,34 @@ public sealed class ListPartitionReassignmentsResponse : IKafkaResponse
     /// <summary>
     /// Throttle time in milliseconds.
     /// </summary>
-    public int ThrottleTimeMs { get; init; }
+    public int ThrottleTimeMs
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Top-level error code.
     /// </summary>
-    public ErrorCode ErrorCode { get; init; }
+    public ErrorCode ErrorCode
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Top-level error message.
     /// </summary>
-    public string? ErrorMessage { get; init; }
+    public string? ErrorMessage
+    {
+        get; init;
+    }
 
     /// <summary>
     /// In-progress reassignments by topic.
     /// </summary>
-    public required IReadOnlyList<ListPartitionReassignmentsResponseTopic> Topics { get; init; }
+    public required IReadOnlyList<ListPartitionReassignmentsResponseTopic> Topics
+    {
+        get; init;
+    }
 
     public static IKafkaResponse Read(ref KafkaProtocolReader reader, short version)
     {
@@ -65,12 +77,18 @@ public sealed class ListPartitionReassignmentsResponseTopic
     /// <summary>
     /// Topic name.
     /// </summary>
-    public required string Name { get; init; }
+    public required string Name
+    {
+        get; init;
+    }
 
     /// <summary>
     /// In-progress partition reassignments.
     /// </summary>
-    public required IReadOnlyList<OngoingPartitionReassignmentData> Partitions { get; init; }
+    public required IReadOnlyList<OngoingPartitionReassignmentData> Partitions
+    {
+        get; init;
+    }
 
     public static ListPartitionReassignmentsResponseTopic Read(ref KafkaProtocolReader reader, short version)
     {
@@ -99,22 +117,34 @@ public sealed class OngoingPartitionReassignmentData
     /// <summary>
     /// Partition index.
     /// </summary>
-    public int PartitionIndex { get; init; }
+    public int PartitionIndex
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Current replica set.
     /// </summary>
-    public required IReadOnlyList<int> Replicas { get; init; }
+    public required IReadOnlyList<int> Replicas
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Replicas being added.
     /// </summary>
-    public required IReadOnlyList<int> AddingReplicas { get; init; }
+    public required IReadOnlyList<int> AddingReplicas
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Replicas being removed.
     /// </summary>
-    public required IReadOnlyList<int> RemovingReplicas { get; init; }
+    public required IReadOnlyList<int> RemovingReplicas
+    {
+        get; init;
+    }
 
     public static OngoingPartitionReassignmentData Read(ref KafkaProtocolReader reader, short version)
     {

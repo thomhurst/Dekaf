@@ -13,7 +13,10 @@ public class ShareAcknowledgeCommitBenchmarks
     private const int NonMatchingSelectorCount = 1024;
 
     [Params(false, true)]
-    public bool ExplicitAcknowledgement { get; set; }
+    public bool ExplicitAcknowledgement
+    {
+        get; set;
+    }
 
     private InMemoryKafkaCluster _matchingCluster = null!;
     private InMemoryKafkaCluster _nonMatchingCluster = null!;
@@ -114,7 +117,9 @@ public class ShareAcknowledgeCommitBenchmarks
         InMemoryShareConsumer<string, string> consumer)
     {
         for (var index = 0; index < BatchSize; index++)
+        {
             producer.ProduceAsync(Topic, "key", "value").GetAwaiter().GetResult();
+        }
 
         var enumerator = consumer.PollAsync().GetAsyncEnumerator();
         try
@@ -122,10 +127,14 @@ public class ShareAcknowledgeCommitBenchmarks
             for (var index = 0; index < BatchSize; index++)
             {
                 if (!enumerator.MoveNextAsync().AsTask().GetAwaiter().GetResult())
+                {
                     throw new InvalidOperationException("Share poll ended before the benchmark batch was prepared.");
+                }
 
                 if (ExplicitAcknowledgement)
+                {
                     consumer.Acknowledge(enumerator.Current);
+                }
             }
         }
         finally

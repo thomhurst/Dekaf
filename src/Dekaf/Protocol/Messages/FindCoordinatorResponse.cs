@@ -13,12 +13,18 @@ public sealed class FindCoordinatorResponse : IKafkaResponse
     /// <summary>
     /// Throttle time in milliseconds.
     /// </summary>
-    public int ThrottleTimeMs { get; init; }
+    public int ThrottleTimeMs
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Coordinator responses.
     /// </summary>
-    public required IReadOnlyList<Coordinator> Coordinators { get; init; }
+    public required IReadOnlyList<Coordinator> Coordinators
+    {
+        get; init;
+    }
 
     public static IKafkaResponse Read(ref KafkaProtocolReader reader, short version)
     {
@@ -44,12 +50,30 @@ public sealed class FindCoordinatorResponse : IKafkaResponse
 /// </summary>
 public sealed class Coordinator
 {
-    public required string Key { get; init; }
-    public required int NodeId { get; init; }
-    public required string Host { get; init; }
-    public required int Port { get; init; }
-    public ErrorCode ErrorCode { get; init; }
-    public string? ErrorMessage { get; init; }
+    public required string Key
+    {
+        get; init;
+    }
+    public required int NodeId
+    {
+        get; init;
+    }
+    public required string Host
+    {
+        get; init;
+    }
+    public required int Port
+    {
+        get; init;
+    }
+    public ErrorCode ErrorCode
+    {
+        get; init;
+    }
+    public string? ErrorMessage
+    {
+        get; init;
+    }
 
     public static Coordinator Read(ref KafkaProtocolReader reader, short version)
     {

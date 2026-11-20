@@ -238,9 +238,13 @@ public sealed class ShareConsumerTelemetryMetricsTests
         metrics.Subscribe([Fetch + "fetch.total"]);
         metrics.FetchStarted(1);
         if (failFetch)
+        {
             metrics.FetchFailed(1);
+        }
         else
+        {
             metrics.FetchCompleted(1, 0);
+        }
 
         // A request submitted without record accounting must also be excluded if
         // its response arrives after the record metrics are selected again.
@@ -254,9 +258,13 @@ public sealed class ShareConsumerTelemetryMetricsTests
         // zero-record sample, so it must remain in the average's denominator.
         metrics.FetchStarted(1);
         if (failFetch)
+        {
             metrics.FetchFailed(1);
+        }
         else
+        {
             metrics.FetchCompleted(1, 0);
+        }
 
         var snapshot = Collect(metrics);
         await Assert.That(Value(snapshot, Fetch + "fetch.total")).IsEqualTo(5d);
@@ -296,6 +304,7 @@ public sealed class ShareConsumerTelemetryMetricsTests
     }
 
     private static double Value(List<ClientTelemetryMetric> metrics, string name) => metrics.Single(metric => metric.Name == name).Value;
+
     private sealed class Clock
     {
         private long _now;

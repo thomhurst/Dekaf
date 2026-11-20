@@ -14,9 +14,15 @@ internal sealed class PartitionedProcessingLimits
         Handlers = handlers;
     }
 
-    public PartitionedBufferBudget? Buffer { get; }
+    public PartitionedBufferBudget? Buffer
+    {
+        get;
+    }
 
-    public HandlerSlotLimiter? Handlers { get; }
+    public HandlerSlotLimiter? Handlers
+    {
+        get;
+    }
 }
 
 /// <summary>
@@ -57,7 +63,9 @@ internal sealed class PartitionedBufferBudget
         {
             var observed = Interlocked.CompareExchange(ref _count, current + 1, current);
             if (observed == current)
+            {
                 return true;
+            }
             current = observed;
         }
 
@@ -67,15 +75,21 @@ internal sealed class PartitionedBufferBudget
     public void Release(int count = 1)
     {
         if (count <= 0)
+        {
             return;
+        }
 
         var remaining = Interlocked.Add(ref _count, -count);
         var previous = remaining + count;
         if (previous >= _max && remaining < _max)
+        {
             _capacityAvailable();
+        }
 
         if (previous > _resumeThreshold && remaining <= _resumeThreshold)
+        {
             TryResume();
+        }
     }
 
     /// <summary>
@@ -86,13 +100,17 @@ internal sealed class PartitionedBufferBudget
     {
         Interlocked.Exchange(ref _resumeRequested, 1);
         if (Volatile.Read(ref _count) <= _resumeThreshold)
+        {
             TryResume();
+        }
     }
 
     private void TryResume()
     {
         if (Volatile.Read(ref _resumeRequested) != 0 && Interlocked.Exchange(ref _resumeRequested, 0) != 0)
+        {
             _resumeAvailable();
+        }
     }
 }
 
@@ -122,7 +140,9 @@ internal sealed class HandlerSlotLimiter
     {
         // Queued waiters go first, so a new caller does not overtake them.
         if (Volatile.Read(ref _queued) != 0)
+        {
             return false;
+        }
 
         return TryTakeAvailable();
     }
@@ -137,7 +157,9 @@ internal sealed class HandlerSlotLimiter
         {
             RemoveCancelledHead();
             if (_waiters.Count == 0 && TryTakeAvailable())
+            {
                 return true;
+            }
 
             Volatile.Write(ref waiter.State, HandlerSlotWaiter.Waiting);
             _waiters.Enqueue(waiter);
@@ -147,7 +169,9 @@ internal sealed class HandlerSlotLimiter
         // A release can complete between the failed take and the queued count becoming visible.
         // That release saw no waiter, so serve the queue here.
         if (Volatile.Read(ref _available) > 0)
+        {
             ServeWaiters();
+        }
 
         return false;
     }
@@ -156,7 +180,9 @@ internal sealed class HandlerSlotLimiter
     {
         Interlocked.Increment(ref _available);
         if (Volatile.Read(ref _queued) != 0)
+        {
             ServeWaiters();
+        }
     }
 
     private void ServeWaiters()
@@ -169,7 +195,9 @@ internal sealed class HandlerSlotLimiter
             {
                 RemoveCancelledHead();
                 if (_waiters.Count == 0 || !TryTakeAvailable())
+                {
                     return;
+                }
 
                 var waiter = _waiters.Dequeue();
                 Interlocked.Decrement(ref _queued);
@@ -206,7 +234,9 @@ internal sealed class HandlerSlotLimiter
         {
             var observed = Interlocked.CompareExchange(ref _available, current - 1, current);
             if (observed == current)
+            {
                 return true;
+            }
             current = observed;
         }
 
@@ -238,7 +268,9 @@ internal abstract class HandlerSlotWaiter
     {
         var state = Interlocked.CompareExchange(ref State, Cancelled, Waiting);
         if (state == Waiting)
+        {
             return false;
+        }
 
         return state == Granted && Interlocked.CompareExchange(ref State, Cancelled, Granted) == Granted;
     }
@@ -269,7 +301,9 @@ internal sealed class AsyncHandlerSlotWaiter : HandlerSlotWaiter, IValueTaskSour
     public ValueTask<bool> AcquireAsync(CancellationToken cancellationToken)
     {
         if (_limiter.TryAcquire())
+        {
             return new ValueTask<bool>(true);
+        }
 
         return WaitAsync(cancellationToken);
     }
@@ -287,10 +321,14 @@ internal sealed class AsyncHandlerSlotWaiter : HandlerSlotWaiter, IValueTaskSour
     public ValueTask<bool> WaitAsync(CancellationToken cancellationToken)
     {
         if (Volatile.Read(ref _interrupted) != 0)
+        {
             return new ValueTask<bool>(false);
+        }
 
         if (Volatile.Read(ref State) == Cancelled || cancellationToken.IsCancellationRequested)
+        {
             return new ValueTask<bool>(Task.FromCanceled<bool>(cancellationToken.IsCancellationRequested ? cancellationToken : new CancellationToken(true)));
+        }
 
         _core.Reset();
         _cancellationToken = cancellationToken;
@@ -325,7 +363,9 @@ internal sealed class AsyncHandlerSlotWaiter : HandlerSlotWaiter, IValueTaskSour
     {
         Interlocked.Exchange(ref _interrupted, 1);
         if (Interlocked.CompareExchange(ref State, Cancelled, Waiting) == Waiting)
+        {
             _core.SetResult(false);
+        }
     }
 
     internal override void OnGranted() => _core.SetResult(true);
@@ -333,7 +373,9 @@ internal sealed class AsyncHandlerSlotWaiter : HandlerSlotWaiter, IValueTaskSour
     private void OnCancelled()
     {
         if (Interlocked.CompareExchange(ref State, Cancelled, Waiting) == Waiting)
+        {
             _core.SetException(new OperationCanceledException(_cancellationToken));
+        }
     }
 
     bool IValueTaskSource<bool>.GetResult(short token)
@@ -343,7 +385,9 @@ internal sealed class AsyncHandlerSlotWaiter : HandlerSlotWaiter, IValueTaskSour
         var granted = _core.GetResult(token);
         // Granted: the slot now belongs to the caller. Interrupted: the waiter stays cancelled.
         if (granted)
+        {
             Volatile.Write(ref State, Idle);
+        }
         return granted;
     }
 

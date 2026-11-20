@@ -28,7 +28,9 @@ public static class NetStandardPackageSmoke
         using var memoryManager = new NonArrayMemoryManager(payload);
         var nativeHeader = new Header("native", memoryManager.Memory);
         if (nativeHeader.GetValueAsString() != "dekaf")
+        {
             throw new InvalidOperationException("MemoryManager-backed header did not decode correctly.");
+        }
 
         var producerBuilder = new ProducerBuilder<string, string>()
             .WithBootstrapServers("localhost:9092")

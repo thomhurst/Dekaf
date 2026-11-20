@@ -17,13 +17,22 @@ public class ShareConsumerMissingLeaderBenchmarks
     private ShareConsumerPollBenchmarks _poll = null!;
 
     [Params(false, true)]
-    public bool Batch { get; set; }
+    public bool Batch
+    {
+        get; set;
+    }
 
     [Params(1, 10)]
-    public int MetadataDelayMs { get; set; }
+    public int MetadataDelayMs
+    {
+        get; set;
+    }
 
     [Params(false, true)]
-    public bool AsynchronousMetadata { get; set; }
+    public bool AsynchronousMetadata
+    {
+        get; set;
+    }
 
     [GlobalSetup]
     public async ValueTask Setup()
@@ -32,7 +41,9 @@ public class ShareConsumerMissingLeaderBenchmarks
         await _poll.Setup();
         _poll.PrepareMissingLeaderPolling(Batch, AsynchronousMetadata);
         if (!await _poll.PollWithMissingLeader(MetadataDelayMs))
+        {
             throw new InvalidOperationException("Leader recovery lost the pending delivery.");
+        }
     }
 
     [Benchmark]

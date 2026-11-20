@@ -240,7 +240,10 @@ public sealed class AdminClientListOffsetsTests
         public string Host => $"broker-{brokerId}";
         public int Port => 9090 + brokerId;
         public bool IsConnected => true;
-        public KafkaConnectionCapabilities Capabilities { get; } =
+        public KafkaConnectionCapabilities Capabilities
+        {
+            get;
+        } =
             KafkaConnectionCapabilities.Create(new ApiVersionsResponse
             {
                 ErrorCode = ErrorCode.None,
@@ -250,7 +253,10 @@ public sealed class AdminClientListOffsetsTests
                     new ApiVersion(ApiKey.ListOffsets, 6, listOffsetsMaxVersion)
                 ]
             });
-        internal List<RecordedListOffsetsRequest> ListOffsetsRequests { get; } = [];
+        internal List<RecordedListOffsetsRequest> ListOffsetsRequests
+        {
+            get;
+        } = [];
 
         public ValueTask<TResponse> SendAsync<TRequest, TResponse>(
             TRequest request,
@@ -332,8 +338,14 @@ public sealed class AdminClientListOffsetsTests
         MetadataManager metadataManager,
         IReadOnlyDictionary<int, RecordingConnection> connections) : IAsyncDisposable
     {
-        internal AdminClient Admin { get; } = admin;
-        internal IReadOnlyDictionary<int, RecordingConnection> Connections { get; } = connections;
+        internal AdminClient Admin
+        {
+            get;
+        } = admin;
+        internal IReadOnlyDictionary<int, RecordingConnection> Connections
+        {
+            get;
+        } = connections;
 
         public async ValueTask DisposeAsync()
         {

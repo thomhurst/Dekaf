@@ -12,10 +12,16 @@ namespace Dekaf.Benchmarks.Benchmarks.Unit;
 public class AdminDetailedConsumerGroupMutationBenchmarks
 {
     [Params(1, 16)]
-    public int Count { get; set; }
+    public int Count
+    {
+        get; set;
+    }
 
     [Params("alter", "alter-topic-ids", "delete", "groups")]
-    public string Operation { get; set; } = "alter";
+    public string Operation
+    {
+        get; set;
+    } = "alter";
 
     private AdminClient _admin = null!;
     private MetadataManager _metadata = null!;
@@ -32,10 +38,14 @@ public class AdminDetailedConsumerGroupMutationBenchmarks
         var topicIds = _topics.ToDictionary(static topic => topic, static _ => Guid.NewGuid());
         var metadata = new MetadataResponse
         {
-            Brokers = [new() { NodeId = 1, Host = "localhost", Port = 9092 }], ControllerId = 1,
+            Brokers = [new() { NodeId = 1, Host = "localhost", Port = 9092 }],
+            ControllerId = 1,
             Topics = _topics.Select(topic => new TopicMetadata
             {
-                Name = topic, TopicId = topicIds[topic], ErrorCode = ErrorCode.None, Partitions = []
+                Name = topic,
+                TopicId = topicIds[topic],
+                ErrorCode = ErrorCode.None,
+                Partitions = []
             }).ToArray()
         };
         var connection = new Connection(metadata,
@@ -57,7 +67,9 @@ public class AdminDetailedConsumerGroupMutationBenchmarks
         var groups = await _admin.DeleteConsumerGroupsDetailedAsync(_topics);
         if (altered.Count != Count || deleted.Count != Count || groups.Count != Count ||
             altered.Values.Any(static result => !result.IsSuccess) || deleted.Values.Any(static result => !result.IsSuccess) || groups.Values.Any(static result => !result.IsSuccess))
+        {
             throw new InvalidOperationException("The fixture did not return every confirmed result.");
+        }
     }
 
     // Costs are per administrative operation, with Count entity results; no message-path work.
@@ -85,7 +97,9 @@ public class AdminDetailedConsumerGroupMutationBenchmarks
         {
             var result = new Dictionary<string, FindCoordinatorResponse>(StringComparer.Ordinal);
             foreach (var group in groups.Results)
+            {
                 result.Add(group.GroupId, Response(group.GroupId));
+            }
             result.Add("group", Response("group"));
             return result;
 
@@ -129,7 +143,9 @@ public class AdminDetailedConsumerGroupMutationBenchmarks
         public ValueTask<IKafkaConnection> GetConnectionAsync(int brokerId, CancellationToken token = default) => ValueTask.FromResult<IKafkaConnection>(connection);
         public ValueTask<IKafkaConnection> GetConnectionAsync(string host, int port, CancellationToken token = default) => ValueTask.FromResult<IKafkaConnection>(connection);
         public ValueTask<IKafkaConnection> GetConnectionByIndexAsync(int brokerId, int index, CancellationToken token = default) => ValueTask.FromResult<IKafkaConnection>(connection);
-        public void RegisterBroker(int id, string host, int port) { }
+        public void RegisterBroker(int id, string host, int port)
+        {
+        }
         public ValueTask<int> ScaleConnectionGroupAsync(int id, int count, CancellationToken token = default) => ValueTask.FromResult(1);
         public ValueTask<IKafkaConnection?> ShrinkConnectionGroupAsync(int id, int count, CancellationToken token = default) => ValueTask.FromResult<IKafkaConnection?>(null);
         public ValueTask RemoveConnectionAsync(int id) => ValueTask.CompletedTask;

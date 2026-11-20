@@ -69,10 +69,14 @@ public class RecordAccumulatorBudgetTests
 
         ValueTask<bool> smallAppend = default;
         if (queueSmallRecordFirst)
+        {
             smallAppend = AccumulatorTestHelpers.AppendNullRecordAsync(accumulator, "small", partition: 1);
+        }
         var oversizedAppend = AppendValue(accumulator, 2048);
         if (!queueSmallRecordFirst)
+        {
             smallAppend = AccumulatorTestHelpers.AppendNullRecordAsync(accumulator, "small", partition: 1);
+        }
         await Assert.That(accumulator.PendingAppendCountForTest).IsEqualTo(2);
 
         accumulator.SetMaxBufferMemory(1024);
@@ -158,7 +162,9 @@ public class RecordAccumulatorBudgetTests
             for (var i = 0; i < OpsPerTask; i++)
             {
                 if (!accumulator.TryReserveMemoryForTest(1))
+                {
                     Interlocked.Increment(ref failures);
+                }
             }
         })).ToArray();
 

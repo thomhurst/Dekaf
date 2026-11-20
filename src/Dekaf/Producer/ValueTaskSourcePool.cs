@@ -93,7 +93,9 @@ public sealed class ValueTaskSourcePool<T> : IAsyncDisposable
     public ValueTaskSourcePool(int maxPoolSize)
     {
         if (maxPoolSize <= 0)
+        {
             throw new ArgumentOutOfRangeException(nameof(maxPoolSize), "Max pool size must be positive.");
+        }
 
         _maxPoolSize = maxPoolSize;
         _pool = new Reservoir.ObjectPool<PooledValueTaskSource<T>, PoolPolicy>(
@@ -110,7 +112,9 @@ public sealed class ValueTaskSourcePool<T> : IAsyncDisposable
     public PooledValueTaskSource<T> Rent()
     {
         if (Volatile.Read(ref _disposed) != 0)
+        {
             throw new ObjectDisposedException(nameof(ValueTaskSourcePool<T>));
+        }
 
         var source = _pool.Rent();
         TrackRetained(-1);
@@ -130,7 +134,9 @@ public sealed class ValueTaskSourcePool<T> : IAsyncDisposable
     public void Return(PooledValueTaskSource<T> source)
     {
         if (Volatile.Read(ref _disposed) != 0)
+        {
             return; // Silently discard after disposal
+        }
 
         _pool.Return(source);
         // Destroy runs synchronously on rejection or disposal, balancing this lifecycle count.
@@ -145,7 +151,9 @@ public sealed class ValueTaskSourcePool<T> : IAsyncDisposable
     private void TrackRetained(int delta)
     {
         if (ValueTaskSourcePool.TrackRetainedCount)
+        {
             Interlocked.Add(ref _retainedCount, delta);
+        }
     }
 
     /// <summary>
@@ -173,7 +181,9 @@ public sealed class ValueTaskSourcePool<T> : IAsyncDisposable
     public ValueTask DisposeAsync()
     {
         if (Interlocked.Exchange(ref _disposed, 1) != 0)
+        {
             return default;
+        }
 
         _pool.Dispose();
 

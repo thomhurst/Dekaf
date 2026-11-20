@@ -19,7 +19,10 @@ public class PendingRequestTableBenchmarks
     private PendingEntry[] _entries = null!;
 
     [Params(5, 64)]
-    public int InFlight { get; set; }
+    public int InFlight
+    {
+        get; set;
+    }
 
     [GlobalSetup]
     public void Setup()
@@ -29,7 +32,9 @@ public class PendingRequestTableBenchmarks
         _entries = new PendingEntry[Operations];
 
         for (var i = 0; i < _entries.Length; i++)
+        {
             _entries[i] = new PendingEntry(new object(), (short)i);
+        }
     }
 
     [Benchmark(Baseline = true, OperationsPerInvoke = Operations)]
@@ -76,7 +81,9 @@ public class PendingRequestTableBenchmarks
         var shards = new PendingShard[shardCount];
 
         for (var i = 0; i < shards.Length; i++)
+        {
             shards[i] = new PendingShard(capacityPerShard);
+        }
 
         return shards;
     }
@@ -88,8 +95,14 @@ public class PendingRequestTableBenchmarks
             Requests = new Dictionary<int, PendingEntry>(capacity);
         }
 
-        public object Gate { get; } = new();
-        public Dictionary<int, PendingEntry> Requests { get; }
+        public object Gate
+        {
+            get;
+        } = new();
+        public Dictionary<int, PendingEntry> Requests
+        {
+            get;
+        }
     }
 
     private readonly record struct PendingEntry(object Request, short Version);

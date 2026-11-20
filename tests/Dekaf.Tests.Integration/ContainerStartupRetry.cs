@@ -27,7 +27,9 @@ internal static class ContainerStartupRetry
                 await TryCleanupAsync(cleanupAttemptAsync).ConfigureAwait(false);
 
                 if (attempt == MaxAttempts || !isTransient(exception))
+                {
                     throw;
+                }
 
                 Console.WriteLine(
                     $"[ContainerStartupRetry] Transient container startup failure on attempt {attempt}; retrying with fresh resources: {exception.Message}");
@@ -63,11 +65,15 @@ internal static class ContainerStartupRetry
         Contains(exception, static candidate =>
         {
             if (candidate is not DockerApiException dockerException)
+            {
                 return false;
+            }
 
             var statusCode = (int)dockerException.StatusCode;
             if (statusCode is < 500 or > 599)
+            {
                 return false;
+            }
 
             var message = candidate.Message;
             return (message.Contains("/manifests/", StringComparison.OrdinalIgnoreCase) &&
@@ -94,7 +100,9 @@ internal static class ContainerStartupRetry
     private static bool Contains(Exception exception, Func<Exception, bool> predicate)
     {
         if (predicate(exception))
+        {
             return true;
+        }
 
         return exception switch
         {

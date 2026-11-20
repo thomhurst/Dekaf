@@ -21,14 +21,18 @@ public ref struct AvroValueWriter
 
     /// <summary>Writes Avro null.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static void WriteNull() { }
+    public static void WriteNull()
+    {
+    }
 
     /// <summary>Writes an Avro boolean.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public void WriteBoolean(bool value)
     {
         if (!Ensure(1))
+        {
             return;
+        }
         _destination[_position++] = value ? (byte)1 : (byte)0;
     }
 
@@ -37,7 +41,9 @@ public ref struct AvroValueWriter
     public bool TryWriteBoolean(bool value)
     {
         if (!Ensure(1))
+        {
             return false;
+        }
         _destination[_position++] = value ? (byte)1 : (byte)0;
         return true;
     }
@@ -62,7 +68,9 @@ public ref struct AvroValueWriter
         }
 
         if (!Ensure(1))
+        {
             return;
+        }
         _destination[_position++] = (byte)encoded;
     }
 
@@ -72,10 +80,14 @@ public ref struct AvroValueWriter
     {
         var encoded = (ulong)((value << 1) ^ (value >> 63));
         if ((encoded & ~0x7FUL) != 0)
+        {
             return TryWriteInt64Slow(encoded);
+        }
 
         if (!Ensure(1))
+        {
             return false;
+        }
         _destination[_position++] = (byte)encoded;
         return true;
     }
@@ -84,7 +96,9 @@ public ref struct AvroValueWriter
     public void WriteSingle(float value)
     {
         if (!Ensure(sizeof(float)))
+        {
             return;
+        }
         BinaryPrimitives.WriteSingleLittleEndian(_destination.Slice(_position, sizeof(float)), value);
         _position += sizeof(float);
     }
@@ -94,7 +108,9 @@ public ref struct AvroValueWriter
     public bool TryWriteSingle(float value)
     {
         if (!Ensure(sizeof(float)))
+        {
             return false;
+        }
         BinaryPrimitives.WriteSingleLittleEndian(_destination.Slice(_position, sizeof(float)), value);
         _position += sizeof(float);
         return true;
@@ -104,7 +120,9 @@ public ref struct AvroValueWriter
     public void WriteDouble(double value)
     {
         if (!Ensure(sizeof(double)))
+        {
             return;
+        }
         BinaryPrimitives.WriteDoubleLittleEndian(_destination.Slice(_position, sizeof(double)), value);
         _position += sizeof(double);
     }
@@ -114,7 +132,9 @@ public ref struct AvroValueWriter
     public bool TryWriteDouble(double value)
     {
         if (!Ensure(sizeof(double)))
+        {
             return false;
+        }
         BinaryPrimitives.WriteDoubleLittleEndian(_destination.Slice(_position, sizeof(double)), value);
         _position += sizeof(double);
         return true;
@@ -125,7 +145,9 @@ public ref struct AvroValueWriter
     {
         WriteInt64(value.Length);
         if (!Ensure(value.Length))
+        {
             return;
+        }
         value.CopyTo(_destination.Slice(_position));
         _position += value.Length;
     }
@@ -146,7 +168,9 @@ public ref struct AvroValueWriter
         var byteCount = StrictUtf8.GetByteCount(value);
         WriteInt64(byteCount);
         if (!Ensure(byteCount))
+        {
             return;
+        }
         _position += StrictUtf8.GetBytes(value, _destination.Slice(_position, byteCount));
     }
 
@@ -156,7 +180,9 @@ public ref struct AvroValueWriter
         const int formattedLength = 36;
         WriteInt64(formattedLength);
         if (!Ensure(formattedLength))
+        {
             return;
+        }
         Span<char> characters = stackalloc char[formattedLength];
         if (!value.TryFormat(characters, out var charsWritten, "D") || charsWritten != formattedLength)
         {
@@ -179,7 +205,9 @@ public ref struct AvroValueWriter
     public void WriteBlockCount(int count)
     {
         if ((uint)count > AvroValueReader.MaxCollectionItemCount)
+        {
             AvroValueReader.ThrowCollectionLimit();
+        }
         WriteInt64(count);
     }
 
@@ -188,7 +216,9 @@ public ref struct AvroValueWriter
     public bool TryWriteBlockCount(int count)
     {
         if ((uint)count > AvroValueReader.MaxCollectionItemCount)
+        {
             AvroValueReader.ThrowCollectionLimit();
+        }
         return TryWriteInt64(count);
     }
 
@@ -200,7 +230,9 @@ public ref struct AvroValueWriter
     private bool Ensure(int required)
     {
         if (required <= _destination.Length - _position)
+        {
             return true;
+        }
 
         return Overflow();
     }
@@ -211,13 +243,17 @@ public ref struct AvroValueWriter
         while ((encoded & ~0x7FUL) != 0)
         {
             if (!Ensure(1))
+            {
                 return;
+            }
             _destination[_position++] = (byte)((encoded & 0x7F) | 0x80);
             encoded >>= 7;
         }
 
         if (!Ensure(1))
+        {
             return;
+        }
         _destination[_position++] = (byte)encoded;
     }
 
@@ -227,13 +263,17 @@ public ref struct AvroValueWriter
         while ((encoded & ~0x7FUL) != 0)
         {
             if (!Ensure(1))
+            {
                 return false;
+            }
             _destination[_position++] = (byte)((encoded & 0x7F) | 0x80);
             encoded >>= 7;
         }
 
         if (!Ensure(1))
+        {
             return false;
+        }
         _destination[_position++] = (byte)encoded;
         return true;
     }

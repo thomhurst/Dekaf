@@ -303,12 +303,12 @@ public sealed class OAuthBearerJwtBearerBuilderTests
 
     private static OAuthBearerClientAssertionOptions CreateClientAssertionOptions(
         AsymmetricAlgorithm privateKey) => new()
-    {
-        TokenEndpoint = "https://auth.example.test/token",
-        ClientId = "client",
-        PrivateKey = privateKey,
-        Audience = "https://auth.example.test/token"
-    };
+        {
+            TokenEndpoint = "https://auth.example.test/token",
+            ClientId = "client",
+            PrivateKey = privateKey,
+            Audience = "https://auth.example.test/token"
+        };
 
     private static async Task AssertInvalidOAuthOptionsDoNotChangeSaslMechanism<TBuilder>(
         TBuilder builder,

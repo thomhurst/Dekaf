@@ -11,10 +11,22 @@ public sealed class UpdateFeaturesResponse : IKafkaResponse
     public static short LowestSupportedVersion => 0;
     public static short HighestSupportedVersion => 2;
 
-    public int ThrottleTimeMs { get; init; }
-    public ErrorCode ErrorCode { get; init; }
-    public string? ErrorMessage { get; init; }
-    public required IReadOnlyList<UpdateFeatureResult> Results { get; init; }
+    public int ThrottleTimeMs
+    {
+        get; init;
+    }
+    public ErrorCode ErrorCode
+    {
+        get; init;
+    }
+    public string? ErrorMessage
+    {
+        get; init;
+    }
+    public required IReadOnlyList<UpdateFeatureResult> Results
+    {
+        get; init;
+    }
 
     public static IKafkaResponse Read(ref KafkaProtocolReader reader, short version)
     {
@@ -44,9 +56,18 @@ public sealed class UpdateFeaturesResponse : IKafkaResponse
 /// </summary>
 public sealed class UpdateFeatureResult
 {
-    public required string Feature { get; init; }
-    public ErrorCode ErrorCode { get; init; }
-    public string? ErrorMessage { get; init; }
+    public required string Feature
+    {
+        get; init;
+    }
+    public ErrorCode ErrorCode
+    {
+        get; init;
+    }
+    public string? ErrorMessage
+    {
+        get; init;
+    }
 
     public static UpdateFeatureResult Read(ref KafkaProtocolReader reader)
     {

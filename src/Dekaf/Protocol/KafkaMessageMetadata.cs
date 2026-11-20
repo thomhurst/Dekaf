@@ -27,6 +27,7 @@ internal static class KafkaMessageMetadata<
     public static int GetThrottleTimeMs(TResponse response) => response.ThrottleTimeMs;
 #else
     private delegate short HeaderVersionDelegate(short version);
+
     private delegate IKafkaResponse ReadResponseDelegate(ref KafkaProtocolReader reader, short version);
 
     private static readonly HeaderVersionDelegate? s_getRequestHeaderVersion =
@@ -36,11 +37,20 @@ internal static class KafkaMessageMetadata<
     private static readonly ReadResponseDelegate s_readResponse = CreateReadResponseDelegate();
     private static readonly Func<TResponse, int> s_getThrottleTimeMs = CreateThrottleTimeDelegate();
 
-    public static ApiKey ApiKey { get; } = ReadApiKey();
+    public static ApiKey ApiKey
+    {
+        get;
+    } = ReadApiKey();
 
-    public static short LowestSupportedVersion { get; } = ReadVersion(nameof(LowestSupportedVersion));
+    public static short LowestSupportedVersion
+    {
+        get;
+    } = ReadVersion(nameof(LowestSupportedVersion));
 
-    public static short HighestSupportedVersion { get; } = ReadVersion(nameof(HighestSupportedVersion));
+    public static short HighestSupportedVersion
+    {
+        get;
+    } = ReadVersion(nameof(HighestSupportedVersion));
 
     public static short GetRequestHeaderVersion(short version)
         => s_getRequestHeaderVersion?.Invoke(version) ?? 2;

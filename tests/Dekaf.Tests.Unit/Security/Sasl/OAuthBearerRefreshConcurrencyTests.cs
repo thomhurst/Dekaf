@@ -64,7 +64,9 @@ public sealed class OAuthBearerRefreshConcurrencyTests
         var authenticator = new OAuthBearerAuthenticator(token =>
         {
             if (Interlocked.Increment(ref calls) == 1)
+            {
                 activeToken = token;
+            }
             return new ValueTask<OAuthBearerToken>(response.Task.WaitAsync(token));
         });
         var first = authenticator.GetTokenAsync().AsTask();
@@ -126,7 +128,9 @@ public sealed class OAuthBearerRefreshConcurrencyTests
         {
             Interlocked.Increment(ref calls);
             if (Interlocked.Increment(ref active) != 1)
+            {
                 Interlocked.Increment(ref overlapping);
+            }
             try
             {
                 await release.Task;
@@ -139,7 +143,9 @@ public sealed class OAuthBearerRefreshConcurrencyTests
         });
         var requests = new Task<OAuthBearerToken>[32];
         for (var index = 0; index < requests.Length; index++)
+        {
             requests[index] = authenticator.GetTokenAsync().AsTask();
+        }
         release.SetResult();
         await Task.WhenAll(requests).WaitAsync(TimeSpan.FromSeconds(10));
 
@@ -166,7 +172,11 @@ public sealed class OAuthBearerRefreshConcurrencyTests
     {
         var calls = 0;
         var token = Token("cached");
-        var authenticator = new OAuthBearerAuthenticator(_ => { calls++; return ValueTask.FromResult(token); });
+        var authenticator = new OAuthBearerAuthenticator(_ =>
+        {
+            calls++;
+            return ValueTask.FromResult(token);
+        });
         await authenticator.GetTokenAsync();
         var cached = authenticator.GetTokenAsync();
         await Assert.That(cached.IsCompletedSuccessfully).IsTrue();

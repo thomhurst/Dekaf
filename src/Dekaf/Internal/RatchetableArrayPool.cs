@@ -42,12 +42,16 @@ internal sealed class RatchetableArrayPool<T>
     internal void RatchetBucketCapacity(int arraysPerBucket)
     {
         if (arraysPerBucket <= Volatile.Read(ref _currentArraysPerBucket))
+        {
             return;
+        }
 
         lock (_ratchetLock)
         {
             if (arraysPerBucket <= _currentArraysPerBucket)
+            {
                 return;
+            }
 
             Volatile.Write(ref _pool, ArrayPool<T>.Create(_maxArrayLength, arraysPerBucket));
             Volatile.Write(ref _currentArraysPerBucket, arraysPerBucket);

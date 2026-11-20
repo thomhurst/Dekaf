@@ -382,7 +382,9 @@ public sealed class ConsumerFetchPoolsTests
     {
         var fetchPositions = (ConcurrentDictionary<TopicPartition, long>)FetchPositionsField.GetValue(consumer)!;
         for (var i = 0; i < partitions.Count; i++)
+        {
             fetchPositions.TryAdd(partitions[i], 0);
+        }
 
         return (List<FetchRequestTopic>)BuildFetchRequestTopicsForConnectionMethod.Invoke(
             consumer,

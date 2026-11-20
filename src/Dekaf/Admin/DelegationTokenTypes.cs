@@ -10,12 +10,36 @@ public readonly record struct DelegationTokenPrincipal(string PrincipalType, str
 /// </summary>
 public sealed class DelegationToken
 {
-    public required DelegationTokenPrincipal Owner { get; init; }
-    public DelegationTokenPrincipal? TokenRequester { get; init; }
-    public required DateTimeOffset IssueTimestamp { get; init; }
-    public required DateTimeOffset ExpiryTimestamp { get; init; }
-    public required DateTimeOffset MaxTimestamp { get; init; }
-    public required string TokenId { get; init; }
-    public required byte[] Hmac { get; init; }
-    public required IReadOnlyList<DelegationTokenPrincipal> Renewers { get; init; }
+    public required DelegationTokenPrincipal Owner
+    {
+        get; init;
+    }
+    public DelegationTokenPrincipal? TokenRequester
+    {
+        get; init;
+    }
+    public required DateTimeOffset IssueTimestamp
+    {
+        get; init;
+    }
+    public required DateTimeOffset ExpiryTimestamp
+    {
+        get; init;
+    }
+    public required DateTimeOffset MaxTimestamp
+    {
+        get; init;
+    }
+    public required string TokenId
+    {
+        get; init;
+    }
+    public required byte[] Hmac
+    {
+        get; init;
+    }
+    public required IReadOnlyList<DelegationTokenPrincipal> Renewers
+    {
+        get; init;
+    }
 }

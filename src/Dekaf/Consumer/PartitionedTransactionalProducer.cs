@@ -94,7 +94,9 @@ internal sealed class TransactionReadGate : IDisposable
         {
             var observed = Interlocked.CompareExchange(ref _state, state + 1, state);
             if (observed == state)
+            {
                 return true;
+            }
             state = observed;
         }
 
@@ -107,7 +109,9 @@ internal sealed class TransactionReadGate : IDisposable
     public async ValueTask WaitOpenAsync(CancellationToken cancellationToken)
     {
         while (!IsOpen)
+        {
             await Volatile.Read(ref _opened).Task.WaitAsync(cancellationToken).ConfigureAwait(false);
+        }
     }
 
     /// <summary>Stops new reads and waits for reads already inside the gate, which never block.</summary>
@@ -120,26 +124,34 @@ internal sealed class TransactionReadGate : IDisposable
         {
             var observed = Interlocked.CompareExchange(ref _state, state | ClosedFlag, state);
             if (observed == state)
+            {
                 break;
+            }
             state = observed;
         }
 
         var spinner = new SpinWait();
         while ((Volatile.Read(ref _state) & ReaderMask) != 0)
+        {
             spinner.SpinOnce();
+        }
     }
 
     public void Open()
     {
         var state = Volatile.Read(ref _state);
         if ((state & ClosedFlag) == 0)
+        {
             return;
+        }
 
         while (true)
         {
             var observed = Interlocked.CompareExchange(ref _state, state & ~ClosedFlag, state);
             if (observed == state)
+            {
                 break;
+            }
             state = observed;
         }
 
@@ -150,7 +162,9 @@ internal sealed class TransactionReadGate : IDisposable
     public void NotifyProgress()
     {
         if (!IsOpen)
+        {
             _progress.Signal();
+        }
     }
 
     /// <summary>Waits for <see cref="NotifyProgress"/>; returns false on timeout. Only the runtime loop waits.</summary>

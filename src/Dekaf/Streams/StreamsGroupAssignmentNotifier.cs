@@ -46,15 +46,21 @@ internal sealed partial class StreamsGroupAssignmentNotifier
     {
         var previous = _published;
         if (ReferenceEquals(previous, assignment))
+        {
             return;
+        }
 
         _published = assignment;
         var revoked = Subtract(previous, assignment);
         var assigned = Subtract(assignment, previous);
         if (revoked is not null)
+        {
             _notifications.Writer.TryWrite(new Notification(NotificationKind.Revoked, revoked));
+        }
         if (assigned is not null)
+        {
             _notifications.Writer.TryWrite(new Notification(NotificationKind.Assigned, assigned));
+        }
     }
 
     /// <summary>
@@ -68,7 +74,9 @@ internal sealed partial class StreamsGroupAssignmentNotifier
         _published = Empty;
         var lost = Union(previous, reported);
         if (!IsEmpty(lost))
+        {
             _notifications.Writer.TryWrite(new Notification(NotificationKind.Lost, lost));
+        }
     }
 
     /// <summary>
@@ -97,7 +105,9 @@ internal sealed partial class StreamsGroupAssignmentNotifier
                && await _notifications.Reader.WaitToReadAsync().ConfigureAwait(false))
         {
             while (!token.IsCancellationRequested && _notifications.Reader.TryRead(out var notification))
+            {
                 await InvokeAsync(notification, token).ConfigureAwait(false);
+            }
         }
     }
 
@@ -147,7 +157,9 @@ internal sealed partial class StreamsGroupAssignmentNotifier
         IReadOnlyList<StreamsGroupTaskSet> right)
     {
         if (right.Count == 0)
+        {
             return left;
+        }
 
         var result = new List<StreamsGroupTaskSet>(left.Count + right.Count);
         foreach (var taskSet in left)
@@ -156,7 +168,9 @@ internal sealed partial class StreamsGroupAssignmentNotifier
             foreach (var other in right)
             {
                 if (other.SubtopologyId == taskSet.SubtopologyId)
+                {
                     (partitions ??= [.. taskSet.Partitions]).AddRange(other.Partitions);
+                }
             }
 
             result.Add(partitions is null
@@ -167,7 +181,9 @@ internal sealed partial class StreamsGroupAssignmentNotifier
         foreach (var other in right)
         {
             if (!ContainsSubtopology(left, other.SubtopologyId))
+            {
                 result.Add(other);
+            }
         }
 
         return result.ToArray();
@@ -178,7 +194,9 @@ internal sealed partial class StreamsGroupAssignmentNotifier
         foreach (var taskSet in taskSets)
         {
             if (taskSet.SubtopologyId == subtopologyId)
+            {
                 return true;
+            }
         }
 
         return false;
@@ -200,7 +218,9 @@ internal sealed partial class StreamsGroupAssignmentNotifier
         IReadOnlyList<StreamsGroupTaskSet> right)
     {
         if (left.Count == 0)
+        {
             return [];
+        }
 
         HashSet<(string SubtopologyId, int Partition)>? remaining = null;
         if (right.Count > 0)
@@ -209,7 +229,9 @@ internal sealed partial class StreamsGroupAssignmentNotifier
             foreach (var taskSet in right)
             {
                 foreach (var partition in taskSet.Partitions)
+                {
                     remaining.Add((taskSet.SubtopologyId, partition));
+                }
             }
         }
 
@@ -220,7 +242,9 @@ internal sealed partial class StreamsGroupAssignmentNotifier
             foreach (var partition in taskSet.Partitions)
             {
                 if (remaining is null || !remaining.Contains((taskSet.SubtopologyId, partition)))
+                {
                     (partitions ??= []).Add(partition);
+                }
             }
 
             if (partitions is not null)

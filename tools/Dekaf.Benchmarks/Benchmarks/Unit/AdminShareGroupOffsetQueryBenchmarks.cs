@@ -11,8 +11,16 @@ namespace Dekaf.Benchmarks.Benchmarks.Unit;
 [MemoryDiagnoser]
 public class AdminShareGroupOffsetQueryBenchmarks
 {
-    [Params(1, 32)] public int Groups { get; set; }
-    [Params((short)0, (short)1)] public short Version { get; set; }
+    [Params(1, 32)]
+    public int Groups
+    {
+        get; set;
+    }
+    [Params((short)0, (short)1)]
+    public short Version
+    {
+        get; set;
+    }
     private AdminClient _admin = null!;
     private MetadataManager _metadata = null!;
     private Dictionary<string, ListShareGroupOffsetsSpec> _specs = null!;
@@ -23,7 +31,9 @@ public class AdminShareGroupOffsetQueryBenchmarks
         var metadata = new MetadataResponse
         {
             Brokers = [new() { NodeId = 1, Host = "localhost", Port = 9092 }],
-            ControllerId = 1, ClusterId = "fixture", Topics = []
+            ControllerId = 1,
+            ClusterId = "fixture",
+            Topics = []
         };
         var groups = new DescribeShareGroupOffsetsResponseGroup[Groups];
         var coordinators = new Coordinator[Groups];
@@ -36,8 +46,13 @@ public class AdminShareGroupOffsetQueryBenchmarks
             coordinators[index] = new() { Key = groupId, NodeId = 1, Host = "localhost", Port = 9092 };
             groups[index] = new()
             {
-                GroupId = groupId, Topics = [new() { TopicName = "input", Partitions =
-                [new() { PartitionIndex = 0, StartOffset = 42, LeaderEpoch = 7, Lag = Version == 0 ? -1 : 9 }] }]
+                GroupId = groupId,
+                Topics = [new()
+                {
+                    TopicName = "input",
+                    Partitions =
+                [new() { PartitionIndex = 0, StartOffset = 42, LeaderEpoch = 7, Lag = Version == 0 ? -1 : 9 }]
+                }]
             };
             individual.Add(groupId, new() { Groups = [groups[index]] });
         }
@@ -56,10 +71,14 @@ public class AdminShareGroupOffsetQueryBenchmarks
             var offset = result.Offsets[new("input", 0)];
             if (result.ErrorCode != ErrorCode.None || single.Count != 1 || offset.StartOffset != 42 ||
                 single[0].StartOffset != offset.StartOffset || offset.LeaderEpoch != 7 || offset.Lag != (Version == 0 ? -1 : 9))
+            {
                 throw new InvalidOperationException("The single and batched fixtures must query identical offsets.");
+            }
         }
         if (results.Count != Groups || Batch().GetAwaiter().GetResult() != Groups || Individual().GetAwaiter().GetResult() != Groups)
+        {
             throw new InvalidOperationException("Every requested group must complete.");
+        }
     }
 
     [Benchmark]
@@ -70,7 +89,9 @@ public class AdminShareGroupOffsetQueryBenchmarks
     {
         var completed = 0;
         foreach (var groupId in _specs.Keys)
+        {
             completed += (await _admin.DescribeShareGroupOffsetsAsync(groupId)).Count;
+        }
         return completed;
     }
 
@@ -112,12 +133,15 @@ public class AdminShareGroupOffsetQueryBenchmarks
         public Task<TResponse> SendPipelinedWithCallerTimeoutAsync<TRequest, TResponse>(TRequest request, short version, CancellationToken token = default)
             where TRequest : IKafkaRequest<TResponse> where TResponse : IKafkaResponse => throw new NotSupportedException();
     }
+
     private sealed class Pool(IKafkaConnection connection) : IConnectionPool
     {
         public ValueTask<IKafkaConnection> GetConnectionAsync(int brokerId, CancellationToken token = default) => ValueTask.FromResult(connection);
         public ValueTask<IKafkaConnection> GetConnectionAsync(string host, int port, CancellationToken token = default) => ValueTask.FromResult(connection);
         public ValueTask<IKafkaConnection> GetConnectionByIndexAsync(int brokerId, int index, CancellationToken token = default) => ValueTask.FromResult(connection);
-        public void RegisterBroker(int id, string host, int port) { }
+        public void RegisterBroker(int id, string host, int port)
+        {
+        }
         public ValueTask<int> ScaleConnectionGroupAsync(int id, int count, CancellationToken token = default) => ValueTask.FromResult(1);
         public ValueTask<IKafkaConnection?> ShrinkConnectionGroupAsync(int id, int count, CancellationToken token = default) => ValueTask.FromResult<IKafkaConnection?>(null);
         public ValueTask RemoveConnectionAsync(int id) => ValueTask.CompletedTask;

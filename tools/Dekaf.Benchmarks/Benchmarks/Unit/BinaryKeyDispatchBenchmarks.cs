@@ -15,7 +15,10 @@ public class BinaryKeyDispatchBenchmarks
 
     // One handler measures the sequential shortcut; two exercise keyed dispatch.
     [Params(1, 2)]
-    public int MaxConcurrentHandlers { get; set; }
+    public int MaxConcurrentHandlers
+    {
+        get; set;
+    }
 
     [GlobalSetup]
     public void Setup()
@@ -51,14 +54,18 @@ public class BinaryKeyDispatchBenchmarks
         bool holdAllWorkers = false, int expectedKeyCount = 0)
     {
         var lane = new PartitionLane<TKey, string>(new TopicPartition("topic", 0), records.Length,
-            static (_, _) => ValueTask.CompletedTask, static _ => { }, static (_, error) => throw error);
+            static (_, _) => ValueTask.CompletedTask, static _ =>
+            {
+            }, static (_, error) => throw error);
         var context = new PartitionProcessorContext<TKey, string>(lane);
         var releaseFirst = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var dispatcher = new KeyOrderedPartitionDispatcher<TKey, string>(context, 1, maxConcurrentHandlers, records.Length,
             async (batch, _) =>
             {
                 if (batch[0].Offset == 0 || (holdAllWorkers && batch[0].Offset < maxConcurrentHandlers))
+                {
                     await releaseFirst.Task.ConfigureAwait(false);
+                }
                 context.MarkProcessed(batch[0]);
             });
         // Reserve before publication, matching the candidate's manual-completion contract.
@@ -69,7 +76,9 @@ public class BinaryKeyDispatchBenchmarks
             for (var i = 0; i < records.Length; i++)
             {
                 if (!lane.TryEnqueue(records[i], completionBatch))
+                {
                     throw new InvalidOperationException("The binary input did not fit in the partition queue.");
+                }
                 published++;
             }
         }
@@ -83,9 +92,13 @@ public class BinaryKeyDispatchBenchmarks
         releaseFirst.SetResult();
         await running.ConfigureAwait(false);
         if (holdAllWorkers && bufferedKeys != (expectedKeyCount == 0 ? records.Length : expectedKeyCount))
+        {
             throw new InvalidOperationException("The binary fixture did not fill the expected keyed buffer.");
+        }
         if (lane.GetCommitOffset()?.Offset != records.Length)
+        {
             throw new InvalidOperationException("The dispatcher did not complete every input record.");
+        }
     }
 }
 
@@ -101,10 +114,16 @@ public class DistinctBinaryKeyDispatchBenchmarks
     private ConsumeResult<ReadOnlyMemory<byte>, string>[] _memory = null!;
 
     [Params(8, 1024, 65536)]
-    public int KeySize { get; set; }
+    public int KeySize
+    {
+        get; set;
+    }
 
     [Params(1, 2)]
-    public int MaxConcurrentHandlers { get; set; }
+    public int MaxConcurrentHandlers
+    {
+        get; set;
+    }
 
     [GlobalSetup]
     public void Setup()
@@ -146,10 +165,16 @@ public class SharedSuffixBinaryKeyDispatchBenchmarks
     private ConsumeResult<ReadOnlyMemory<byte>, string>[] _records = null!;
 
     [Params(1024, 65536)]
-    public int KeySize { get; set; }
+    public int KeySize
+    {
+        get; set;
+    }
 
     [Params(false, true)]
-    public bool HoldSmallKeys { get; set; }
+    public bool HoldSmallKeys
+    {
+        get; set;
+    }
 
     [GlobalSetup]
     public void Setup()

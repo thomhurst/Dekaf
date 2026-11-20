@@ -13,57 +13,90 @@ public static class Serializers
     /// <summary>
     /// Serializer for byte arrays (pass-through).
     /// </summary>
-    public static ISerde<byte[]> ByteArray { get; } = new ByteArraySerde();
+    public static ISerde<byte[]> ByteArray
+    {
+        get;
+    } = new ByteArraySerde();
 
     /// <summary>
     /// Serializer for strings using UTF-8.
     /// </summary>
-    public static ISerde<string> String { get; } = new StringSerde();
+    public static ISerde<string> String
+    {
+        get;
+    } = new StringSerde();
 
     /// <summary>
     /// Serializer for nullable strings using UTF-8.
     /// </summary>
-    public static ISerde<string?> NullableString { get; } = new NullableStringSerde();
+    public static ISerde<string?> NullableString
+    {
+        get;
+    } = new NullableStringSerde();
 
     /// <summary>
     /// Serializer for 32-bit integers.
     /// </summary>
-    public static ISerde<int> Int32 { get; } = new Int32Serde();
+    public static ISerde<int> Int32
+    {
+        get;
+    } = new Int32Serde();
 
     /// <summary>
     /// Serializer for 64-bit integers.
     /// </summary>
-    public static ISerde<long> Int64 { get; } = new Int64Serde();
+    public static ISerde<long> Int64
+    {
+        get;
+    } = new Int64Serde();
 
     /// <summary>
     /// Serializer for GUIDs.
     /// </summary>
-    public static ISerde<Guid> Guid { get; } = new GuidSerde();
+    public static ISerde<Guid> Guid
+    {
+        get;
+    } = new GuidSerde();
 
     /// <summary>
     /// Serializer for doubles.
     /// </summary>
-    public static ISerde<double> Double { get; } = new DoubleSerde();
+    public static ISerde<double> Double
+    {
+        get;
+    } = new DoubleSerde();
 
     /// <summary>
     /// Serializer for single-precision floats.
     /// </summary>
-    public static ISerde<float> Float { get; } = new FloatSerde();
+    public static ISerde<float> Float
+    {
+        get;
+    } = new FloatSerde();
 
     /// <summary>
     /// Serializer for DateTime values. Serialized as UTC ticks (8 bytes).
     /// </summary>
-    public static ISerde<DateTime> DateTime { get; } = new DateTimeSerde();
+    public static ISerde<DateTime> DateTime
+    {
+        get;
+    } = new DateTimeSerde();
 
     /// <summary>
     /// Serializer for DateTimeOffset values. Serialized as ticks (8 bytes) + offset minutes (2 bytes).
     /// </summary>
-    public static ISerde<DateTimeOffset> DateTimeOffset { get; } = new DateTimeOffsetSerde();
+    public static ISerde<DateTimeOffset> DateTimeOffset
+    {
+        get;
+    } = new DateTimeOffsetSerde();
 
     /// <summary>
     /// Serializer for TimeSpan values. Serialized as ticks (8 bytes).
     /// </summary>
-    public static ISerde<TimeSpan> TimeSpan { get; } = new TimeSpanSerde();
+    public static ISerde<TimeSpan> TimeSpan
+    {
+        get;
+    } = new TimeSpanSerde();
 
     /// <summary>
     /// Zero-copy deserializer that returns raw bytes as ReadOnlyMemory.
@@ -88,7 +121,10 @@ public static class Serializers
     ///     .Build();
     /// </code>
     /// </remarks>
-    public static ISerde<ReadOnlyMemory<byte>> RawBytes { get; } = new RawBytesSerde();
+    public static ISerde<ReadOnlyMemory<byte>> RawBytes
+    {
+        get;
+    } = new RawBytesSerde();
 
     /// <summary>
     /// Creates a null serializer that returns default values.
@@ -98,7 +134,10 @@ public static class Serializers
     /// <summary>
     /// Creates a void serializer that ignores values.
     /// </summary>
-    public static ISerde<Ignore> Ignore { get; } = new IgnoreSerde();
+    public static ISerde<Ignore> Ignore
+    {
+        get;
+    } = new IgnoreSerde();
 }
 
 internal sealed class ByteArraySerde : ISerde<byte[]>, IInputIsolatedDeserializer
@@ -148,7 +187,9 @@ internal sealed class NullableStringSerde : ISerde<string?>, IInputIsolatedDeser
 #endif
     {
         if (value is null)
+        {
             return;
+        }
 
         var span = destination.GetSpan(checked(value.Length * 3));
         var bytesWritten = Encoding.UTF8.GetBytes(value, span);
@@ -158,10 +199,14 @@ internal sealed class NullableStringSerde : ISerde<string?>, IInputIsolatedDeser
     public string? Deserialize(ReadOnlyMemory<byte> data, SerializationContext context)
     {
         if (context.IsNull)
+        {
             return null;
+        }
 
         if (data.Length == 0)
+        {
             return string.Empty;
+        }
 
         return Encoding.UTF8.GetString(data.Span);
     }

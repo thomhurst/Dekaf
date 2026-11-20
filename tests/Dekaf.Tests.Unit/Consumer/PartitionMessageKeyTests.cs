@@ -31,7 +31,9 @@ public sealed class PartitionMessageKeyTests
         const int keyCount = 64;
         const int recordCount = keyCount * 2;
         var lane = new PartitionLane<byte[], string>(new TopicPartition("topic", 0), recordCount,
-            static (_, _) => default, static _ => { }, static (_, error) => throw error);
+            static (_, _) => default, static _ =>
+            {
+            }, static (_, error) => throw error);
         var context = new PartitionProcessorContext<byte[], string>(lane);
         var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var active = new int[keyCount];
@@ -43,11 +45,15 @@ public sealed class PartitionMessageKeyTests
                 var record = records[0];
                 var key = System.Buffers.Binary.BinaryPrimitives.ReadInt32LittleEndian(record.Key!.AsSpan(65536 - 32));
                 if (Interlocked.Increment(ref active[key]) != 1 || record.Offset / keyCount != last[key] + 1)
+                {
                     throw new InvalidOperationException("Equal keys overlapped or arrived out of order.");
+                }
                 try
                 {
                     if (record.Offset < 2)
+                    {
                         await release.Task.WaitAsync(cancellationToken);
+                    }
                     last[key]++;
                     context.MarkProcessed(record);
                 }
@@ -77,7 +83,10 @@ public sealed class PartitionMessageKeyTests
         {
             release.TrySetResult();
             await timeout.CancelAsync();
-            try { await running; }
+            try
+            {
+                await running;
+            }
             catch (OperationCanceledException) when (timeout.IsCancellationRequested) { }
         }
     }
@@ -218,7 +227,9 @@ public sealed class PartitionMessageKeyTests
     public async Task Dispatcher_EqualBinaryKeysWaitWhileDifferentKeyRuns(int keyKind)
     {
         var lane = new PartitionLane<byte[], string>(new TopicPartition("topic", 0), 8,
-            static (_, _) => ValueTask.CompletedTask, static _ => { }, static (_, error) => throw error);
+            static (_, _) => ValueTask.CompletedTask, static _ =>
+            {
+            }, static (_, error) => throw error);
         var context = new PartitionProcessorContext<byte[], string>(lane);
         var firstStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var releaseFirst = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -260,7 +271,10 @@ public sealed class PartitionMessageKeyTests
         {
             releaseFirst.TrySetResult();
             await timeout.CancelAsync();
-            try { await running; }
+            try
+            {
+                await running;
+            }
             catch (OperationCanceledException) when (timeout.IsCancellationRequested)
             {
                 await Assert.That(running.IsCanceled).IsTrue();
@@ -274,15 +288,21 @@ public sealed class PartitionMessageKeyTests
     public async Task SingleHandler_PreservesOrderAcrossPendingAndSynchronousRecords(bool binary)
     {
         if (binary)
+        {
             await AssertSingleHandlerOrder(Serializers.ByteArray);
+        }
         else
+        {
             await AssertSingleHandlerOrder(Serializers.String);
+        }
     }
 
     private static async Task AssertSingleHandlerOrder<TKey>(IDeserializer<TKey> deserializer)
     {
         var lane = new PartitionLane<TKey, string>(new TopicPartition("topic", 0), 8,
-            static (_, _) => default, static _ => { }, static (_, error) => throw error);
+            static (_, _) => default, static _ =>
+            {
+            }, static (_, error) => throw error);
         var context = new PartitionProcessorContext<TKey, string>(lane);
         var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -328,7 +348,9 @@ public sealed class PartitionMessageKeyTests
     public async Task SingleHandler_StopsBeforeNextRecordAfterCancellationOrFailure(bool fail)
     {
         var lane = new PartitionLane<byte[], string>(new TopicPartition("topic", 0), 8,
-            static (_, _) => default, static _ => { }, static (_, error) => throw error);
+            static (_, _) => default, static _ =>
+            {
+            }, static (_, error) => throw error);
         var context = new PartitionProcessorContext<byte[], string>(lane);
         using var cancellation = new CancellationTokenSource();
         var calls = 0;
@@ -338,7 +360,9 @@ public sealed class PartitionMessageKeyTests
             {
                 calls++;
                 if (fail)
+                {
                     throw expected;
+                }
                 cancellation.Cancel();
                 return default;
             });
@@ -346,7 +370,10 @@ public sealed class PartitionMessageKeyTests
         lane.TryEnqueueForTest(Message(1, [2]));
         await lane.StopAsync(PartitionStopPolicy.Drain, Timeout.InfiniteTimeSpan);
         Exception? observed = null;
-        try { await dispatcher.RunAsync(cancellation.Token); }
+        try
+        {
+            await dispatcher.RunAsync(cancellation.Token);
+        }
         catch (Exception error) { observed = error; }
         await Assert.That(calls).IsEqualTo(1);
         await Assert.That(fail ? ReferenceEquals(observed, expected) : observed is OperationCanceledException).IsTrue();

@@ -8,8 +8,16 @@ public class ShareConsumerSubscriptionBenchmarks
 {
     private ShareConsumerPollBenchmarks _consumer = null!;
 
-    [Params(1, 1024)] public int RecordCount { get; set; }
-    [Params(false, true)] public bool Batch { get; set; }
+    [Params(1, 1024)]
+    public int RecordCount
+    {
+        get; set;
+    }
+    [Params(false, true)]
+    public bool Batch
+    {
+        get; set;
+    }
 
     [GlobalSetup]
     public async ValueTask Setup()

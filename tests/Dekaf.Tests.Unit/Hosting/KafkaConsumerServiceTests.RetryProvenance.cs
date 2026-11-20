@@ -21,8 +21,7 @@ public sealed partial class KafkaConsumerServiceTests
         var consumer = CreateConsumerSubstitute();
         await using var service = new TestConsumerService(consumer, ["orders"],
             deadLetterOptions: ProvenanceDeadLetterOptions());
-        var result = CreateResult("orders", partition: 1, offset: 42, headers:
-        [
+        var result = CreateResult("orders", partition: 1, offset: 42, headers: [
             StringHeader(RetryTopicHeaders.DueTimestampMsKey,
                 DateTimeOffset.UtcNow.AddDays(1).ToUnixTimeMilliseconds().ToString(System.Globalization.CultureInfo.InvariantCulture))
         ]);
@@ -53,8 +52,7 @@ public sealed partial class KafkaConsumerServiceTests
     {
         var (service, sent) = CreateProvenanceService();
         await using var _ = service;
-        var result = CreateResult("orders", partition: 1, offset: 42, headers:
-        [
+        var result = CreateResult("orders", partition: 1, offset: 42, headers: [
             StringHeader("app", "kept"),
             StringHeader(RetryTopicHeaders.SourceTopicKey, "unrelated"),
             StringHeader(RetryTopicHeaders.SourcePartitionKey, "7"),
@@ -79,8 +77,7 @@ public sealed partial class KafkaConsumerServiceTests
     {
         var (service, sent) = CreateProvenanceService();
         await using var _ = service;
-        var result = CreateResult("orders", partition: 1, offset: 42, headers:
-        [
+        var result = CreateResult("orders", partition: 1, offset: 42, headers: [
             StringHeader(RetryTopicHeaders.FailureCountKey, "9")
         ]);
 
@@ -142,11 +139,14 @@ public sealed partial class KafkaConsumerServiceTests
         var producer = Substitute.For<IKafkaProducer<byte[]?, byte[]?>>();
         ProducerMessage<byte[]?, byte[]?>? sent = null;
         producer.ProduceAsync(Arg.Any<ProducerMessage<byte[]?, byte[]?>>(), Arg.Any<CancellationToken>())
-            .Returns(call => { sent = call.ArgAt<ProducerMessage<byte[]?, byte[]?>>(0); return new ValueTask<RecordMetadata>(default(RecordMetadata)); });
+            .Returns(call =>
+            {
+                sent = call.ArgAt<ProducerMessage<byte[]?, byte[]?>>(0);
+                return new ValueTask<RecordMetadata>(default(RecordMetadata));
+            });
         await using var service = new FailingConsumerService(CreateConsumerSubstitute(), ["orders"], new DeadLetterOptions());
         SetDlqProducer(service, producer);
-        var result = CreateResult("orders", partition: 1, offset: 42, headers:
-        [
+        var result = CreateResult("orders", partition: 1, offset: 42, headers: [
             StringHeader("app", "kept"),
             StringHeader(RetryTopicHeaders.SourceTopicKey, "unrelated"),
             StringHeader(RetryTopicHeaders.SourceOffsetKey, "700"),
@@ -170,8 +170,7 @@ public sealed partial class KafkaConsumerServiceTests
     {
         var (service, sent) = CreateProvenanceService(["orders", "orders-retry-5s"]);
         await using var _ = service;
-        var result = CreateResult("orders-retry-5s", partition: 1, offset: 42, headers:
-        [
+        var result = CreateResult("orders-retry-5s", partition: 1, offset: 42, headers: [
             StringHeader(RetryTopicHeaders.SourceTopicKey, "orders"),
             StringHeader(RetryTopicHeaders.FailureCountKey, "1")
         ]);
@@ -195,7 +194,11 @@ public sealed partial class KafkaConsumerServiceTests
         var producer = Substitute.For<IKafkaProducer<byte[]?, byte[]?>>();
         var sent = new List<ProducerMessage<byte[]?, byte[]?>>();
         producer.ProduceAsync(Arg.Any<ProducerMessage<byte[]?, byte[]?>>(), Arg.Any<CancellationToken>())
-            .Returns(call => { sent.Add(call.ArgAt<ProducerMessage<byte[]?, byte[]?>>(0)); return new ValueTask<RecordMetadata>(default(RecordMetadata)); });
+            .Returns(call =>
+            {
+                sent.Add(call.ArgAt<ProducerMessage<byte[]?, byte[]?>>(0));
+                return new ValueTask<RecordMetadata>(default(RecordMetadata));
+            });
         var service = new FailingConsumerService(CreateConsumerSubstitute(), topics ?? ["orders"], ProvenanceDeadLetterOptions());
         SetDlqProducer(service, producer);
         return (service, sent);
@@ -224,7 +227,9 @@ public sealed partial class KafkaConsumerServiceTests
         for (var index = 0; index < headers.Count; index++)
         {
             if (headers[index].Key == key)
+            {
                 count++;
+            }
         }
 
         return count;

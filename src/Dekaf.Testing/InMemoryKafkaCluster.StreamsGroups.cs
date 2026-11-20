@@ -29,10 +29,19 @@ public sealed partial class InMemoryKafkaCluster
 internal sealed class InMemoryStreamsGroup
 {
     /// <summary>Members that hold a place in the group, in join order.</summary>
-    public List<InMemoryStreamsGroupMember> Members { get; } = [];
+    public List<InMemoryStreamsGroupMember> Members
+    {
+        get;
+    } = [];
 
     /// <summary>The most recent topology a member supplied.</summary>
-    public StreamsGroupTopology? Topology { get; set; }
+    public StreamsGroupTopology? Topology
+    {
+        get; set;
+    }
 
-    public int NextMemberNumber { get; set; }
+    public int NextMemberNumber
+    {
+        get; set;
+    }
 }

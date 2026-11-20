@@ -13,18 +13,27 @@ public class ShareConsumerPartialPollBenchmarks
     private ShareConsumerPollBufferBenchmarks _poll = null!;
 
     [Params(false, true)]
-    public bool Prepared { get; set; }
+    public bool Prepared
+    {
+        get; set;
+    }
 
     [Params(false, true)]
-    public bool RenewalBuffering { get; set; }
+    public bool RenewalBuffering
+    {
+        get; set;
+    }
 
     [GlobalSetup]
     public Task Setup()
     {
         _poll = new ShareConsumerPollBufferBenchmarks
         {
-            PartitionCount = 1, Overflow = true, Prepared = Prepared,
-            RenewalBuffering = RenewalBuffering, RecordsPerIteration = 1
+            PartitionCount = 1,
+            Overflow = true,
+            Prepared = Prepared,
+            RenewalBuffering = RenewalBuffering,
+            RecordsPerIteration = 1
         };
         return _poll.Setup();
     }

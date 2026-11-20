@@ -63,14 +63,20 @@ public sealed class TelemetryReceiverKafkaContainer : KafkaContainerDefault
                 {
                     var fields = line.Split('\t');
                     if (fields.Length != 5)
+                    {
                         throw new InvalidDataException("Malformed telemetry receiver output.");
+                    }
                     if (DecodeText(fields[2]) != clientId)
+                    {
                         continue;
+                    }
                     lastClientPayloadCount++;
                     var payload = new ReceivedTelemetry(Guid.Parse(fields[0]), bool.Parse(fields[1]),
                         DecodeText(fields[3]), Convert.FromBase64String(fields[4]));
                     if (matches(payload))
+                    {
                         return payload;
+                    }
                 }
                 await Task.Delay(100, timeout.Token);
             }
@@ -92,10 +98,14 @@ public sealed class TelemetryReceiverKafkaContainer : KafkaContainerDefault
         {
             var fields = line.Split('\t');
             if (fields.Length != 5)
+            {
                 throw new InvalidDataException("Malformed telemetry receiver output.");
+            }
             if (DecodeText(fields[2]) == clientId)
+            {
                 payloads.Add(new ReceivedTelemetry(Guid.Parse(fields[0]), bool.Parse(fields[1]),
                     DecodeText(fields[3]), Convert.FromBase64String(fields[4])));
+            }
         }
         return payloads;
     }
@@ -122,9 +132,13 @@ public sealed class TelemetryReceiverKafkaContainer : KafkaContainerDefault
             {
                 last = await ReadFreshSubscriptionAsync(connection, timeout.Token);
                 if (last.ErrorCode != ErrorCode.None)
+                {
                     throw new InvalidOperationException($"Telemetry subscription probe failed: {last.ErrorCode}.");
+                }
                 if (last.PushIntervalMs == expectedPushIntervalMs && metrics.All(metric => last.RequestedMetrics.Contains(metric)))
+                {
                     return last;
+                }
                 await Task.Delay(100, timeout.Token);
             }
         }
@@ -154,7 +168,10 @@ public sealed class TelemetryReceiverKafkaContainer : KafkaContainerDefault
 
     public override async ValueTask DisposeAsync()
     {
-        try { await base.DisposeAsync(); }
+        try
+        {
+            await base.DisposeAsync();
+        }
         finally
         {
             _http.Dispose();

@@ -33,7 +33,9 @@ public sealed class RebalanceCallbackConsumerStateTests(KafkaTestContainer kafka
         listener.OnAssigned = (c, partitions) =>
         {
             if (partitions.Contains(partition))
+            {
                 c.Seek(new TopicPartitionOffset(topic, 0, 3));
+            }
         };
         listener.Consumer = consumer;
         consumer.Subscribe(topic);
@@ -64,7 +66,9 @@ public sealed class RebalanceCallbackConsumerStateTests(KafkaTestContainer kafka
         listener.OnAssigned = (c, partitions) =>
         {
             if (seeked || !partitions.Contains(partition))
+            {
                 return;
+            }
 
             // The callback's seek is staged for the assignment it announced, which the consumer
             // abandons before ever synchronizing it.
@@ -102,7 +106,9 @@ public sealed class RebalanceCallbackConsumerStateTests(KafkaTestContainer kafka
         seeking.OnAssigned = (c, partitions) =>
         {
             if (partitions.Contains(partition))
+            {
                 c.Seek(new TopicPartitionOffset(topic, 0, 2));
+            }
         };
         await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
@@ -203,7 +209,9 @@ public sealed class RebalanceCallbackConsumerStateTests(KafkaTestContainer kafka
         var revoked = listener.NextRevocation();
         var assignmentLock = holdAssignmentSyncOf is null ? null : GetAssignmentLock(holdAssignmentSyncOf);
         if (assignmentLock is not null)
+        {
             await assignmentLock.WaitAsync(timeout.Token);
+        }
         try
         {
             return await HandOffAndReturnCoreAsync(topic, groupId, listener, onReturn, revoked, timeout.Token);
@@ -233,7 +241,9 @@ public sealed class RebalanceCallbackConsumerStateTests(KafkaTestContainer kafka
             listener.OnReturn = (target, partitions) =>
             {
                 if (partitions.Contains(handedOff))
+                {
                     onReturn(target, handedOff);
+                }
             };
             var returned = listener.NextAssignment();
             await consumer2.CloseAsync(cancellationToken);
@@ -260,7 +270,9 @@ public sealed class RebalanceCallbackConsumerStateTests(KafkaTestContainer kafka
         {
             records.Add(record);
             if (record.Partition == partition.Partition)
+            {
                 break;
+            }
         }
 
         return records;
@@ -294,7 +306,9 @@ public sealed class RebalanceCallbackConsumerStateTests(KafkaTestContainer kafka
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithOffsetCommitMode(OffsetCommitMode.Manual);
         if (listener is not null)
+        {
             builder = builder.WithRebalanceListener(listener);
+        }
         return builder.BuildAsync().AsTask();
     }
 
@@ -308,7 +322,10 @@ public sealed class RebalanceCallbackConsumerStateTests(KafkaTestContainer kafka
 
     private interface IRecordingListener
     {
-        Action<IConsumerCallbackTarget, IReadOnlyList<TopicPartition>>? OnReturn { get; set; }
+        Action<IConsumerCallbackTarget, IReadOnlyList<TopicPartition>>? OnReturn
+        {
+            get; set;
+        }
 
         Task<IReadOnlyList<TopicPartition>> NextRevocation();
 
@@ -320,7 +337,10 @@ public sealed class RebalanceCallbackConsumerStateTests(KafkaTestContainer kafka
         private readonly ConcurrentQueue<TaskCompletionSource<IReadOnlyList<TopicPartition>>> _revocations = new();
         private readonly ConcurrentQueue<TaskCompletionSource<IReadOnlyList<TopicPartition>>> _assignments = new();
 
-        public Action<IConsumerCallbackTarget, IReadOnlyList<TopicPartition>>? OnReturn { get; set; }
+        public Action<IConsumerCallbackTarget, IReadOnlyList<TopicPartition>>? OnReturn
+        {
+            get; set;
+        }
 
         public Task<IReadOnlyList<TopicPartition>> NextRevocation() => Enqueue(_revocations);
 
@@ -331,14 +351,18 @@ public sealed class RebalanceCallbackConsumerStateTests(KafkaTestContainer kafka
             var list = partitions.ToList();
             OnReturn?.Invoke(target, list);
             if (_assignments.TryDequeue(out var waiter))
+            {
                 waiter.TrySetResult(list);
+            }
         }
 
         protected void Revoked(IEnumerable<TopicPartition> partitions)
         {
             var list = partitions.ToList();
             if (list.Count != 0 && _revocations.TryDequeue(out var waiter))
+            {
                 waiter.TrySetResult(list);
+            }
         }
 
         private static Task<IReadOnlyList<TopicPartition>> Enqueue(
@@ -354,15 +378,23 @@ public sealed class RebalanceCallbackConsumerStateTests(KafkaTestContainer kafka
     /// <summary>A plain listener that captures the consumer, as Confluent-style code does.</summary>
     private sealed class LegacyListener : RecordingListenerBase, IRebalanceListener, IConsumerCallbackTarget
     {
-        public IKafkaConsumer<string, string>? Consumer { get; set; }
+        public IKafkaConsumer<string, string>? Consumer
+        {
+            get; set;
+        }
 
-        public Action<IKafkaConsumer<string, string>, IReadOnlyList<TopicPartition>>? OnAssigned { get; set; }
+        public Action<IKafkaConsumer<string, string>, IReadOnlyList<TopicPartition>>? OnAssigned
+        {
+            get; set;
+        }
 
         public ValueTask OnPartitionsAssignedAsync(IEnumerable<TopicPartition> partitions, CancellationToken cancellationToken)
         {
             var list = partitions.ToList();
             if (Consumer is { } consumer)
+            {
                 OnAssigned?.Invoke(consumer, list);
+            }
             Assigned(this, list);
             return ValueTask.CompletedTask;
         }

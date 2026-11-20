@@ -34,26 +34,56 @@ public class ShareConsumerPollBenchmarks
     private int _acquiredRecordCount;
 
     [Params(1, 1024)]
-    public int RecordCount { get; set; }
+    public int RecordCount
+    {
+        get; set;
+    }
 
     [Params(1, 16)]
-    public int BatchCount { get; set; } = 1;
+    public int BatchCount
+    {
+        get; set;
+    } = 1;
 
     [Params(false, true)]
-    public bool AsynchronousResponse { get; set; }
+    public bool AsynchronousResponse
+    {
+        get; set;
+    }
 
-    internal int IdleFetchMaxWaitMs { get; set; } = 200;
-    internal bool RenewalMode { get; set; }
-    internal int ReplayChunkSize { get; set; }
-    internal ShareAcquisitionShape AcquisitionShape { get; set; }
+    internal int IdleFetchMaxWaitMs
+    {
+        get; set;
+    } = 200;
+    internal bool RenewalMode
+    {
+        get; set;
+    }
+    internal int ReplayChunkSize
+    {
+        get; set;
+    }
+    internal ShareAcquisitionShape AcquisitionShape
+    {
+        get; set;
+    }
     // Adds a partition-level NOT_LEADER_OR_FOLLOWER for an unassigned partition to every response,
     // as a broker's share session reports a partition the consumer no longer fetches from it.
-    internal bool StalePartitionError { get; set; }
+    internal bool StalePartitionError
+    {
+        get; set;
+    }
     // Below the fetched record count, compatibility polls buffer the remainder and drain their
     // acknowledgements with a ShareAcknowledge before each later window.
-    internal int CompatibilityMaxPollRecords { get; set; }
+    internal int CompatibilityMaxPollRecords
+    {
+        get; set;
+    }
     // A cancellable token that is never cancelled, as hosted loops and per-iteration timeouts pass.
-    internal CancellationToken PollCancellationToken { get; set; }
+    internal CancellationToken PollCancellationToken
+    {
+        get; set;
+    }
 
     [GlobalSetup]
     public async ValueTask Setup()
@@ -62,13 +92,17 @@ public class ShareConsumerPollBenchmarks
         Serializers.Int32.Serialize(42, ref encodedValue, default);
         var records = new Record[RecordCount];
         for (var index = 0; index < records.Length; index++)
+        {
             records[index] = new Record { OffsetDelta = index, IsKeyNull = true, Value = encodedValue.WrittenMemory };
+        }
         var bytes = new ArrayBufferWriter<byte>();
         for (var index = 0; index < BatchCount; index++)
         {
             using var batch = new RecordBatch
             {
-                BaseOffset = 1000 + index * RecordCount, LastOffsetDelta = RecordCount - 1, Records = records
+                BaseOffset = 1000 + index * RecordCount,
+                LastOffsetDelta = RecordCount - 1,
+                Records = records
             };
             batch.Write(bytes);
         }
@@ -115,11 +149,16 @@ public class ShareConsumerPollBenchmarks
             Brokers = [new BrokerMetadata { NodeId = 1, Host = "localhost", Port = 9092 }],
             Topics = [new TopicMetadata
             {
-                ErrorCode = ErrorCode.None, Name = Topic, TopicId = TopicId,
+                ErrorCode = ErrorCode.None,
+                Name = Topic,
+                TopicId = TopicId,
                 Partitions = [new PartitionMetadata
                 {
-                    ErrorCode = ErrorCode.None, PartitionIndex = 0, LeaderId = 1,
-                    ReplicaNodes = [1], IsrNodes = [1]
+                    ErrorCode = ErrorCode.None,
+                    PartitionIndex = 0,
+                    LeaderId = 1,
+                    ReplicaNodes = [1],
+                    IsrNodes = [1]
                 }]
             }]
         };
@@ -131,14 +170,20 @@ public class ShareConsumerPollBenchmarks
         await ValidatePolling(offsets, acquired);
         long expected = 0;
         foreach (var offset in offsets)
+        {
             expected += offset + 42;
+        }
         var borrowedChecksum = ReplayChunkSize != 0 ? await PollBorrowedChunkedRenewalCycle()
             : RenewalMode ? await PollBorrowedRenewalCycle() : await PollBorrowedBatch();
         if (await PollCompatibilityBatch() != expected || borrowedChecksum != expected)
+        {
             throw new InvalidOperationException("Polling changed the acquired records.");
+        }
         if (CompatibilityMaxPollRecords != 0 && CompatibilityMaxPollRecords < _acquiredRecordCount
             && _connection.AcknowledgeRequests == 0)
+        {
             throw new InvalidOperationException("Buffered polling must drain acknowledgements with a ShareAcknowledge.");
+        }
     }
 
     [Benchmark]
@@ -149,9 +194,13 @@ public class ShareConsumerPollBenchmarks
         {
             var next = _records.MoveNextAsync();
             if (!next.IsCompleted)
+            {
                 _connection.CompletePendingFetch();
+            }
             if (!await next)
+            {
                 throw new InvalidOperationException("Polling ended before the batch was delivered.");
+            }
             checksum += _records.Current.Offset + _records.Current.Value;
         }
         return checksum;
@@ -165,11 +214,17 @@ public class ShareConsumerPollBenchmarks
         {
             var next = _batches.MoveNextAsync();
             if (!next.IsCompleted)
+            {
                 _connection.CompletePendingFetch();
+            }
             if (!await next)
+            {
                 throw new InvalidOperationException("Batch polling ended before delivery.");
+            }
             foreach (var record in _batches.Current)
+            {
                 checksum += record.Offset + record.Value;
+            }
         }
         return checksum;
     }
@@ -178,9 +233,13 @@ public class ShareConsumerPollBenchmarks
     {
         var next = _batches.MoveNextAsync();
         if (!next.IsCompleted)
+        {
             _connection.CompletePendingFetch();
+        }
         if (!await next)
+        {
             throw new InvalidOperationException("Batch polling ended before delivery.");
+        }
         long checksum = 0;
         foreach (var record in _batches.Current)
         {
@@ -189,21 +248,31 @@ public class ShareConsumerPollBenchmarks
         }
         await _borrowed.CommitAsync();
         if (!await _batches.MoveNextAsync())
+        {
             throw new InvalidOperationException("Renewal replay ended before delivery.");
+        }
         var acknowledged = 0;
         foreach (var record in _batches.Current)
         {
             if (++acknowledged == _acquiredRecordCount)
+            {
                 break; // Leave the last renewal active while earlier Accepts are pending.
+            }
             _batches.Current.Acknowledge(record);
         }
         var commitsBeforeReplay = _connection.AcknowledgeRequests;
         if (!await _batches.MoveNextAsync())
+        {
             throw new InvalidOperationException("Unread renewal was lost.");
+        }
         if (_connection.AcknowledgeRequests != commitsBeforeReplay + 1)
+        {
             throw new InvalidOperationException("Pending replay dispositions were not sent.");
+        }
         foreach (var record in _batches.Current)
+        {
             _batches.Current.Acknowledge(record);
+        }
         return checksum;
     }
 
@@ -213,11 +282,17 @@ public class ShareConsumerPollBenchmarks
         {
             var next = _batches.MoveNextAsync();
             if (!next.IsCompleted)
+            {
                 _connection.CompletePendingFetch();
+            }
             if (!await next)
+            {
                 throw new InvalidOperationException("Batch polling ended before acquisition.");
+            }
             foreach (var record in _batches.Current)
+            {
                 _batches.Current.Acknowledge(record, AcknowledgeType.Renew);
+            }
         }
         await _borrowed.CommitAsync();
 
@@ -226,9 +301,13 @@ public class ShareConsumerPollBenchmarks
         while (replayed < _acquiredRecordCount)
         {
             if (!await _batches.MoveNextAsync())
+            {
                 throw new InvalidOperationException("Renewal replay ended before completion.");
+            }
             if (_batches.Current.Count > ReplayChunkSize)
+            {
                 throw new InvalidOperationException("Renewal replay exceeded its poll budget.");
+            }
             foreach (var record in _batches.Current)
             {
                 checksum += record.Offset + record.Value;
@@ -238,7 +317,9 @@ public class ShareConsumerPollBenchmarks
         }
         await _borrowed.CommitAsync();
         if (replayed != _acquiredRecordCount)
+        {
             throw new InvalidOperationException("Renewal replay changed acquisition cardinality.");
+        }
         return checksum;
     }
 
@@ -248,13 +329,19 @@ public class ShareConsumerPollBenchmarks
         foreach (var offset in offsets)
         {
             while (offset > acquired[rangeIndex].LastOffset)
+            {
                 rangeIndex++;
+            }
             var next = _records.MoveNextAsync();
             if (!next.IsCompleted)
+            {
                 _connection.CompletePendingFetch();
+            }
             if (!await next || _records.Current.Offset != offset || _records.Current.Value != 42
                 || _records.Current.DeliveryCount != acquired[rangeIndex].DeliveryCount)
+            {
                 throw new InvalidOperationException("Compatibility polling changed acquisition order or delivery count.");
+            }
         }
 
         var recordIndex = 0;
@@ -263,23 +350,37 @@ public class ShareConsumerPollBenchmarks
         {
             var next = _batches.MoveNextAsync();
             if (!next.IsCompleted)
+            {
                 _connection.CompletePendingFetch();
+            }
             if (!await next)
+            {
                 throw new InvalidOperationException("Borrowed polling lost an acquired batch.");
+            }
             foreach (var record in _batches.Current)
             {
                 if (recordIndex >= offsets.Length || record.Offset != offsets[recordIndex++])
+                {
                     throw new InvalidOperationException("Borrowed polling changed acquisition order.");
+                }
                 while (record.Offset > acquired[rangeIndex].LastOffset)
+                {
                     rangeIndex++;
+                }
                 if (record.Value != 42 || record.DeliveryCount != acquired[rangeIndex].DeliveryCount)
+                {
                     throw new InvalidOperationException("Borrowed polling changed record data or delivery count.");
+                }
                 if (RenewalMode)
+                {
                     _batches.Current.Acknowledge(record);
+                }
             }
         }
         if (recordIndex != offsets.Length)
+        {
             throw new InvalidOperationException("Borrowed polling changed acquisition cardinality.");
+        }
     }
 
     [GlobalCleanup]
@@ -310,12 +411,18 @@ public class ShareConsumerPollBenchmarks
         _batches = _borrowed.PollBatchesAsync().GetAsyncEnumerator();
         var next = _batches.MoveNextAsync();
         if (!next.IsCompleted)
+        {
             _connection.CompletePendingFetch();
+        }
         if (!await next)
+        {
             throw new InvalidOperationException("No first batch to unsubscribe from.");
+        }
         _borrowed.Unsubscribe();
         if (PendingReleaseTask.GetValue(_borrowed) is Task pending)
+        {
             await pending;
+        }
         await _batches.DisposeAsync();
         PublishJoinedMembership(_borrowed);
         return _connection.ReleasedOffsets;
@@ -341,9 +448,13 @@ public class ShareConsumerPollBenchmarks
         // Keep the same fixture compatible with the baseline, whose heartbeat reports whether it
         // carried an assignment.
         if (method.ReturnType == typeof(ValueTask))
+        {
             _sendHeartbeat = method.CreateDelegate<Func<int, CancellationToken, ValueTask>>(coordinator);
+        }
         else
+        {
             _sendLegacyHeartbeat = method.CreateDelegate<Func<int, CancellationToken, ValueTask<bool>>>(coordinator);
+        }
     }
 
     // Both signatures go through the same pooled state machine, so the baseline and the candidate
@@ -404,11 +515,16 @@ public class ShareConsumerPollBenchmarks
             Brokers = [new BrokerMetadata { NodeId = 1, Host = "localhost", Port = 9092 }],
             Topics = [new TopicMetadata
             {
-                ErrorCode = ErrorCode.None, Name = Topic, TopicId = TopicId,
+                ErrorCode = ErrorCode.None,
+                Name = Topic,
+                TopicId = TopicId,
                 Partitions = [new PartitionMetadata
                 {
-                    ErrorCode = ErrorCode.None, PartitionIndex = 0, LeaderId = -1,
-                    ReplicaNodes = [1], IsrNodes = [1]
+                    ErrorCode = ErrorCode.None,
+                    PartitionIndex = 0,
+                    LeaderId = -1,
+                    ReplicaNodes = [1],
+                    IsrNodes = [1]
                 }]
             }]
         };
@@ -445,13 +561,17 @@ public class ShareConsumerPollBenchmarks
         var restored = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         _metadataRestored = restored;
         if (_asynchronousMetadata)
+        {
             _connection.PendingMetadata = new TaskCompletionSource<MetadataResponse>(TaskCreationOptions.RunContinuationsAsynchronously);
+        }
         _missingLeaderAssignment!.Prepare(metadataDelayMs);
         try
         {
             var delivered = await _idleMoveNext!();
             if (!_missingLeaderAssignment.ObservedMissingLeader)
+            {
                 throw new InvalidOperationException("Polling did not inspect the missing leader.");
+            }
             return delivered;
         }
         finally
@@ -461,7 +581,9 @@ public class ShareConsumerPollBenchmarks
             try
             {
                 if (_missingLeaderAssignment.ObservedMissingLeader)
+                {
                     await restored.Task;
+                }
             }
             finally
             {
@@ -475,7 +597,10 @@ public class ShareConsumerPollBenchmarks
         : HashSet<TopicPartition>, IEnumerable<TopicPartition>
     {
         private int _delayMs;
-        internal bool ObservedMissingLeader { get; private set; }
+        internal bool ObservedMissingLeader
+        {
+            get; private set;
+        }
 
         internal void Prepare(int delayMs)
         {
@@ -490,10 +615,14 @@ public class ShareConsumerPollBenchmarks
         {
             using var partitions = base.GetEnumerator();
             while (partitions.MoveNext())
+            {
                 yield return partitions.Current;
+            }
 
             if (poll._metadata.Metadata.GetPartitionLeader(Topic, 0) is not null)
+            {
                 throw new InvalidOperationException("Metadata was restored before missing-leader routing completed.");
+            }
             ObservedMissingLeader = true;
             poll._metadataRestoreTimer!.Change(_delayMs, Timeout.Infinite);
         }
@@ -502,7 +631,8 @@ public class ShareConsumerPollBenchmarks
     {
         var consumer = new KafkaShareConsumer<int, int>(new ShareConsumerOptions
         {
-            BootstrapServers = ["localhost:9092"], GroupId = "share-poll-benchmark",
+            BootstrapServers = ["localhost:9092"],
+            GroupId = "share-poll-benchmark",
             FetchMaxWaitMs = IdleFetchMaxWaitMs,
             MaxPollRecords = maxPollRecords == 0 ? checked(RecordCount * BatchCount) : maxPollRecords,
             AcknowledgementMode = RenewalMode ? ShareAcknowledgementMode.Explicit : ShareAcknowledgementMode.Implicit
@@ -539,21 +669,44 @@ public class ShareConsumerPollBenchmarks
         private ManualResetValueTaskSourceCore<ShareGroupHeartbeatResponse> _heartbeatCompletion;
         private bool _heartbeatPending;
         private readonly ShareGroupHeartbeatResponse _heartbeat = new() { ErrorCode = ErrorCode.None, MemberEpoch = 1 };
-        internal MetadataResponse MetadataResponse { get; set; } = null!;
-        internal TaskCompletionSource<MetadataResponse>? PendingMetadata { get; set; }
-        internal bool Asynchronous { get; set; } = asynchronous;
-        internal int AcknowledgeRequests { get; private set; }
-        internal long ReleasedOffsets { get; private set; }
-        internal bool CaptureReleases { get; set; }
+        internal MetadataResponse MetadataResponse
+        {
+            get; set;
+        } = null!;
+        internal TaskCompletionSource<MetadataResponse>? PendingMetadata
+        {
+            get; set;
+        }
+        internal bool Asynchronous
+        {
+            get; set;
+        } = asynchronous;
+        internal int AcknowledgeRequests
+        {
+            get; private set;
+        }
+        internal long ReleasedOffsets
+        {
+            get; private set;
+        }
+        internal bool CaptureReleases
+        {
+            get; set;
+        }
         private readonly ShareAcknowledgeResponse _acknowledge = new()
         {
-            ErrorCode = ErrorCode.None, Responses = [], NodeEndpoints = []
+            ErrorCode = ErrorCode.None,
+            Responses = [],
+            NodeEndpoints = []
         };
         public int BrokerId => 1;
         public string Host => "localhost";
         public int Port => 9092;
         public bool IsConnected => true;
-        public KafkaConnectionCapabilities Capabilities { get; } = KafkaConnectionCapabilities.Create(new ApiVersionsResponse
+        public KafkaConnectionCapabilities Capabilities
+        {
+            get;
+        } = KafkaConnectionCapabilities.Create(new ApiVersionsResponse
         {
             ErrorCode = ErrorCode.None,
             ApiKeys = [new ApiVersion(ApiKey.ShareGroupHeartbeat, 0, 1), new ApiVersion(ApiKey.ShareFetch, 1, 2), new ApiVersion(ApiKey.ShareAcknowledge, 1, 2),
@@ -564,34 +717,54 @@ public class ShareConsumerPollBenchmarks
             where TRequest : IKafkaRequest<TResponse> where TResponse : IKafkaResponse
         {
             if (request is MetadataRequest && PendingMetadata is { } metadata)
+            {
                 return AwaitMetadataAsync<TResponse>(metadata.Task, token);
+            }
             if (request is ShareAcknowledgeRequest acknowledge)
             {
                 AcknowledgeRequests++;
                 if (CaptureReleases)
                 {
                     if (acknowledge.ShareSessionEpoch != ShareSessionManager.CloseEpoch)
+                    {
                         throw new InvalidOperationException("Unsubscribe did not close the broker session.");
+                    }
                     ReleasedOffsets = 0;
                     foreach (var topic in acknowledge.Topics)
-                    foreach (var partition in topic.Partitions)
-                    foreach (var batch in partition.AcknowledgementBatches!)
                     {
-                        foreach (var type in batch.AcknowledgeTypes)
-                            if (type != (byte)AcknowledgeType.Release)
-                                throw new InvalidOperationException("Unsubscribe sent a non-release disposition.");
+                        foreach (var partition in topic.Partitions)
+                        {
+                            foreach (var batch in partition.AcknowledgementBatches!)
+                            {
+                                foreach (var type in batch.AcknowledgeTypes)
+                                {
+                                    if (type != (byte)AcknowledgeType.Release)
+                                    {
+                                        throw new InvalidOperationException("Unsubscribe sent a non-release disposition.");
+                                    }
+                                }
+                            }
+                        }
                     }
                     // Model the broker's final-session release, including unparsed records.
                     foreach (var topic in fetch.Responses)
-                    foreach (var partition in topic.Partitions)
-                    foreach (var acquired in partition.AcquiredRecords)
-                        ReleasedOffsets += acquired.LastOffset - acquired.FirstOffset + 1;
+                    {
+                        foreach (var partition in topic.Partitions)
+                        {
+                            foreach (var acquired in partition.AcquiredRecords)
+                            {
+                                ReleasedOffsets += acquired.LastOffset - acquired.FirstOffset + 1;
+                            }
+                        }
+                    }
                 }
             }
             if (Asynchronous && request is ShareGroupHeartbeatRequest)
             {
                 if (_heartbeatPending)
+                {
                     throw new InvalidOperationException("The fixture allows one pending heartbeat at a time.");
+                }
                 _heartbeatCompletion.Reset();
                 _heartbeatPending = true;
                 return new ValueTask<TResponse>((IValueTaskSource<TResponse>)(object)this, _heartbeatCompletion.Version);
@@ -599,7 +772,9 @@ public class ShareConsumerPollBenchmarks
             if (Asynchronous && request is ShareFetchRequest)
             {
                 if (_pending)
+                {
                     throw new InvalidOperationException("The fixture allows one pending fetch at a time.");
+                }
                 _completion.Reset();
                 _pending = true;
                 return new ValueTask<TResponse>((IValueTaskSource<TResponse>)(object)this, _completion.Version);
@@ -623,14 +798,19 @@ public class ShareConsumerPollBenchmarks
         internal void CompletePendingFetch()
         {
             if (!_pending)
+            {
                 throw new InvalidOperationException("Polling suspended without a pending fixture response.");
+            }
             _pending = false;
             _completion.SetResult(fetch);
         }
 
         internal void CompleteHeartbeat()
         {
-            if (!_heartbeatPending) return;
+            if (!_heartbeatPending)
+            {
+                return;
+            }
             _heartbeatPending = false;
             _heartbeatCompletion.SetResult(_heartbeat);
         }
@@ -661,7 +841,9 @@ public class ShareConsumerPollBenchmarks
         public ValueTask<IKafkaConnection> GetConnectionAsync(int brokerId, CancellationToken token = default) => ValueTask.FromResult(connection);
         public ValueTask<IKafkaConnection> GetConnectionAsync(string host, int port, CancellationToken token = default) => ValueTask.FromResult(connection);
         public ValueTask<IKafkaConnection> GetConnectionByIndexAsync(int brokerId, int index, CancellationToken token = default) => ValueTask.FromResult(connection);
-        public void RegisterBroker(int id, string host, int port) { }
+        public void RegisterBroker(int id, string host, int port)
+        {
+        }
         public ValueTask<int> ScaleConnectionGroupAsync(int id, int count, CancellationToken token = default) => ValueTask.FromResult(1);
         public ValueTask<IKafkaConnection?> ShrinkConnectionGroupAsync(int id, int count, CancellationToken token = default) => ValueTask.FromResult<IKafkaConnection?>(null);
         public ValueTask RemoveConnectionAsync(int id) => ValueTask.CompletedTask;

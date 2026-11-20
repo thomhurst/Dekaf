@@ -162,7 +162,9 @@ public sealed class BrokerScaleOutIntegrationTests(BrokerScaleOutKafkaContainer 
             var result = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(15), cancellationToken)
                 .ConfigureAwait(false);
             if (result is null)
+            {
                 throw new InvalidOperationException($"Timed out waiting for {topic}-0@{sequence}.");
+            }
 
             var record = result.Value;
             var expected = sequence.ToString();
@@ -189,7 +191,9 @@ public sealed class BrokerScaleOutIntegrationTests(BrokerScaleOutKafkaContainer 
                     [new TopicPartition(topic, 0)],
                     cancellationToken: token).ConfigureAwait(false);
                 if (active.Count != 0)
+                {
                     return false;
+                }
 
                 var descriptions = await admin.DescribeTopicsAsync([topic], token).ConfigureAwait(false);
                 var partition = descriptions[topic].Partitions.Single();
@@ -212,7 +216,9 @@ public sealed class BrokerScaleOutIntegrationTests(BrokerScaleOutKafkaContainer 
         try
         {
             while (!await predicate(timeout.Token).ConfigureAwait(false))
+            {
                 await Task.Delay(TimeSpan.FromMilliseconds(200), timeout.Token).ConfigureAwait(false);
+            }
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
