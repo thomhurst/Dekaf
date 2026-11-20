@@ -13,12 +13,18 @@ public sealed class OffsetDeleteRequest : IKafkaRequest<OffsetDeleteResponse>
     /// <summary>
     /// The unique group identifier.
     /// </summary>
-    public required string GroupId { get; init; }
+    public required string GroupId
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The topics to delete offsets for.
     /// </summary>
-    public required IReadOnlyList<OffsetDeleteRequestTopic> Topics { get; init; }
+    public required IReadOnlyList<OffsetDeleteRequestTopic> Topics
+    {
+        get; init;
+    }
 
     public static bool IsFlexibleVersion(short version) => false;
     public static short GetRequestHeaderVersion(short version) => 1;
@@ -42,12 +48,18 @@ public sealed class OffsetDeleteRequestTopic
     /// <summary>
     /// The topic name.
     /// </summary>
-    public required string Name { get; init; }
+    public required string Name
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The partitions to delete offsets for.
     /// </summary>
-    public required IReadOnlyList<OffsetDeleteRequestPartition> Partitions { get; init; }
+    public required IReadOnlyList<OffsetDeleteRequestPartition> Partitions
+    {
+        get; init;
+    }
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {
@@ -67,7 +79,10 @@ public sealed class OffsetDeleteRequestPartition
     /// <summary>
     /// The partition index.
     /// </summary>
-    public required int PartitionIndex { get; init; }
+    public required int PartitionIndex
+    {
+        get; init;
+    }
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {

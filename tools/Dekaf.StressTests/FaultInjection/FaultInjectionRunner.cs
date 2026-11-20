@@ -455,7 +455,10 @@ internal static class FaultInjectionRunner
             {
                 // Only reached when the window failed before the transactional load was stopped.
                 windowCts.Cancel();
-                try { _ = await transactionalTask.ConfigureAwait(false); }
+                try
+                {
+                    _ = await transactionalTask.ConfigureAwait(false);
+                }
                 catch (OperationCanceledException) { }
                 catch (Exception ex) { Console.WriteLine($"  Transactional producer cleanup failed: {ex.Message}"); }
             }
@@ -847,7 +850,10 @@ internal static class FaultInjectionRunner
                 {
                     if (transaction is not null)
                     {
-                        try { await transaction.DisposeAsync().ConfigureAwait(false); }
+                        try
+                        {
+                            await transaction.DisposeAsync().ConfigureAwait(false);
+                        }
                         catch (Exception ex) { lastFailure = ex; }
                     }
                 }

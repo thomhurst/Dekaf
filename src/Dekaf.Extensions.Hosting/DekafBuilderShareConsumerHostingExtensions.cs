@@ -229,7 +229,9 @@ public static class DekafBuilderShareConsumerHostingExtensions
         var registrationKey = new KafkaShareConsumerServiceKey(typeof(TService), serviceKey);
         if (builder.Services.Any(descriptor => descriptor.IsKeyedService &&
                 descriptor.ServiceType == typeof(RegistrationMarker) && Equals(descriptor.ServiceKey, registrationKey)))
+        {
             throw new InvalidOperationException($"{typeof(TService).Name} is already registered for this service key. Use distinct service keys.");
+        }
 
         registerConsumer(registrationKey);
         builder.Services.AddKeyedSingleton(registrationKey, RegistrationMarker.Instance);
@@ -255,11 +257,15 @@ public static class DekafBuilderShareConsumerHostingExtensions
                 : null;
             if (options is not null && !typeof(TService).GetConstructors().Any(static constructor =>
                     constructor.GetParameters().Any(static parameter => parameter.ParameterType == typeof(DeadLetterOptions))))
+            {
                 throw new InvalidOperationException("The hosted service constructor must accept and forward DeadLetterOptions to base(...).");
+            }
             object[] arguments = options is null ? [consumer] : [consumer, options];
             var service = ActivatorUtilities.CreateInstance<TService>(provider, arguments);
             if (!ReferenceEquals(service.ConfiguredDeadLetterOptions, options))
+            {
                 throw new InvalidOperationException("The hosted service must forward the matching DeadLetterOptions to base(...).");
+            }
             return service;
         });
         return builder;
@@ -267,7 +273,10 @@ public static class DekafBuilderShareConsumerHostingExtensions
 
     private sealed class ShareConsumerAliasDescriptor<TKey, TValue> : ServiceDescriptor, IKafkaClientAliasRegistration
     {
-        public object TargetServiceKey { get; }
+        public object TargetServiceKey
+        {
+            get;
+        }
 
         public ShareConsumerAliasDescriptor(object registrationKey)
             : base(typeof(IKafkaShareConsumer<TKey, TValue>), provider =>

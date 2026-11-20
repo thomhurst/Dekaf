@@ -17,7 +17,9 @@ public sealed partial class AdminClient : IClassicGroupDescriptionAdminClient
         var opts = options ?? new DescribeClassicGroupsOptions();
         ArgumentOutOfRangeException.ThrowIfNegative(opts.TimeoutMs);
         if (groups.Length == 0)
+        {
             return new(new Dictionary<string, ClassicGroupDescriptionResult>(StringComparer.Ordinal));
+        }
         return ExecuteWithTimeoutAsync(
             token => DescribeClassicGroupsCoreAsync(groups, opts.IncludeAuthorizedOperations, token),
             opts.TimeoutMs, nameof(DescribeClassicGroupsAsync), cancellationToken);
@@ -34,7 +36,9 @@ public sealed partial class AdminClient : IClassicGroupDescriptionAdminClient
         {
             ArgumentException.ThrowIfNullOrWhiteSpace(group, nameof(groupIds));
             if (!seen.Add(group))
+            {
                 throw new ArgumentException($"Group ID '{group}' is duplicated.", nameof(groupIds));
+            }
         }
         return groups;
     }
@@ -66,19 +70,27 @@ public sealed partial class AdminClient : IClassicGroupDescriptionAdminClient
                 // continuation only. Every started operation is observed before propagating failure.
                 var discoveries = new ValueTask<int>[groupIds.Length];
                 for (var i = 0; i < groupIds.Length; i++)
+                {
                     if (!results.ContainsKey(groupIds[i]))
+                    {
                         discoveries[i] = FindGroupCoordinatorAsync(groupIds[i], attemptToken);
+                    }
+                }
 
                 for (var i = 0; i < groupIds.Length; i++)
                 {
                     var groupId = groupIds[i];
                     if (results.ContainsKey(groupId))
+                    {
                         continue;
+                    }
                     try
                     {
                         var coordinatorId = await discoveries[i].ConfigureAwait(false);
                         if (!batches.TryGetValue(coordinatorId, out var batch))
+                        {
                             batches.Add(coordinatorId, batch = []);
+                        }
                         batch.Add(groupId);
                     }
                     catch (KafkaException exception) when (exception.ErrorCode is { } code &&
@@ -98,14 +110,18 @@ public sealed partial class AdminClient : IClassicGroupDescriptionAdminClient
                     }
                 }
                 if (fatalFailure is not null)
+                {
                     ExceptionDispatchInfo.Capture(fatalFailure).Throw();
+                }
                 attemptToken.ThrowIfCancellationRequested();
 
                 var descriptions = new (int CoordinatorId, List<string> Groups, ValueTask<DescribeGroupsResponse> Operation)[batches.Count];
                 var batchIndex = 0;
                 foreach (var (coordinatorId, batch) in batches)
+                {
                     descriptions[batchIndex++] = (coordinatorId, batch,
                         DescribeClassicGroupBatchAsync(coordinatorId, batch, includeAuthorizedOperations, attemptToken));
+                }
 
                 foreach (var (coordinatorId, batch, operation) in descriptions)
                 {
@@ -116,7 +132,9 @@ public sealed partial class AdminClient : IClassicGroupDescriptionAdminClient
                         foreach (var group in response.Groups)
                         {
                             if (!missing.Remove(group.GroupId))
+                            {
                                 continue;
+                            }
                             if (group.ErrorCode.IsRetriable())
                             {
                                 retryErrors[group.GroupId] = ClassicGroupError(group.GroupId, group.ErrorCode, group.ErrorMessage);
@@ -132,21 +150,29 @@ public sealed partial class AdminClient : IClassicGroupDescriptionAdminClient
                             }
                         }
                         foreach (var groupId in missing)
+                        {
                             results[groupId] = ClassicGroupError(groupId, ErrorCode.UnknownServerError,
                                 "DescribeGroups omitted the requested group.");
+                        }
                     }
                     catch (KafkaException exception) when (exception.ErrorCode is { } code &&
                         !RetryHelper.IsRetriableRequestFailure(exception))
                     {
                         foreach (var groupId in batch)
+                        {
                             results.TryAdd(groupId, ClassicGroupError(groupId, code, exception.Message));
+                        }
                     }
                     catch (Exception exception) when (RetryHelper.IsRetriableRequestFailure(exception) &&
                         !attemptToken.IsCancellationRequested)
                     {
                         foreach (var groupId in batch)
+                        {
                             if (!results.ContainsKey(groupId))
+                            {
                                 retryErrors[groupId] = ClassicGroupError(groupId, GetRetryErrorCode(exception), exception.Message);
+                            }
+                        }
                         retryFailure ??= exception;
                     }
                     catch (Exception exception)
@@ -155,10 +181,14 @@ public sealed partial class AdminClient : IClassicGroupDescriptionAdminClient
                     }
                 }
                 if (fatalFailure is not null)
+                {
                     ExceptionDispatchInfo.Capture(fatalFailure).Throw();
+                }
                 attemptToken.ThrowIfCancellationRequested();
                 if (retryFailure is not null)
+                {
                     throw retryFailure;
+                }
             }, cancellationToken, Timeout.Infinite, nameof(DescribeClassicGroupsAsync)).ConfigureAwait(false);
         }
         catch (Exception exception) when (cancellationToken.IsCancellationRequested &&
@@ -171,9 +201,13 @@ public sealed partial class AdminClient : IClassicGroupDescriptionAdminClient
             !cancellationToken.IsCancellationRequested)
         {
             foreach (var groupId in groupIds)
+            {
                 if (!results.ContainsKey(groupId))
+                {
                     results[groupId] = retryErrors.TryGetValue(groupId, out var error)
                         ? error : ClassicGroupError(groupId, GetRetryErrorCode(exception), exception.Message);
+                }
+            }
         }
         cancellationToken.ThrowIfCancellationRequested();
         return results;

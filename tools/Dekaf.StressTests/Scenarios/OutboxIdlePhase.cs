@@ -19,11 +19,15 @@ internal static class OutboxIdlePhase
         {
             var remaining = duration - Stopwatch.GetElapsedTime(started);
             if (remaining <= TimeSpan.Zero)
+            {
                 break;
+            }
             await Task.Delay(remaining < TimeSpan.FromSeconds(1) ? remaining : TimeSpan.FromSeconds(1), cancellationToken).ConfigureAwait(false);
             state.ThrowIfFailed();
             if (state.Reserved != 0 || state.Completed != 0)
+            {
                 throw new InvalidOperationException("The idle outbox phase contains message activity.");
+            }
             samples.Add(new OutboxIdleSample(Stopwatch.GetElapsedTime(started).TotalSeconds, RuntimeObservation.Capture(), readOperations()));
         }
         var elapsed = Stopwatch.GetElapsedTime(started).TotalSeconds;
@@ -32,7 +36,9 @@ internal static class OutboxIdlePhase
         samples.Add(new OutboxIdleSample(elapsed, end, operations));
         var delta = operations.Since(operationsStart);
         if (delta.Probes == 0 || delta.Published != 0 || delta.Errors != 0)
+        {
             throw new InvalidOperationException("The idle phase did not exercise a healthy empty relay.");
+        }
         return new OutboxIdleSnapshot(duration.TotalSeconds, elapsed, runtimeStart, end, delta, samples);
     }
 }

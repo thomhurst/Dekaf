@@ -17,7 +17,10 @@ public class DnsPreferenceCacheBenchmarks
     private int _index;
 
     [Params(32, 8192)]
-    public int HostCount { get; set; }
+    public int HostCount
+    {
+        get; set;
+    }
 
     [GlobalSetup]
     public void Setup()

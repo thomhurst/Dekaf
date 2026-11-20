@@ -17,7 +17,9 @@ internal sealed class ManualTimeProvider : TimeProvider
     {
         var timer = new ManualTimer(this, callback, state);
         lock (_gate)
+        {
             _timers.Add(timer);
+        }
         timer.Change(dueTime, period);
         return timer;
     }
@@ -25,7 +27,9 @@ internal sealed class ManualTimeProvider : TimeProvider
     public async Task WaitForTimerAsync(TimeSpan dueTime)
     {
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-        while (await _scheduled.Reader.ReadAsync(timeout.Token) != dueTime) { }
+        while (await _scheduled.Reader.ReadAsync(timeout.Token) != dueTime)
+        {
+        }
     }
 
     /// <summary>
@@ -37,7 +41,9 @@ internal sealed class ManualTimeProvider : TimeProvider
     {
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
         while (!HasArmedTimer(dueIn))
+        {
             await Task.Delay(1, timeout.Token);
+        }
     }
 
     private bool HasArmedTimer(TimeSpan dueIn)
@@ -47,7 +53,9 @@ internal sealed class ManualTimeProvider : TimeProvider
             for (var index = 0; index < _timers.Count; index++)
             {
                 if (_timers[index].Due != long.MaxValue && _timers[index].Due - _ticks == dueIn.Ticks)
+                {
                     return true;
+                }
             }
             return false;
         }
@@ -63,20 +71,30 @@ internal sealed class ManualTimeProvider : TimeProvider
             {
                 var timer = _timers[index];
                 if (timer.Due > _ticks)
+                {
                     continue;
+                }
                 timer.Due = timer.Period > TimeSpan.Zero ? _ticks + timer.Period.Ticks : long.MaxValue;
                 due.Add(timer);
             }
         }
 
         foreach (var timer in due)
+        {
             timer.Invoke();
+        }
     }
 
     private sealed class ManualTimer(ManualTimeProvider owner, TimerCallback callback, object? state) : ITimer
     {
-        internal long Due { get; set; } = long.MaxValue;
-        internal TimeSpan Period { get; private set; }
+        internal long Due
+        {
+            get; set;
+        } = long.MaxValue;
+        internal TimeSpan Period
+        {
+            get; private set;
+        }
 
         public bool Change(TimeSpan dueTime, TimeSpan period)
         {
@@ -87,7 +105,9 @@ internal sealed class ManualTimeProvider : TimeProvider
             }
 
             if (dueTime != Timeout.InfiniteTimeSpan)
+            {
                 owner._scheduled.Writer.TryWrite(dueTime);
+            }
             return true;
         }
 
@@ -95,7 +115,9 @@ internal sealed class ManualTimeProvider : TimeProvider
         public void Dispose()
         {
             lock (owner._gate)
+            {
                 owner._timers.Remove(this);
+            }
         }
 
         public ValueTask DisposeAsync()

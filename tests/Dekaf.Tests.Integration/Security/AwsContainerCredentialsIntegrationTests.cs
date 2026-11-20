@@ -26,7 +26,9 @@ public sealed class AwsContainerCredentialsIntegrationTests
         try
         {
             foreach (var name in names)
+            {
                 Environment.SetEnvironmentVariable(name, null);
+            }
             Environment.SetEnvironmentVariable("AWS_PROFILE", "dekaf-test-missing-" + Guid.NewGuid().ToString("N"));
             Environment.SetEnvironmentVariable("AWS_EC2_METADATA_DISABLED", "true");
             Environment.SetEnvironmentVariable("AWS_CONTAINER_AUTHORIZATION_TOKEN", "container-token");
@@ -66,7 +68,9 @@ public sealed class AwsContainerCredentialsIntegrationTests
             finally
             {
                 foreach (var (name, value) in snapshot)
+                {
                     Environment.SetEnvironmentVariable(name, value);
+                }
             }
         }
     }
@@ -78,7 +82,9 @@ public sealed class AwsContainerCredentialsIntegrationTests
         using var reader = new StreamReader(stream, Encoding.ASCII, leaveOpen: true);
         var headers = new List<string>();
         while (await reader.ReadLineAsync(cancellationToken) is { Length: > 0 } line)
+        {
             headers.Add(line);
+        }
 
         const string json = """
             {"AccessKeyId":"loopback-access","SecretAccessKey":"loopback-secret","Token":"loopback-token","Expiration":"2099-01-01T00:00:00Z"}

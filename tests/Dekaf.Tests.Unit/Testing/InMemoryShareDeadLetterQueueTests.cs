@@ -1,5 +1,5 @@
-using Dekaf.Consumer;
 using System.Text;
+using Dekaf.Consumer;
 using Dekaf.Consumer.DeadLetter;
 using Dekaf.Producer;
 using Dekaf.Serialization;
@@ -33,7 +33,9 @@ public sealed class InMemoryShareDeadLetterQueueTests
         await using var consumer = new InMemoryShareConsumer<string, string>(cluster, new InMemoryShareConsumerOptions
         {
             AutoOffsetReset = AutoOffsetReset.Earliest,
-            GroupId = "workers", DeadLetterQueueTopic = "dlq.orders", DeadLetterQueueCopyRecord = copyRecord
+            GroupId = "workers",
+            DeadLetterQueueTopic = "dlq.orders",
+            DeadLetterQueueCopyRecord = copyRecord
         });
         consumer.Subscribe("orders");
 
@@ -41,7 +43,9 @@ public sealed class InMemoryShareDeadLetterQueueTests
         {
             consumer.Acknowledge(record, record.Offset == 0 ? AcknowledgeType.Reject : AcknowledgeType.Accept);
             if (record.Offset == 1)
+            {
                 break;
+            }
         }
         await consumer.CommitAsync();
 
@@ -54,7 +58,9 @@ public sealed class InMemoryShareDeadLetterQueueTests
         await Assert.That(deadLetter.Headers.Count).IsEqualTo(6);
         await Assert.That(deadLetter.Headers.Any(header => header.Key == "app")).IsFalse();
         if (copyRecord)
+        {
             await Assert.That(Encoding.UTF8.GetString(deadLetter.Value)).IsEqualTo("value");
+        }
     }
 
     [Test]
@@ -73,7 +79,9 @@ public sealed class InMemoryShareDeadLetterQueueTests
         await using var consumer = new InMemoryShareConsumer<string, string>(cluster, new InMemoryShareConsumerOptions
         {
             AutoOffsetReset = AutoOffsetReset.Earliest,
-            GroupId = "workers", MemberId = "first", DeadLetterQueueTopic = "dlq.orders"
+            GroupId = "workers",
+            MemberId = "first",
+            DeadLetterQueueTopic = "dlq.orders"
         });
         consumer.Subscribe("orders");
 
@@ -91,7 +99,9 @@ public sealed class InMemoryShareDeadLetterQueueTests
             : null;
         var pendingCommit = withFault ? consumer.CommitAsync().AsTask() : null;
         if (barrier is not null)
+        {
             await barrier.WaitUntilEnteredAsync();
+        }
 
         // Invalidate only the cluster registration, retaining the old consumer's pending Reject.
         var registration = (ShareGroupMemberRegistration)typeof(InMemoryShareConsumer<string, string>)
@@ -101,7 +111,9 @@ public sealed class InMemoryShareDeadLetterQueueTests
         await using var replacement = new InMemoryShareConsumer<string, string>(cluster, new InMemoryShareConsumerOptions
         {
             AutoOffsetReset = AutoOffsetReset.Earliest,
-            GroupId = "workers", MemberId = sameMemberId ? "first" : "second", DeadLetterQueueTopic = "dlq.orders"
+            GroupId = "workers",
+            MemberId = sameMemberId ? "first" : "second",
+            DeadLetterQueueTopic = "dlq.orders"
         });
         replacement.Subscribe("orders");
         var current = await replacement.PollAsync().FirstAsync();
@@ -109,11 +121,17 @@ public sealed class InMemoryShareDeadLetterQueueTests
         await Assert.That(current.DeliveryCount).IsEqualTo(2);
 
         if (barrier is not null)
+        {
             barrier.Release();
+        }
         if (pendingCommit is not null)
+        {
             await pendingCommit;
+        }
         else
+        {
             await consumer.CommitAsync();
+        }
 
         await Assert.That(cluster.ReadRecords("dlq.orders").Count).IsEqualTo(1);
         var partition = new TopicPartition("orders", 0);
@@ -163,7 +181,8 @@ public sealed class InMemoryShareDeadLetterQueueTests
         await using var consumer = new InMemoryShareConsumer<string, string>(cluster, new InMemoryShareConsumerOptions
         {
             AutoOffsetReset = AutoOffsetReset.Earliest,
-            GroupId = "workers", DeadLetterQueueTopic = "dlq.orders"
+            GroupId = "workers",
+            DeadLetterQueueTopic = "dlq.orders"
         });
         consumer.Subscribe("orders");
 
@@ -186,7 +205,8 @@ public sealed class InMemoryShareDeadLetterQueueTests
         await using var consumer = new InMemoryShareConsumer<string, string>(cluster, new InMemoryShareConsumerOptions
         {
             AutoOffsetReset = AutoOffsetReset.Earliest,
-            GroupId = "workers", DeadLetterQueueTopic = "dlq.orders"
+            GroupId = "workers",
+            DeadLetterQueueTopic = "dlq.orders"
         });
         consumer.Subscribe("orders");
 
@@ -215,7 +235,8 @@ public sealed class InMemoryShareDeadLetterQueueTests
         await using var consumer = new InMemoryShareConsumer<string, string>(cluster, new InMemoryShareConsumerOptions
         {
             AutoOffsetReset = AutoOffsetReset.Earliest,
-            GroupId = "workers", DeadLetterQueueTopic = "dlq.orders"
+            GroupId = "workers",
+            DeadLetterQueueTopic = "dlq.orders"
         });
         consumer.Subscribe("orders");
 

@@ -33,7 +33,9 @@ internal static class MarkdownReporter
             foreach (var result in groupResults)
             {
                 if (result.Outbox is not { } outbox)
+                {
                     continue;
+                }
                 sb.AppendLine($"### EF Outbox Idle - {result.Client}");
                 sb.AppendLine();
                 sb.AppendLine("| Elapsed | CPU (ms/s) | Allocation (B/s) | Empty probes | Published | Errors |");
@@ -53,29 +55,39 @@ internal static class MarkdownReporter
                 .Where(r => r.TransactionVerification is not null)
                 .ToList();
             if (transactionalResults.Count > 0)
+            {
                 GenerateTransactionVerificationTable(sb, transactionalResults, $"Transaction Verification - {label}");
+            }
 
             var resultsWithLatency = groupResults.Where(r => r.Latency is not null).ToList();
             if (resultsWithLatency.Count > 0)
+            {
                 GenerateLatencyTable(sb, resultsWithLatency, $"Latency - {label}");
+            }
 
             GenerateGcTable(sb, groupResults, $"GC Statistics - {label}");
 
             var resultsWithResourceTrends = groupResults.Where(r => r.ResourceTrend is not null).ToList();
             if (resultsWithResourceTrends.Count > 0)
+            {
                 GenerateResourceTrendTable(sb, resultsWithResourceTrends, $"Resource Trends - {label}");
+            }
 
             var roundTripResults = groupResults
                 .Where(r => r.RoundTripValidation is not null)
                 .ToList();
             if (roundTripResults.Count > 0)
+            {
                 GenerateRoundTripValidationTable(sb, roundTripResults, $"Round-Trip Validation - {label}");
+            }
 
             var resultsWithErrorSamples = groupResults
                 .Where(r => r.Throughput.ErrorSamples.Count > 0)
                 .ToList();
             if (resultsWithErrorSamples.Count > 0)
+            {
                 GenerateErrorSamplesTable(sb, resultsWithErrorSamples, $"Error Samples - {label}");
+            }
         }
 
         if (results.Results.Any(r => r.Client.Equals("Confluent", StringComparison.OrdinalIgnoreCase)))
@@ -204,7 +216,9 @@ internal static class MarkdownReporter
             .OrderBy(row => row.Event.OccurredAtUtc)
             .ToList();
         if (rows.Count == 0)
+        {
             return;
+        }
 
         var displayedRows = SampleEvenly(rows, MaxTimelineRows);
         var omittedRows = rows.Count - displayedRows.Count;
@@ -228,14 +242,18 @@ internal static class MarkdownReporter
                 $"{row.Event.ObservationCount:N0} / {row.Event.ObservedDurationMs / 1000.0:F1}s | {throughput} |");
         }
         if (omittedRows > 0)
+        {
             sb.AppendLine($"*{omittedRows:N0} scale event(s) omitted; rows sampled across the full timeline.*");
+        }
         sb.AppendLine();
     }
 
     private static List<T> SampleEvenly<T>(IReadOnlyList<T> rows, int maximumRows)
     {
         if (rows.Count <= maximumRows)
+        {
             return [.. rows];
+        }
 
         var sampled = new List<T>(maximumRows);
         for (var i = 0; i < maximumRows; i++)
@@ -259,7 +277,9 @@ internal static class MarkdownReporter
             .ThenBy(row => row.Diagnostic.BrokerId)
             .ToList();
         if (rows.Count == 0)
+        {
             return;
+        }
 
         sb.AppendLine($"## Producer Request Diagnostics - {label}");
         sb.AppendLine();
@@ -289,7 +309,9 @@ internal static class MarkdownReporter
             .OrderBy(row => row.Sample.CapturedAtUtc)
             .ToList();
         if (rows.Count == 0)
+        {
             return;
+        }
 
         var displayedRows = SampleEvenly(rows, MaxTimelineRows);
         var omittedRows = rows.Count - displayedRows.Count;
@@ -313,7 +335,9 @@ internal static class MarkdownReporter
                 $"{row.Sample.AdmissionBlockCount:N0} | {throughput} |");
         }
         if (omittedRows > 0)
+        {
             sb.AppendLine($"*{omittedRows:N0} budget sample(s) omitted; rows sampled across the full timeline.*");
+        }
         sb.AppendLine();
 
         GenerateBudgetProbeTimeline(sb, results, label);
@@ -331,7 +355,9 @@ internal static class MarkdownReporter
             .OrderBy(row => row.Event.OccurredAtUtc)
             .ToList();
         if (rows.Count == 0)
+        {
             return;
+        }
 
         var displayedRows = SampleEvenly(rows, MaxTimelineRows);
         sb.AppendLine($"## Producer Budget Probe Events - {label}");
@@ -350,7 +376,9 @@ internal static class MarkdownReporter
 
         var omitted = rows.Count - displayedRows.Count;
         if (omitted > 0)
+        {
             sb.AppendLine($"*{omitted:N0} probe event(s) omitted; rows sampled across the full timeline.*");
+        }
         sb.AppendLine();
     }
 
@@ -373,7 +401,9 @@ internal static class MarkdownReporter
             .Where(row => row.Count > 0)
             .ToList();
         if (rows.Count == 0)
+        {
             return;
+        }
 
         sb.AppendLine($"## Producer Admission Block Durations - {label}");
         sb.AppendLine();
@@ -405,7 +435,9 @@ internal static class MarkdownReporter
             .OrderBy(row => row.Sample.CapturedAtUtc)
             .ToList();
         if (rows.Count == 0)
+        {
             return;
+        }
 
         var displayedRows = SampleEvenly(rows, MaxTimelineRows);
         var omittedRows = rows.Count - displayedRows.Count;
@@ -442,7 +474,9 @@ internal static class MarkdownReporter
         }
 
         if (omittedRows > 0)
+        {
             sb.AppendLine($"*{omittedRows:N0} fetch sample(s) omitted; rows sampled across the full timeline.*");
+        }
 
         sb.AppendLine();
         sb.AppendLine("*Bytes/fetch is consumed message payload bytes divided by completed fetch requests for the interval; queue depths, managed heap size, and active GC heap count are point-in-time samples. GC collection counts and pause time are interval deltas. DATAS is .NET dynamic GC adaptation mode.*");
@@ -463,7 +497,9 @@ internal static class MarkdownReporter
             .OrderBy(row => row.Sample.StartedAtUtc)
             .ToList();
         if (rows.Count == 0)
+        {
             return;
+        }
 
         sb.AppendLine($"## Delivery Latency Outliers - {label}");
         sb.AppendLine();
@@ -536,9 +572,13 @@ internal static class MarkdownReporter
         double clientMessagesPerSecond)
     {
         if (scaleEventCount > 0)
+        {
             return "connection transition";
+        }
         if (gen2Delta > 0 || pauseDeltaMs >= 10)
+        {
             return "GC pause";
+        }
         if (throughputSample is not null &&
             throughputSample.MessagesPerSecond < clientMessagesPerSecond * 0.5)
         {
@@ -627,11 +667,15 @@ internal static class MarkdownReporter
             .SelectMany(r => r.TransactionVerification!.FailureSamples.Select(sample => (r.Client, Sample: sample)))
             .ToList();
         if (failureSamples.Count == 0)
+        {
             return;
+        }
 
         sb.AppendLine("**Transaction verification failure samples:**");
         foreach (var (client, sample) in failureSamples)
+        {
             sb.AppendLine($"- {client}: {sample}");
+        }
         sb.AppendLine();
     }
 

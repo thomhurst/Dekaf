@@ -29,7 +29,9 @@ internal sealed class DeserializerSubjectNameCache : IAssociatedNameCacheInvalid
         _asyncStrategy = asyncStrategy;
         _useLegacySubjectNames = useLegacySubjectNames;
         if (asyncStrategy is AssociatedNameStrategy associatedNameStrategy)
+        {
             associatedNameStrategy.RegisterCacheInvalidationTarget(this);
+        }
     }
 
     internal static DeserializerSubjectNameCache? Create(
@@ -47,7 +49,9 @@ internal sealed class DeserializerSubjectNameCache : IAssociatedNameCacheInvalid
     internal static DeserializerSubjectNameCache? Create(SchemaRegistryDeserializerConfig? config)
     {
         if (config is null)
+        {
             return null;
+        }
 
         if (config.AsyncSubjectNameStrategy is not null
             || config is
@@ -82,9 +86,13 @@ internal sealed class DeserializerSubjectNameCache : IAssociatedNameCacheInvalid
     {
         ArgumentNullException.ThrowIfNull(schemaRegistry);
         if (customStrategy is not null)
+        {
             asyncStrategy = null;
+        }
         else if (asyncStrategy is null && strategy == SubjectNameStrategy.AssociatedName)
+        {
             asyncStrategy = new AssociatedNameStrategy(schemaRegistry);
+        }
 
         if (customStrategy is null
             && asyncStrategy is null
@@ -180,18 +188,24 @@ internal sealed class DeserializerSubjectNameCache : IAssociatedNameCacheInvalid
         if (_asyncStrategy is not null)
         {
             if (TryGetPreparedSubject(schemaId, topic, isKey, out var prepared))
+            {
                 return prepared.Subject;
+            }
 
             throw new InvalidOperationException(
                 "The asynchronous subject-name strategy must be prepared before deserialization.");
         }
 
         if (_subjectsByTopicIdentity.TryGetValue(topic, out var topicSubjects))
+        {
             return topicSubjects.GetSubjectName(this, schemaId, schema, topic, isKey, fallbackRecordName);
+        }
 
         var key = new CacheKey(schemaId, topic, isKey);
         if (Volatile.Read(ref _state).Subjects.TryGetValue(key, out var subject))
+        {
             return subject;
+        }
 
         topicSubjects = _subjectsByTopicIdentity.GetValue(topic, static _ => new PerTopicSubjectNames());
         return topicSubjects.GetSubjectName(this, schemaId, schema, topic, isKey, fallbackRecordName);
@@ -224,7 +238,9 @@ internal sealed class DeserializerSubjectNameCache : IAssociatedNameCacheInvalid
         CancellationToken cancellationToken)
     {
         if (_asyncStrategy is null)
+        {
             return new ValueTask<string>(ResolveSubjectName(schema, topic, isKey, fallbackRecordName));
+        }
 
         var recordName = SubjectNameResolver.GetRecordName(schema, fallbackRecordName);
         return _asyncStrategy.GetSubjectNameAsync(topic, recordName, isKey, cancellationToken);
@@ -243,10 +259,14 @@ internal sealed class DeserializerSubjectNameCache : IAssociatedNameCacheInvalid
         for (var attempt = 0; attempt < MaxAssociatedNameInvalidationRetries; attempt++)
         {
             if (!ReferenceEquals(state, Volatile.Read(ref _state)))
+            {
                 state = Volatile.Read(ref _state);
+            }
 
             if (state.Subjects.TryGetValue(key, out _))
+            {
                 return;
+            }
 
             var schema = await schemaRegistry.GetSchemaAsync(schemaId, cancellationToken).ConfigureAwait(false);
             var recordName = SubjectNameResolver.GetRecordName(schema, fallbackRecordName);
@@ -259,7 +279,9 @@ internal sealed class DeserializerSubjectNameCache : IAssociatedNameCacheInvalid
             _ = await schemaRegistry.GetSchemaAsync(schemaId, subject, cancellationToken)
                 .ConfigureAwait(false);
             if (AddPreparedSubject(state, key, subject))
+            {
                 return;
+            }
         }
 
         throw new InvalidOperationException(
@@ -274,12 +296,16 @@ internal sealed class DeserializerSubjectNameCache : IAssociatedNameCacheInvalid
         lock (_subjectsLock)
         {
             if (!ReferenceEquals(state, Volatile.Read(ref _state)))
+            {
                 return false;
+            }
 
             var subjects = state.Subjects;
 
             if (subjects.TryGetValue(key, out _))
+            {
                 return true;
+            }
 
             if (_subjectOrder.Count >= MaxCachedSubjectCount)
             {
@@ -368,7 +394,9 @@ internal sealed class DeserializerSubjectNameCache : IAssociatedNameCacheInvalid
         {
             var key = new SchemaKey(schemaId, isKey);
             if (_subjects.TryGetValue(key, out var subject))
+            {
                 return subject;
+            }
 
             subject = owner.GetSubjectNameByValue(
                 schemaId,
@@ -385,12 +413,16 @@ internal sealed class DeserializerSubjectNameCache : IAssociatedNameCacheInvalid
             lock (_subjectsLock)
             {
                 if (_subjects.TryGetValue(key, out var cachedSubject))
+                {
                     return cachedSubject;
+                }
 
                 // Overflow remains in the bounded value cache instead of evicting an
                 // identity entry and turning rotating schema IDs into lock contention.
                 if (_subjects.Count >= MaxCachedSchemaCount)
+                {
                     return subject;
+                }
 
                 _subjects[key] = subject;
                 return subject;
@@ -399,13 +431,20 @@ internal sealed class DeserializerSubjectNameCache : IAssociatedNameCacheInvalid
     }
 
     private readonly record struct CacheKey(int SchemaId, string Topic, bool IsKey);
+
     private readonly record struct SchemaKey(int SchemaId, bool IsKey);
 
     internal readonly record struct PreparedSubject(string Subject, int Generation, object? State);
 
     private sealed class CacheState(int generation)
     {
-        internal ConcurrentDictionary<CacheKey, string> Subjects { get; } = new();
-        internal int Generation { get; } = generation;
+        internal ConcurrentDictionary<CacheKey, string> Subjects
+        {
+            get;
+        } = new();
+        internal int Generation
+        {
+            get;
+        } = generation;
     }
 }

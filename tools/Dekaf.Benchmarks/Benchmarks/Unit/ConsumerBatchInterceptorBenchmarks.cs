@@ -19,10 +19,16 @@ public class ConsumerBatchInterceptorBenchmarks
     private Func<ConsumeResult<Ignore, ReadOnlyMemory<byte>>, ConsumeResult<Ignore, ReadOnlyMemory<byte>>>? _baselineOnConsume;
 
     [Params(0, 1, 3)]
-    public int InterceptorCount { get; set; }
+    public int InterceptorCount
+    {
+        get; set;
+    }
 
     [Params(false, true)]
-    public bool ReplaceResult { get; set; }
+    public bool ReplaceResult
+    {
+        get; set;
+    }
 
     [GlobalSetup]
     public async Task Setup()
@@ -36,20 +42,31 @@ public class ConsumerBatchInterceptorBenchmarks
         }
         var interceptors = new CountingInterceptor[InterceptorCount];
         for (var index = 0; index < interceptors.Length; index++)
+        {
             interceptors[index] = new CountingInterceptor(ReplaceResult);
+        }
         _consumer = new KafkaConsumer<Ignore, ReadOnlyMemory<byte>>(new ConsumerOptions
         {
-            BootstrapServers = ["localhost:9092"], OffsetCommitMode = OffsetCommitMode.Manual,
-            Interceptors = interceptors, QueuedMinMessages = 1, MaxPollRecords = MessageCount
+            BootstrapServers = ["localhost:9092"],
+            OffsetCommitMode = OffsetCommitMode.Manual,
+            Interceptors = interceptors,
+            QueuedMinMessages = 1,
+            MaxPollRecords = MessageCount
         }, Serializers.Ignore, Serializers.RawBytes);
         BufferedConsumerHarness.InitializeForBufferedFastPath(_consumer, Topic, 0);
         _baselineOnConsume = BufferedConsumerHarness.BindBaselineBatchInterceptors(_consumer, InterceptorCount > 0);
         var expectedLength = ValueLength - (ReplaceResult ? InterceptorCount : 0);
         if (await EnumerateCore(validate: true) != MessageCount * expectedLength)
+        {
             throw new InvalidOperationException("Every record must contain the result of the complete interceptor chain.");
+        }
         foreach (var interceptor in interceptors)
+        {
             if (interceptor.Calls != MessageCount)
+            {
                 throw new InvalidOperationException("Each interceptor must run once per delivered record.");
+            }
+        }
     }
 
     [Benchmark(OperationsPerInvoke = MessageCount)]
@@ -70,11 +87,15 @@ public class ConsumerBatchInterceptorBenchmarks
                 if (validate)
                 {
                     if (!ReplaceResult && !result.IsKeyNull)
+                    {
                         throw new InvalidOperationException("Pass-through delivery must preserve the wire-null key flag.");
+                    }
                     var removedBytes = ReplaceResult ? InterceptorCount : 0;
                     if (index >= MessageCount || result.Offset != index ||
                         !result.Value.Span.SequenceEqual(_records[0][index].Value.Span[removedBytes..]))
+                    {
                         throw new InvalidOperationException("Every record must retain its identity and fully transformed payload in order.");
+                    }
                     index++;
                 }
                 bytes += result.Value.Length;
@@ -82,7 +103,9 @@ public class ConsumerBatchInterceptorBenchmarks
             break;
         }
         if (validate && index != MessageCount)
+        {
             throw new InvalidOperationException("Every seeded record must be delivered exactly once.");
+        }
         return bytes;
     }
 
@@ -104,6 +127,8 @@ public class ConsumerBatchInterceptorBenchmarks
                     result.Timestamp.ToUnixTimeMilliseconds(), result.TimestampType, result.LeaderEpoch)
                 : result;
         }
-        public void OnCommit(IReadOnlyList<TopicPartitionOffset> offsets) { }
+        public void OnCommit(IReadOnlyList<TopicPartitionOffset> offsets)
+        {
+        }
     }
 }

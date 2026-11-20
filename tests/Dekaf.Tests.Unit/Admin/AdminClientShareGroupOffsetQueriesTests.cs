@@ -126,8 +126,11 @@ public sealed class AdminClientShareGroupOffsetQueriesTests
             .Returns(call =>
             {
                 calls.Add(call.ArgAt<DescribeShareGroupOffsetsRequest>(0).Groups.Select(group => group.GroupId).ToArray());
-                return ValueTask.FromResult(new DescribeShareGroupOffsetsResponse { Groups = calls.Count == 1
-                    ? [Group("first"), Group("second", ErrorCode.NotCoordinator)] : [Group("second")] });
+                return ValueTask.FromResult(new DescribeShareGroupOffsetsResponse
+                {
+                    Groups = calls.Count == 1
+                    ? [Group("first"), Group("second", ErrorCode.NotCoordinator)] : [Group("second")]
+                });
             });
         var results = await admin.ListShareGroupOffsetsAsync(Specs("first", "second"));
         await Assert.That(calls.Count).IsEqualTo(2);
@@ -144,13 +147,18 @@ public sealed class AdminClientShareGroupOffsetQueriesTests
         var (admin, connection) = CreateAdmin();
         await using var owned = admin;
         if (discovery)
+        {
             connection.SendAsync<FindCoordinatorRequest, FindCoordinatorResponse>(Arg.Any<FindCoordinatorRequest>(), Arg.Any<short>(), Arg.Any<CancellationToken>())
                 .Returns(call =>
                 {
                     var key = call.ArgAt<FindCoordinatorRequest>(0).Key;
-                    return ValueTask.FromResult(new FindCoordinatorResponse { Coordinators = [new Coordinator
-                    { Key = key, NodeId = 1, Host = "localhost", Port = 9092, ErrorCode = key == "denied" ? ErrorCode.GroupAuthorizationFailed : ErrorCode.None }] });
+                    return ValueTask.FromResult(new FindCoordinatorResponse
+                    {
+                        Coordinators = [new Coordinator
+                    { Key = key, NodeId = 1, Host = "localhost", Port = 9092, ErrorCode = key == "denied" ? ErrorCode.GroupAuthorizationFailed : ErrorCode.None }]
+                    });
                 });
+        }
         connection.SendAsync<DescribeShareGroupOffsetsRequest, DescribeShareGroupOffsetsResponse>(Arg.Any<DescribeShareGroupOffsetsRequest>(), Arg.Any<short>(), Arg.Any<CancellationToken>())
             .Returns(ValueTask.FromResult(new DescribeShareGroupOffsetsResponse { Groups = [Group("ok"), Group("denied", ErrorCode.GroupAuthorizationFailed)] }));
         var results = await admin.ListShareGroupOffsetsAsync(Specs("ok", "denied"));
@@ -169,8 +177,11 @@ public sealed class AdminClientShareGroupOffsetQueriesTests
             {
                 var groups = call.ArgAt<DescribeShareGroupOffsetsRequest>(0).Groups;
                 completedRequests += groups.Count(group => group.GroupId == "ok");
-                return ValueTask.FromResult(new DescribeShareGroupOffsetsResponse { Groups = groups.Select(group =>
-                    Group(group.GroupId, group.GroupId == "ok" ? ErrorCode.None : ErrorCode.CoordinatorLoadInProgress)).ToArray() });
+                return ValueTask.FromResult(new DescribeShareGroupOffsetsResponse
+                {
+                    Groups = groups.Select(group =>
+                    Group(group.GroupId, group.GroupId == "ok" ? ErrorCode.None : ErrorCode.CoordinatorLoadInProgress)).ToArray()
+                });
             });
         var result = await admin.ListShareGroupOffsetsAsync(Specs("ok", "retry"));
         await Assert.That(completedRequests).IsEqualTo(1);
@@ -219,6 +230,7 @@ public sealed class AdminClientShareGroupOffsetQueriesTests
         var entered = new TaskCompletionSource<CancellationToken>(TaskCreationOptions.RunContinuationsAsynchronously);
         connection.SendAsync<FindCoordinatorRequest, FindCoordinatorResponse>(Arg.Any<FindCoordinatorRequest>(), Arg.Any<short>(), Arg.Any<CancellationToken>())
             .Returns(call => new ValueTask<FindCoordinatorResponse>(Pause(call.ArgAt<CancellationToken>(2))));
+
         async Task<FindCoordinatorResponse> Pause(CancellationToken token)
         {
             var wait = Task.Delay(Timeout.Infinite, token);
@@ -226,9 +238,12 @@ public sealed class AdminClientShareGroupOffsetQueriesTests
             await wait;
             return new FindCoordinatorResponse { Coordinators = [] };
         }
+
         var pending = admin.ListShareGroupOffsetsAsync(Specs("wait"), new() { TimeoutMs = 30000 }, cancellation.Token).AsTask();
         if (await Task.WhenAny(entered.Task, pending) == pending)
+        {
             await pending;
+        }
         await Assert.That(entered.Task.IsCompleted).IsTrue();
         // Both endings fire only once discovery is suspended on the pending FindCoordinator.
         if (deadline)
@@ -254,7 +269,9 @@ public sealed class AdminClientShareGroupOffsetQueriesTests
         await Assert.That(async () => await admin.ListShareGroupOffsetsAsync(new Dictionary<string, ListShareGroupOffsetsSpec> { ["g"] = null! })).Throws<ArgumentNullException>();
         await Assert.That(async () => await admin.ListShareGroupOffsetsAsync(Specs("g"), new() { TimeoutMs = -1 })).Throws<ArgumentOutOfRangeException>();
         foreach (var partitions in new TopicPartition[][] { [Partition, Partition], [new("input", -1)], [new("", 0)] })
+        {
             await Assert.That(async () => await admin.ListShareGroupOffsetsAsync(new Dictionary<string, ListShareGroupOffsetsSpec> { ["g"] = new() { TopicPartitions = partitions } })).Throws<ArgumentException>();
+        }
         using var cancellation = new CancellationTokenSource();
         cancellation.Cancel();
         await Assert.That(async () => await admin.ListShareGroupOffsetsAsync(Specs("g"), cancellationToken: cancellation.Token)).Throws<OperationCanceledException>();
@@ -282,8 +299,11 @@ public sealed class AdminClientShareGroupOffsetQueriesTests
             .Returns(call =>
             {
                 var key = call.ArgAt<FindCoordinatorRequest>(0).Key;
-                return ValueTask.FromResult(new FindCoordinatorResponse { Coordinators =
-                    [new() { Key = key, NodeId = key == "ok" ? 1 : 2, Host = "localhost", Port = 9092 }] });
+                return ValueTask.FromResult(new FindCoordinatorResponse
+                {
+                    Coordinators =
+                    [new() { Key = key, NodeId = key == "ok" ? 1 : 2, Host = "localhost", Port = 9092 }]
+                });
             });
         var requests = new List<string>();
         var failed = false;
@@ -320,19 +340,29 @@ public sealed class AdminClientShareGroupOffsetQueriesTests
                     ? new InvalidOperationException("invariant") : new GroupException(ErrorCode.NotCoordinator, "moved"));
             });
         if (invariant)
+        {
             await Assert.That(async () => await admin.ListShareGroupOffsetsAsync(Specs("g"), cancellationToken: cancellation.Token)).Throws<InvalidOperationException>();
+        }
         else
+        {
             await Assert.That(async () => await admin.ListShareGroupOffsetsAsync(Specs("g"), cancellationToken: cancellation.Token)).Throws<OperationCanceledException>();
+        }
     }
 
     private static Dictionary<string, ListShareGroupOffsetsSpec> Specs(params string[] groups) => groups.ToDictionary(group => group, _ => new ListShareGroupOffsetsSpec());
 
     private static DescribeShareGroupOffsetsResponseGroup Group(string groupId, ErrorCode error = ErrorCode.None) => new()
     {
-        GroupId = groupId, ErrorCode = error, ErrorMessage = error == ErrorCode.None ? null : "group error",
-        Topics = [new() { TopicName = "input", Partitions =
+        GroupId = groupId,
+        ErrorCode = error,
+        ErrorMessage = error == ErrorCode.None ? null : "group error",
+        Topics = [new()
+        {
+            TopicName = "input",
+            Partitions =
         [new() { PartitionIndex = 0, StartOffset = 42, LeaderEpoch = 7, Lag = 9 },
-         new() { PartitionIndex = 1, ErrorCode = ErrorCode.TopicAuthorizationFailed, ErrorMessage = "denied" }] }]
+         new() { PartitionIndex = 1, ErrorCode = ErrorCode.TopicAuthorizationFailed, ErrorMessage = "denied" }]
+        }]
     };
 
     private static (AdminClient Admin, IKafkaConnection Connection) CreateAdmin(short version = 1, bool supported = true)
@@ -347,7 +377,9 @@ public sealed class AdminClientShareGroupOffsetQueriesTests
         pool.GetConnectionAsync(Arg.Any<string>(), Arg.Any<int>(), Arg.Any<CancellationToken>()).Returns(ValueTask.FromResult(connection));
         var versions = new List<ApiVersion> { new(ApiKey.Metadata, 9, 13), new(ApiKey.FindCoordinator, 4, 6) };
         if (supported)
+        {
             versions.Add(new(ApiKey.DescribeShareGroupOffsets, 0, version));
+        }
         connection.SendAsync<ApiVersionsRequest, ApiVersionsResponse>(Arg.Any<ApiVersionsRequest>(), Arg.Any<short>(), Arg.Any<CancellationToken>())
             .Returns(ValueTask.FromResult(new ApiVersionsResponse { ErrorCode = ErrorCode.None, ApiKeys = versions }));
         connection.SendAsync<MetadataRequest, MetadataResponse>(Arg.Any<MetadataRequest>(), Arg.Any<short>(), Arg.Any<CancellationToken>())
@@ -358,7 +390,9 @@ public sealed class AdminClientShareGroupOffsetQueriesTests
         metadata.SetApiVersion(ApiKey.Metadata, 9, 13);
         metadata.SetApiVersion(ApiKey.FindCoordinator, 4, 6);
         if (supported)
+        {
             metadata.SetApiVersion(ApiKey.DescribeShareGroupOffsets, 0, version);
+        }
         return (new AdminClient(new() { BootstrapServers = ["localhost:9092"], RetryBackoffMs = 1, RetryBackoffMaxMs = 1 }, pool, metadata, ownsResources: true), connection);
     }
 }

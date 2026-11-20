@@ -65,13 +65,25 @@ internal sealed class DynamoDbOutboxSchema
         _sequencePartitionPrefix = options.KeyPrefix + "#SEQUENCE#";
     }
 
-    public string TableName { get; }
+    public string TableName
+    {
+        get;
+    }
 
-    public string PartitionKeyName { get; }
+    public string PartitionKeyName
+    {
+        get;
+    }
 
-    public string SortKeyName { get; }
+    public string SortKeyName
+    {
+        get;
+    }
 
-    public string CoordinationPartition { get; }
+    public string CoordinationPartition
+    {
+        get;
+    }
 
     public string MessagePartition(int bucket) =>
         _messagePartitionPrefix + bucket.ToString(CultureInfo.InvariantCulture);
@@ -130,13 +142,21 @@ internal sealed class DynamoDbOutboxSchema
         item[CreatedAtUtc] = Number(message.CreatedAtUtc.UtcTicks);
         item[BucketCount] = Number(bucketCount);
         if (message.Key is not null)
+        {
             item[Key] = Binary(message.Key);
+        }
         if (message.Value is not null)
+        {
             item[Value] = Binary(message.Value);
+        }
         if (message.Headers is not null)
+        {
             item[Headers] = Binary(message.Headers);
+        }
         if (message.Partition is { } partition)
+        {
             item[Partition] = Number(partition);
+        }
         return item;
     }
 

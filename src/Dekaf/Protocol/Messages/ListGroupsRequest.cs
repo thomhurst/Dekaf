@@ -13,12 +13,18 @@ public sealed class ListGroupsRequest : IKafkaRequest<ListGroupsResponse>
     /// <summary>
     /// Filter groups by state (v4+). Null means no filter.
     /// </summary>
-    public IReadOnlyList<string>? StatesFilter { get; init; }
+    public IReadOnlyList<string>? StatesFilter
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Filter groups by type (v5+). Null means no filter.
     /// </summary>
-    public IReadOnlyList<string>? TypesFilter { get; init; }
+    public IReadOnlyList<string>? TypesFilter
+    {
+        get; init;
+    }
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {

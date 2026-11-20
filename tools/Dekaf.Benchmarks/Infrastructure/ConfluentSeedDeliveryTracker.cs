@@ -18,14 +18,19 @@ internal sealed class ConfluentSeedDeliveryTracker
     /// <summary>
     /// Gets the cached handler shared by every seed produce.
     /// </summary>
-    public Action<DeliveryReport<string, string>> Handler { get; }
+    public Action<DeliveryReport<string, string>> Handler
+    {
+        get;
+    }
 
     public void EnsureComplete(int expectedCount, int undeliveredCount)
     {
         var completedCount = Volatile.Read(ref _completedCount);
         var failedCount = Volatile.Read(ref _failedCount);
         if (undeliveredCount == 0 && completedCount == expectedCount && failedCount == 0)
+        {
             return;
+        }
 
         throw new InvalidOperationException(
             $"Benchmark seed delivery failed: expected {expectedCount} reports, received {completedCount}, " +
@@ -35,7 +40,9 @@ internal sealed class ConfluentSeedDeliveryTracker
     private void OnDelivery(DeliveryReport<string, string> report)
     {
         if (report.Error.IsError)
+        {
             Interlocked.Increment(ref _failedCount);
+        }
 
         Interlocked.Increment(ref _completedCount);
     }

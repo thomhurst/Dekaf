@@ -55,7 +55,9 @@ public sealed class PartitionedProcessingMonitor
                 for (var i = 0; i < _sources.Count; i++)
                 {
                     if (_sources[i].TryGetOldestOutstandingUtcTicks(out var ticks) && ticks < oldest)
+                    {
                         oldest = ticks;
+                    }
                 }
             }
 
@@ -66,26 +68,34 @@ public sealed class PartitionedProcessingMonitor
     internal void Attach()
     {
         if (Interlocked.CompareExchange(ref _attached, 1, 0) != 0)
+        {
             throw new InvalidOperationException("The partitioned processing monitor is already attached to a running consumer.");
+        }
     }
 
     internal void Detach()
     {
         lock (_sources)
+        {
             _sources.Clear();
+        }
         Volatile.Write(ref _attached, 0);
     }
 
     internal void Register(IOutstandingRecordSource source)
     {
         lock (_sources)
+        {
             _sources.Add(source);
+        }
     }
 
     internal void Unregister(IOutstandingRecordSource source)
     {
         lock (_sources)
+        {
             _sources.Remove(source);
+        }
     }
 }
 
@@ -146,13 +156,19 @@ internal sealed class OutstandingRecordTimeline
         if (_count == entries.Length)
         {
             if (entries.Length < MaximumCapacity)
+            {
                 entries = Grow(entries);
+            }
             else
+            {
                 Merge(entries);
+            }
         }
 
         if (_count > 0)
+        {
             entries[(_head + _count - 1) % entries.Length].LastOffset = lastEnqueuedOffset;
+        }
 
         entries[(_head + _count) % entries.Length] = new Entry(OpenLastOffset, utcTicks);
         _count++;
@@ -199,7 +215,9 @@ internal sealed class OutstandingRecordTimeline
                 var found = TryFind(offset, out utcTicks);
                 // Keep the reads above from moving after the second sequence read.
                 if (Interlocked.CompareExchange(ref _sequence, 0, 0) == sequence)
+                {
                     return found;
+                }
             }
 
             spinner.SpinOnce();
@@ -234,7 +252,9 @@ internal sealed class OutstandingRecordTimeline
     {
         var grown = new Entry[entries.Length * 2];
         for (var i = 0; i < _count; i++)
+        {
             grown[i] = entries[(_head + i) % entries.Length];
+        }
 
         _entries = grown;
         _head = 0;
@@ -250,7 +270,9 @@ internal sealed class OutstandingRecordTimeline
         {
             var first = entries[(_head + i) % entries.Length];
             if (i + 1 < _count)
+            {
                 first.LastOffset = entries[(_head + i + 1) % entries.Length].LastOffset;
+            }
             entries[(_head + merged) % entries.Length] = first;
         }
 

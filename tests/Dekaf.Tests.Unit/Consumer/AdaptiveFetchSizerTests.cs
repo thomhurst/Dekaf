@@ -20,7 +20,9 @@ public class AdaptiveFetchSizerTests
 
         // Send enough grow signals to hit the stable window (default 3)
         for (var i = 0; i < 3; i++)
+        {
             sizer.EvaluateAndAdjust(0.3); // Below grow threshold of 0.5
+        }
 
         await Assert.That(sizer.CurrentPartitionFetchBytes).IsGreaterThan(initialPartitionBytes);
         await Assert.That(sizer.CurrentFetchMaxBytes).IsGreaterThan(initialFetchMaxBytes);
@@ -101,7 +103,9 @@ public class AdaptiveFetchSizerTests
 
         // Send enough memory-pressure signals to hit the stable window
         for (var i = 0; i < 3; i++)
+        {
             sizer.ReportMemoryPressure();
+        }
 
         await Assert.That(sizer.CurrentPartitionFetchBytes).IsLessThan(4_000_000);
         await Assert.That(sizer.CurrentFetchMaxBytes).IsLessThan(100_000_000);
@@ -156,7 +160,9 @@ public class AdaptiveFetchSizerTests
         var sizer = new AdaptiveFetchSizer(options);
 
         for (var i = 0; i < 10; i++)
+        {
             sizer.EvaluateAndAdjust(10.0);
+        }
 
         await Assert.That(sizer.CurrentPartitionFetchBytes).IsEqualTo(4_000_000);
         await Assert.That(sizer.CurrentFetchMaxBytes).IsEqualTo(100_000_000);
@@ -247,7 +253,9 @@ public class AdaptiveFetchSizerTests
 
         // Ratio between grow (0.5) and shrink (2.0) thresholds — stable zone
         for (var i = 0; i < 10; i++)
+        {
             sizer.EvaluateAndAdjust(1.0);
+        }
 
         await Assert.That(sizer.CurrentPartitionFetchBytes).IsEqualTo(initialPartitionBytes);
         await Assert.That(sizer.CurrentFetchMaxBytes).IsEqualTo(initialFetchMaxBytes);
@@ -361,7 +369,9 @@ public class AdaptiveFetchSizerTests
 
         // 4 signals should not trigger growth
         for (var i = 0; i < 4; i++)
+        {
             sizer.EvaluateAndAdjust(0.3);
+        }
         await Assert.That(sizer.CurrentPartitionFetchBytes).IsEqualTo(1_000_000);
 
         // 5th signal triggers growth

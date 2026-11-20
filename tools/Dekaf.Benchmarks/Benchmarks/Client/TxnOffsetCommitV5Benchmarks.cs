@@ -17,7 +17,10 @@ public class TxnOffsetCommitV5Benchmarks
     private Harness _tv2 = null!;
 
     [Params(0, 1)]
-    public int SimulatedRpcLatencyMs { get; set; }
+    public int SimulatedRpcLatencyMs
+    {
+        get; set;
+    }
 
     [GlobalSetup]
     public void Setup()
@@ -122,8 +125,14 @@ public class TxnOffsetCommitV5Benchmarks
         MetadataManager metadataManager,
         BenchmarkConnection connection) : IAsyncDisposable
     {
-        internal KafkaProducer<string, string> Producer { get; } = producer;
-        internal BenchmarkConnection Connection { get; } = connection;
+        internal KafkaProducer<string, string> Producer
+        {
+            get;
+        } = producer;
+        internal BenchmarkConnection Connection
+        {
+            get;
+        } = connection;
 
         public async ValueTask DisposeAsync()
         {
@@ -144,7 +153,10 @@ public class TxnOffsetCommitV5Benchmarks
         public int Port => 9092;
         public bool IsConnected => true;
         public int RpcCount => Volatile.Read(ref _rpcCount);
-        public KafkaConnectionCapabilities Capabilities { get; } =
+        public KafkaConnectionCapabilities Capabilities
+        {
+            get;
+        } =
             KafkaConnectionCapabilities.Create(new ApiVersionsResponse
             {
                 ErrorCode = ErrorCode.None,

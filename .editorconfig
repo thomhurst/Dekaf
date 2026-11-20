@@ -1,0 +1,163 @@
+# Shared C# profile. See csharp.md for readability rules that need human judgment.
+root = true
+
+[*.cs]
+charset = utf-8
+indent_style = space
+indent_size = 4
+tab_width = 4
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+
+# Always use braces, including single-statement branches and loop bodies.
+csharp_prefer_braces = true:error
+dotnet_diagnostic.IDE0011.severity = error
+csharp_new_line_before_open_brace = all
+csharp_new_line_before_else = true
+csharp_new_line_before_catch = true
+csharp_new_line_before_finally = true
+csharp_preserve_single_line_blocks = false
+csharp_preserve_single_line_statements = false
+
+# Separate code visually. Logical groups and member spacing also need csharp.md.
+# These Roslyn options are experimental; support depends on the SDK/editor.
+dotnet_style_allow_multiple_blank_lines_experimental = false:warning
+dotnet_style_allow_statement_immediately_after_block_experimental = false:warning
+csharp_style_allow_embedded_statements_on_same_line_experimental = false:warning
+csharp_style_allow_blank_lines_between_consecutive_braces_experimental = false:warning
+dotnet_diagnostic.IDE2000.severity = warning
+dotnet_diagnostic.IDE2001.severity = warning
+dotnet_diagnostic.IDE2002.severity = warning
+dotnet_diagnostic.IDE2003.severity = warning
+
+# Standard indentation and spaces.
+csharp_indent_block_contents = true
+csharp_indent_braces = false
+csharp_indent_case_contents = true
+csharp_indent_case_contents_when_block = true
+csharp_indent_switch_labels = true
+csharp_indent_labels = one_less_than_current
+csharp_space_after_cast = false
+csharp_space_after_colon_in_inheritance_clause = true
+csharp_space_after_comma = true
+csharp_space_after_dot = false
+csharp_space_after_keywords_in_control_flow_statements = true
+csharp_space_after_semicolon_in_for_statement = true
+csharp_space_before_colon_in_inheritance_clause = true
+csharp_space_before_comma = false
+csharp_space_before_dot = false
+csharp_space_before_open_square_brackets = false
+csharp_space_before_semicolon_in_for_statement = false
+csharp_space_between_empty_square_brackets = false
+csharp_space_between_method_call_empty_parameter_list_parentheses = false
+csharp_space_between_method_call_name_and_opening_parenthesis = false
+csharp_space_between_method_call_parameter_list_parentheses = false
+csharp_space_between_method_declaration_empty_parameter_list_parentheses = false
+csharp_space_between_method_declaration_name_and_open_parenthesis = false
+csharp_space_between_method_declaration_parameter_list_parentheses = false
+csharp_space_between_parentheses = false
+csharp_space_between_square_brackets = false
+csharp_space_around_binary_operators = before_and_after
+csharp_new_line_before_members_in_object_initializers = true
+csharp_new_line_before_members_in_anonymous_types = true
+csharp_new_line_between_query_expression_clauses = true
+dotnet_diagnostic.IDE0055.severity = warning
+
+# Prefer var for obvious constructed/cast types; keep built-in types explicit.
+csharp_style_var_for_built_in_types = false:warning
+csharp_style_var_when_type_is_apparent = true:warning
+csharp_style_var_elsewhere = false:warning
+dotnet_diagnostic.IDE0007.severity = warning
+dotnet_diagnostic.IDE0008.severity = warning
+dotnet_style_predefined_type_for_locals_parameters_members = true:warning
+dotnet_style_predefined_type_for_member_access = true:warning
+dotnet_diagnostic.IDE0049.severity = warning
+
+# Expression bodies are for simple single-line properties and lambdas only.
+csharp_style_expression_bodied_constructors = false:warning
+csharp_style_expression_bodied_methods = false:warning
+csharp_style_expression_bodied_operators = false:warning
+csharp_style_expression_bodied_properties = when_on_single_line:warning
+csharp_style_expression_bodied_indexers = false:warning
+csharp_style_expression_bodied_accessors = false:warning
+csharp_style_expression_bodied_lambdas = when_on_single_line:warning
+csharp_style_expression_bodied_local_functions = false:warning
+dotnet_diagnostic.IDE0021.severity = warning
+dotnet_diagnostic.IDE0022.severity = warning
+dotnet_diagnostic.IDE0023.severity = warning
+dotnet_diagnostic.IDE0024.severity = warning
+dotnet_diagnostic.IDE0025.severity = warning
+dotnet_diagnostic.IDE0026.severity = warning
+dotnet_diagnostic.IDE0027.severity = warning
+dotnet_diagnostic.IDE0053.severity = warning
+dotnet_diagnostic.IDE0061.severity = warning
+
+# Modern C# organization (file-scoped namespaces require C# 10+).
+csharp_style_namespace_declarations = file_scoped:warning
+dotnet_diagnostic.IDE0161.severity = warning
+csharp_using_directive_placement = outside_namespace:warning
+dotnet_diagnostic.IDE0065.severity = warning
+dotnet_sort_system_directives_first = true
+dotnet_separate_import_directive_groups = false
+dotnet_style_require_accessibility_modifiers = for_non_interface_members:warning
+dotnet_diagnostic.IDE0040.severity = warning
+dotnet_style_readonly_field = true:warning
+dotnet_diagnostic.IDE0044.severity = warning
+
+# Naming: PascalCase types/members, I-prefixed interfaces, camelCase locals.
+dotnet_naming_rule.interfaces.symbols = interfaces
+dotnet_naming_rule.interfaces.style = interface_name
+dotnet_naming_rule.interfaces.severity = warning
+dotnet_naming_symbols.interfaces.applicable_kinds = interface
+dotnet_naming_symbols.interfaces.applicable_accessibilities = *
+dotnet_naming_style.interface_name.required_prefix = I
+dotnet_naming_style.interface_name.capitalization = pascal_case
+
+dotnet_naming_rule.types_and_members.symbols = types_and_members
+dotnet_naming_rule.types_and_members.style = pascal_case
+dotnet_naming_rule.types_and_members.severity = warning
+dotnet_naming_symbols.types_and_members.applicable_kinds = namespace, class, struct, interface, enum, delegate, property, method, event, local_function
+dotnet_naming_symbols.types_and_members.applicable_accessibilities = *
+dotnet_naming_style.pascal_case.capitalization = pascal_case
+
+dotnet_naming_rule.locals_and_parameters.symbols = locals_and_parameters
+dotnet_naming_rule.locals_and_parameters.style = camel_case
+dotnet_naming_rule.locals_and_parameters.severity = warning
+dotnet_naming_symbols.locals_and_parameters.applicable_kinds = local, parameter
+dotnet_naming_symbols.locals_and_parameters.applicable_accessibilities = *
+dotnet_naming_style.camel_case.capitalization = camel_case
+
+dotnet_naming_rule.private_fields.symbols = private_fields
+dotnet_naming_rule.private_fields.style = private_field
+dotnet_naming_rule.private_fields.severity = warning
+dotnet_naming_symbols.private_fields.applicable_kinds = field
+dotnet_naming_symbols.private_fields.applicable_accessibilities = private
+dotnet_naming_style.private_field.required_prefix = _
+dotnet_naming_style.private_field.capitalization = camel_case
+
+dotnet_naming_rule.private_static_fields.symbols = private_static_fields
+dotnet_naming_rule.private_static_fields.style = private_static_field
+dotnet_naming_rule.private_static_fields.severity = warning
+dotnet_naming_symbols.private_static_fields.applicable_kinds = field
+dotnet_naming_symbols.private_static_fields.applicable_accessibilities = private
+dotnet_naming_symbols.private_static_fields.required_modifiers = static
+dotnet_naming_style.private_static_field.required_prefix = s_
+dotnet_naming_style.private_static_field.capitalization = camel_case
+
+# Constants need a more specific rule because they are implicitly static.
+dotnet_naming_rule.constants.symbols = constants
+dotnet_naming_rule.constants.style = pascal_case
+dotnet_naming_rule.constants.severity = warning
+dotnet_naming_symbols.constants.applicable_kinds = field, local
+dotnet_naming_symbols.constants.applicable_accessibilities = *
+dotnet_naming_symbols.constants.required_modifiers = const
+
+dotnet_naming_rule.type_parameters.symbols = type_parameters
+dotnet_naming_rule.type_parameters.style = type_parameter
+dotnet_naming_rule.type_parameters.severity = warning
+dotnet_naming_symbols.type_parameters.applicable_kinds = type_parameter
+dotnet_naming_symbols.type_parameters.applicable_accessibilities = *
+dotnet_naming_style.type_parameter.required_prefix = T
+dotnet_naming_style.type_parameter.capitalization = pascal_case
+dotnet_diagnostic.IDE1006.severity = warning

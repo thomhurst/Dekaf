@@ -42,14 +42,19 @@ public sealed class GcpKmsProvider : ISchemaRegistryKmsProvider
     {
         ArgumentNullException.ThrowIfNull(client);
         if (string.IsNullOrWhiteSpace(type))
+        {
             throw new ArgumentException("KMS provider type cannot be null or whitespace.", nameof(type));
+        }
 
         _client = client;
         Type = type;
     }
 
     /// <inheritdoc />
-    public string Type { get; }
+    public string Type
+    {
+        get;
+    }
 
     /// <inheritdoc />
     public async ValueTask<byte[]> WrapKeyAsync(
@@ -59,7 +64,9 @@ public sealed class GcpKmsProvider : ISchemaRegistryKmsProvider
     {
         cancellationToken.ThrowIfCancellationRequested();
         if (keyMaterial.IsEmpty)
+        {
             throw new SchemaRegistryKmsException("Google Cloud KMS wrap failed. Key material cannot be empty.");
+        }
 
         var keyName = ResolveKeyName(keyReference);
         try
@@ -96,8 +103,7 @@ public sealed class GcpKmsProvider : ISchemaRegistryKmsProvider
         {
             throw;
         }
-        catch (RpcException ex) when (
-            cancellationToken.IsCancellationRequested && ex.StatusCode == StatusCode.Cancelled)
+        catch (RpcException ex) when (cancellationToken.IsCancellationRequested && ex.StatusCode == StatusCode.Cancelled)
         {
             throw new OperationCanceledException("Google Cloud KMS wrap was canceled.", cancellationToken);
         }
@@ -141,8 +147,7 @@ public sealed class GcpKmsProvider : ISchemaRegistryKmsProvider
         {
             throw;
         }
-        catch (RpcException ex) when (
-            cancellationToken.IsCancellationRequested && ex.StatusCode == StatusCode.Cancelled)
+        catch (RpcException ex) when (cancellationToken.IsCancellationRequested && ex.StatusCode == StatusCode.Cancelled)
         {
             throw new OperationCanceledException("Google Cloud KMS unwrap was canceled.", cancellationToken);
         }
@@ -163,10 +168,14 @@ public sealed class GcpKmsProvider : ISchemaRegistryKmsProvider
 
         var keyId = keyReference.KmsKeyId;
         if (string.IsNullOrWhiteSpace(keyId))
+        {
             throw new SchemaRegistryKmsException("Google Cloud KMS key identifier cannot be null or whitespace.");
+        }
 
         if (keyId.StartsWith(KeyUriPrefix, StringComparison.OrdinalIgnoreCase))
+        {
             keyId = keyId[KeyUriPrefix.Length..];
+        }
 
         if (!CryptoKeyName.TryParse(keyId, out var keyName))
         {
@@ -231,7 +240,9 @@ public sealed class GcpKmsProvider : ISchemaRegistryKmsProvider
         {
             var crc = uint.MaxValue;
             foreach (var value in data)
+            {
                 crc = Table[(crc ^ value) & 0xff] ^ (crc >> 8);
+            }
 
             return crc ^ uint.MaxValue;
         }

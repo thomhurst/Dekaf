@@ -227,6 +227,7 @@ public sealed class SchemaRegistryAuthenticationTests
         var pendingToken = new TaskCompletionSource<OAuthBearerToken>(TaskCreationOptions.RunContinuationsAsynchronously);
         var requested = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         using var cancellation = new CancellationTokenSource();
+
         ValueTask<OAuthBearerToken> GetToken(CancellationToken token)
         {
             requested.SetResult();
@@ -262,7 +263,10 @@ public sealed class SchemaRegistryAuthenticationTests
 
     private sealed class TokenEndpointHandler(int expiresInSeconds) : HttpMessageHandler
     {
-        public int RequestCount { get; private set; }
+        public int RequestCount
+        {
+            get; private set;
+        }
 
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
@@ -309,7 +313,10 @@ public sealed class SchemaRegistryAuthenticationTests
 
     private sealed class CapturingSchemaRegistryHandler : HttpMessageHandler
     {
-        public List<AuthenticationHeaderValue?> AuthorizationHeaders { get; } = [];
+        public List<AuthenticationHeaderValue?> AuthorizationHeaders
+        {
+            get;
+        } = [];
 
         protected override Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request,

@@ -97,7 +97,9 @@ public sealed partial class ConsumerCoordinatorKip848Tests
             {
                 var request = callInfo.Arg<OffsetCommitRequest>()!;
                 lock (committedEpochs)
+                {
                     committedEpochs.Add(request.GenerationIdOrMemberEpoch);
+                }
 
                 // Until the member rejoins, the coordinator knows it only at a newer epoch.
                 var errorCode = request.GenerationIdOrMemberEpoch <= 0
@@ -483,7 +485,9 @@ public sealed partial class ConsumerCoordinatorKip848Tests
             {
                 var request = callInfo.Arg<OffsetCommitRequest>()!;
                 lock (committedIdentities)
+                {
                     committedIdentities.Add($"{request.MemberId}@{request.GenerationIdOrMemberEpoch}");
+                }
                 return ValueTask.FromResult(new OffsetCommitResponse { Topics = [] });
             });
 
@@ -501,7 +505,9 @@ public sealed partial class ConsumerCoordinatorKip848Tests
         // The new coordinator accepts the member id and epoch it is sent: the same membership.
         script.Reset();
         lock (script.Requests)
+        {
             script.Requests.Clear();
+        }
         script.Respond = (_, _) => Joined("member-1", memberEpoch: 5, CreateAssignment(TestTopicId, 0, 1));
         await coordinator.EnsureActiveGroupAsync(new HashSet<string> { "test-topic" }, CancellationToken.None);
         await coordinator.StopHeartbeatAsync();
@@ -509,7 +515,9 @@ public sealed partial class ConsumerCoordinatorKip848Tests
 
         ConsumerGroupHeartbeatRequest rejoin;
         lock (script.Requests)
+        {
             rejoin = script.Requests[0];
+        }
         await Assert.That(rejoin.MemberId).IsEqualTo("member-1");
         await Assert.That(rejoin.MemberEpoch).IsEqualTo(5);
         await Assert.That(coordinator.MembershipVersion).IsEqualTo(membershipVersion);
@@ -525,7 +533,9 @@ public sealed partial class ConsumerCoordinatorKip848Tests
         await Assert.That(committedIdentities).IsEquivalentTo(["member-1@5"]);
         string[] recorded;
         lock (calls)
+        {
             recorded = [.. calls];
+        }
         await Assert.That(recorded.Any(static call => call.StartsWith("lost:", StringComparison.Ordinal))).IsFalse();
     }
 
@@ -561,7 +571,9 @@ public sealed partial class ConsumerCoordinatorKip848Tests
         // owner's progress.
         script.Reset();
         lock (script.Requests)
+        {
             script.Requests.Clear();
+        }
         script.Respond = (_, _) => Joined("member-1", memberEpoch: 6, CreateAssignment(TestTopicId, 1));
         await coordinator.EnsureActiveGroupAsync(new HashSet<string> { "test-topic" }, CancellationToken.None);
         await coordinator.StopHeartbeatAsync();
@@ -569,7 +581,9 @@ public sealed partial class ConsumerCoordinatorKip848Tests
 
         ConsumerGroupHeartbeatRequest rejoin;
         lock (script.Requests)
+        {
             rejoin = script.Requests[0];
+        }
         await Assert.That(rejoin.MemberId).IsEqualTo("member-1");
         await Assert.That(rejoin.MemberEpoch).IsEqualTo(5);
         await Assert.That(coordinator.MembershipVersion).IsNotEqualTo(membershipVersion);
@@ -651,7 +665,9 @@ public sealed partial class ConsumerCoordinatorKip848Tests
         await Assert.That(coordinator.Assignment.Count).IsEqualTo(2);
         string[] recorded;
         lock (calls)
+        {
             recorded = [.. calls];
+        }
         await Assert.That(recorded.Any(static call => call.StartsWith("lost:", StringComparison.Ordinal))).IsFalse();
     }
 
@@ -732,7 +748,9 @@ public sealed partial class ConsumerCoordinatorKip848Tests
             onPartitionsRevokedAsync: (revoked, _) =>
             {
                 lock (revocationCommits)
+                {
                     revocationCommits.Add(string.Join(',', revoked.Select(static tp => $"{tp.Topic}-{tp.Partition}")));
+                }
                 return ValueTask.CompletedTask;
             });
         await coordinator.EnsureActiveGroupAsync(new HashSet<string> { "test-topic" }, CancellationToken.None);
@@ -747,7 +765,9 @@ public sealed partial class ConsumerCoordinatorKip848Tests
         script.Respond = (_, _) =>
         {
             if (Interlocked.Exchange(ref queuedEarlier, 1) == 0)
+            {
                 QueueLoss(coordinator, new TopicPartition("other-topic", 0));
+            }
             return Joined("member-1", memberEpoch: 6, CreateAssignment(TestTopicId, 0));
         };
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
@@ -822,9 +842,13 @@ public sealed partial class ConsumerCoordinatorKip848Tests
             {
                 bool leaveSent;
                 lock (script.Requests)
+                {
                     leaveSent = script.Requests.Any(static request => request.MemberEpoch == -1);
+                }
                 lock (calls)
+                {
                     calls.Add(leaveSent ? "assigned after leave" : "assigned before leave");
+                }
                 return ValueTask.CompletedTask;
             });
         SetupFindCoordinator();
@@ -911,7 +935,9 @@ public sealed partial class ConsumerCoordinatorKip848Tests
                 }
 
                 lock (completedCommits)
+                {
                     completedCommits.Add(string.Join(',', revoked.Select(static tp => $"{tp.Topic}-{tp.Partition}")));
+                }
             });
         await coordinator.EnsureActiveGroupAsync(new HashSet<string> { "test-topic" }, CancellationToken.None);
         await coordinator.StopHeartbeatAsync();
@@ -1004,7 +1030,9 @@ public sealed partial class ConsumerCoordinatorKip848Tests
                     foreach (var topic in request.Topics)
                     {
                         foreach (var partition in topic.Partitions)
+                        {
                             committed.Add($"{topic.Name}-{partition.PartitionIndex}@{request.MemberId}");
+                        }
                     }
                 }
 
@@ -1016,10 +1044,13 @@ public sealed partial class ConsumerCoordinatorKip848Tests
         ConsumerCoordinator? coordinator = null;
         Task<(int Version, TopicPartition[] Snapshot)>? snapshot = null;
         var snapshotDuringRejoin = 0;
+
         void OnPartitionsRevoking(IReadOnlyList<TopicPartition> revoked)
         {
             if (Interlocked.Exchange(ref snapshotDuringRejoin, 0) != 1)
+            {
                 return;
+            }
 
             snapshot = Task.Run(() =>
             {
@@ -1095,6 +1126,7 @@ public sealed partial class ConsumerCoordinatorKip848Tests
         ConsumerCoordinator? coordinator = null;
         Task? hookCommit = null;
         var commitFromHook = 0;
+
         void OnPartitionsRevoking(IReadOnlyList<TopicPartition> revoked)
         {
             if (Interlocked.Exchange(ref commitFromHook, 0) == 1)
@@ -1436,7 +1468,9 @@ public sealed partial class ConsumerCoordinatorKip848Tests
         await using var coordinator = await JoinAsync(script, listener);
         observed = coordinator;
         lock (calls)
+        {
             calls.Clear();
+        }
 
         // A fenced member rejoins with [p0]; cancellation interrupts its OnPartitionsAssigned,
         // which stays queued.
@@ -1472,7 +1506,9 @@ public sealed partial class ConsumerCoordinatorKip848Tests
         {
             var owned = observed?.Assignment ?? (IEnumerable<TopicPartition>)[];
             lock (calls)
+            {
                 calls.Add($"assigned:{Names(partitions)} owned:{Names(owned)}");
+            }
             return ValueTask.CompletedTask;
         }
 
@@ -1582,7 +1618,9 @@ public sealed partial class ConsumerCoordinatorKip848Tests
 
         ConsumerGroupHeartbeatRequest lastRequest;
         lock (script.Requests)
+        {
             lastRequest = script.Requests[^1];
+        }
         await Assert.That(lastRequest.MemberId).IsEqualTo("member-2");
         await Assert.That(lastRequest.MemberEpoch).IsEqualTo(1);
         await Assert.That(coordinator.State).IsEqualTo(CoordinatorState.Unjoined);
@@ -1804,7 +1842,9 @@ public sealed partial class ConsumerCoordinatorKip848Tests
             .Returns(callInfo =>
             {
                 lock (committedEpochs)
+                {
                     committedEpochs.Add(callInfo.Arg<OffsetCommitRequest>()!.GenerationIdOrMemberEpoch);
+                }
                 return ValueTask.FromResult(new OffsetCommitResponse { Topics = [] });
             });
 
@@ -1868,10 +1908,13 @@ public sealed partial class ConsumerCoordinatorKip848Tests
                 : ValueTask.FromResult(_connection));
         Task? commit = null;
         var commitDuringRejoin = 0;
+
         void OnPartitionsRevoking(IReadOnlyList<TopicPartition> revoked)
         {
             if (Interlocked.Exchange(ref commitDuringRejoin, 0) != 1)
+            {
                 return;
+            }
 
             releaseCommitLease.SetResult();
             try
@@ -1963,7 +2006,9 @@ public sealed partial class ConsumerCoordinatorKip848Tests
         script.Respond = (count, _) =>
         {
             if (count == 1)
+            {
                 return Error(ErrorCode.CoordinatorNotAvailable);
+            }
 
             releaseCommitLease.TrySetResult();
             try
@@ -2069,7 +2114,9 @@ public sealed partial class ConsumerCoordinatorKip848Tests
         await coordinator.EnsureActiveGroupAsync(new HashSet<string> { "test-topic" }, CancellationToken.None);
         await coordinator.StopHeartbeatAsync();
         lock (calls)
+        {
             calls.Clear();
+        }
 
         // After a coordinator outage the rejoin's first attempt is fenced, which queues [p0, p1]
         // as lost; the immediate retry succeeds with [p1] and publishes it before the loss is
@@ -2090,8 +2137,11 @@ public sealed partial class ConsumerCoordinatorKip848Tests
                 ',',
                 tps.OrderBy(static partition => partition.Partition)
                     .Select(static partition => $"{partition.Topic}-{partition.Partition}"));
+
             lock (calls)
+            {
                 calls.Add($"{callback}:{Names(partitions)}@[{Names(scopeAssignment)}]");
+            }
             return ValueTask.CompletedTask;
         }
     }
@@ -2176,8 +2226,11 @@ public sealed partial class ConsumerCoordinatorKip848Tests
                 ',',
                 tps.OrderBy(static partition => partition.Partition)
                     .Select(static partition => $"{partition.Topic}-{partition.Partition}"));
+
             lock (calls)
+            {
                 calls.Add($"{callback}:{Names(partitions)}@[{Names(scopeAssignment)}]");
+            }
             return ValueTask.CompletedTask;
         }
     }
@@ -2201,7 +2254,9 @@ public sealed partial class ConsumerCoordinatorKip848Tests
         coordinator = await JoinAsync(script, listener);
         await using var coordinatorLifetime = coordinator;
         lock (calls)
+        {
             calls.Clear();
+        }
 
         // A steady heartbeat revokes p1. The listener throws OperationCanceledException without
         // the heartbeat being stopped, so the revocation stays queued and the loop gives up the
@@ -2225,8 +2280,11 @@ public sealed partial class ConsumerCoordinatorKip848Tests
                 ',',
                 tps.OrderBy(static partition => partition.Partition)
                     .Select(static partition => $"{partition.Topic}-{partition.Partition}"));
+
             lock (calls)
+            {
                 calls.Add($"{callback}:{Names(partitions)}@[{Names(coordinator!.Assignment)}]");
+            }
             return ValueTask.CompletedTask;
         }
     }
@@ -2246,7 +2304,9 @@ public sealed partial class ConsumerCoordinatorKip848Tests
             .Returns(callInfo =>
             {
                 lock (committedEpochs)
+                {
                     committedEpochs.Add(callInfo.Arg<OffsetCommitRequest>()!.GenerationIdOrMemberEpoch);
+                }
                 return ValueTask.FromResult(new OffsetCommitResponse { Topics = [] });
             });
 
@@ -2480,7 +2540,9 @@ public sealed partial class ConsumerCoordinatorKip848Tests
                 .OrderBy(static partition => partition.Partition)
                 .Select(static partition => $"{partition.Topic}-{partition.Partition}");
             lock (calls)
+            {
                 calls.Add($"{callback}:{string.Join(',', names)}");
+            }
             return ValueTask.CompletedTask;
         }
     }
@@ -2525,15 +2587,23 @@ public sealed partial class ConsumerCoordinatorKip848Tests
                 {
                     var request = callInfo.Arg<ConsumerGroupHeartbeatRequest>()!;
                     lock (Requests)
+                    {
                         Requests.Add(request);
+                    }
                     return Respond(Interlocked.Increment(ref _count), request);
                 });
         }
 
-        public Func<int, ConsumerGroupHeartbeatRequest, ValueTask<ConsumerGroupHeartbeatResponse>> Respond { get; set; } =
+        public Func<int, ConsumerGroupHeartbeatRequest, ValueTask<ConsumerGroupHeartbeatResponse>> Respond
+        {
+            get; set;
+        } =
             static (_, _) => throw new InvalidOperationException("No heartbeat response scripted.");
 
-        public List<ConsumerGroupHeartbeatRequest> Requests { get; } = [];
+        public List<ConsumerGroupHeartbeatRequest> Requests
+        {
+            get;
+        } = [];
 
         public void Reset() => Interlocked.Exchange(ref _count, 0);
     }

@@ -105,7 +105,9 @@ public class ResponseFrameReaderBenchmarks
         {
             var frame = await reader.ReadBoundedFrameAsync(_fetchAdmission);
             if (frame.IsEndOfStream)
+            {
                 throw new InvalidOperationException("Unexpected EOF");
+            }
 
             totalBytes += frame.Buffer.Length;
             frame.Buffer.Dispose();
@@ -138,7 +140,9 @@ public class ResponseFrameReaderBenchmarks
         {
             var frame = await reader.ReadFrameAsync();
             if (frame.IsEndOfStream)
+            {
                 throw new InvalidOperationException("Unexpected EOF");
+            }
 
             totalBytes += frame.Buffer.Length;
             frame.Buffer.Dispose();
@@ -157,7 +161,9 @@ public class ResponseFrameReaderBenchmarks
             BinaryPrimitives.WriteInt32BigEndian(frame, payloadSize);
             BinaryPrimitives.WriteInt32BigEndian(frame[4..], i); // correlation id
             for (var j = 8; j < frameLength; j++)
+            {
                 frame[j] = (byte)j;
+            }
         }
 
         return (blob, frameCount);
@@ -200,7 +206,9 @@ public class ResponseFrameReaderBenchmarks
             return count;
         }
 
-        public override void Flush() { }
+        public override void Flush()
+        {
+        }
         public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
         public override void SetLength(long value) => throw new NotSupportedException();
         public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();

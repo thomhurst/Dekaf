@@ -27,12 +27,16 @@ internal sealed class MemoryBudgetDispatcher
         do
         {
             if (Interlocked.CompareExchange(ref _dispatching, 1, 0) != 0)
+            {
                 return;
+            }
 
             try
             {
                 while (Interlocked.Exchange(ref _pending, null) is { } snapshot)
+                {
                     snapshot.Dispatch();
+                }
             }
             finally
             {
@@ -50,19 +54,29 @@ internal sealed class MemoryBudgetDispatcher
         {
             foreach (var producer in producers)
             {
-                try { producer.OnBudgetChanged(producerLimit); }
+                try
+                {
+                    producer.OnBudgetChanged(producerLimit);
+                }
                 catch (Exception ex) { ReportBookkeepingError(ex); }
             }
             foreach (var consumer in consumers)
             {
-                try { consumer.OnBudgetChanged(consumerLimit); }
+                try
+                {
+                    consumer.OnBudgetChanged(consumerLimit);
+                }
                 catch (Exception ex) { ReportBookkeepingError(ex); }
             }
         }
 
         private static void ReportBookkeepingError(Exception exception)
         {
-            try { DekafMemoryBudget.OnBookkeepingError?.Invoke(exception); } catch { }
+            try
+            {
+                DekafMemoryBudget.OnBookkeepingError?.Invoke(exception);
+            }
+            catch { }
         }
     }
 }

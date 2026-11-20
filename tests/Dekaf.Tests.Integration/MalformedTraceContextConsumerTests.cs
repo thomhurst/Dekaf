@@ -39,7 +39,9 @@ public sealed class MalformedTraceContextConsumerTests(KafkaTestContainer kafka)
             {
                 if (activity.GetTagItem(DekafDiagnostics.MessagingDestinationName) as string == topic &&
                     activity.Kind is ActivityKind.Consumer or ActivityKind.Client)
+                {
                     activities.Add(activity);
+                }
             }
         };
         ActivitySource.AddActivityListener(listener);
@@ -81,7 +83,9 @@ public sealed class MalformedTraceContextConsumerTests(KafkaTestContainer kafka)
             {
                 received.Add(record.Value);
                 if (received.Count == traceparents.Length)
+                {
                     break;
+                }
             }
         }
         else
@@ -96,7 +100,9 @@ public sealed class MalformedTraceContextConsumerTests(KafkaTestContainer kafka)
 
         await Assert.That(received.Count).IsEqualTo(traceparents.Length);
         for (var index = 0; index < received.Count; index++)
+        {
             await Assert.That(received[index]).IsEqualTo($"record-{index}");
+        }
         await Assert.That(logs.Entries.Any(entry => entry.Message.StartsWith("Record parsing error", StringComparison.Ordinal))).IsFalse();
         await Assert.That(activities.Count).IsEqualTo(traceparents.Length);
         var linked = activities.SelectMany(static activity => activity.Links).ToArray();

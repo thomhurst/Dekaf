@@ -22,10 +22,16 @@ public class ShareBatchAcknowledgementBenchmarks
     private ShareFetchAcquiredRecords[] _acquired = null!;
 
     [Params(64, 1024)]
-    public int RecordCount { get; set; }
+    public int RecordCount
+    {
+        get; set;
+    }
 
     [Params(ShareAcknowledgementMode.Implicit, ShareAcknowledgementMode.Explicit)]
-    public ShareAcknowledgementMode Mode { get; set; }
+    public ShareAcknowledgementMode Mode
+    {
+        get; set;
+    }
 
     [GlobalSetup]
     public async ValueTask Setup()
@@ -34,10 +40,14 @@ public class ShareBatchAcknowledgementBenchmarks
         Serializers.Int32.Serialize(42, ref value, default);
         var records = new Record[RecordCount];
         for (var index = 0; index < records.Length; index++)
+        {
             records[index] = new Record { OffsetDelta = index, IsKeyNull = true, Value = value.WrittenMemory };
+        }
         var buffer = new ArrayBufferWriter<byte>();
         using (var batch = new RecordBatch { Records = records })
+        {
             batch.Write(buffer);
+        }
         _bytes = buffer.WrittenMemory;
         _acquired = [new ShareFetchAcquiredRecords { FirstOffset = 0, LastOffset = RecordCount - 1, DeliveryCount = 1 }];
         _consumer = new KafkaShareConsumer<int, int>(new ShareConsumerOptions
@@ -53,12 +63,16 @@ public class ShareBatchAcknowledgementBenchmarks
         Acknowledge(parsed);
         var wire = tracked.Flush()[_partition];
         if (wire.Count != 1 || wire[0].FirstOffset != 0 || wire[0].LastOffset != RecordCount - 1)
+        {
             throw new InvalidOperationException("The batch acknowledgement range changed.");
+        }
         for (var index = 0; index < RecordCount; index++)
         {
             var expected = Mode == ShareAcknowledgementMode.Implicit ? AcknowledgeType.Accept : Disposition(index);
             if (wire[0].AcknowledgeTypes[index] != (byte)expected)
+            {
                 throw new InvalidOperationException("A first-use acknowledgement changed disposition.");
+            }
         }
     }
 
@@ -126,7 +140,9 @@ public class ShareBatchAcknowledgementBenchmarks
         foreach (var record in batch)
         {
             if (Mode == ShareAcknowledgementMode.Explicit)
+            {
                 batch.Acknowledge(record, Disposition((int)record.Offset));
+            }
         }
         return batch.DeliveredCount;
     }

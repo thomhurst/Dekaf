@@ -61,9 +61,15 @@ public sealed partial class MetadataManager : IAsyncDisposable
     {
         private Exception? _lastFailure;
 
-        public CancellationTokenSource Cancellation { get; } = cancellation;
+        public CancellationTokenSource Cancellation
+        {
+            get;
+        } = cancellation;
 
-        public TaskCompletionSource<TopicInfo?> Completion { get; } =
+        public TaskCompletionSource<TopicInfo?> Completion
+        {
+            get;
+        } =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         // Guarded by _sharedTopicFetchLock.
@@ -146,7 +152,9 @@ public sealed partial class MetadataManager : IAsyncDisposable
             lock (metadataManager._brokerCountDiscoveredLock)
             {
                 if (_callback is null)
+                {
                     return;
+                }
 
                 metadataManager._brokerCountDiscoveredCallbacks -= _callback;
                 _callback = null;
@@ -167,7 +175,9 @@ public sealed partial class MetadataManager : IAsyncDisposable
         ExponentialRetryBackoff.Validate(_options.RetryBackoffMs, _options.RetryBackoffMaxMs);
         _logger = logger ?? Microsoft.Extensions.Logging.Abstractions.NullLogger<MetadataManager>.Instance;
         if (connectionPool is IConnectionCapabilityObserverPool observerPool)
+        {
             observerPool.SetConnectionCapabilityObserver(ObserveConnectionCapabilities);
+        }
 
         // Pre-parse bootstrap servers to avoid allocation in hot path
         ArgumentNullException.ThrowIfNull(bootstrapServers);
@@ -193,7 +203,9 @@ public sealed partial class MetadataManager : IAsyncDisposable
         }
 
         if (connectionPool is IConnectionCapabilityObserverPool observerPool)
+        {
             observerPool.SetConnectionCapabilityObserver(ObserveConnectionCapabilities);
+        }
 
         ConfigureMetadataClusterCheck(connectionPool);
         UpdateMetadataClusterId(connectionPool, Volatile.Read(ref _trustedMetadataClusterId));
@@ -213,7 +225,9 @@ public sealed partial class MetadataManager : IAsyncDisposable
     private static void UpdateMetadataClusterId(IConnectionPool connectionPool, string? clusterId)
     {
         if (connectionPool is IMetadataClusterIdentityPool identityPool)
+        {
             identityPool.UpdateMetadataClusterId(clusterId);
+        }
     }
 
     private void UpdateMetadataClusterId(string? clusterId)
@@ -247,7 +261,9 @@ public sealed partial class MetadataManager : IAsyncDisposable
                         && identityPool.TryConsumeMetadataRebootstrapRequest();
         var additionalPool = Volatile.Read(ref _additionalBrokerRegistrationTarget);
         if (additionalPool is IMetadataClusterIdentityPool additionalIdentityPool)
+        {
             requested |= additionalIdentityPool.TryConsumeMetadataRebootstrapRequest();
+        }
 
         return requested;
     }
@@ -255,10 +271,14 @@ public sealed partial class MetadataManager : IAsyncDisposable
     private void RequestMetadataRebootstrap()
     {
         if (_connectionPool is IMetadataClusterIdentityPool identityPool)
+        {
             identityPool.RequestMetadataRebootstrap();
+        }
 
         if (Volatile.Read(ref _additionalBrokerRegistrationTarget) is IMetadataClusterIdentityPool additionalIdentityPool)
+        {
             additionalIdentityPool.RequestMetadataRebootstrap();
+        }
     }
 
     /// <summary>
@@ -446,12 +466,16 @@ public sealed partial class MetadataManager : IAsyncDisposable
     private void ObserveConnectionCapabilities(KafkaConnectionCapabilities capabilities)
     {
         if (Volatile.Read(ref _disposed) != 0)
+        {
             return;
+        }
 
         lock (_finalizedFeatureLock)
         {
             if (_finalizedFeatureClusterId is null)
+            {
                 return;
+            }
 
             PublishClusterCapabilities(capabilities);
         }
@@ -460,7 +484,9 @@ public sealed partial class MetadataManager : IAsyncDisposable
     private void ObserveClusterCapabilities(string? clusterId, IKafkaConnection connection)
     {
         if (connection is not IKafkaCapabilityProvider provider)
+        {
             return;
+        }
 
         ObserveClusterCapabilities(clusterId, provider.Capabilities);
     }
@@ -478,7 +504,9 @@ public sealed partial class MetadataManager : IAsyncDisposable
             }
 
             if (clusterId is null)
+            {
                 return;
+            }
 
             PublishClusterCapabilities(capabilities);
         }
@@ -488,7 +516,9 @@ public sealed partial class MetadataManager : IAsyncDisposable
     {
         var candidate = capabilities.FinalizedFeatureSnapshot;
         if (candidate is not null)
+        {
             PublishFinalizedFeatures(candidate);
+        }
     }
 
     private void PublishFinalizedFeatures(FinalizedFeatureSnapshot candidate)
@@ -497,12 +527,16 @@ public sealed partial class MetadataManager : IAsyncDisposable
         if (current is not null)
         {
             if (candidate.Epoch < current.Epoch)
+            {
                 return;
+            }
 
             if (candidate.Epoch == current.Epoch)
             {
                 if (current.HasSameContent(candidate))
+                {
                     return;
+                }
 
                 LogConflictingFinalizedFeatures(candidate.Epoch);
                 throw new KafkaException(
@@ -538,7 +572,9 @@ public sealed partial class MetadataManager : IAsyncDisposable
             or AuthenticationException
             or AuthorizationException
             or BootstrapResolutionException)
+        {
             return true;
+        }
 
         // KafkaConnection instances can be disposed independently during pool churn. Only the
         // manager's own disposal is fatal; recycled connections should fall through to retry.
@@ -548,20 +584,28 @@ public sealed partial class MetadataManager : IAsyncDisposable
     public async ValueTask InitializeAsync(CancellationToken cancellationToken = default)
     {
         if (Volatile.Read(ref _disposed) != 0)
+        {
             throw new ObjectDisposedException(nameof(MetadataManager));
+        }
 
         if (_initialized)
+        {
             return;
+        }
 
         await SemaphoreHelper.AcquireOrThrowDisposedAsync(_initializeLock, nameof(MetadataManager), cancellationToken)
             .ConfigureAwait(false);
         try
         {
             if (Volatile.Read(ref _disposed) != 0)
+            {
                 throw new ObjectDisposedException(nameof(MetadataManager));
+            }
 
             if (_initialized)
+            {
                 return;
+            }
 
             using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _disposalCts.Token);
             var initializationToken = linkedCts.Token;
@@ -604,10 +648,12 @@ public sealed partial class MetadataManager : IAsyncDisposable
                         var bootstrapElapsed = Stopwatch.GetElapsedTime(bootstrapStartedAt);
                         var bootstrapRemainingMs = _options.BootstrapResolveTimeoutMs - bootstrapElapsed.TotalMilliseconds;
                         if (bootstrapRemainingMs <= 0)
+                        {
                             throw CreateBootstrapDeadlineException(
                                 ex.UnresolvedBootstrapServers,
                                 ex,
                                 bootstrapElapsed);
+                        }
 
                         var backoffMs = ExponentialRetryBackoff.CalculateDelayMilliseconds(
                             _options.RetryBackoffMs,
@@ -623,8 +669,7 @@ public sealed partial class MetadataManager : IAsyncDisposable
                         // metadata initialization budget.
                         metadataFailureCount = 0;
                     }
-                    catch (OperationCanceledException ex) when (
-                        !initializationToken.IsCancellationRequested
+                    catch (OperationCanceledException ex) when (!initializationToken.IsCancellationRequested
                         && !bootstrapResolutionCompleted
                         && IsDnsResolutionFailure(ex))
                     {
@@ -682,7 +727,9 @@ public sealed partial class MetadataManager : IAsyncDisposable
             }
 
             if (Volatile.Read(ref _disposed) != 0)
+            {
                 throw new ObjectDisposedException(nameof(MetadataManager));
+            }
 
             if (_options.EnableBackgroundRefresh)
             {
@@ -690,7 +737,9 @@ public sealed partial class MetadataManager : IAsyncDisposable
             }
 
             if (Volatile.Read(ref _disposed) != 0)
+            {
                 throw new ObjectDisposedException(nameof(MetadataManager));
+            }
 
             _initialized = true;
         }
@@ -758,7 +807,9 @@ public sealed partial class MetadataManager : IAsyncDisposable
     {
         cancellationToken.ThrowIfCancellationRequested();
         if (Volatile.Read(ref _disposed) != 0)
+        {
             throw new ObjectDisposedException(nameof(MetadataManager));
+        }
 
         SharedTopicFetch? fetch;
         var started = false;
@@ -776,14 +827,15 @@ public sealed partial class MetadataManager : IAsyncDisposable
 
         // Started outside the lock: the fetch runs synchronously up to its first real await.
         if (started)
+        {
             _ = RunSharedTopicFetchAsync(topicName, fetch);
+        }
 
         try
         {
             return await fetch.Completion.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
         }
-        catch (OperationCanceledException ex) when (
-            cancellationToken.IsCancellationRequested
+        catch (OperationCanceledException ex) when (cancellationToken.IsCancellationRequested
             && ex.InnerException is null
             && fetch.LastFailure is { } lastRefreshFailure)
         {
@@ -837,15 +889,21 @@ public sealed partial class MetadataManager : IAsyncDisposable
         lock (_sharedTopicFetchLock)
         {
             if (cancelReturned)
+            {
                 fetch.CancelReturned = true;
+            }
             else
+            {
                 fetch.Finished = true;
+            }
 
             dispose = fetch.Finished && (!fetch.Abandoned || fetch.CancelReturned);
         }
 
         if (dispose)
+        {
             fetch.Cancellation.Dispose();
+        }
     }
 
     private async Task RunSharedTopicFetchAsync(string topicName, SharedTopicFetch fetch)
@@ -890,7 +948,9 @@ public sealed partial class MetadataManager : IAsyncDisposable
     private void RemoveSharedTopicFetch(string topicName, SharedTopicFetch fetch)
     {
         if (_sharedTopicFetches.TryGetValue(topicName, out var current) && ReferenceEquals(current, fetch))
+        {
             _sharedTopicFetches.Remove(topicName);
+        }
     }
 
     /// <summary>
@@ -901,7 +961,9 @@ public sealed partial class MetadataManager : IAsyncDisposable
         CancellationToken cancellationToken)
     {
         if (TryGetCachedTopicMetadata(topicName, out var topic))
+        {
             return new ValueTask<TopicInfo?>(topic);
+        }
 
         return GetTopicMetadataSlowAsync(
             topicName,
@@ -925,7 +987,9 @@ public sealed partial class MetadataManager : IAsyncDisposable
     internal TopicInfo? WaitForTopicMetadataSync(string topicName, int timeoutMs)
     {
         if (TryGetCachedTopicMetadata(topicName, out var topic))
+        {
             return topic;
+        }
 
         // Coalesce: all callers for the same topic share one fetch task.
         // The inner task uses _disposalCts so it is cancelled promptly on disposal,
@@ -1041,15 +1105,21 @@ public sealed partial class MetadataManager : IAsyncDisposable
                     // Every endpoint already logged its own failure; keep the per-attempt noise
                     // of a long outage at Debug after the first Warning.
                     if (lastRefreshFailure is null)
+                    {
                         LogTopicMetadataRefreshFailed(ex, topicName, retryDelayMs);
+                    }
                     else
+                    {
                         LogTopicMetadataRefreshRetry(ex, topicName, retryDelayMs, failureCount);
+                    }
 
                     // "Failed to refresh metadata from any broker" wraps the last endpoint's
                     // transport failure; that failure is the cause worth reporting to the caller.
                     lastRefreshFailure = ex is InvalidOperationException { InnerException: { } cause } ? cause : ex;
                     if (sharedFetch is not null)
+                    {
                         sharedFetch.LastFailure = lastRefreshFailure;
+                    }
                     await Task.Delay(retryDelayMs, cancellationToken).ConfigureAwait(false);
                     continue;
                 }
@@ -1109,13 +1179,17 @@ public sealed partial class MetadataManager : IAsyncDisposable
         NodeEndpoint? leaderEndpoint = null)
     {
         if (leaderId < 0 || leaderEpoch < 0)
+        {
             return false;
+        }
 
         BrokerNode? broker = null;
         if (leaderEndpoint is not null)
         {
             if (leaderEndpoint.NodeId != leaderId)
+            {
                 return false;
+            }
 
             broker = new BrokerNode
             {
@@ -1218,7 +1292,9 @@ public sealed partial class MetadataManager : IAsyncDisposable
         CancellationToken cancellationToken)
     {
         if (Volatile.Read(ref _disposed) != 0)
+        {
             throw new ObjectDisposedException(nameof(MetadataManager));
+        }
 
         LogMetadataRefreshRequested();
         await SemaphoreHelper.AcquireOrThrowDisposedAsync(_refreshLock, nameof(MetadataManager), cancellationToken)
@@ -1240,11 +1316,12 @@ public sealed partial class MetadataManager : IAsyncDisposable
                 await RefreshMetadataInternalAsync(topics, allowAutoTopicCreation, cancellationToken)
                     .ConfigureAwait(false);
             }
-            catch (BootstrapResolutionPendingException ex) when (
-                bootstrapResolutionFailureMode != BootstrapResolutionFailureMode.Pending)
+            catch (BootstrapResolutionPendingException ex) when (bootstrapResolutionFailureMode != BootstrapResolutionFailureMode.Pending)
             {
                 if (bootstrapResolutionFailureMode == BootstrapResolutionFailureMode.PublicException)
+                {
                     throw CreateBootstrapResolutionException(ex.UnresolvedBootstrapServers, ex);
+                }
 
                 throw new MetadataRefreshFailedException(ex.InnerException ?? ex);
             }
@@ -1383,15 +1460,21 @@ public sealed partial class MetadataManager : IAsyncDisposable
                 }
 
                 if (negotiatedCapabilities is not null)
+                {
                     ObserveClusterCapabilities(response.ClusterId, negotiatedCapabilities);
+                }
                 else
+                {
                     ObserveClusterCapabilities(response.ClusterId, connection);
+                }
 
                 // Publish the routes before the snapshot can expose these brokers (see
                 // TryUpdatePartitionLeader): a reader that picks a broker from the new snapshot
                 // would otherwise find the connection pool still considers it unknown.
                 foreach (var broker in response.Brokers)
+                {
                     RegisterBroker(broker.NodeId, broker.Host, broker.Port);
+                }
 
                 // Topic-specific requests merge into the existing snapshot to preserve
                 // metadata for other topics. Full-cluster requests replace the snapshot.
@@ -1466,7 +1549,9 @@ public sealed partial class MetadataManager : IAsyncDisposable
         }
 
         if (retryRequestedRebootstrap)
+        {
             RequestMetadataRebootstrap();
+        }
 
         throw new MetadataRefreshFailedException(lastException);
     }
@@ -1483,17 +1568,20 @@ public sealed partial class MetadataManager : IAsyncDisposable
         // budget that is spent still gets one bounded probe, so an immediate DNS failure keeps
         // its endpoint details instead of racing a pre-cancelled refresh lock.
         if (_options.BootstrapResolveTimeoutMs > 0)
+        {
             deadlineCts.CancelAfter(TimeSpan.FromMilliseconds(Math.Max(1, remainingMs)));
+        }
         try
         {
             await refresh.ConfigureAwait(false);
         }
-        catch (OperationCanceledException ex) when (
-            !cancellationToken.IsCancellationRequested
+        catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested
             && !IsDnsResolutionFailure(ex))
         {
             if (previousDnsFailure is not null)
+            {
                 throw previousDnsFailure;
+            }
 
             // The DNS lookup completed and the shared deadline expired in a later connection
             // phase. Translate this into a normal retriable initialization failure so future
@@ -1528,14 +1616,18 @@ public sealed partial class MetadataManager : IAsyncDisposable
         for (Exception? current = exception; current is not null; current = current.InnerException)
         {
             if (current is DnsResolutionException)
+            {
                 return true;
+            }
 
             if (current is AggregateException aggregateException)
             {
                 foreach (var innerException in aggregateException.InnerExceptions)
                 {
                     if (IsDnsResolutionFailure(innerException))
+                    {
                         return true;
+                    }
                 }
             }
         }
@@ -1548,7 +1640,10 @@ public sealed partial class MetadataManager : IAsyncDisposable
         Exception innerException)
         : Exception("No bootstrap server DNS name could be resolved.", innerException)
     {
-        public IReadOnlyList<string> UnresolvedBootstrapServers { get; } = unresolvedBootstrapServers;
+        public IReadOnlyList<string> UnresolvedBootstrapServers
+        {
+            get;
+        } = unresolvedBootstrapServers;
     }
 
     private enum BootstrapResolutionFailureMode
@@ -1571,7 +1666,9 @@ public sealed partial class MetadataManager : IAsyncDisposable
 
         // First time all brokers are unavailable - record the timestamp and wait for the delay.
         if (StartAllBrokersUnavailableTimer(now))
+        {
             return false;
+        }
 
         var elapsedMs = now - Interlocked.Read(ref _allBrokersUnavailableSince);
         if (elapsedMs < _options.MetadataRecoveryRebootstrapTriggerMs)
@@ -1591,7 +1688,9 @@ public sealed partial class MetadataManager : IAsyncDisposable
     private bool StartAllBrokersUnavailableTimer(long now)
     {
         if (Interlocked.CompareExchange(ref _allBrokersUnavailableSince, now, 0) != 0)
+        {
             return false;
+        }
 
         LogAllBrokersUnavailable(_options.MetadataRecoveryRebootstrapTriggerMs);
         return true;
@@ -1646,7 +1745,9 @@ public sealed partial class MetadataManager : IAsyncDisposable
                 // addresses that accept TCP but fail the handshake are tried in turn even when
                 // round-robin DNS gives the connection's lookup a different order.
                 if (address is not null)
+                {
                     _options.DnsResolver.MarkSuccessful(host, port, _options.ClientDnsLookup, address);
+                }
 
                 using var connectionLease = await _connectionPool.LeaseConnectionAsync(host, port, cancellationToken)
                     .ConfigureAwait(false);
@@ -1705,9 +1806,13 @@ public sealed partial class MetadataManager : IAsyncDisposable
                     replaceExisting: true);
 
                 if (negotiatedCapabilities is not null)
+                {
                     ObserveClusterCapabilities(response.ClusterId, negotiatedCapabilities);
+                }
                 else
+                {
                     ObserveClusterCapabilities(response.ClusterId, connection);
+                }
 
                 // Routes first, then the snapshot that names these brokers (see RefreshMetadataInternalAsync).
                 foreach (var broker in response.Brokers)
@@ -1747,7 +1852,9 @@ public sealed partial class MetadataManager : IAsyncDisposable
                 LogRebootstrapEndpointFailed(ex, host, port);
                 lastException = ex;
                 if (connection is not null)
+                {
                     RetireRebootstrapConnection(host, port, connection);
+                }
             }
         }
 
@@ -1763,7 +1870,9 @@ public sealed partial class MetadataManager : IAsyncDisposable
     private void RetireRebootstrapConnection(string host, int port, IKafkaConnection connection)
     {
         if (_connectionPool is IMetadataClusterIdentityPool identityPool)
+        {
             identityPool.RetireRebootstrapConnection(host, port, connection);
+        }
     }
 
     private void RegisterBroker(int brokerId, string host, int port)
@@ -1776,18 +1885,24 @@ public sealed partial class MetadataManager : IAsyncDisposable
     {
         var brokerIds = new int[brokers.Count];
         for (var i = 0; i < brokers.Count; i++)
+        {
             brokerIds[i] = brokers[i].NodeId;
+        }
 
         UpdateBrokerStatusSnapshot(_connectionPool, brokerIds);
         var additionalPool = Volatile.Read(ref _additionalBrokerRegistrationTarget);
         if (additionalPool is not null)
+        {
             UpdateBrokerStatusSnapshot(additionalPool, brokerIds);
+        }
     }
 
     private static void UpdateBrokerStatusSnapshot(IConnectionPool connectionPool, int[] brokerIds)
     {
         if (connectionPool is IConnectionPoolStatusSource statusSource)
+        {
             statusSource.UpdateBrokerStatusSnapshot(brokerIds);
+        }
     }
 
     /// <summary>
@@ -1816,7 +1931,9 @@ public sealed partial class MetadataManager : IAsyncDisposable
                 {
                     resolvedAddress = true;
                     if (seen.Add((host, port, endpoint.Address)))
+                    {
                         resolved.Add((host, port, endpoint.Address));
+                    }
                 }
 
                 LogRebootstrapDnsResolved(host, port, endpoints.Count);
@@ -1828,7 +1945,9 @@ public sealed partial class MetadataManager : IAsyncDisposable
 
             // Without a resolved address, still try the hostname: the connection resolves it again.
             if (!resolvedAddress && seen.Add((host, port, null)))
+            {
                 resolved.Add((host, port, null));
+            }
         }
 
         return resolved;
@@ -1913,17 +2032,23 @@ public sealed partial class MetadataManager : IAsyncDisposable
     {
         if ((!replaceExisting && _metadataApiVersion >= 0)
             || connection is not IKafkaCapabilityProvider provider)
+        {
             return;
+        }
 
         var capabilities = provider.Capabilities;
         if (replaceExisting)
+        {
             _brokerApiVersions.Clear();
+        }
 
         for (var key = 0; key < capabilities.ApiRangeCount; key++)
         {
             var apiKey = (ApiKey)key;
             if (capabilities.TryGetApiRange(apiKey, out var minVersion, out var maxVersion))
+            {
                 _brokerApiVersions[apiKey] = (minVersion, maxVersion);
+            }
         }
 
         _negotiatedVersionCache.Clear();
@@ -1934,20 +2059,26 @@ public sealed partial class MetadataManager : IAsyncDisposable
     {
         var current = _lastRespondingEndpoint;
         if (current is null || current.Port != port || !string.Equals(current.Host, host, StringComparison.Ordinal))
+        {
             _lastRespondingEndpoint = new RespondingEndpoint(host, port);
+        }
     }
 
     private int FindLastRespondingEndpointIndex(IReadOnlyList<(int BrokerId, string Host, int Port)> endpoints)
     {
         var preferred = _lastRespondingEndpoint;
         if (preferred is null)
+        {
             return -1;
+        }
 
         for (var i = 0; i < endpoints.Count; i++)
         {
             var (_, host, port) = endpoints[i];
             if (port == preferred.Port && string.Equals(host, preferred.Host, StringComparison.Ordinal))
+            {
                 return i;
+            }
         }
 
         return -1;
@@ -2000,7 +2131,9 @@ public sealed partial class MetadataManager : IAsyncDisposable
             foreach (var endpoint in _bootstrapEndpoints)
             {
                 if (seen.Add(endpoint))
+                {
                     endpoints.Add((-1, endpoint.Host, endpoint.Port));
+                }
             }
 
             // Update cache with new hash and endpoints
@@ -2015,15 +2148,21 @@ public sealed partial class MetadataManager : IAsyncDisposable
     private void StartBackgroundRefresh()
     {
         if (Volatile.Read(ref _disposed) != 0)
+        {
             return;
+        }
 
         lock (_backgroundRefreshGate)
         {
             if (Volatile.Read(ref _disposed) != 0)
+            {
                 return;
+            }
 
             if (_backgroundRefreshTask is { IsCompleted: false })
+            {
                 return;
+            }
 
             _backgroundRefreshCts?.Dispose();
             _backgroundRefreshCts = new CancellationTokenSource();
@@ -2084,7 +2223,9 @@ public sealed partial class MetadataManager : IAsyncDisposable
     public async ValueTask DisposeAsync()
     {
         if (Interlocked.Exchange(ref _disposed, 1) != 0)
+        {
             return;
+        }
 
         _disposalCts.Cancel();
         _backgroundRefreshCts?.Cancel();
@@ -2133,9 +2274,13 @@ public sealed partial class MetadataManager : IAsyncDisposable
     private void LogMetadataInitializationFailed(Exception ex, int attempt, int backoffMs)
     {
         if (ShouldWarnAboutMetadataFailure())
+        {
             LogMetadataInitializationFailedWarning(ex, attempt, backoffMs);
+        }
         else
+        {
             LogMetadataInitializationFailedDebug(ex, attempt, backoffMs);
+        }
     }
 
     [LoggerMessage(Level = LogLevel.Debug, Message = "Metadata initialization attempt {Attempt} failed, retrying in {BackoffMs}ms")]
@@ -2159,9 +2304,13 @@ public sealed partial class MetadataManager : IAsyncDisposable
     private void LogMetadataRefreshFailed(Exception ex, string host, int port)
     {
         if (ShouldWarnAboutMetadataFailure())
+        {
             LogMetadataRefreshFailedWarning(ex, host, port);
+        }
         else
+        {
             LogMetadataRefreshFailedDebug(ex, host, port);
+        }
     }
 
     [LoggerMessage(Level = LogLevel.Debug, Message = "Failed to refresh metadata from {Host}:{Port}")]
@@ -2176,9 +2325,13 @@ public sealed partial class MetadataManager : IAsyncDisposable
         // threshold cannot escalate it later. A terminal initialization warning covers a
         // persistent bootstrap outage; after successful operation, a new outage is warning.
         if (_hasSuccessfulRefresh)
+        {
             LogAllBrokersUnavailableWarning(triggerMs);
+        }
         else
+        {
             LogAllBrokersUnavailableDebug(triggerMs);
+        }
     }
 
     [LoggerMessage(Level = LogLevel.Debug, Message = "All known brokers are unavailable. Rebootstrap will trigger after {TriggerMs}ms")]
@@ -2263,38 +2416,56 @@ public sealed class MetadataOptions
     /// This KIP-909 budget is independent of metadata initialization and request timeouts.
     /// Default is 120000 (2 minutes); Kafka 4.4 defaults to 0. Zero resolves once with no deadline.
     /// </summary>
-    public int BootstrapResolveTimeoutMs { get; init; } = 120000;
+    public int BootstrapResolveTimeoutMs
+    {
+        get; init;
+    } = 120000;
 
     /// <summary>
     /// Interval for background metadata refresh.
     /// Metadata is never considered stale - it refreshes periodically and swaps in silently.
     /// Default matches Confluent's metadata.max.age.ms (15 minutes).
     /// </summary>
-    public TimeSpan MetadataRefreshInterval { get; init; } = TimeSpan.FromMinutes(15);
+    public TimeSpan MetadataRefreshInterval
+    {
+        get; init;
+    } = TimeSpan.FromMinutes(15);
 
     /// <summary>
     /// Whether to enable background metadata refresh.
     /// </summary>
-    public bool EnableBackgroundRefresh { get; init; } = true;
+    public bool EnableBackgroundRefresh
+    {
+        get; init;
+    } = true;
 
     /// <summary>
     /// Whether topic metadata lookups ask the broker to auto-create missing topics.
     /// The broker creates a topic only when its <c>auto.create.topics.enable</c> is also true.
     /// Default is true, matching Java's <c>allow.auto.create.topics</c>.
     /// </summary>
-    public bool AllowAutoTopicCreation { get; init; } = true;
+    public bool AllowAutoTopicCreation
+    {
+        get; init;
+    } = true;
 
     /// <summary>
     /// Strategy for recovering cluster metadata when all known brokers become unavailable.
     /// Default is <see cref="MetadataRecoveryStrategy.Rebootstrap"/>.
     /// </summary>
-    public MetadataRecoveryStrategy MetadataRecoveryStrategy { get; init; } = MetadataRecoveryStrategy.Rebootstrap;
+    public MetadataRecoveryStrategy MetadataRecoveryStrategy
+    {
+        get; init;
+    } = MetadataRecoveryStrategy.Rebootstrap;
 
     /// <summary>
     /// Whether new broker connections include the expected cluster and node identity (KIP-1242).
     /// Disabled when <see cref="MetadataRecoveryStrategy"/> is <see cref="MetadataRecoveryStrategy.None"/>.
     /// </summary>
-    public bool MetadataClusterCheckEnabled { get; init; } = true;
+    public bool MetadataClusterCheckEnabled
+    {
+        get; init;
+    } = true;
 
     /// <summary>
     /// How long in milliseconds to wait before triggering a rebootstrap when all known brokers
@@ -2302,29 +2473,44 @@ public sealed class MetadataOptions
     /// <see cref="MetadataRecoveryStrategy.Rebootstrap"/>.
     /// Default is 300000 (5 minutes).
     /// </summary>
-    public int MetadataRecoveryRebootstrapTriggerMs { get; init; } = 300000;
+    public int MetadataRecoveryRebootstrapTriggerMs
+    {
+        get; init;
+    } = 300000;
 
     /// <summary>
     /// Controls how bootstrap and broker hostnames are resolved before connecting.
     /// </summary>
-    public ClientDnsLookup ClientDnsLookup { get; init; } = ClientDnsLookup.UseAllDnsIps;
+    public ClientDnsLookup ClientDnsLookup
+    {
+        get; init;
+    } = ClientDnsLookup.UseAllDnsIps;
 
     /// <summary>
     /// DNS resolver used when re-resolving bootstrap endpoints. Internal for deterministic tests.
     /// </summary>
-    internal ClientDnsEndpointResolver DnsResolver { get; init; } = ClientDnsEndpointResolver.Default;
+    internal ClientDnsEndpointResolver DnsResolver
+    {
+        get; init;
+    } = ClientDnsEndpointResolver.Default;
 
     /// <summary>
     /// Initial retry backoff in milliseconds for metadata initialization.
     /// Matches Java client's retry.backoff.ms. Default is 100ms.
     /// </summary>
-    public int RetryBackoffMs { get; init; } = 100;
+    public int RetryBackoffMs
+    {
+        get; init;
+    } = 100;
 
     /// <summary>
     /// Maximum retry backoff in milliseconds for metadata initialization.
     /// Matches Java client's retry.backoff.max.ms. Default is 1000ms.
     /// </summary>
-    public int RetryBackoffMaxMs { get; init; } = 1000;
+    public int RetryBackoffMaxMs
+    {
+        get; init;
+    } = 1000;
 
     /// <summary>
     /// Total time budget in milliseconds for the initial metadata fetch. Initialization
@@ -2333,12 +2519,18 @@ public sealed class MetadataOptions
     /// where the first send blocks up to max.block.ms (60s) while metadata is fetched.
     /// Default is 60000 (60 seconds). The producer maps its MaxBlockMs setting here.
     /// </summary>
-    public int InitTimeoutMs { get; init; } = 60000;
+    public int InitTimeoutMs
+    {
+        get; init;
+    } = 60000;
 
     /// <summary>
     /// Optional cap on the number of retries for the initial metadata fetch. By default
     /// initialization is bounded by <see cref="InitTimeoutMs"/> alone; set this to make
     /// it give up after a fixed number of attempts instead, rethrowing the last failure.
     /// </summary>
-    public int MaxInitRetries { get; init; } = int.MaxValue;
+    public int MaxInitRetries
+    {
+        get; init;
+    } = int.MaxValue;
 }

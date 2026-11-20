@@ -12,7 +12,9 @@ internal sealed class AllocationFreeBinaryEncoder(Stream stream) : global::Avro.
     private const int MaxStackChars = StackBufferSize / MaxUtf8BytesPerChar;
     private readonly Stream _stream = stream;
 
-    public void WriteNull() { }
+    public void WriteNull()
+    {
+    }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public void WriteBoolean(bool value) => _stream.WriteByte(value ? (byte)1 : (byte)0);
@@ -49,7 +51,9 @@ internal sealed class AllocationFreeBinaryEncoder(Stream stream) : global::Avro.
     public void WriteBytes(byte[] value)
     {
         if (value is null)
+        {
             throw new global::Avro.AvroTypeException("Null cannot be written as Avro bytes.");
+        }
 
         WriteLong(value.Length);
         _stream.Write(value, 0, value.Length);
@@ -58,7 +62,9 @@ internal sealed class AllocationFreeBinaryEncoder(Stream stream) : global::Avro.
     public void WriteBytes(byte[] value, int offset, int length)
     {
         if (value is null)
+        {
             throw new global::Avro.AvroTypeException("Null cannot be written as Avro bytes.");
+        }
 
         WriteLong(length);
         _stream.Write(value, offset, length);
@@ -67,7 +73,9 @@ internal sealed class AllocationFreeBinaryEncoder(Stream stream) : global::Avro.
     public void WriteString(string value)
     {
         if (value is null)
+        {
             throw new global::Avro.AvroTypeException("Null cannot be written as an Avro string.");
+        }
 
         WriteString(value.AsSpan());
     }
@@ -109,13 +117,21 @@ internal sealed class AllocationFreeBinaryEncoder(Stream stream) : global::Avro.
     public void SetItemCount(long value)
     {
         if (value > 0)
+        {
             WriteLong(value);
+        }
     }
 
-    public void StartItem() { }
-    public void WriteArrayStart() { }
+    public void StartItem()
+    {
+    }
+    public void WriteArrayStart()
+    {
+    }
     public void WriteArrayEnd() => WriteLong(0);
-    public void WriteMapStart() { }
+    public void WriteMapStart()
+    {
+    }
     public void WriteMapEnd() => WriteLong(0);
     public void WriteUnionIndex(int value) => WriteLong(value);
     public void WriteFixed(byte[] data) => _stream.Write(data, 0, data.Length);

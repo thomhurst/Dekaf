@@ -459,6 +459,8 @@ public class ProtobufInlineValidationBenchmarks
             bool permanent = false,
             CancellationToken cancellationToken = default) => throw new NotSupportedException();
 
-        public void Dispose() { }
+        public void Dispose()
+        {
+        }
     }
 }

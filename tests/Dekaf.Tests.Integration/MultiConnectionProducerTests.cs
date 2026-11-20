@@ -49,7 +49,10 @@ public sealed class MultiConnectionProducerTests(KafkaTestContainer kafka) : Kaf
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))
         {
             received.Add(msg.Value!);
-            if (received.Count >= messageCount) break;
+            if (received.Count >= messageCount)
+            {
+                break;
+            }
         }
 
         await Assert.That(received).Count().IsEqualTo(messageCount);
@@ -76,6 +79,7 @@ public sealed class MultiConnectionProducerTests(KafkaTestContainer kafka) : Kaf
 
         // Warmup all partitions
         for (var p = 0; p < partitionCount; p++)
+        {
             await producer.ProduceAsync(new ProducerMessage<string, string>
             {
                 Topic = topic,
@@ -83,6 +87,7 @@ public sealed class MultiConnectionProducerTests(KafkaTestContainer kafka) : Kaf
                 Value = "warmup",
                 Partition = p
             }, CancellationToken.None);
+        }
 
         // Produce sequenced messages to each partition
         for (var p = 0; p < partitionCount; p++)
@@ -113,7 +118,9 @@ public sealed class MultiConnectionProducerTests(KafkaTestContainer kafka) : Kaf
 
         var messagesByPartition = new Dictionary<int, List<string>>();
         for (var p = 0; p < partitionCount; p++)
+        {
             messagesByPartition[p] = [];
+        }
 
         var totalExpected = partitionCount * messagesPerPartition;
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(60));
@@ -121,11 +128,15 @@ public sealed class MultiConnectionProducerTests(KafkaTestContainer kafka) : Kaf
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))
         {
             if (msg.Value != "warmup")
+            {
                 messagesByPartition[msg.Partition].Add(msg.Value!);
+            }
 
             var total = messagesByPartition.Values.Sum(messages => messages.Count);
             if (total >= totalExpected)
+            {
                 break;
+            }
         }
 
         for (var p = 0; p < partitionCount; p++)
@@ -178,7 +189,10 @@ public sealed class MultiConnectionProducerTests(KafkaTestContainer kafka) : Kaf
         await foreach (var _ in consumer.ConsumeAsync(cts.Token))
         {
             count++;
-            if (count >= messageCount) break;
+            if (count >= messageCount)
+            {
+                break;
+            }
         }
 
         await Assert.That(count).IsEqualTo(messageCount);
@@ -216,7 +230,10 @@ public sealed class MultiConnectionProducerTests(KafkaTestContainer kafka) : Kaf
         await foreach (var _ in consumer.ConsumeAsync(cts.Token))
         {
             count++;
-            if (count >= messageCount) break;
+            if (count >= messageCount)
+            {
+                break;
+            }
         }
 
         await Assert.That(count).IsEqualTo(messageCount);
@@ -267,7 +284,10 @@ public sealed class MultiConnectionProducerTests(KafkaTestContainer kafka) : Kaf
         await foreach (var _ in consumer.ConsumeAsync(consumeCts.Token))
         {
             count++;
-            if (count >= messageCount) break;
+            if (count >= messageCount)
+            {
+                break;
+            }
         }
 
         await Assert.That(count).IsEqualTo(messageCount);
@@ -331,7 +351,10 @@ public sealed class MultiConnectionProducerTests(KafkaTestContainer kafka) : Kaf
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))
         {
             received.Add(msg.Value!);
-            if (received.Count >= messageCount) break;
+            if (received.Count >= messageCount)
+            {
+                break;
+            }
         }
 
         await Assert.That(received).Count().IsEqualTo(messageCount);
@@ -391,7 +414,10 @@ public sealed class MultiConnectionProducerTests(KafkaTestContainer kafka) : Kaf
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))
         {
             received.Add(msg.Value!);
-            if (received.Count >= messageCount) break;
+            if (received.Count >= messageCount)
+            {
+                break;
+            }
         }
 
         await Assert.That(received).Count().IsEqualTo(messageCount);

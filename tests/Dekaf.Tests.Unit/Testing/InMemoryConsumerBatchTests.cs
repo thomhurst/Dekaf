@@ -44,13 +44,17 @@ public sealed class InMemoryConsumerBatchTests
         {
             await using var batches = consumer.ConsumeRawBatchAsync().GetAsyncEnumerator();
             for (var i = 0; i < 3 && await batches.MoveNextAsync(); i++)
+            {
                 partitions.Add(batches.Current.TopicPartition);
+            }
         }
         else
         {
             await using var batches = consumer.ConsumeBatchAsync().GetAsyncEnumerator();
             for (var i = 0; i < 3 && await batches.MoveNextAsync(); i++)
+            {
                 partitions.Add(batches.Current.TopicPartition);
+            }
         }
 
         // Skipped batches are redelivered, but only after the other partition's batch.
@@ -83,7 +87,9 @@ public sealed class InMemoryConsumerBatchTests
         foreach (var record in batches.Current)
         {
             if (record.Offset == 1)
+            {
                 break;
+            }
         }
 
         await Assert.That(await batches.MoveNextAsync()).IsTrue();
@@ -118,7 +124,9 @@ public sealed class InMemoryConsumerBatchTests
         foreach (var record in batches.Current)
         {
             if (record.Offset == 1)
+            {
                 break;
+            }
         }
 
         await consumer.CommitAsync();
@@ -156,7 +164,9 @@ public sealed class InMemoryConsumerBatchTests
             foreach (var record in batch)
             {
                 if (record.Offset == 1)
+                {
                     break;
+                }
             }
 
             await consumer.CommitAsync();
@@ -354,7 +364,9 @@ public sealed class InMemoryConsumerBatchTests
         var cluster = new InMemoryKafkaCluster();
         cluster.CreateTopic("topic", 1);
         await using (var producer = new InMemoryProducer<string, string>(cluster))
+        {
             await ProduceAsync(producer, 0, "before");
+        }
         await using (var transactional = new InMemoryProducer<string, string>(
                          cluster,
                          new InMemoryProducerOptions { TransactionalId = "tx" }))
@@ -363,12 +375,17 @@ public sealed class InMemoryConsumerBatchTests
             await using var transaction = transactional.BeginTransaction();
             await transaction.ProduceAsync(new ProducerMessage<string, string>
             {
-                Topic = "topic", Partition = 0, Key = "key", Value = "aborted"
+                Topic = "topic",
+                Partition = 0,
+                Key = "key",
+                Value = "aborted"
             });
             await transaction.AbortAsync();
         }
         await using (var producer = new InMemoryProducer<string, string>(cluster))
+        {
             await ProduceAsync(producer, 0, "after");
+        }
 
         await using var consumer = new InMemoryConsumer<string, string>(cluster, new InMemoryConsumerOptions
         {
@@ -427,23 +444,32 @@ public sealed class InMemoryConsumerBatchTests
         cluster.CreateTopic("topic", 2);
         await using var producer = new InMemoryProducer<string, string>(cluster);
         for (var i = 0; i < partition0; i++)
+        {
             await ProduceAsync(producer, 0, $"p0-{i}");
+        }
         for (var i = 0; i < partition1; i++)
+        {
             await ProduceAsync(producer, 1, $"p1-{i}");
+        }
         return cluster;
     }
 
     private static InMemoryConsumer<string, string> CreateConsumer(
         InMemoryKafkaCluster cluster, OffsetCommitMode mode) => new(cluster, new InMemoryConsumerOptions
         {
-            GroupId = "group", AutoOffsetReset = AutoOffsetReset.Earliest, OffsetCommitMode = mode
+            GroupId = "group",
+            AutoOffsetReset = AutoOffsetReset.Earliest,
+            OffsetCommitMode = mode
         });
 
     private static ValueTask<RecordMetadata> ProduceAsync(
         InMemoryProducer<string, string> producer, int partition, string value) =>
         producer.ProduceAsync(new ProducerMessage<string, string>
         {
-            Topic = "topic", Partition = partition, Key = "key", Value = value
+            Topic = "topic",
+            Partition = partition,
+            Key = "key",
+            Value = value
         });
 
     private static List<string> Values(ConsumeBatch<string, string> batch) =>
@@ -457,7 +483,9 @@ public sealed class InMemoryConsumerBatchTests
     {
         var projected = new List<T>();
         foreach (var record in batch)
+        {
             projected.Add(select(record));
+        }
         return projected;
     }
 }

@@ -11,10 +11,14 @@ internal static class BoundedConcurrency
         int count, int maxConcurrency, Func<int, CancellationToken, ValueTask> body, CancellationToken cancellationToken)
     {
         if (count == 0)
+        {
             return Task.CompletedTask;
+        }
         // The common case of one bucket needs no scheduling.
         if (count == 1)
+        {
             return body(0, cancellationToken).AsTask();
+        }
 
         return Parallel.ForAsync(0, count, new ParallelOptions
         {

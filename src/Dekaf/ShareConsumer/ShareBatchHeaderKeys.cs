@@ -20,7 +20,9 @@ internal sealed class ShareBatchHeaderKeys
             {
                 _names.TryAdd(new HashedName(bytes, XxHash64.HashToUInt64(bytes)), name);
                 if (bytes.Length > HeaderProtocol.MaxCachedKeyBytes)
+                {
                     (_oversizedNameLengths ??= new()).Add(bytes.Length);
+                }
             }
         }
     }
@@ -28,13 +30,17 @@ internal sealed class ShareBatchHeaderKeys
     internal string Get(ReadOnlyMemory<byte> bytes)
     {
         if (HeaderProtocol.TryGetCachedKey(bytes, out var name, out var hash))
+        {
             return name;
+        }
         // The global lookup skips hashing oversized names; all other misses already have a hash.
         if (bytes.Length > HeaderProtocol.MaxCachedKeyBytes)
         {
             // A different byte length cannot match any configured name. Decode without scanning for a hash.
             if (_oversizedNameLengths is null || !_oversizedNameLengths.Contains(bytes.Length))
+            {
                 return HeaderProtocol.InternUncachedKey(bytes, hash);
+            }
             hash = XxHash64.HashToUInt64(bytes.Span);
         }
         return _names.TryGetValue(new HashedName(bytes, hash), out name)

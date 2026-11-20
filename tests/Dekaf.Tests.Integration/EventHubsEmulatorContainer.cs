@@ -67,8 +67,14 @@ public sealed class EventHubsEmulatorContainer : IAsyncInitializer, IAsyncDispos
     private IContainer? _azurite;
     private IContainer? _emulator;
 
-    public string BootstrapServers { get; private set; } = string.Empty;
-    public string SaslPassword { get; private set; } = string.Empty;
+    public string BootstrapServers
+    {
+        get; private set;
+    } = string.Empty;
+    public string SaslPassword
+    {
+        get; private set;
+    } = string.Empty;
 
     public async Task InitializeAsync()
     {
@@ -167,7 +173,9 @@ public sealed class EventHubsEmulatorContainer : IAsyncInitializer, IAsyncDispos
         firstError = await TryDisposeAsync(network, firstError).ConfigureAwait(false);
 
         if (firstError is not null)
+        {
             throw firstError;
+        }
     }
 
     private async Task<string> GetLogTailAsync()
@@ -180,7 +188,9 @@ public sealed class EventHubsEmulatorContainer : IAsyncInitializer, IAsyncDispos
     private static async Task<string> GetLogTailAsync(IContainer? container)
     {
         if (container is null)
+        {
             return "<container not created>";
+        }
 
         try
         {
@@ -198,7 +208,9 @@ public sealed class EventHubsEmulatorContainer : IAsyncInitializer, IAsyncDispos
         Exception? firstError)
     {
         if (resource is null)
+        {
             return firstError;
+        }
 
         try
         {

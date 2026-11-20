@@ -27,9 +27,18 @@ internal sealed class SchemaRegistryCertificateMaterial : IDisposable
         _ownedClientCertificates = ownedClientCertificates;
     }
 
-    internal X509Certificate2Collection? CaCertificates { get; }
-    internal X509Certificate2? ClientCertificate { get; }
-    internal X509Certificate2Collection? ClientIntermediateCertificates { get; }
+    internal X509Certificate2Collection? CaCertificates
+    {
+        get;
+    }
+    internal X509Certificate2? ClientCertificate
+    {
+        get;
+    }
+    internal X509Certificate2Collection? ClientIntermediateCertificates
+    {
+        get;
+    }
 
     internal static SchemaRegistryCertificateMaterial Load(SchemaRegistryTlsConfig config)
     {
@@ -56,9 +65,13 @@ internal sealed class SchemaRegistryCertificateMaterial : IDisposable
         catch
         {
             if (ownsCaCertificates && caCertificates is not null)
+            {
                 DisposeCertificates(caCertificates);
+            }
             if (ownsClientCertificates && clientCertificates is not null)
+            {
                 DisposeCertificates(clientCertificates);
+            }
             throw;
         }
     }
@@ -91,7 +104,9 @@ internal sealed class SchemaRegistryCertificateMaterial : IDisposable
         if (config.CaCertificatePassword is not null)
         {
             if (config.CaCertificatePath is null)
+            {
                 throw new ArgumentException("A CA certificate path is required when a CA password is configured.", nameof(config));
+            }
 
             if (!Directory.Exists(config.CaCertificatePath) && !IsPkcs12(config.CaCertificatePath))
             {
@@ -104,7 +119,9 @@ internal sealed class SchemaRegistryCertificateMaterial : IDisposable
         if (config.ClientCertificate is not null)
         {
             if (!config.ClientCertificate.HasPrivateKey)
+            {
                 throw new ArgumentException("The client certificate must contain a private key.", nameof(config));
+            }
 
             if (config.ClientPrivateKeyPath is not null ||
                 config.ClientPrivateKeyPem is not null ||
@@ -120,21 +137,31 @@ internal sealed class SchemaRegistryCertificateMaterial : IDisposable
         {
             var isPkcs12 = IsPkcs12(config.ClientCertificatePath);
             if (isPkcs12 && config.ClientPrivateKeyPath is not null)
+            {
                 throw new ArgumentException("A separate private key cannot be combined with a PKCS#12 client certificate.", nameof(config));
+            }
 
             if (!isPkcs12 && config.ClientPrivateKeyPath is null)
+            {
                 throw new ArgumentException("A private-key path is required for a PEM client certificate.", nameof(config));
+            }
 
             if (config.ClientPrivateKeyPem is not null)
+            {
                 throw new ArgumentException("A private-key PEM string cannot be combined with a client certificate path.", nameof(config));
+            }
         }
         else if (config.ClientCertificatePem is not null)
         {
             if (config.ClientPrivateKeyPem is null)
+            {
                 throw new ArgumentException("A private-key PEM string is required for a PEM client certificate.", nameof(config));
+            }
 
             if (config.ClientPrivateKeyPath is not null)
+            {
                 throw new ArgumentException("A private-key path cannot be combined with a client certificate PEM string.", nameof(config));
+            }
         }
         else if (config.ClientPrivateKeyPath is not null ||
                  config.ClientPrivateKeyPem is not null ||
@@ -152,13 +179,21 @@ internal sealed class SchemaRegistryCertificateMaterial : IDisposable
     {
         var count = 0;
         if (first is not null)
+        {
             count++;
+        }
         if (second is not null)
+        {
             count++;
+        }
         if (third is not null)
+        {
             count++;
+        }
         if (fourth is not null)
+        {
             count++;
+        }
 
         return count;
     }
@@ -169,10 +204,14 @@ internal sealed class SchemaRegistryCertificateMaterial : IDisposable
     {
         ownsCertificates = false;
         if (config.CaCertificates is not null)
+        {
             return config.CaCertificates;
+        }
 
         if (config.CaCertificate is not null)
+        {
             return [config.CaCertificate];
+        }
 
         if (config.CaCertificatePem is not null)
         {
@@ -192,7 +231,9 @@ internal sealed class SchemaRegistryCertificateMaterial : IDisposable
         }
 
         if (config.CaCertificatePath is null)
+        {
             return null;
+        }
 
         var loaded = Directory.Exists(config.CaCertificatePath)
             ? LoadCaDirectory(config.CaCertificatePath, config.CaCertificatePassword)
@@ -216,7 +257,9 @@ internal sealed class SchemaRegistryCertificateMaterial : IDisposable
         foreach (var file in Directory.EnumerateFiles(path, "*", SearchOption.TopDirectoryOnly))
         {
             if (IsSupportedCaExtension(Path.GetExtension(file)))
+            {
                 files.Add(file);
+            }
         }
 
         if (files.Count == 0)
@@ -261,11 +304,15 @@ internal sealed class SchemaRegistryCertificateMaterial : IDisposable
     private static X509Certificate2Collection LoadCaFile(string path, string? password)
     {
         if (!File.Exists(path))
+        {
             throw new FileNotFoundException("CA certificate file was not found.", path);
+        }
 
         var extension = Path.GetExtension(path);
         if (!IsSupportedCaExtension(extension))
+        {
             throw new ArgumentException("Unsupported CA certificate file extension.", nameof(path));
+        }
 
         if (IsPkcs12(path))
         {
@@ -285,7 +332,9 @@ internal sealed class SchemaRegistryCertificateMaterial : IDisposable
         {
             collection.ImportFromPemFile(path);
             if (collection.Count != 0)
+            {
                 return collection;
+            }
 
             if (string.Equals(extension, ".crt", StringComparison.OrdinalIgnoreCase) ||
                 string.Equals(extension, ".cer", StringComparison.OrdinalIgnoreCase))
@@ -308,12 +357,16 @@ internal sealed class SchemaRegistryCertificateMaterial : IDisposable
     {
         ownsCertificates = false;
         if (config.ClientCertificate is not null)
+        {
             return [config.ClientCertificate];
+        }
 
         if (config.ClientCertificatePath is not null)
         {
             if (!File.Exists(config.ClientCertificatePath))
+            {
                 throw new FileNotFoundException("Client certificate file was not found.", config.ClientCertificatePath);
+            }
 
             if (IsPkcs12(config.ClientCertificatePath))
             {
@@ -341,7 +394,9 @@ internal sealed class SchemaRegistryCertificateMaterial : IDisposable
             else
             {
                 if (!File.Exists(config.ClientPrivateKeyPath!))
+                {
                     throw new FileNotFoundException("Client private-key file was not found.", config.ClientPrivateKeyPath);
+                }
 
                 var certificate = config.ClientCertificatePassword is null
                     ? X509Certificate2.CreateFromPemFile(config.ClientCertificatePath, config.ClientPrivateKeyPath)
@@ -387,9 +442,13 @@ internal sealed class SchemaRegistryCertificateMaterial : IDisposable
         try
         {
             if (sourceIsFile)
+            {
                 certificates.ImportFromPemFile(certificateSource);
+            }
             else
+            {
                 certificates.ImportFromPem(certificateSource);
+            }
 
             ReplacePublicCertificate(certificates, clientCertificate);
             return certificates;
@@ -410,7 +469,9 @@ internal sealed class SchemaRegistryCertificateMaterial : IDisposable
         {
             var certificate = certificates[index];
             if (!certificate.RawDataMemory.Span.SequenceEqual(clientCertificate.RawDataMemory.Span))
+            {
                 continue;
+            }
 
             certificates.RemoveAt(index);
             certificate.Dispose();
@@ -425,15 +486,21 @@ internal sealed class SchemaRegistryCertificateMaterial : IDisposable
     {
         X509Certificate2? selectedCertificate = null;
         if (certificates is null)
+        {
             return null;
+        }
 
         foreach (var certificate in certificates)
         {
             if (!certificate.HasPrivateKey)
+            {
                 continue;
+            }
 
             if (selectedCertificate is not null)
+            {
                 throw new ArgumentException("The client certificate source contains multiple certificates with private keys.");
+            }
 
             selectedCertificate = certificate;
         }
@@ -447,13 +514,17 @@ internal sealed class SchemaRegistryCertificateMaterial : IDisposable
         X509Certificate2? clientCertificate)
     {
         if (certificates is null || clientCertificate is null || certificates.Count == 1)
+        {
             return null;
+        }
 
         var intermediateCertificates = new X509Certificate2Collection();
         foreach (var certificate in certificates)
         {
             if (!ReferenceEquals(certificate, clientCertificate))
+            {
                 intermediateCertificates.Add(certificate);
+            }
         }
 
         return intermediateCertificates;
@@ -467,7 +538,9 @@ internal sealed class SchemaRegistryCertificateMaterial : IDisposable
     private static X509Certificate2 PrepareWindowsClientCertificate(X509Certificate2 certificate)
     {
         if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+        {
             return certificate;
+        }
 
         byte[]? pkcs12 = null;
         try
@@ -478,7 +551,9 @@ internal sealed class SchemaRegistryCertificateMaterial : IDisposable
         finally
         {
             if (pkcs12 is not null)
+            {
                 CryptographicOperations.ZeroMemory(pkcs12);
+            }
             certificate.Dispose();
         }
     }
@@ -486,13 +561,17 @@ internal sealed class SchemaRegistryCertificateMaterial : IDisposable
     private static void PreparePkcs12ClientCertificates(X509Certificate2Collection certificates)
     {
         if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+        {
             return;
+        }
 
         for (var index = 0; index < certificates.Count; index++)
         {
             var certificate = certificates[index];
             if (!certificate.HasPrivateKey)
+            {
                 continue;
+            }
 
             var preparedCertificate = PrepareWindowsClientCertificate(certificate);
             certificates.RemoveAt(index);
@@ -547,7 +626,9 @@ internal sealed class SchemaRegistryCertificateMaterial : IDisposable
         foreach (var candidate in SupportedCaExtensions)
         {
             if (string.Equals(candidate, extension, StringComparison.OrdinalIgnoreCase))
+            {
                 return true;
+            }
         }
 
         return false;
@@ -556,25 +637,35 @@ internal sealed class SchemaRegistryCertificateMaterial : IDisposable
     private static void EnsureNotEmpty(X509Certificate2Collection certificates, string message)
     {
         if (certificates.Count == 0)
+        {
             throw new ArgumentException(message);
+        }
     }
 
     private static void DisposeCertificates(X509Certificate2Collection certificates)
     {
         foreach (var certificate in certificates)
+        {
             certificate.Dispose();
+        }
     }
 
     public void Dispose()
     {
         if (Interlocked.Exchange(ref _disposed, 1) != 0)
+        {
             return;
+        }
 
         if (_ownedCaCertificates is not null)
+        {
             DisposeCertificates(_ownedCaCertificates);
+        }
 
         if (_ownedClientCertificates is not null)
+        {
             DisposeCertificates(_ownedClientCertificates);
+        }
     }
 }
 
@@ -591,13 +682,19 @@ internal static class SchemaRegistryCertificateValidator
         bool checkCertificateRevocation)
     {
         if (certificate is null)
+        {
             return false;
+        }
 
         if (!validateHostName)
+        {
             sslPolicyErrors &= ~SslPolicyErrors.RemoteCertificateNameMismatch;
+        }
 
         if ((sslPolicyErrors & ~SslPolicyErrors.RemoteCertificateChainErrors) != SslPolicyErrors.None)
+        {
             return false;
+        }
 
         X509Certificate2? ownedCertificate = null;
         try
@@ -621,7 +718,9 @@ internal static class SchemaRegistryCertificateValidator
             if (serverChain is not null)
             {
                 for (var index = 1; index < serverChain.ChainElements.Count; index++)
+                {
                     chain.ChainPolicy.ExtraStore.Add(serverChain.ChainElements[index].Certificate);
+                }
             }
 
             return trustedCertificates.Count > 0 &&
@@ -639,13 +738,17 @@ internal static class SchemaRegistryCertificateValidator
         X509Certificate2Collection trustedCertificates)
     {
         if (chain.ChainElements.Count == 0)
+        {
             return false;
+        }
 
         var terminalCertificate = chain.ChainElements[^1].Certificate;
         foreach (var trustedCertificate in trustedCertificates)
         {
             if (terminalCertificate.RawDataMemory.Span.SequenceEqual(trustedCertificate.RawDataMemory.Span))
+            {
                 return true;
+            }
         }
 
         return false;

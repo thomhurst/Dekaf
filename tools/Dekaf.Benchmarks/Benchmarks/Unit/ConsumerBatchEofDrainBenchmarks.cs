@@ -28,13 +28,22 @@ public class ConsumerBatchEofDrainBenchmarks
     private Record[][] _records = null!;
 
     [Params(1, 64)]
-    public int PartitionCount { get; set; }
+    public int PartitionCount
+    {
+        get; set;
+    }
 
     [Params(false, true)]
-    public bool Raw { get; set; }
+    public bool Raw
+    {
+        get; set;
+    }
 
     [Params(false, true)]
-    public bool SkipHalf { get; set; }
+    public bool SkipHalf
+    {
+        get; set;
+    }
 
     private int Skipped => SkipHalf ? PartitionCount / 2 : 0;
 
@@ -45,28 +54,37 @@ public class ConsumerBatchEofDrainBenchmarks
     {
         _records = [new Record[RecordsPerFetch]];
         for (var i = 0; i < RecordsPerFetch; i++)
+        {
             _records[0][i] = new Record { OffsetDelta = i, IsKeyNull = true, Value = new byte[16] };
+        }
         _consumer = new KafkaConsumer<Ignore, ReadOnlyMemory<byte>>(new ConsumerOptions
         {
-            BootstrapServers = ["localhost:9092"], OffsetCommitMode = OffsetCommitMode.Manual,
-            QueuedMinMessages = 1, MaxPollRecords = RecordsPerFetch
+            BootstrapServers = ["localhost:9092"],
+            OffsetCommitMode = OffsetCommitMode.Manual,
+            QueuedMinMessages = 1,
+            MaxPollRecords = RecordsPerFetch
         }, Serializers.Ignore, Serializers.RawBytes);
         BufferedConsumerHarness.InitializeForBufferedFastPath(_consumer, Topic, 0);
         _partitions = new TopicPartition[PartitionCount];
         for (var i = 0; i < PartitionCount; i++)
+        {
             _partitions[i] = new TopicPartition(Topic, i);
+        }
         _consumer.Assign(_partitions);
         foreach (var partition in _partitions)
+        {
             BufferedConsumerHarness.GetFetchPositions(_consumer)[partition] = 0;
+        }
         BufferedConsumerHarness.SetPrivateField(
             _consumer,
             "_lastManualAssignmentEnsureVersion",
             BufferedConsumerHarness.GetPrivateField(_consumer, "_assignmentEnsureVersion"));
-        _eofEvents = (ConcurrentQueue<(TopicPartition Partition, long Offset)>)
-            BufferedConsumerHarness.GetPrivateField(_consumer, "_pendingEofEvents")!;
+        _eofEvents = (ConcurrentQueue<(TopicPartition Partition, long Offset)>)BufferedConsumerHarness.GetPrivateField(_consumer, "_pendingEofEvents")!;
 
         if (await Drain() != ExpectedBatches)
+        {
             throw new InvalidOperationException("Without skips, every fetch and every EOF must be delivered once.");
+        }
     }
 
     [Benchmark]
@@ -97,10 +115,14 @@ public class ConsumerBatchEofDrainBenchmarks
             }
             else if (batch.Partition >= Skipped)
             {
-                foreach (var _ in batch) { }
+                foreach (var _ in batch)
+                {
+                }
             }
             if (++batches == ExpectedBatches)
+            {
                 break;
+            }
         }
         // Each stream is a fixed number of MoveNext calls, so it stays bounded on revisions
         // that re-yield a skipped batch. Delivery order across skips is the unit tests' job;
@@ -121,10 +143,14 @@ public class ConsumerBatchEofDrainBenchmarks
             }
             else if (batch.Partition >= Skipped)
             {
-                foreach (var _ in batch) { }
+                foreach (var _ in batch)
+                {
+                }
             }
             if (++batches == ExpectedBatches)
+            {
                 break;
+            }
         }
         // Each stream is a fixed number of MoveNext calls, so it stays bounded on revisions
         // that re-yield a skipped batch. Delivery order across skips is the unit tests' job;

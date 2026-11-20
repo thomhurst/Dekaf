@@ -72,7 +72,9 @@ internal sealed partial class UnresolvedAssignmentMetadataRefresher
         get
         {
             lock (_gate)
+            {
                 return _task;
+            }
         }
     }
 
@@ -128,7 +130,9 @@ internal sealed partial class UnresolvedAssignmentMetadataRefresher
     private void StartIfDueLocked()
     {
         if (_stopped || _inFlight || Stopwatch.GetTimestamp() < _notBefore)
+        {
             return;
+        }
 
         _inFlight = true;
         _refreshGeneration = _generation;
@@ -143,7 +147,9 @@ internal sealed partial class UnresolvedAssignmentMetadataRefresher
     {
         int generation;
         lock (_gate)
+        {
             generation = _refreshGeneration;
+        }
 
         var cancellationToken = _cts.Token;
         try
@@ -181,7 +187,9 @@ internal sealed partial class UnresolvedAssignmentMetadataRefresher
             // A newer assignment asked for a refresh while this one ran: that request found the
             // refresher busy, so start it now rather than wait for a later heartbeat.
             if (_requestedGeneration == _generation)
+            {
                 StartIfDueLocked();
+            }
         }
     }
 

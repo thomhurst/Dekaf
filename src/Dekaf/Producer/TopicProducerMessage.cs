@@ -12,27 +12,42 @@ public sealed record TopicProducerMessage<TKey, TValue>
     /// <summary>
     /// The message key (can be null).
     /// </summary>
-    public TKey? Key { get; init; }
+    public TKey? Key
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The message value.
     /// </summary>
-    public required TValue Value { get; init; }
+    public required TValue Value
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Optional headers.
     /// </summary>
-    public Headers? Headers { get; init; }
+    public Headers? Headers
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Optional partition. If not set, partitioner will choose.
     /// </summary>
-    public int? Partition { get; init; }
+    public int? Partition
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Optional timestamp. If not set, current time will be used.
     /// </summary>
-    public DateTimeOffset? Timestamp { get; init; }
+    public DateTimeOffset? Timestamp
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Creates a new topic producer message.

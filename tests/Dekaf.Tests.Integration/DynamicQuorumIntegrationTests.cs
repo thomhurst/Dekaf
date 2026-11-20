@@ -145,14 +145,18 @@ public sealed class DynamicQuorumKafkaContainer : IAsyncInitializer, IAsyncDispo
         try
         {
             if (_observer is not null)
+            {
                 await _observer.DisposeAsync();
+            }
         }
         finally
         {
             try
             {
                 if (_leader is not null)
+                {
                     await _leader.DisposeAsync();
+                }
             }
             finally { await _network.DisposeAsync(); }
         }

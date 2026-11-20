@@ -35,7 +35,9 @@ public class ConsumerCoordinatorStablePollBenchmarks
 
         var pending = EnsureActiveGroup();
         if (!pending.IsCompletedSuccessfully)
+        {
             throw new InvalidOperationException("The stable EnsureActiveGroupAsync path did not complete synchronously.");
+        }
     }
 
     [Benchmark]

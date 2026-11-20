@@ -155,7 +155,10 @@ public sealed class LargeMessageTests(KafkaTestContainer kafka) : KafkaIntegrati
         await foreach (var msg in consumer.ConsumeAsync(cts.Token).ConfigureAwait(false))
         {
             consumedCount++;
-            if (consumedCount >= messageCount) break;
+            if (consumedCount >= messageCount)
+            {
+                break;
+            }
         }
 
         // Assert
@@ -205,7 +208,10 @@ public sealed class LargeMessageTests(KafkaTestContainer kafka) : KafkaIntegrati
         {
             consumed.Add(msg);
             partitionsSeen.Add(msg.Partition);
-            if (consumed.Count >= 20) break;
+            if (consumed.Count >= 20)
+            {
+                break;
+            }
         }
 
         // Assert - all 20 partitions should have received a message

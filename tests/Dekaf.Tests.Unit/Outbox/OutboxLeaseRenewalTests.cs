@@ -1,6 +1,6 @@
+using System.Threading.Channels;
 using Dekaf.Outbox;
 using Microsoft.Extensions.Logging.Abstractions;
-using System.Threading.Channels;
 
 namespace Dekaf.Tests.Unit.Outbox;
 
@@ -170,7 +170,9 @@ public sealed class OutboxLeaseRenewalTests
         var time = new ManualTimeProvider();
         var store = new RenewableStore(time)
         {
-            Buckets = [0, 1], FetchDuration = TimeSpan.FromSeconds(10), RenewalSucceeds = false
+            Buckets = [0, 1],
+            FetchDuration = TimeSpan.FromSeconds(10),
+            RenewalSucceeds = false
         };
         var publisher = new PausedPublisher();
         using var relay = new OutboxRelayService(store, publisher,
@@ -289,7 +291,9 @@ public sealed class OutboxLeaseRenewalTests
 
     private static OutboxLeaseRequest PeerRequest() => new()
     {
-        RelayId = "relay-b", BucketCount = 1, LeaseDuration = TimeSpan.FromSeconds(30)
+        RelayId = "relay-b",
+        BucketCount = 1,
+        LeaseDuration = TimeSpan.FromSeconds(30)
     };
 
     private static OutboxRelayService CreateRelay(IOutboxStore store, IOutboxPublisher publisher, TimeProvider time) =>
@@ -298,9 +302,18 @@ public sealed class OutboxLeaseRenewalTests
 
     private sealed class PausedPublisher : IOutboxPublisher
     {
-        internal TaskCompletionSource Entered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        internal TaskCompletionSource<OutboxPublishResult> Completion { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        internal int Calls { get; private set; }
+        internal TaskCompletionSource Entered
+        {
+            get;
+        } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        internal TaskCompletionSource<OutboxPublishResult> Completion
+        {
+            get;
+        } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        internal int Calls
+        {
+            get; private set;
+        }
         public ValueTask InitializeAsync(CancellationToken cancellationToken = default) => ValueTask.CompletedTask;
         public ValueTask<OutboxPublishResult> PublishAsync(IReadOnlyList<OutboxMessage> messages,
             string messageIdHeaderName, CancellationToken cancellationToken = default)
@@ -324,19 +337,58 @@ public sealed class OutboxLeaseRenewalTests
         private int _renewalCount;
         private int _acquisitionCount;
         private int _fetchCount;
-        internal string? Owner { get { lock (_gate) return _owner; } }
-        internal DateTimeOffset ExpiresAt { get { lock (_gate) return _expiresAt; } }
+        internal string? Owner
+        {
+            get
+            {
+                lock (_gate)
+                {
+                    return _owner;
+                }
+            }
+        }
+        internal DateTimeOffset ExpiresAt
+        {
+            get
+            {
+                lock (_gate)
+                {
+                    return _expiresAt;
+                }
+            }
+        }
         internal int MarkCount => Volatile.Read(ref _markCount);
         internal int RenewalCount => Volatile.Read(ref _renewalCount);
         internal int AcquisitionCount => Volatile.Read(ref _acquisitionCount);
         internal int FetchCount => Volatile.Read(ref _fetchCount);
-        internal IReadOnlyList<int> Buckets { get; init; } = [0];
-        internal bool RenewalSucceeds { get; init; } = true;
-        internal TimeSpan FetchDuration { get; init; }
-        internal TimeSpan RenewalDuration { get; init; }
-        internal TimeSpan SubsequentAcquisitionDuration { get; init; }
-        internal Channel<int> Renewals { get; } = Channel.CreateUnbounded<int>();
-        internal TaskCompletionSource Marked { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        internal IReadOnlyList<int> Buckets
+        {
+            get; init;
+        } = [0];
+        internal bool RenewalSucceeds
+        {
+            get; init;
+        } = true;
+        internal TimeSpan FetchDuration
+        {
+            get; init;
+        }
+        internal TimeSpan RenewalDuration
+        {
+            get; init;
+        }
+        internal TimeSpan SubsequentAcquisitionDuration
+        {
+            get; init;
+        }
+        internal Channel<int> Renewals
+        {
+            get;
+        } = Channel.CreateUnbounded<int>();
+        internal TaskCompletionSource Marked
+        {
+            get;
+        } = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         public ValueTask<IReadOnlyList<int>> AcquireBucketLeasesAsync(OutboxLeaseRequest request,
             CancellationToken cancellationToken = default)
@@ -348,7 +400,9 @@ public sealed class OutboxLeaseRenewalTests
                     _owner = request.RelayId;
                     _expiresAt = time.GetUtcNow() + request.LeaseDuration;
                     if (Interlocked.Increment(ref _acquisitionCount) > 1)
+                    {
                         time.Advance(SubsequentAcquisitionDuration);
+                    }
                     return ValueTask.FromResult(Buckets);
                 }
 
@@ -362,7 +416,9 @@ public sealed class OutboxLeaseRenewalTests
             lock (_gate)
             {
                 if (!RenewalSucceeds || _owner != request.RelayId || _expiresAt <= time.GetUtcNow())
+                {
                     return ValueTask.FromResult(false);
+                }
                 _expiresAt = time.GetUtcNow() + request.LeaseDuration;
                 time.Advance(RenewalDuration);
                 Renewals.Writer.TryWrite(Interlocked.Increment(ref _renewalCount));

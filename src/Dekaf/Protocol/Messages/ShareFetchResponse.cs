@@ -22,11 +22,17 @@ public sealed class ShareFetchResponse : IKafkaResponse, IDisposable
         {
             var message = ErrorMessage;
             if (value is null)
+            {
                 _errorMessageOrMemoryOwner = message;
+            }
             else if (message is null)
+            {
                 _errorMessageOrMemoryOwner = value;
+            }
             else
+            {
                 _errorMessageOrMemoryOwner = new ErrorMessageWithMemory(message, value);
+            }
         }
     }
 
@@ -36,10 +42,14 @@ public sealed class ShareFetchResponse : IKafkaResponse, IDisposable
     {
         var state = Volatile.Read(ref _errorMessageOrMemoryOwner);
         if (state is not IPooledMemory memory)
+        {
             return;
+        }
         var message = (state as ErrorMessageWithMemory)?.Message;
         if (ReferenceEquals(Interlocked.CompareExchange(ref _errorMessageOrMemoryOwner, message, state), state))
+        {
             memory.Dispose();
+        }
     }
 
     // Only a response containing both an error message and borrowed records needs
@@ -65,12 +75,18 @@ public sealed class ShareFetchResponse : IKafkaResponse, IDisposable
     /// <summary>
     /// Throttle time in milliseconds.
     /// </summary>
-    public int ThrottleTimeMs { get; init; }
+    public int ThrottleTimeMs
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The top-level error code, or 0 if there was no error.
     /// </summary>
-    public required ErrorCode ErrorCode { get; init; }
+    public required ErrorCode ErrorCode
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The error message, or null if there was no error.
@@ -85,17 +101,26 @@ public sealed class ShareFetchResponse : IKafkaResponse, IDisposable
     /// <summary>
     /// The acquisition lock timeout in milliseconds (v1+).
     /// </summary>
-    public int AcquisitionLockTimeoutMs { get; init; }
+    public int AcquisitionLockTimeoutMs
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Responses per topic.
     /// </summary>
-    public required IReadOnlyList<ShareFetchResponseTopic> Responses { get; init; }
+    public required IReadOnlyList<ShareFetchResponseTopic> Responses
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Node endpoints for preferred leader information.
     /// </summary>
-    public required IReadOnlyList<ShareFetchNodeEndpoint> NodeEndpoints { get; init; }
+    public required IReadOnlyList<ShareFetchNodeEndpoint> NodeEndpoints
+    {
+        get; init;
+    }
 
     public static IKafkaResponse Read(ref KafkaProtocolReader reader, short version)
     {
@@ -142,12 +167,18 @@ public sealed class ShareFetchResponseTopic
     /// <summary>
     /// The topic ID (UUID).
     /// </summary>
-    public required Guid TopicId { get; init; }
+    public required Guid TopicId
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Partition responses.
     /// </summary>
-    public required IReadOnlyList<ShareFetchResponsePartition> Partitions { get; init; }
+    public required IReadOnlyList<ShareFetchResponsePartition> Partitions
+    {
+        get; init;
+    }
 
     public static ShareFetchResponseTopic Read(ref KafkaProtocolReader reader, short version)
     {
@@ -176,42 +207,66 @@ public sealed class ShareFetchResponsePartition
     /// <summary>
     /// Partition index.
     /// </summary>
-    public int PartitionIndex { get; init; }
+    public int PartitionIndex
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Error code for this partition.
     /// </summary>
-    public ErrorCode ErrorCode { get; init; }
+    public ErrorCode ErrorCode
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The error message, or null if there was no error.
     /// </summary>
-    public string? ErrorMessage { get; init; }
+    public string? ErrorMessage
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Error code for the acknowledgement, or 0 if there was no error.
     /// </summary>
-    public ErrorCode AcknowledgeErrorCode { get; init; }
+    public ErrorCode AcknowledgeErrorCode
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The acknowledgement error message, or null if there was no error.
     /// </summary>
-    public string? AcknowledgeErrorMessage { get; init; }
+    public string? AcknowledgeErrorMessage
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The current leader information. Always present inline in the response.
     /// </summary>
-    public required ShareFetchLeaderIdAndEpoch CurrentLeader { get; init; }
+    public required ShareFetchLeaderIdAndEpoch CurrentLeader
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Raw record batch bytes. Use the protocol Records decoder to parse.
     /// </summary>
-    public ReadOnlyMemory<byte> RecordBytes { get; init; }
+    public ReadOnlyMemory<byte> RecordBytes
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Acquired record ranges for this partition.
     /// </summary>
-    public required IReadOnlyList<ShareFetchAcquiredRecords> AcquiredRecords { get; init; }
+    public required IReadOnlyList<ShareFetchAcquiredRecords> AcquiredRecords
+    {
+        get; init;
+    }
 
     public static ShareFetchResponsePartition Read(ref KafkaProtocolReader reader, short version)
     {
@@ -270,12 +325,18 @@ public sealed class ShareFetchLeaderIdAndEpoch
     /// <summary>
     /// The leader broker ID, or -1 if unknown.
     /// </summary>
-    public int LeaderId { get; init; } = -1;
+    public int LeaderId
+    {
+        get; init;
+    } = -1;
 
     /// <summary>
     /// The leader epoch, or -1 if unknown.
     /// </summary>
-    public int LeaderEpoch { get; init; } = -1;
+    public int LeaderEpoch
+    {
+        get; init;
+    } = -1;
 }
 
 /// <summary>
@@ -287,17 +348,26 @@ public sealed class ShareFetchAcquiredRecords
     /// <summary>
     /// The first offset of the acquired range.
     /// </summary>
-    public long FirstOffset { get; init; }
+    public long FirstOffset
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The last offset of the acquired range.
     /// </summary>
-    public long LastOffset { get; init; }
+    public long LastOffset
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The number of times these records have been delivered.
     /// </summary>
-    public short DeliveryCount { get; init; }
+    public short DeliveryCount
+    {
+        get; init;
+    }
 
     public static ShareFetchAcquiredRecords Read(ref KafkaProtocolReader reader)
     {
@@ -325,22 +395,34 @@ public sealed class ShareFetchNodeEndpoint
     /// <summary>
     /// The node ID.
     /// </summary>
-    public int NodeId { get; init; }
+    public int NodeId
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The hostname.
     /// </summary>
-    public required string Host { get; init; }
+    public required string Host
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The port number.
     /// </summary>
-    public int Port { get; init; }
+    public int Port
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The rack ID, or null if not available.
     /// </summary>
-    public string? Rack { get; init; }
+    public string? Rack
+    {
+        get; init;
+    }
 
     public static ShareFetchNodeEndpoint Read(ref KafkaProtocolReader reader)
     {

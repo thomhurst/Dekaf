@@ -38,7 +38,9 @@ public class KafkaConnectionReadyBenchmarks
         await using var connection = new KafkaConnection(1, IPAddress.Loopback.ToString(), _port);
         await connection.ConnectAsync().ConfigureAwait(false);
         if (!connection.IsConnected)
+        {
             throw new InvalidOperationException("Connection was exposed before capability negotiation completed.");
+        }
     }
 
     [GlobalCleanup]

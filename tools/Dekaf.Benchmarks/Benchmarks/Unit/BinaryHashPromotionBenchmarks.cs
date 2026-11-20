@@ -16,13 +16,22 @@ public class BinaryHashPromotionBenchmarks
     private ConsumeResult<ReadOnlyMemory<byte>, string>[] _records = null!;
 
     [Params(16, 1024)]
-    public int ExistingLanes { get; set; }
+    public int ExistingLanes
+    {
+        get; set;
+    }
 
     [Params(1024, 65536)]
-    public int KeySize { get; set; }
+    public int KeySize
+    {
+        get; set;
+    }
 
     [Params(false, true)]
-    public bool RepeatExistingKeys { get; set; }
+    public bool RepeatExistingKeys
+    {
+        get; set;
+    }
 
     [GlobalSetup]
     public void Setup()

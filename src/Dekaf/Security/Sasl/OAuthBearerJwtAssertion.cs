@@ -72,7 +72,9 @@ internal static class OAuthBearerJwtAssertion
         var privateKey = privateKeyValue
             ?? throw new InvalidOperationException("JWT-bearer OAuth private key is required");
         if (assertionLifetime <= TimeSpan.Zero)
+        {
             throw new InvalidOperationException("JWT-bearer assertion lifetime must be positive");
+        }
 
         ValidateAdditionalClaims(additionalClaims);
 
@@ -82,7 +84,9 @@ internal static class OAuthBearerJwtAssertion
             writer.WriteString("alg", AlgorithmName(algorithm));
             writer.WriteString("typ", "JWT");
             if (!string.IsNullOrWhiteSpace(keyId))
+            {
                 writer.WriteString("kid", keyId);
+            }
         });
 
         var expiresAt = now.Add(assertionLifetime);
@@ -112,19 +116,25 @@ internal static class OAuthBearerJwtAssertion
     private static string Required(string? value, string message)
     {
         if (string.IsNullOrWhiteSpace(value))
+        {
             throw new InvalidOperationException(message);
+        }
         return value!;
     }
 
     private static void ValidateAdditionalClaims(IReadOnlyDictionary<string, object?>? claims)
     {
         if (claims is null)
+        {
             return;
+        }
 
         foreach (var name in claims.Keys)
         {
             if (ReservedClaims.Contains(name))
+            {
                 throw new InvalidOperationException($"JWT-bearer additional claim '{name}' conflicts with a reserved assertion claim");
+            }
         }
     }
 
@@ -217,7 +227,9 @@ internal static class OAuthBearerJwtAssertion
     private static void WriteAdditionalClaimNumberValue(Utf8JsonWriter writer, string claimName, float value)
     {
         if (float.IsNaN(value) || float.IsInfinity(value))
+        {
             throw UnsupportedAdditionalClaimValue(claimName, value);
+        }
 
         writer.WriteNumberValue(value);
     }
@@ -225,7 +237,9 @@ internal static class OAuthBearerJwtAssertion
     private static void WriteAdditionalClaimNumberValue(Utf8JsonWriter writer, string claimName, double value)
     {
         if (double.IsNaN(value) || double.IsInfinity(value))
+        {
             throw UnsupportedAdditionalClaimValue(claimName, value);
+        }
 
         writer.WriteNumberValue(value);
     }
@@ -269,7 +283,9 @@ internal static class OAuthBearerJwtAssertion
         OAuthBearerJwtSigningAlgorithm? configured)
     {
         if (configured is not null)
+        {
             return configured.Value;
+        }
 
         return key switch
         {
@@ -319,7 +335,9 @@ internal static class OAuthBearerJwtAssertion
         RSASignaturePadding padding)
     {
         if (key is not RSA rsa)
+        {
             throw new InvalidOperationException("Selected JWT-bearer signing algorithm requires an RSA private key");
+        }
 
         return rsa.SignData(signingInput, hashAlgorithm, padding);
     }
@@ -330,7 +348,9 @@ internal static class OAuthBearerJwtAssertion
         HashAlgorithmName hashAlgorithm)
     {
         if (key is not ECDsa ecdsa)
+        {
             throw new InvalidOperationException("Selected JWT-bearer signing algorithm requires an ECDSA private key");
+        }
 
 #if NETSTANDARD2_0
         var derSignature = ecdsa.SignData(signingInput, hashAlgorithm);
@@ -344,20 +364,28 @@ internal static class OAuthBearerJwtAssertion
     private static byte[] DerEcdsaSignatureToIeeeP1363(ReadOnlySpan<byte> signature, int componentLength)
     {
         if (signature.Length == componentLength * 2)
+        {
             return signature.ToArray();
+        }
 
         var offset = 0;
         if (ReadDerByte(signature, ref offset) != 0x30)
+        {
             throw new CryptographicException("Invalid ECDSA signature sequence.");
+        }
 
         var sequenceLength = ReadDerLength(signature, ref offset);
         if (sequenceLength != signature.Length - offset)
+        {
             throw new CryptographicException("Invalid ECDSA signature sequence length.");
+        }
 
         var r = ReadDerInteger(signature, ref offset);
         var s = ReadDerInteger(signature, ref offset);
         if (offset != signature.Length)
+        {
             throw new CryptographicException("Invalid trailing ECDSA signature data.");
+        }
 
         var result = new byte[checked(componentLength * 2)];
         CopyDerIntegerToFixedWidth(r, result.AsSpan(0, componentLength));
@@ -368,11 +396,15 @@ internal static class OAuthBearerJwtAssertion
     private static ReadOnlySpan<byte> ReadDerInteger(ReadOnlySpan<byte> source, ref int offset)
     {
         if (ReadDerByte(source, ref offset) != 0x02)
+        {
             throw new CryptographicException("Invalid ECDSA signature integer.");
+        }
 
         var length = ReadDerLength(source, ref offset);
         if (length <= 0 || source.Length - offset < length)
+        {
             throw new CryptographicException("Invalid ECDSA signature integer length.");
+        }
 
         var value = source.Slice(offset, length);
         offset += length;
@@ -383,15 +415,21 @@ internal static class OAuthBearerJwtAssertion
     {
         var first = ReadDerByte(source, ref offset);
         if ((first & 0x80) == 0)
+        {
             return first;
+        }
 
         var byteCount = first & 0x7F;
         if (byteCount is 0 or > 2 || source.Length - offset < byteCount)
+        {
             throw new CryptographicException("Invalid ECDSA signature length.");
+        }
 
         var length = 0;
         for (var index = 0; index < byteCount; index++)
+        {
             length = (length << 8) | ReadDerByte(source, ref offset);
+        }
 
         return length;
     }
@@ -399,7 +437,9 @@ internal static class OAuthBearerJwtAssertion
     private static int ReadDerByte(ReadOnlySpan<byte> source, ref int offset)
     {
         if (offset >= source.Length)
+        {
             throw new CryptographicException("Truncated ECDSA signature.");
+        }
 
         return source[offset++];
     }
@@ -407,10 +447,14 @@ internal static class OAuthBearerJwtAssertion
     private static void CopyDerIntegerToFixedWidth(ReadOnlySpan<byte> source, Span<byte> destination)
     {
         while (source.Length > 0 && source[0] == 0)
+        {
             source = source[1..];
+        }
 
         if (source.Length > destination.Length)
+        {
             throw new CryptographicException("ECDSA signature integer is too large.");
+        }
 
         source.CopyTo(destination[^source.Length..]);
     }

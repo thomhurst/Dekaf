@@ -20,11 +20,18 @@ public sealed class BufferedBatchDeliveryTests(KafkaTestContainer kafka) : Kafka
                          .WithBootstrapServers(KafkaContainer.BootstrapServers).BuildAsync(cancellationToken))
         {
             for (var partition = 0; partition < 2; partition++)
+            {
                 for (var i = 0; i < perPartition; i++)
+                {
                     await producer.ProduceAsync(new ProducerMessage<string, string>
                     {
-                        Topic = topic, Partition = partition, Key = "key", Value = $"{partition}-{i}"
+                        Topic = topic,
+                        Partition = partition,
+                        Key = "key",
+                        Value = $"{partition}-{i}"
                     }, cancellationToken);
+                }
+            }
         }
 
         var proven = new Dictionary<TopicPartition, long>();
@@ -40,11 +47,15 @@ public sealed class BufferedBatchDeliveryTests(KafkaTestContainer kafka) : Kafka
                     if (completeFirstBatch && batchIndex++ == 0)
                     {
                         foreach (var record in batch)
+                        {
                             proven[new TopicPartition(topic, record.Partition)] = record.Offset + 1;
+                        }
                         continue;
                     }
                     foreach (var record in batch)
+                    {
                         failed.Add((record.Partition, record.Offset));
+                    }
                     throw new InvalidOperationException("batch handler failed");
                 }
             }).Throws<InvalidOperationException>();
@@ -57,16 +68,22 @@ public sealed class BufferedBatchDeliveryTests(KafkaTestContainer kafka) : Kafka
         {
             var key = new TopicPartition(topic, partition);
             if (proven.TryGetValue(key, out var offset))
+            {
                 await Assert.That(committed[key]).IsEqualTo(offset);
+            }
             else
+            {
                 await Assert.That(committed.ContainsKey(key)).IsFalse();
+            }
         }
 
         var replayed = new HashSet<(int Partition, long Offset)>();
         await using var restart = await CreateConsumerAsync(group, cancellationToken);
         restart.Subscribe(topic);
         await foreach (var record in restart.ConsumeAsync(cancellationToken).Take(4, cancellationToken))
+        {
             replayed.Add((record.Partition, record.Offset));
+        }
         await Assert.That(replayed).IsEquivalentTo(failed);
     }
 
@@ -80,7 +97,9 @@ public sealed class BufferedBatchDeliveryTests(KafkaTestContainer kafka) : Kafka
                          .WithBootstrapServers(KafkaContainer.BootstrapServers).BuildAsync(cancellationToken))
         {
             for (var i = 0; i < 3; i++)
+            {
                 await producer.ProduceAsync(topic, "key", "value", cancellationToken);
+            }
         }
 
         await using var consumer = await Kafka.CreateConsumer<string, string>()
@@ -99,19 +118,26 @@ public sealed class BufferedBatchDeliveryTests(KafkaTestContainer kafka) : Kafka
         {
             var partition = new TopicPartition(topic, 0);
             while (await consumer.GetCommittedOffsetAsync(partition, cancellationToken) != 3)
+            {
                 await Task.Delay(50, cancellationToken);
+            }
         }
         finally
         {
             await stop.CancelAsync();
-            try { await batches; }
+            try
+            {
+                await batches;
+            }
             catch (OperationCanceledException) when (stop.IsCancellationRequested) { }
         }
 
         async Task DrainBatchesAsync()
         {
             await foreach (var _ in consumer.ConsumeAsync(stop.Token).Batch(8, stop.Token))
+            {
                 throw new InvalidOperationException("An all-rejecting filter must not yield a batch.");
+            }
         }
     }
 

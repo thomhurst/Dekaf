@@ -315,7 +315,9 @@ public sealed partial class AdminClientRemoveMembersTests
         metadataManager.SetApiVersion(ApiKey.FindCoordinator, 4, 5);
         metadataManager.SetApiVersion(ApiKey.DescribeGroups, 5, 6);
         if (modern)
+        {
             metadataManager.SetApiVersion(ApiKey.ConsumerGroupDescribe, 0, 1);
+        }
         metadataManager.SetApiVersion(ApiKey.LeaveGroup, leaveGroupMinVersion, leaveGroupMaxVersion);
 
         connection.SendAsync<MetadataRequest, MetadataResponse>(
@@ -335,7 +337,7 @@ public sealed partial class AdminClientRemoveMembersTests
                     new ApiVersion(ApiKey.Metadata, 9, 13),
                     new ApiVersion(ApiKey.FindCoordinator, 4, 5),
                     new ApiVersion(ApiKey.DescribeGroups, 5, 6),
-                    ..(modern ? new[] { new ApiVersion(ApiKey.ConsumerGroupDescribe, 0, 1) } : []),
+                    .. (modern ? new[] { new ApiVersion(ApiKey.ConsumerGroupDescribe, 0, 1) } : []),
                     new ApiVersion(ApiKey.LeaveGroup, leaveGroupMinVersion, leaveGroupMaxVersion)
                 ]
             }));

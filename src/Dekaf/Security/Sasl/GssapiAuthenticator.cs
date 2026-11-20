@@ -124,7 +124,9 @@ public sealed class GssapiAuthenticator : ISaslAuthenticator, IDisposable
             var unwrapped = new ArrayBufferWriter<byte>(4);
             var unwrapStatus = _auth.Unwrap(challenge, unwrapped, out _);
             if (unwrapStatus != NegotiateAuthenticationStatusCode.Completed)
+            {
                 throw new AuthenticationException($"GSSAPI security-layer offer verification failed: {unwrapStatus}");
+            }
             ValidateSecurityLayerOffer(unwrapped.WrittenSpan);
 
             // Kafka uses SASL for authentication only. Select no post-authentication
@@ -132,7 +134,9 @@ public sealed class GssapiAuthenticator : ISaslAuthenticator, IDisposable
             var wrapped = new ArrayBufferWriter<byte>();
             var wrapStatus = _auth.Wrap([1, 0, 0, 0], wrapped, requestEncryption: false, out var encrypted);
             if (wrapStatus != NegotiateAuthenticationStatusCode.Completed || encrypted)
+            {
                 throw new AuthenticationException($"GSSAPI security-layer selection failed: {wrapStatus}");
+            }
             _state = GssapiState.Complete;
             return wrapped.WrittenSpan.ToArray();
         }
@@ -159,9 +163,13 @@ public sealed class GssapiAuthenticator : ISaslAuthenticator, IDisposable
     internal static void ValidateSecurityLayerOffer(ReadOnlySpan<byte> offer)
     {
         if (offer.Length != 4)
+        {
             throw new AuthenticationException("GSSAPI security-layer offer must contain exactly four bytes.");
+        }
         if ((offer[0] & 1) == 0)
+        {
             throw new AuthenticationException("GSSAPI server does not support authentication without a security layer.");
+        }
         // Kafka's Java SASL server can advertise a nonzero buffer even for auth-only.
         // We do not use its buffer limit: our selected security layer and receive buffer
         // are always 1 (no layer) and zero respectively.

@@ -22,14 +22,20 @@ public class AdminDetailedMutationTests(KafkaTestContainer kafka) : KafkaIntegra
         try
         {
             if (detailed)
+            {
                 await Assert.That((await admin.CreateTopicsDetailedAsync(topics))[name].IsSuccess).IsTrue();
+            }
             else
+            {
                 await admin.CreateTopicsAsync(topics);
+            }
 
             var description = await WaitForConditionAsync(async () => (await admin.DescribeTopicsAsync([name]))[name],
                 topic => topic.Partitions.Count == 2, description: "manually assigned topic metadata");
             foreach (var partition in description.Partitions)
+            {
                 await Assert.That(partition.ReplicaNodes).IsEquivalentTo([brokerId]);
+            }
         }
         finally
         {

@@ -301,7 +301,9 @@ public class ProtocolVersionTests(KafkaTestContainer kafka) : KafkaIntegrationTe
             await Assert.That(negotiatedVersion)
                 .IsEqualTo(Math.Min(fetchApi.MaxVersion, FetchRequest.HighestSupportedVersion));
             if (KafkaContainer.Version >= 431)
+            {
                 await Assert.That(negotiatedVersion).IsEqualTo((short)18);
+            }
         }
         finally
         {
@@ -487,7 +489,10 @@ public class ProtocolVersionTests(KafkaTestContainer kafka) : KafkaIntegrationTe
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))
         {
             messages.Add(msg);
-            if (messages.Count >= messagesToProduce) break;
+            if (messages.Count >= messagesToProduce)
+            {
+                break;
+            }
         }
 
         // Assert

@@ -22,14 +22,18 @@ public class DeferredLingerSweepBenchmarks
 
         Append(_accumulator, "first"u8);
         if (!_accumulator.TryDrainBatch(out _))
+        {
             throw new InvalidOperationException("Expected the first batch to enter the pipeline.");
+        }
 
         Append(_accumulator, "second"u8);
         ExpireLinger(_accumulator);
 
         Append(_reactivationAccumulator, "first"u8);
         if (!_reactivationAccumulator.TryDrainBatch(out var predecessor))
+        {
             throw new InvalidOperationException("Expected a reactivation predecessor.");
+        }
         _predecessor = predecessor!;
         Append(_reactivationAccumulator, "second"u8);
         ExpireLinger(_reactivationAccumulator);
@@ -57,7 +61,9 @@ public class DeferredLingerSweepBenchmarks
         _reactivationAccumulator.ReturnReadyBatch(_predecessor);
         ExpireLinger(_reactivationAccumulator);
         if (!_reactivationAccumulator.TryDrainBatch(out var successor))
+        {
             throw new InvalidOperationException("Expected the reactivated batch to seal.");
+        }
         _predecessor = successor!;
 
         // Restore the same deferred state for the next invocation without iteration setup.
@@ -89,13 +95,17 @@ public class DeferredLingerSweepBenchmarks
             partitionCount: 1);
 
         if (!append.IsCompletedSuccessfully || !append.Result)
+        {
             throw new InvalidOperationException("Expected synchronous append completion.");
+        }
     }
 
     private static void ExpireLinger(RecordAccumulator accumulator)
     {
         var expire = accumulator.ExpireLingerAsync(CancellationToken.None);
         if (!expire.IsCompletedSuccessfully)
+        {
             expire.GetAwaiter().GetResult();
+        }
     }
 }

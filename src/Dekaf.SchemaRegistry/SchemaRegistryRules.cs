@@ -85,7 +85,6 @@ public sealed class SchemaRegistryRuleContext
     {
         [CompilerGenerated]
         get => _topic;
-
         [CompilerGenerated]
         init => _topic = value;
     }
@@ -97,7 +96,6 @@ public sealed class SchemaRegistryRuleContext
     {
         [CompilerGenerated]
         get => _component;
-
         [CompilerGenerated]
         init => _component = value;
     }
@@ -109,7 +107,6 @@ public sealed class SchemaRegistryRuleContext
     {
         [CompilerGenerated]
         get => _schemaId;
-
         [CompilerGenerated]
         init => _schemaId = value;
     }
@@ -121,7 +118,6 @@ public sealed class SchemaRegistryRuleContext
     {
         [CompilerGenerated]
         get => _subject;
-
         [CompilerGenerated]
         init => _subject = value;
     }
@@ -134,7 +130,6 @@ public sealed class SchemaRegistryRuleContext
     {
         [CompilerGenerated]
         get => _schema;
-
         [CompilerGenerated]
         init => _schema = value;
     }
@@ -161,7 +156,6 @@ public sealed class SchemaRegistryRuleContext
     {
         [CompilerGenerated]
         get => _payloadFormat;
-
         [CompilerGenerated]
         init => _payloadFormat = value;
     }
@@ -392,7 +386,6 @@ public sealed class SchemaRegistryRuleHandlerContext
     {
         [CompilerGenerated]
         get => _payloadContext!;
-
         [CompilerGenerated]
         init => _payloadContext = value;
     }
@@ -404,7 +397,6 @@ public sealed class SchemaRegistryRuleHandlerContext
     {
         [CompilerGenerated]
         get => _rule!;
-
         [CompilerGenerated]
         init => _rule = value;
     }
@@ -416,12 +408,14 @@ public sealed class SchemaRegistryRuleHandlerContext
     {
         [CompilerGenerated]
         get => _direction;
-
         [CompilerGenerated]
         init => _direction = value;
     }
 
-    internal SchemaRegistryRuleHandlerContext? PoolNext { get; set; }
+    internal SchemaRegistryRuleHandlerContext? PoolNext
+    {
+        get; set;
+    }
 
     internal void Initialize(
         SchemaRegistryRuleContext payloadContext,
@@ -449,7 +443,10 @@ public interface ISchemaRegistryRuleHandler
     /// <summary>
     /// Gets the Schema Registry rule type this handler supports.
     /// </summary>
-    string Type { get; }
+    string Type
+    {
+        get;
+    }
 
     /// <summary>
     /// Applies a write-side transform for the rule.
@@ -503,7 +500,10 @@ public interface ISchemaRegistryRuleAction
     /// <summary>
     /// Gets the Schema Registry action type this implementation supports.
     /// </summary>
-    string Type { get; }
+    string Type
+    {
+        get;
+    }
 
     /// <summary>
     /// Runs the action for a completed rule.
@@ -583,10 +583,14 @@ public sealed class SchemaRegistryRuleExecutor : ISchemaRegistryRuleExecutor
         {
             ArgumentNullException.ThrowIfNull(handler);
             if (string.IsNullOrWhiteSpace(handler.Type))
+            {
                 throw new ArgumentException("Rule handler type cannot be null or whitespace.", nameof(handlers));
+            }
 
             if (!dictionary.TryAdd(handler.Type, handler))
+            {
                 throw new ArgumentException($"A rule handler for type '{handler.Type}' is already registered.", nameof(handlers));
+            }
         }
 
         _handlers = dictionary.ToFrozenDictionary(StringComparer.OrdinalIgnoreCase);
@@ -596,10 +600,14 @@ public sealed class SchemaRegistryRuleExecutor : ISchemaRegistryRuleExecutor
         {
             ArgumentNullException.ThrowIfNull(action);
             if (string.IsNullOrWhiteSpace(action.Type))
+            {
                 throw new ArgumentException("Rule action type cannot be null or whitespace.", nameof(actions));
+            }
 
             if (!actionDictionary.TryAdd(new RuleActionName(action.Type), action))
+            {
                 throw new ArgumentException($"A rule action for type '{action.Type}' is already registered.", nameof(actions));
+            }
         }
 
         _actions = actionDictionary;
@@ -648,14 +656,18 @@ public sealed class SchemaRegistryRuleExecutor : ISchemaRegistryRuleExecutor
         ArgumentNullException.ThrowIfNull(context);
 
         if (validationRulesExecution == ValidationRulesExecution.BeforeDomainRules)
+        {
             validationRules!.ValidateRules(payload, schemaId, validationRulesFailFast);
+        }
 
         var ruleSet = context.Schema?.RuleSet;
         if (ruleSet is null || !ruleSet.HasDomainOrEncodingRules)
         {
             validator?.Validate(payload.Span, schemaId);
             if (validationRulesExecution == ValidationRulesExecution.AfterDomainRules)
+            {
                 validationRules!.ValidateRules(payload, schemaId, validationRulesFailFast);
+            }
             return payload;
         }
 
@@ -666,7 +678,9 @@ public sealed class SchemaRegistryRuleExecutor : ISchemaRegistryRuleExecutor
             case "GATEWAY" or "SERVER" or "NONE":
                 validator?.Validate(payload.Span, schemaId);
                 if (validationRulesExecution == ValidationRulesExecution.AfterDomainRules)
+                {
                     validationRules!.ValidateRules(payload, schemaId, validationRulesFailFast);
+                }
                 return payload;
             case { } enabledEnvironment:
                 throw new SchemaRegistryRuleException(
@@ -685,7 +699,9 @@ public sealed class SchemaRegistryRuleExecutor : ISchemaRegistryRuleExecutor
                 SchemaRegistryRuleDirection.Write);
             validator?.Validate(payload.Span, schemaId);
             if (validationRulesExecution == ValidationRulesExecution.AfterDomainRules)
+            {
                 validationRules!.ValidateRules(payload, schemaId, validationRulesFailFast);
+            }
             return ApplyRules(
                 payload,
                 context,
@@ -698,7 +714,9 @@ public sealed class SchemaRegistryRuleExecutor : ISchemaRegistryRuleExecutor
         payload = ApplyRules(payload, context, ruleSet.DomainRules, SchemaRegistryRuleDirection.Write);
         validator?.Validate(payload.Span, schemaId);
         if (validationRulesExecution == ValidationRulesExecution.AfterDomainRules)
+        {
             validationRules!.ValidateRules(payload, schemaId, validationRulesFailFast);
+        }
         return ApplyRules(payload, context, ruleSet.EncodingRules, SchemaRegistryRuleDirection.Write);
     }
 
@@ -718,10 +736,14 @@ public sealed class SchemaRegistryRuleExecutor : ISchemaRegistryRuleExecutor
     {
         payload = TransformDeserializedEncodingPayload(payload, context);
         if (validationRulesExecution == ValidationRulesExecution.BeforeDomainRules)
+        {
             validationRules.ValidateRules(payload, schemaId, validationRulesFailFast);
+        }
         payload = TransformDeserializedDomainPayload(payload, context);
         if (validationRulesExecution == ValidationRulesExecution.AfterDomainRules)
+        {
             validationRules.ValidateRules(payload, schemaId, validationRulesFailFast);
+        }
         return payload;
     }
 
@@ -754,7 +776,9 @@ public sealed class SchemaRegistryRuleExecutor : ISchemaRegistryRuleExecutor
         var ruleSet = context.Schema?.RuleSet;
         var rules = ruleSet?.MigrationRules;
         if (rules is null || rules.Count == 0 || !ShouldExecute(ruleSet!))
+        {
             return SchemaRegistryMigrationTransformResult.None;
+        }
 
         var isUpgrade = mode == SchemaRuleMode.Upgrade;
         var index = isUpgrade ? 0 : rules.Count - 1;
@@ -767,7 +791,9 @@ public sealed class SchemaRegistryRuleExecutor : ISchemaRegistryRuleExecutor
         {
             var rule = rules[index];
             if (!IsActiveMigrationRule(rule, mode))
+            {
                 continue;
+            }
 
             _handlers.TryGetValue(rule.Type, out var handler);
             var ruleSucceeded = ApplyRule(ref payload, context, rule, handler, direction);
@@ -785,7 +811,9 @@ public sealed class SchemaRegistryRuleExecutor : ISchemaRegistryRuleExecutor
         }
 
         if (payloadTransformFailed)
+        {
             return SchemaRegistryMigrationTransformResult.Failed;
+        }
 
         return payloadWasTransformed
             ? SchemaRegistryMigrationTransformResult.Transformed
@@ -795,17 +823,23 @@ public sealed class SchemaRegistryRuleExecutor : ISchemaRegistryRuleExecutor
     internal static bool HasActiveMigrationRule(SchemaRuleSet? ruleSet, SchemaRuleMode mode)
     {
         if (ruleSet is null || !ShouldExecute(ruleSet))
+        {
             return false;
+        }
 
         var rules = ruleSet.MigrationRules;
         if (rules is null)
+        {
             return false;
+        }
 
         for (var i = 0; i < rules.Count; i++)
         {
             var rule = rules[i];
             if (IsActiveMigrationRule(rule, mode))
+            {
                 return true;
+            }
         }
 
         return false;
@@ -820,7 +854,9 @@ public sealed class SchemaRegistryRuleExecutor : ISchemaRegistryRuleExecutor
 
         var ruleSet = context.Schema?.RuleSet;
         if (ruleSet is null || !ruleSet.HasDomainOrEncodingRules || !ShouldExecute(ruleSet))
+        {
             return payload;
+        }
 
         if (ruleSet.HasFixedRuleCollections)
         {
@@ -854,7 +890,9 @@ public sealed class SchemaRegistryRuleExecutor : ISchemaRegistryRuleExecutor
 
         var ruleSet = context.Schema?.RuleSet;
         if (ruleSet is null || !ruleSet.HasDomainOrEncodingRules || !ShouldExecute(ruleSet))
+        {
             return payload;
+        }
 
         if (ruleSet.HasFixedRuleCollections)
         {
@@ -889,7 +927,9 @@ public sealed class SchemaRegistryRuleExecutor : ISchemaRegistryRuleExecutor
         payloadWasTransformed = false;
         var ruleSet = context.Schema?.RuleSet;
         if (ruleSet is null || !ruleSet.HasDomainOrEncodingRules || !ShouldExecute(ruleSet))
+        {
             return payload;
+        }
 
         if (ruleSet.HasFixedRuleCollections)
         {
@@ -921,10 +961,14 @@ public sealed class SchemaRegistryRuleExecutor : ISchemaRegistryRuleExecutor
 
         var ruleSet = context.Schema?.RuleSet;
         if (ruleSet is null || !ruleSet.HasDomainOrEncodingRules)
+        {
             return payload;
+        }
 
         if (!ShouldExecute(ruleSet))
+        {
             return payload;
+        }
 
         if (ruleSet.HasFixedRuleCollections)
         {
@@ -955,7 +999,9 @@ public sealed class SchemaRegistryRuleExecutor : ISchemaRegistryRuleExecutor
         SchemaRegistryRuleDirection direction)
     {
         if (rules is null || rules.Count == 0)
+        {
             return payload;
+        }
 
         var isWrite = direction == SchemaRegistryRuleDirection.Write;
         var index = isWrite ? 0 : rules.Count - 1;
@@ -966,7 +1012,9 @@ public sealed class SchemaRegistryRuleExecutor : ISchemaRegistryRuleExecutor
         {
             var rule = rules[index];
             if (!IsActiveRule(rule, direction))
+            {
                 continue;
+            }
 
             var handlerContext = RentHandlerContext(context, rule, direction);
             try
@@ -1026,7 +1074,9 @@ public sealed class SchemaRegistryRuleExecutor : ISchemaRegistryRuleExecutor
     {
         payloadWasTransformed = false;
         if (rules is null || rules.Count == 0)
+        {
             return payload;
+        }
 
         var input = payload;
         var requiresContentComparison = false;
@@ -1038,7 +1088,9 @@ public sealed class SchemaRegistryRuleExecutor : ISchemaRegistryRuleExecutor
         {
             var rule = rules[index];
             if (!IsActiveRule(rule, direction))
+            {
                 continue;
+            }
 
             _handlers.TryGetValue(rule.Type, out var handler);
             if (ApplyRule(
@@ -1052,14 +1104,20 @@ public sealed class SchemaRegistryRuleExecutor : ISchemaRegistryRuleExecutor
                 rule.Kind == SchemaRuleKind.Transform)
             {
                 if (payloadChanged is { } changed)
+                {
                     payloadWasTransformed |= changed;
+                }
                 else
+                {
                     requiresContentComparison = true;
+                }
             }
         }
 
         if (requiresContentComparison)
+        {
             payloadWasTransformed = PayloadContentChanged(input, payload);
+        }
 
         return payload;
     }
@@ -1116,14 +1174,20 @@ public sealed class SchemaRegistryRuleExecutor : ISchemaRegistryRuleExecutor
                 step.Rule.Kind == SchemaRuleKind.Transform)
             {
                 if (payloadChanged is { } changed)
+                {
                     payloadWasTransformed |= changed;
+                }
                 else
+                {
                     requiresContentComparison = true;
+                }
             }
         }
 
         if (requiresContentComparison)
+        {
             payloadWasTransformed = PayloadContentChanged(input, payload);
+        }
 
         return payload;
     }
@@ -1264,7 +1328,9 @@ public sealed class SchemaRegistryRuleExecutor : ISchemaRegistryRuleExecutor
         bool reverse)
     {
         if (rules is null)
+        {
             return;
+        }
 
         var index = reverse ? rules.Count - 1 : 0;
         var end = reverse ? -1 : rules.Count;
@@ -1273,7 +1339,9 @@ public sealed class SchemaRegistryRuleExecutor : ISchemaRegistryRuleExecutor
         {
             var rule = rules[index];
             if (!IsActiveRule(rule, direction))
+            {
                 continue;
+            }
 
             _handlers.TryGetValue(rule.Type, out var handler);
             destination.Add(new RuleExecutionStep(rule, handler));
@@ -1318,13 +1386,19 @@ public sealed class SchemaRegistryRuleExecutor : ISchemaRegistryRuleExecutor
     {
         var actionName = GetActionName(configuredAction, context.Rule.Mode, context.Direction);
         if (actionName is null && defaultAction is not null)
+        {
             actionName = new RuleActionName(defaultAction);
+        }
 
         if (actionName is not { } resolvedActionName)
+        {
             return;
+        }
 
         if (resolvedActionName.Equals("NONE"))
+        {
             return;
+        }
 
         if (resolvedActionName.Equals("ERROR"))
         {
@@ -1356,17 +1430,25 @@ public sealed class SchemaRegistryRuleExecutor : ISchemaRegistryRuleExecutor
         SchemaRegistryRuleDirection direction)
     {
         if (configuredAction is null)
+        {
             return null;
+        }
 
         if (ruleMode is not (SchemaRuleMode.WriteRead or SchemaRuleMode.UpDown))
+        {
             return new RuleActionName(configuredAction);
+        }
 
         var separator = configuredAction.IndexOf(',');
         if (separator < 0)
+        {
             return new RuleActionName(configuredAction);
+        }
 
         if (direction == SchemaRegistryRuleDirection.Write)
+        {
             return new RuleActionName(configuredAction, 0, separator);
+        }
 
         var start = separator + 1;
         var nextSeparator = configuredAction.IndexOf(',', start);
@@ -1377,10 +1459,14 @@ public sealed class SchemaRegistryRuleExecutor : ISchemaRegistryRuleExecutor
     private static bool IsActiveRule(SchemaRule rule, SchemaRegistryRuleDirection direction)
     {
         if (rule.Disabled || string.IsNullOrWhiteSpace(rule.Type))
+        {
             return false;
+        }
 
         if (rule.Kind is not (SchemaRuleKind.Transform or SchemaRuleKind.Condition))
+        {
             return false;
+        }
 
         return direction == SchemaRegistryRuleDirection.Write
             ? rule.Mode is SchemaRuleMode.Write or SchemaRuleMode.WriteRead
@@ -1390,10 +1476,14 @@ public sealed class SchemaRegistryRuleExecutor : ISchemaRegistryRuleExecutor
     private static bool IsActiveMigrationRule(SchemaRule rule, SchemaRuleMode mode)
     {
         if (rule.Disabled || string.IsNullOrWhiteSpace(rule.Type))
+        {
             return false;
+        }
 
         if (rule.Kind is not (SchemaRuleKind.Transform or SchemaRuleKind.Condition))
+        {
             return false;
+        }
 
         return rule.Mode == mode || rule.Mode == SchemaRuleMode.UpDown;
     }

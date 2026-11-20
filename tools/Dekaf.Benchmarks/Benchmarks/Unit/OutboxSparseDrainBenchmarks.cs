@@ -15,7 +15,10 @@ namespace Dekaf.Benchmarks.Benchmarks.Unit;
 public class OutboxSparseDrainBenchmarks
 {
     [Params(1, 8)]
-    public int Buckets { get; set; }
+    public int Buckets
+    {
+        get; set;
+    }
     private ServiceProvider _provider = null!;
     private OutboxRelayService _relay = null!;
     private IOutboxBucketNotifier _notifier = null!;
@@ -43,7 +46,10 @@ public class OutboxSparseDrainBenchmarks
     private static Func<ValueTask> Bind<T>(OutboxRelayService relay, MethodInfo method)
     {
         var cycle = method.CreateDelegate<Func<CancellationToken, ValueTask<T>>>(relay);
-        return async () => { await cycle(default); };
+        return async () =>
+        {
+            await cycle(default);
+        };
     }
 
     [Benchmark]
@@ -59,12 +65,17 @@ public class OutboxSparseDrainBenchmarks
     }
 
     [GlobalCleanup]
-    public void Cleanup() { _relay.Dispose(); _provider.Dispose(); }
+    public void Cleanup()
+    {
+        _relay.Dispose();
+        _provider.Dispose();
+    }
 
     private sealed class FrozenTimeProvider : TimeProvider
     {
         public override long GetTimestamp() => 1;
     }
+
     private sealed class Store(int buckets) : IOutboxStore, IOutboxLeaseRenewalStore
     {
         private readonly int[] _owned = Enumerable.Range(0, buckets).ToArray();
@@ -91,6 +102,7 @@ public class OutboxSparseDrainBenchmarks
             return default;
         }
     }
+
     private sealed class Publisher : IOutboxPublisher
     {
         public ValueTask InitializeAsync(CancellationToken cancellationToken = default) => default;

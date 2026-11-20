@@ -22,14 +22,19 @@ internal sealed class FinalizedFeatureSnapshot
         _features = features;
     }
 
-    public long Epoch { get; }
+    public long Epoch
+    {
+        get;
+    }
 
     public static FinalizedFeatureSnapshot? Create(
         long epoch,
         IReadOnlyList<FinalizedFeature>? features)
     {
         if (epoch < 0)
+        {
             return null;
+        }
 
         var featureMap = new Dictionary<string, FeatureLevel>(
             features?.Count ?? 0,
@@ -67,7 +72,9 @@ internal sealed class FinalizedFeatureSnapshot
     public bool HasSameContent(FinalizedFeatureSnapshot other)
     {
         if (_features.Count != other._features.Count)
+        {
             return false;
+        }
 
         foreach (var feature in _features)
         {
@@ -87,7 +94,9 @@ internal sealed class FinalizedFeatureSnapshot
             _features.Count,
             StringComparer.Ordinal);
         foreach (var feature in _features)
+        {
             copy.Add(feature.Key, (feature.Value.MinVersionLevel, feature.Value.MaxVersionLevel));
+        }
 
         return copy;
     }

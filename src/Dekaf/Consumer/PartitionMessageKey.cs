@@ -16,7 +16,10 @@ internal readonly struct PartitionMessageKey<TKey> : IEquatable<PartitionMessage
     private readonly TKey? _value;
     private readonly int _binaryHashCode;
     private readonly KeyKind _kind;
-    internal bool HasBinaryHashCode { get; }
+    internal bool HasBinaryHashCode
+    {
+        get;
+    }
     internal int BinaryHashCode => _binaryHashCode;
 
     internal bool HasValue => _kind == KeyKind.Value;
@@ -42,7 +45,9 @@ internal readonly struct PartitionMessageKey<TKey> : IEquatable<PartitionMessage
     public static PartitionMessageKey<TKey> From(TKey? value, bool isKeyNull = false)
     {
         if (isKeyNull)
+        {
             return default;
+        }
 
         // A deserializer can return null for a non-null wire key. Keep that lane
         // separate from Kafka null keys without passing either null to a comparer.
@@ -52,7 +57,9 @@ internal readonly struct PartitionMessageKey<TKey> : IEquatable<PartitionMessage
     public bool Equals(PartitionMessageKey<TKey> other)
     {
         if (_kind != other._kind)
+        {
             return false;
+        }
 
         return !HasValue || EqualityComparer<TKey>.Default.Equals(_value!, other._value!);
     }
@@ -125,13 +132,19 @@ internal sealed class BinaryPartitionMessageKeyComparer<TKey> : IEqualityCompare
     public bool Equals(PartitionMessageKey<TKey> x, PartitionMessageKey<TKey> y)
     {
         if (!x.HasSameKind(y))
+        {
             return false;
+        }
         if (!x.HasValue)
+        {
             return true;
+        }
         var left = GetBytes(x.Value!);
         var right = GetBytes(y.Value!);
         if (left.SequenceEqual(right))
+        {
             return true;
+        }
         return ObserveCollision(x, left.Length, right.Length);
     }
 
@@ -161,7 +174,9 @@ internal sealed class BinaryPartitionMessageKeyComparer<TKey> : IEqualityCompare
             state.Count = 0;
         }
         if (obj.HasBinaryHashCode)
+        {
             return obj.BinaryHashCode;
+        }
         return ComputeHashCode(obj);
     }
 
@@ -171,7 +186,10 @@ internal sealed class BinaryPartitionMessageKeyComparer<TKey> : IEqualityCompare
     internal int ComputeHashCode(PartitionMessageKey<TKey> obj, out bool sampled)
     {
         sampled = false;
-        if (!obj.HasValue) return 0;
+        if (!obj.HasValue)
+        {
+            return 0;
+        }
         var bytes = GetBytes(obj.Value!);
         sampled = bytes.Length > 64 && UsesSampledHashing;
         return sampled ? HashSample(bytes) : unchecked((int)XxHash3.HashToUInt64(bytes));
@@ -186,7 +204,10 @@ internal sealed class BinaryPartitionMessageKeyComparer<TKey> : IEqualityCompare
     internal void EnableFullHashing()
     {
         var state = _state ??= CollisionStatePool.Instance.Rent();
-        if (state.SampledLanes < 0) state.SampledLanes = ~state.SampledLanes;
+        if (state.SampledLanes < 0)
+        {
+            state.SampledLanes = ~state.SampledLanes;
+        }
     }
 
     internal PartitionMessageKey<TKey>[] TakeCollisionKeys(out int count)
@@ -201,25 +222,43 @@ internal sealed class BinaryPartitionMessageKeyComparer<TKey> : IEqualityCompare
 
     internal void ReleaseCollisionState()
     {
-        if (_state is not { } state) return;
+        if (_state is not { } state)
+        {
+            return;
+        }
         _state = null;
         CollisionStatePool.Instance.Return(state);
     }
 
     internal void RemoveSampledLane()
     {
-        if (_state is not { } state) return;
-        if (state.SampledLanes < -1) state.SampledLanes++;
-        else if (state.SampledLanes > 0) state.SampledLanes--;
+        if (_state is not { } state)
+        {
+            return;
+        }
+        if (state.SampledLanes < -1)
+        {
+            state.SampledLanes++;
+        }
+        else if (state.SampledLanes > 0)
+        {
+            state.SampledLanes--;
+        }
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal bool TryGetSampledKey(PartitionMessageKey<TKey> key, out PartitionMessageKey<TKey> sampledKey)
     {
         sampledKey = default;
-        if (_state is not { SampledLanes: > 0 } || !key.HasValue) return false;
+        if (_state is not { SampledLanes: > 0 } || !key.HasValue)
+        {
+            return false;
+        }
         var bytes = GetBytes(key.Value!);
-        if (bytes.Length <= 64) return false;
+        if (bytes.Length <= 64)
+        {
+            return false;
+        }
         sampledKey = key.WithBinaryHashCode(HashSample(bytes));
         return true;
     }
@@ -239,7 +278,10 @@ internal sealed class BinaryPartitionMessageKeyComparer<TKey> : IEqualityCompare
         protected override CollisionState Create() => new();
         protected override void Reset(CollisionState state)
         {
-            if (state.Keys is { } keys) Array.Clear(keys, 0, keys.Length);
+            if (state.Keys is { } keys)
+            {
+                Array.Clear(keys, 0, keys.Length);
+            }
             state.Count = 0;
             state.SampledLanes = -1;
         }
@@ -262,14 +304,22 @@ internal sealed class BinaryPartitionMessageKeyComparer<TKey> : IEqualityCompare
     {
         // Exact type checks let the JIT specialize value keys without boxing or interface dispatch.
         if (typeof(TKey) == typeof(byte[]))
+        {
             return Unsafe.As<TKey, byte[]>(ref value);
+        }
         if (typeof(TKey) == typeof(ReadOnlyMemory<byte>))
+        {
             return Unsafe.As<TKey, ReadOnlyMemory<byte>>(ref value).Span;
+        }
         if (typeof(TKey) == typeof(Memory<byte>))
+        {
             return Unsafe.As<TKey, Memory<byte>>(ref value).Span;
+        }
 
         if (typeof(TKey) == typeof(ArraySegment<byte>))
+        {
             return Unsafe.As<TKey, ArraySegment<byte>>(ref value).AsSpan();
+        }
 
         throw new InvalidOperationException("The key type does not represent binary memory.");
     }

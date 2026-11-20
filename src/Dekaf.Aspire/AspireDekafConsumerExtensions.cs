@@ -93,16 +93,22 @@ public static class AspireDekafConsumerExtensions
         void Configure(IServiceProvider services, ConsumerBuilder<TKey, TValue> consumer)
         {
             if (settings.ConnectionString is not null)
+            {
                 consumer.WithBootstrapServers(settings.ConnectionString);
+            }
             configureBuilder?.Invoke(services, consumer);
         }
 
         builder.Services.AddDekaf(dekaf =>
         {
             if (serviceKey is null)
+            {
                 dekaf.AddConsumer<TKey, TValue>(native, Configure);
+            }
             else
+            {
                 dekaf.AddConsumer<TKey, TValue>(serviceKey, native, Configure);
+            }
         });
 
         DekafAspireRegistration.AddTelemetry(builder, settings);

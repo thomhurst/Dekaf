@@ -11,12 +11,16 @@ internal static class BatchCheckpointAccess
     {
         checkpoint = default;
         if (!pending.IsCheckpointWindowActive(owner))
+        {
             return false;
+        }
 
         var observedVersion = guard.CapturedVersion;
         if (guard.GetStatusAfterRead(pending.TopicPartition, ref observedVersion) == BatchIterationStatus.Stopped
             || !pending.IsCheckpointWindowActive(owner))
+        {
             return false;
+        }
 
         // Snapshot only scalar/value fields. Pool reset may overlap these reads;
         // ownership validation below discards the entire snapshot in that case.
@@ -26,7 +30,9 @@ internal static class BatchCheckpointAccess
         var exhausted = pending.IsExhausted && fetchEnd >= 0;
         if (pending.MessageCount == pending.CheckpointInitialMessageCount
             && (!exhausted || fetchEnd <= pending.CheckpointStartOffset))
+        {
             return false;
+        }
 
         var nextOffset = pending.LastYieldedOffset + 1;
         var leaderEpoch = pending.LastYieldedLeaderEpoch;
@@ -41,7 +47,9 @@ internal static class BatchCheckpointAccess
         Interlocked.MemoryBarrier();
         if (guard.GetStatusAfterRead(partition, ref observedVersion) == BatchIterationStatus.Stopped
             || !pending.IsCheckpointWindowActive(owner))
+        {
             return false;
+        }
 
         checkpoint = new TopicPartitionOffset(partition.Topic, partition.Partition, nextOffset, leaderEpoch);
         return true;

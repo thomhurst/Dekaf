@@ -76,7 +76,9 @@ internal static class ResponseParsingContext
     {
         var state = t_state;
         if (state is null || !state.MemoryUsed || state.PooledMemory is null)
+        {
             return null;
+        }
 
         var memory = state.PooledMemory;
         state.PooledMemory = null; // Prevent double-take

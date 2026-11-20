@@ -225,8 +225,14 @@ public sealed class MigrationSpecificBenchmarkRecord : ISpecificRecord
     public static readonly AvroSchema _SCHEMA =
         AvroSchema.Parse(AvroSchemaRegistryMigrationBenchmarks.GeneratedSchema);
 
-    public string Name { get; set; } = string.Empty;
-    public int Age { get; set; }
+    public string Name
+    {
+        get; set;
+    } = string.Empty;
+    public int Age
+    {
+        get; set;
+    }
     public AvroSchema Schema => _SCHEMA;
 
     public object Get(int fieldPos) => fieldPos switch

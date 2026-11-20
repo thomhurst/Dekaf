@@ -135,7 +135,9 @@ public class CustomPartitionerFireHotPathBenchmarks
         SeedMetadata(producer);
         SetInstanceField(producer, "_initialized", true);
         if (producer.RecordAccumulator.GetBrokerUnackedBudget(brokerId: 0) is { } budget)
+        {
             SetInstanceField(budget, "_budgetBytes", FixtureCapacityBytes);
+        }
 
         return producer;
     }
@@ -248,16 +250,22 @@ public class CustomPartitionerFireHotPathBenchmarks
             var drained = DrainOne(_accumulator);
             drained |= DrainOne(_recursiveAccumulator);
             if (drained)
+            {
                 spinner.Reset();
+            }
             else
+            {
                 spinner.SpinOnce();
+            }
         }
     }
 
     private static bool DrainOne(RecordAccumulator accumulator)
     {
         if (!accumulator.TryDrainBatch(out var batch))
+        {
             return false;
+        }
 
         accumulator.OnBatchExitsPipeline(batch);
         accumulator.ReleaseMemory(batch.DataSize);
@@ -344,14 +352,18 @@ public class CustomPartitionerFireHotPathBenchmarks
         public int Partition(string topic, ReadOnlySpan<byte> key, bool keyIsNull, int partitionCount)
         {
             if (_depth == _nestedMessages.Length)
+            {
                 return 0;
+            }
 
             var nestedMessage = _nestedMessages[_depth++];
             try
             {
                 var result = _producer.FireAsync(nestedMessage);
                 if (!result.IsCompletedSuccessfully)
+                {
                     throw new InvalidOperationException("Expected recursive FireAsync to complete synchronously.");
+                }
             }
             finally
             {

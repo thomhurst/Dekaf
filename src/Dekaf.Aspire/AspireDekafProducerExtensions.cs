@@ -93,16 +93,22 @@ public static class AspireDekafProducerExtensions
         void Configure(IServiceProvider services, ProducerBuilder<TKey, TValue> producer)
         {
             if (settings.ConnectionString is not null)
+            {
                 producer.WithBootstrapServers(settings.ConnectionString);
+            }
             configureBuilder?.Invoke(services, producer);
         }
 
         builder.Services.AddDekaf(dekaf =>
         {
             if (serviceKey is null)
+            {
                 dekaf.AddProducer<TKey, TValue>(native, Configure);
+            }
             else
+            {
                 dekaf.AddProducer<TKey, TValue>(serviceKey, native, Configure);
+            }
         });
 
         DekafAspireRegistration.AddTelemetry(builder, settings);

@@ -11,23 +11,35 @@ public sealed class InMemoryKafkaClusterOptions
     /// <summary>
     /// Number of partitions created for auto-created topics.
     /// </summary>
-    public int DefaultPartitionCount { get; set; } = 1;
+    public int DefaultPartitionCount
+    {
+        get; set;
+    } = 1;
 
     /// <summary>
     /// Maximum deliveries of a share-group record before it is archived on release. Matches
     /// the broker's <c>group.share.delivery.count.limit</c> default of 5. Must be positive.
     /// </summary>
-    public int DeliveryCountLimit { get; init; } = 5;
+    public int DeliveryCountLimit
+    {
+        get; init;
+    } = 5;
 
     /// <summary>
     /// Whether producers and consumers may create missing topics on first use.
     /// </summary>
-    public bool AutoCreateTopics { get; set; } = true;
+    public bool AutoCreateTopics
+    {
+        get; set;
+    } = true;
 
     /// <summary>
     /// Cluster ID surfaced by admin operations.
     /// </summary>
-    public string ClusterId { get; set; } = "dekaf-in-memory";
+    public string ClusterId
+    {
+        get; set;
+    } = "dekaf-in-memory";
 
     /// <summary>
     /// Partitioner that in-memory producers use for records produced without an explicit partition.
@@ -43,11 +55,17 @@ public sealed class InMemoryKafkaClusterOptions
     /// when they hash a nonempty key; selecting a sticky partition throws
     /// <see cref="NotSupportedException"/>. An explicit record partition bypasses the partitioner.
     /// </remarks>
-    public IPartitioner? Partitioner { get; set; }
+    public IPartitioner? Partitioner
+    {
+        get; set;
+    }
 
     /// <summary>
     /// Broker-supported feature ranges surfaced by the in-memory admin client.
     /// </summary>
-    public IDictionary<string, FeatureVersionRange> SupportedFeatures { get; set; } =
+    public IDictionary<string, FeatureVersionRange> SupportedFeatures
+    {
+        get; set;
+    } =
         new Dictionary<string, FeatureVersionRange>(StringComparer.Ordinal);
 }

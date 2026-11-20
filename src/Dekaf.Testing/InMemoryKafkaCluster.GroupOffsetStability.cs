@@ -5,8 +5,14 @@ namespace Dekaf.Testing;
 
 internal sealed class InMemoryPendingGroupOffsets
 {
-    public List<TopicPartitionOffset> Offsets { get; } = [];
-    public List<ConsumerGroupMetadata> MetadataSnapshots { get; } = [];
+    public List<TopicPartitionOffset> Offsets
+    {
+        get;
+    } = [];
+    public List<ConsumerGroupMetadata> MetadataSnapshots
+    {
+        get;
+    } = [];
 }
 
 public sealed partial class InMemoryKafkaCluster
@@ -26,7 +32,9 @@ public sealed partial class InMemoryKafkaCluster
                 pendingOffsets.Add(groupId, pending);
             }
             if (metadata is not null)
+            {
                 pending.MetadataSnapshots.Add(metadata);
+            }
             pending.Offsets.AddRange(offsets);
             if (offsets.Length != 0)
             {
@@ -64,18 +72,24 @@ public sealed partial class InMemoryKafkaCluster
     private bool HasPendingConsumerGroupOffsetsUnderLock(string groupId, TopicPartition[]? selectedPartitions)
     {
         if (_pendingConsumerGroupOffsets is null || selectedPartitions is { Length: 0 })
+        {
             return false;
+        }
 
         // Only administrative stability queries scan pending offsets. Staging reuses the
         // transaction's existing state; completion removes its registration in O(1).
         foreach (var groups in _pendingConsumerGroupOffsets.Values)
         {
             if (!groups.TryGetValue(groupId, out var pending))
+            {
                 continue;
+            }
             if (selectedPartitions is null)
             {
                 if (pending.Offsets.Count != 0)
+                {
                     return true;
+                }
                 continue;
             }
             for (var i = 0; i < pending.Offsets.Count; i++)
@@ -85,7 +99,9 @@ public sealed partial class InMemoryKafkaCluster
                 {
                     var selected = selectedPartitions[j];
                     if (selected.Partition == offset.Partition && selected.Topic == offset.Topic)
+                    {
                         return true;
+                    }
                 }
             }
         }

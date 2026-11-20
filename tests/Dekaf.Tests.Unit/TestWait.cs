@@ -13,7 +13,9 @@ internal static class TestWait
         while (!condition())
         {
             if (Environment.TickCount64 >= deadline)
+            {
                 throw new TimeoutException("Condition was not reached before the timeout.");
+            }
 
             await Task.Delay(delay);
         }
@@ -32,7 +34,9 @@ internal static class TestWait
         while (!condition())
         {
             if (Environment.TickCount64 >= deadline)
+            {
                 throw new TimeoutException(timeoutMessage());
+            }
 
             await Task.Delay(delay, cancellationToken);
         }

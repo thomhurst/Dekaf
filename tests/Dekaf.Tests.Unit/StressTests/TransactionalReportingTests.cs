@@ -1,6 +1,6 @@
+using Dekaf.Producer;
 using Dekaf.StressTests.Metrics;
 using Dekaf.StressTests.Reporting;
-using Dekaf.Producer;
 
 namespace Dekaf.Tests.Unit.StressTests;
 

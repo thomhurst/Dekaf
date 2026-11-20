@@ -354,7 +354,9 @@ public sealed partial class ConsumerRackAwarenessTests
                 CancellationToken.None
             ]);
         if (result is not ValueTask<List<PendingFetchData>?> valueTask)
+        {
             throw new InvalidOperationException("FetchFromBrokerAsync returned unexpected type");
+        }
 
         var pendingItems = await valueTask.ConfigureAwait(false);
         DisposeAndReturn(pendingItems);
@@ -379,7 +381,9 @@ public sealed partial class ConsumerRackAwarenessTests
                 CancellationToken.None
             ]);
         if (result is not Task<List<PendingFetchData>?> task)
+        {
             throw new InvalidOperationException("FetchFromBrokerWithErrorHandlingAsync returned unexpected type");
+        }
 
         var pendingItems = await task.ConfigureAwait(false);
         DisposeAndReturn(pendingItems);
@@ -388,12 +392,16 @@ public sealed partial class ConsumerRackAwarenessTests
     private static void DisposeAndReturn(List<PendingFetchData>? pendingItems)
     {
         if (pendingItems is null)
+        {
             return;
+        }
 
         try
         {
             foreach (var pending in pendingItems)
+            {
                 pending.Dispose();
+            }
         }
         finally
         {
@@ -410,7 +418,9 @@ public sealed partial class ConsumerRackAwarenessTests
 
         var result = method.Invoke(consumer, [CancellationToken.None]);
         if (result is not ValueTask<Dictionary<int, List<TopicPartition>>> valueTask)
+        {
             throw new InvalidOperationException("GroupPartitionsByBrokerAsync returned unexpected type");
+        }
 
         return await valueTask.ConfigureAwait(false);
     }

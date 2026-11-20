@@ -74,13 +74,19 @@ public class PartitionedEofRoutingTests
         var batch = new ConsumeBatch<string, string>(pending, Serializers.String, Serializers.String,
             new BatchIterationGuard(epoch, epoch.Version));
         if (invalidated)
+        {
             epoch.Invalidate();
+        }
 
         for (var i = 0; i < 100; i++)
+        {
             route(batch, default).GetAwaiter().GetResult();
+        }
         var before = GC.GetAllocatedBytesForCurrentThread();
         for (var i = 0; i < 100; i++)
+        {
             route(batch, default).GetAwaiter().GetResult();
+        }
         var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
 
         await Assert.That(allocated).IsEqualTo(0);
@@ -97,10 +103,14 @@ public class PartitionedEofRoutingTests
         var batch = new ConsumeBatch<string, string>(pending, Serializers.String, Serializers.String);
 
         for (var i = 0; i < 100; i++)
+        {
             route(batch, default).GetAwaiter().GetResult();
+        }
         var before = GC.GetAllocatedBytesForCurrentThread();
         for (var i = 0; i < 100; i++)
+        {
             route(batch, default).GetAwaiter().GetResult();
+        }
         var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
 
         await Assert.That(allocated).IsEqualTo(0);
@@ -115,10 +125,13 @@ public class PartitionedEofRoutingTests
             new PartitionedProcessingOptions { CommitPolicy = PartitionCommitPolicy.UserManaged }, null);
         var partition = new TopicPartition(topic, 0);
         lane = new PartitionLane<string, string>(partition, 1,
-            static (_, _) => default, static _ => { }, static (_, _) => { });
+            static (_, _) => default, static _ =>
+            {
+            }, static (_, _) =>
+            {
+            });
         var runtimeType = runtime.GetType();
-        var lanes = (Dictionary<TopicPartition, PartitionLane<string, string>>)
-            runtimeType.GetField("_lanes", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(runtime)!;
+        var lanes = (Dictionary<TopicPartition, PartitionLane<string, string>>)runtimeType.GetField("_lanes", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(runtime)!;
         lanes.Add(partition, lane);
         return runtimeType.GetMethod("RouteBatchAsync", BindingFlags.Instance | BindingFlags.NonPublic)!
             .CreateDelegate<Func<ConsumeBatch<string, string>, CancellationToken, ValueTask>>(runtime);

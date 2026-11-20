@@ -19,14 +19,21 @@ public class AspireSchemaRegistryRegistrationTests
             ("Aspire:Dekaf:SchemaRegistry:Config:BasicAuthUserInfo", "user:secret"),
             ("Aspire:Dekaf:SchemaRegistry:registry:Config:RequestTimeoutMs", "1234"));
         SchemaRegistryConfig? captured = null;
+
         ISchemaRegistryClient Factory(IServiceProvider _, SchemaRegistryConfig config)
         {
             captured = config;
             return new SchemaRegistryClient(config);
         }
 
-        if (keyed) builder.AddKeyedDekafSchemaRegistryClient("registry", clientFactory: Factory);
-        else builder.AddDekafSchemaRegistryClient("registry", clientFactory: Factory);
+        if (keyed)
+        {
+            builder.AddKeyedDekafSchemaRegistryClient("registry", clientFactory: Factory);
+        }
+        else
+        {
+            builder.AddDekafSchemaRegistryClient("registry", clientFactory: Factory);
+        }
         await using var provider = builder.Services.BuildServiceProvider();
         _ = keyed
             ? provider.GetRequiredKeyedService<ISchemaRegistryClient>("registry")

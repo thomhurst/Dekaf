@@ -46,7 +46,10 @@ internal static class SemaphoreHelper
     /// </summary>
     internal static void ReleaseSafely(SemaphoreSlim semaphore)
     {
-        try { semaphore.Release(); }
+        try
+        {
+            semaphore.Release();
+        }
         catch (ObjectDisposedException) { }
     }
 }

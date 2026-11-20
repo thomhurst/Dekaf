@@ -252,7 +252,9 @@ public sealed class InMemoryRebalanceListenerTests
 
         var values = new List<string>();
         await foreach (var record in consumer.ConsumeSnapshotAsync())
+        {
             values.Add(record.Value!);
+        }
         await consumer.CloseAsync();
         await consumer.DisposeAsync();
 
@@ -338,7 +340,9 @@ public sealed class InMemoryRebalanceListenerTests
         listener.OnRevoked = async () =>
         {
             if (Interlocked.Increment(ref running) > 1)
+            {
                 overlapped = true;
+            }
             revocationEntered.TrySetResult();
             await releaseRevocation.Task;
             await first.CommitAsync();
@@ -667,7 +671,9 @@ public sealed class InMemoryRebalanceListenerTests
         cluster.RemoveConsumerGroupMembers("group", [new ConsumerGroupMemberIdentity { MemberId = "a" }]);
         await ProduceAsync(cluster, 1, partition: moved.Partition);
         while (second.GetPosition(moved) is not 2)
+        {
             await Assert.That(await second.ConsumeOneAsync(TimeSpan.Zero)).IsNotNull();
+        }
         await second.CommitAsync();
         releaseRevocation.SetResult();
         await consume;
@@ -722,7 +728,9 @@ public sealed class InMemoryRebalanceListenerTests
         listener.OnAssigned = async () =>
         {
             if (Interlocked.Increment(ref assignments) != 1)
+            {
                 return;
+            }
 
             assignmentEntered.SetResult();
             await releaseAssignment.Task;
@@ -951,20 +959,34 @@ public sealed class InMemoryRebalanceListenerTests
         private readonly Lock _gate = new();
         private readonly List<string> _events = [];
 
-        public Func<ValueTask>? OnRevoked { get; set; }
+        public Func<ValueTask>? OnRevoked
+        {
+            get; set;
+        }
 
-        public Func<ValueTask>? OnAssigned { get; set; }
+        public Func<ValueTask>? OnAssigned
+        {
+            get; set;
+        }
 
-        public bool ThrowOnAssigned { get; init; }
+        public bool ThrowOnAssigned
+        {
+            get; init;
+        }
 
-        public TaskCompletionSource Revoked { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource Revoked
+        {
+            get;
+        } = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         public IReadOnlyList<string> Events
         {
             get
             {
                 lock (_gate)
+                {
                     return _events.ToArray();
+                }
             }
         }
 
@@ -974,9 +996,13 @@ public sealed class InMemoryRebalanceListenerTests
         {
             Record("assigned", partitions);
             if (ThrowOnAssigned)
+            {
                 throw new InvalidOperationException("listener failure");
+            }
             if (OnAssigned is { } onAssigned)
+            {
                 await onAssigned();
+            }
         }
 
         public async ValueTask OnPartitionsRevokedAsync(
@@ -984,7 +1010,9 @@ public sealed class InMemoryRebalanceListenerTests
             CancellationToken cancellationToken)
         {
             if (OnRevoked is { } onRevoked)
+            {
                 await onRevoked();
+            }
             Record("revoked", partitions);
             Revoked.TrySetResult();
         }
@@ -1000,7 +1028,9 @@ public sealed class InMemoryRebalanceListenerTests
         private void Record(string kind, IEnumerable<TopicPartition> partitions)
         {
             lock (_gate)
+            {
                 _events.Add($"{kind} {Format(partitions)}");
+            }
         }
     }
 }

@@ -139,7 +139,9 @@ public sealed class DekafBuilderOutboxExtensionsTests
         DekafBuilder builder = null!;
 
         await Assert.That(() => builder.AddOutboxRelay()).Throws<ArgumentNullException>();
-        await Assert.That(() => builder.AddOutboxRelay(_ => { })).Throws<ArgumentNullException>();
+        await Assert.That(() => builder.AddOutboxRelay(_ =>
+        {
+        })).Throws<ArgumentNullException>();
         await Assert.That(() => builder.AddOutboxNotificationTransport<Transport>()).Throws<ArgumentNullException>();
         await Assert.That(() => builder.AddDynamoDbOutboxStore(DynamoDbOptions)).Throws<ArgumentNullException>();
         await Assert.That(() => builder.AddEntityFrameworkCoreOutboxStore<Context>()).Throws<ArgumentNullException>();

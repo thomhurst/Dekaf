@@ -9,10 +9,22 @@ namespace Dekaf.Protocol;
 /// </summary>
 public readonly struct RequestHeader
 {
-    public required ApiKey ApiKey { get; init; }
-    public required short ApiVersion { get; init; }
-    public required int CorrelationId { get; init; }
-    public string? ClientId { get; init; }
+    public required ApiKey ApiKey
+    {
+        get; init;
+    }
+    public required short ApiVersion
+    {
+        get; init;
+    }
+    public required int CorrelationId
+    {
+        get; init;
+    }
+    public string? ClientId
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Header version based on API version flexibility.
@@ -20,7 +32,10 @@ public readonly struct RequestHeader
     /// v1: + client ID
     /// v2: + tagged fields (flexible versions)
     /// </summary>
-    public short HeaderVersion { get; init; }
+    public short HeaderVersion
+    {
+        get; init;
+    }
 
     public void Write(ref KafkaProtocolWriter writer)
     {

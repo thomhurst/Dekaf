@@ -13,10 +13,16 @@ namespace Dekaf.SchemaRegistry.Json;
 public sealed class StreamingJsonSchemaValidatorOptions
 {
     /// <summary>Maximum time allowed to resolve Schema Registry references. Default is 30 seconds.</summary>
-    public TimeSpan ReferenceResolutionTimeout { get; init; } = TimeSpan.FromSeconds(30);
+    public TimeSpan ReferenceResolutionTimeout
+    {
+        get; init;
+    } = TimeSpan.FromSeconds(30);
 
     /// <summary>Maximum compiled schema nesting depth. Default is 128.</summary>
-    public int MaxSchemaDepth { get; init; } = 128;
+    public int MaxSchemaDepth
+    {
+        get; init;
+    } = 128;
 }
 
 /// <summary>
@@ -62,7 +68,9 @@ public sealed class StreamingJsonSchemaValidatorFactory : IJsonSchemaValidatorFa
     {
         ArgumentNullException.ThrowIfNull(schema);
         if (schema.SchemaType != SchemaType.Json)
+        {
             throw new ArgumentException("JSON Schema validation requires a JSON schema.", nameof(schema));
+        }
 
         return _validators.GetValue(schema, _createValidator);
     }
@@ -96,17 +104,23 @@ internal sealed class StreamingJsonSchemaValidator(
         try
         {
             if (!reader.Read())
+            {
                 ThrowFailure(schemaId, "$parse", "$", null);
+            }
 
             if (!ValidateNode(ref reader, payload, root, ref path, schemaId, out var failure))
             {
                 while (reader.Read())
+                {
                     reader.Skip();
+                }
                 throw failure!;
             }
 
             if (reader.Read())
+            {
                 ThrowFailure(schemaId, "$parse", "$", null);
+            }
         }
         catch (JsonException exception)
         {
@@ -122,7 +136,9 @@ internal sealed class StreamingJsonSchemaValidator(
     public void ValidateRules(ReadOnlyMemory<byte> payload, int schemaId, bool failFast)
     {
         if (validationRulesDeclarationError is not null)
+        {
             ThrowInvalidValidationRulesDeclaration(validationRulesDeclarationError);
+        }
 
         var reader = new Utf8JsonReader(payload.Span, new JsonReaderOptions
         {
@@ -138,7 +154,9 @@ internal sealed class StreamingJsonSchemaValidator(
         try
         {
             if (!reader.Read())
+            {
                 ThrowFailure(schemaId, "$parse", "$", null);
+            }
 
             var completed = WalkValidationRules(
                 ref reader,
@@ -152,7 +170,9 @@ internal sealed class StreamingJsonSchemaValidator(
                 ref compositionMatches,
                 ref valueSlice);
             if (completed && reader.Read())
+            {
                 ThrowFailure(schemaId, "$parse", "$", null);
+            }
         }
         catch (JsonException exception)
         {
@@ -168,7 +188,9 @@ internal sealed class StreamingJsonSchemaValidator(
             compositionMatches.Dispose();
         }
         if (violations is not null)
+        {
             throw new ValidationRulesFailedException(violations);
+        }
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
@@ -228,25 +250,33 @@ internal sealed class StreamingJsonSchemaValidator(
                         if (result.Kind == ValidationResultKind.Boolean ? !result.Boolean : result.String!.Length != 0)
                         {
                             if (!compositionMatches.CollectViolations)
+                            {
                                 return false;
+                            }
                             (violations ??= []).Add(new ValidationRuleError(
                                 compiledRule.Rule,
                                 path.ToString(),
                                 result.Kind == ValidationResultKind.String ? result.String : null));
                             if (failFast)
+                            {
                                 return false;
+                            }
                         }
                     }
                     catch (SchemaRegistryRuleException exception)
                     {
                         if (!compositionMatches.CollectViolations)
+                        {
                             return false;
+                        }
                         (violations ??= []).Add(new ValidationRuleError(
                             compiledRule.Rule,
                             path.ToString(),
                             cause: exception));
                         if (failFast)
+                        {
                             return false;
+                        }
                     }
                 }
             }
@@ -259,7 +289,9 @@ internal sealed class StreamingJsonSchemaValidator(
         if (node.Reference is not null)
         {
             if (referenceDepth == MaxReferenceDepth)
+            {
                 throw new SchemaRegistryRuleException("Inline validation reference depth exceeded 128.");
+            }
             var referencedReader = reader;
             if (!WalkValidationRules(
                     ref referencedReader,
@@ -273,7 +305,9 @@ internal sealed class StreamingJsonSchemaValidator(
                     ref compositionMatches,
                     ref valueSlice,
                     referenceDepth + 1))
+            {
                 return false;
+            }
             if (!node.HasLocalValidationTraversal)
             {
                 reader = referencedReader;
@@ -301,7 +335,9 @@ internal sealed class StreamingJsonSchemaValidator(
                         ref compositionMatches,
                         ref valueSlice,
                         referenceDepth))
+                {
                     return false;
+                }
                 traversedReader = branchReader;
             }
 
@@ -330,7 +366,9 @@ internal sealed class StreamingJsonSchemaValidator(
                 ref compositionMatches,
                 ref valueSlice,
                 referenceDepth))
+        {
             return false;
+        }
         if (node.HasOneOf && !WalkMatchingBranches(
                 ref reader,
                 payload,
@@ -346,7 +384,9 @@ internal sealed class StreamingJsonSchemaValidator(
                 ref compositionMatches,
                 ref valueSlice,
                 referenceDepth))
+        {
             return false;
+        }
 
         return reader.TokenType switch
         {
@@ -398,16 +438,20 @@ internal sealed class StreamingJsonSchemaValidator(
                         branches[index],
                         referenceDepth,
                         ref compositionMatches))
+                {
                     continue;
+                }
 
                 if (oneOnly)
                 {
                     if (directMatchingBranch >= 0)
+                    {
                         return FailCompositionMatch(
                             compositionMatches.CollectViolations,
                             schemaId,
                             "oneOf",
                             ref path);
+                    }
                     directMatchingBranch = index;
                     continue;
                 }
@@ -426,28 +470,36 @@ internal sealed class StreamingJsonSchemaValidator(
                         ref compositionMatches,
                         ref valueSlice,
                         referenceDepth))
+                {
                     return false;
+                }
                 directTraversedReader = branchReader;
             }
 
             if (!oneOnly)
             {
                 if (directMatchingBranch < 0)
+                {
                     return FailCompositionMatch(
                         compositionMatches.CollectViolations,
                         schemaId,
                         "anyOf",
                         ref path);
+                }
                 if (preserveAdvancedReader)
+                {
                     reader = directTraversedReader;
+                }
                 return true;
             }
             if (directMatchingBranch < 0)
+            {
                 return FailCompositionMatch(
                     compositionMatches.CollectViolations,
                     schemaId,
                     "oneOf",
                     ref path);
+            }
 
             var directSelectedReader = reader;
             var directCompleted = WalkValidationRules(
@@ -463,7 +515,9 @@ internal sealed class StreamingJsonSchemaValidator(
                 ref valueSlice,
                 referenceDepth);
             if (directCompleted && preserveAdvancedReader)
+            {
                 reader = directSelectedReader;
+            }
             return directCompleted;
         }
 
@@ -497,11 +551,13 @@ internal sealed class StreamingJsonSchemaValidator(
                 if (oneOnly)
                 {
                     if (matchingBranch >= 0)
+                    {
                         return FailCompositionMatch(
                             compositionMatches.CollectViolations,
                             schemaId,
                             "oneOf",
                             ref path);
+                    }
                     matchingBranch = index;
                     selectedMatchIndex = matchIndex;
                 }
@@ -522,7 +578,9 @@ internal sealed class StreamingJsonSchemaValidator(
                             ref compositionMatches,
                             ref valueSlice,
                             referenceDepth))
+                    {
                         return false;
+                    }
                     traversedReader = branchReader;
                 }
             }
@@ -532,21 +590,27 @@ internal sealed class StreamingJsonSchemaValidator(
         if (!oneOnly)
         {
             if (matchingBranch < 0)
+            {
                 return FailCompositionMatch(
                     compositionMatches.CollectViolations,
                     schemaId,
                     "anyOf",
                     ref path);
+            }
             if (preserveAdvancedReader)
+            {
                 reader = traversedReader;
+            }
             return true;
         }
         if (matchingBranch < 0)
+        {
             return FailCompositionMatch(
                 compositionMatches.CollectViolations,
                 schemaId,
                 "oneOf",
                 ref path);
+        }
 
         compositionMatches.SkipTo(selectedMatchIndex + 1);
         var selectedReader = reader;
@@ -564,7 +628,9 @@ internal sealed class StreamingJsonSchemaValidator(
             referenceDepth);
         compositionMatches.SkipTo(compositionEnd);
         if (completed && preserveAdvancedReader)
+        {
             reader = selectedReader;
+        }
         return completed;
     }
 
@@ -576,7 +642,9 @@ internal sealed class StreamingJsonSchemaValidator(
         scoped ref ValidationPathBuilder path)
     {
         if (collectViolations)
+        {
             ThrowFailure(schemaId, keyword, path.ToString(), innerException: null);
+        }
         return false;
     }
 
@@ -653,11 +721,15 @@ internal sealed class StreamingJsonSchemaValidator(
             while (reader.Read() && reader.TokenType != JsonTokenType.EndObject)
             {
                 if (reader.TokenType != JsonTokenType.PropertyName)
+                {
                     return true;
+                }
                 if (hasFinalProperties && !finalProperties.IsLast(ref reader, payload.Span))
                 {
                     if (!reader.Read())
+                    {
                         return true;
+                    }
                     reader.Skip();
                     continue;
                 }
@@ -666,11 +738,17 @@ internal sealed class StreamingJsonSchemaValidator(
                 var propertyReader = reader;
                 var property = node.Properties?.Find(ref reader);
                 if (property is not null)
+                {
                     path.AppendProperty(property.Name);
+                }
                 else if (node.AdditionalProperties is not null)
+                {
                     path.AppendMapKey(ref reader);
+                }
                 if (!reader.Read())
+                {
                     return true;
+                }
 
                 var child = property?.IsDeclared == true ? property.Schema : node.AdditionalProperties;
                 if (child is not null)
@@ -739,7 +817,9 @@ internal sealed class StreamingJsonSchemaValidator(
                                     ref compositionMatches,
                                     ref childValueSlice,
                                     referenceDepth))
+                            {
                                 return false;
+                            }
                         }
                         else
                         {
@@ -758,7 +838,9 @@ internal sealed class StreamingJsonSchemaValidator(
         finally
         {
             if (hasFinalProperties)
+            {
                 finalProperties.Dispose();
+            }
         }
     }
 
@@ -773,18 +855,26 @@ internal sealed class StreamingJsonSchemaValidator(
         for (var inspected = 0; scan.Read() && scan.TokenType != JsonTokenType.EndObject; inspected++)
         {
             if (scan.TokenType != JsonTokenType.PropertyName)
+            {
                 return AggregatePropertyLookahead.NotFound;
+            }
 
             var matches = property is not null
                 ? ReferenceEquals(property, properties!.Find(ref scan))
                 : JsonObjectPropertyIndex.NamesEqual(source, ref propertyReader, ref scan);
             if (matches)
+            {
                 return AggregatePropertyLookahead.Found;
+            }
             if (inspected + 1 >= MaxAggregatePropertyLookahead)
+            {
                 return AggregatePropertyLookahead.LimitReached;
+            }
 
             if (!scan.Read())
+            {
                 return AggregatePropertyLookahead.NotFound;
+            }
             scan.Skip();
         }
 
@@ -824,7 +914,9 @@ internal sealed class StreamingJsonSchemaValidator(
                         ref compositionMatches,
                         ref childValueSlice,
                         referenceDepth))
+                {
                     return false;
+                }
             }
             else
             {
@@ -870,7 +962,9 @@ internal sealed class StreamingJsonSchemaValidator(
             ReadOnlyMemory<byte> payload)
         {
             if (_value.IsEmpty)
+            {
                 _value = GetCurrentValue(ref reader, payload);
+            }
             return _value;
         }
 
@@ -893,7 +987,9 @@ internal sealed class StreamingJsonSchemaValidator(
         public uint GetOrCreateEqualityGeneration()
         {
             if (_equalityGeneration == 0)
+            {
                 _equalityGeneration = CompiledValidationRule.BeginEqualityResolution();
+            }
             return _equalityGeneration;
         }
     }
@@ -948,12 +1044,16 @@ internal sealed class StreamingJsonSchemaValidator(
         int referenceDepth)
     {
         if (node.IsFalse)
+        {
             return Fail(schemaId, "$schema", ref path, out failure);
+        }
 
         if (node.Reference is not null)
         {
             if (referenceDepth == MaxReferenceDepth)
+            {
                 return Fail(schemaId, "$ref", ref path, out failure);
+            }
 
             var referencedReader = reader;
             if (!ValidateNodeCore(
@@ -965,7 +1065,9 @@ internal sealed class StreamingJsonSchemaValidator(
                     ref compositionMatches,
                     recordCompositionMatches,
                     referenceDepth + 1))
+            {
                 return false;
+            }
 
             if (!node.HasLocalAssertions)
             {
@@ -986,7 +1088,9 @@ internal sealed class StreamingJsonSchemaValidator(
                     ref compositionMatches,
                     recordCompositionMatches,
                     referenceDepth))
+            {
                 return false;
+            }
         }
 
         if (node.HasAnyOf)
@@ -1009,14 +1113,20 @@ internal sealed class StreamingJsonSchemaValidator(
                         recordCompositionMatches,
                         referenceDepth);
                 if (recordCompositionMatches)
+                {
                     compositionMatches.EndBranch(matchIndex, branchMatched);
+                }
                 path.Truncate(pathMark);
                 matched |= branchMatched;
                 if (matched && !recordCompositionMatches)
+                {
                     break;
+                }
             }
             if (!matched)
+            {
                 return Fail(schemaId, "anyOf", ref path, out failure);
+            }
         }
 
         if (node.HasOneOf)
@@ -1039,17 +1149,25 @@ internal sealed class StreamingJsonSchemaValidator(
                         recordCompositionMatches,
                         referenceDepth);
                 if (recordCompositionMatches)
+                {
                     compositionMatches.EndBranch(matchIndex, matched);
+                }
                 path.Truncate(pathMark);
                 if (matched && ++matches > 1)
+                {
                     break;
+                }
             }
             if (matches != 1)
+            {
                 return Fail(schemaId, "oneOf", ref path, out failure);
+            }
         }
 
         if (!MatchesType(ref reader, node.Types))
+        {
             return Fail(schemaId, "type", ref path, out failure);
+        }
 
         switch (reader.TokenType)
         {
@@ -1115,22 +1233,32 @@ internal sealed class StreamingJsonSchemaValidator(
                 if (reader.TokenType == JsonTokenType.EndObject)
                 {
                     if (missingRequired != 0)
+                    {
                         return Fail(schemaId, "required", ref path, out failure);
+                    }
                     if (propertyCount < node.MinProperties)
+                    {
                         return Fail(schemaId, "minProperties", ref path, out failure);
+                    }
                     if (propertyCount > node.MaxProperties)
+                    {
                         return Fail(schemaId, "maxProperties", ref path, out failure);
+                    }
 
                     failure = null;
                     return true;
                 }
 
                 if (reader.TokenType != JsonTokenType.PropertyName)
+                {
                     return Fail(schemaId, "$parse", ref path, out failure);
+                }
                 if (lastPropertyWins && !properties.IsLast(ref reader, compositionMatches.Source))
                 {
                     if (!reader.Read())
+                    {
                         return Fail(schemaId, "$parse", ref path, out failure);
+                    }
                     reader.Skip();
                     continue;
                 }
@@ -1142,9 +1270,13 @@ internal sealed class StreamingJsonSchemaValidator(
                     !node.AllowsAdditionalProperties ||
                     node.AdditionalProperties is not null;
                 if (property is not null)
+                {
                     path.AppendProperty(property.Name);
+                }
                 else if (pathAppended)
+                {
                     path.AppendProperty(ref reader);
+                }
 
                 if (property is { RequiredIndex: >= 0 })
                 {
@@ -1158,12 +1290,16 @@ internal sealed class StreamingJsonSchemaValidator(
                 }
 
                 if (!reader.Read())
+                {
                     return Fail(schemaId, "$parse", ref path, out failure);
+                }
 
                 var declaredProperty = property?.IsDeclared == true;
                 var propertySchema = declaredProperty ? property!.Schema : node.AdditionalProperties;
                 if (!declaredProperty && !node.AllowsAdditionalProperties)
+                {
                     return Fail(schemaId, "additionalProperties", ref path, out failure);
+                }
 
                 if (propertySchema is not null)
                 {
@@ -1176,7 +1312,9 @@ internal sealed class StreamingJsonSchemaValidator(
                             ref compositionMatches,
                             recordCompositionMatches,
                             referenceDepth))
+                    {
                         return false;
+                    }
                 }
                 else
                 {
@@ -1184,7 +1322,9 @@ internal sealed class StreamingJsonSchemaValidator(
                 }
 
                 if (pathAppended)
+                {
                     path.Truncate(pathMark);
+                }
             }
 
             return Fail(schemaId, "$parse", ref path, out failure);
@@ -1192,7 +1332,9 @@ internal sealed class StreamingJsonSchemaValidator(
         finally
         {
             if (lastPropertyWins)
+            {
                 properties.Dispose();
+            }
         }
     }
 
@@ -1212,9 +1354,13 @@ internal sealed class StreamingJsonSchemaValidator(
             if (reader.TokenType == JsonTokenType.EndArray)
             {
                 if (index < node.MinItems)
+                {
                     return Fail(schemaId, "minItems", ref path, out failure);
+                }
                 if (index > node.MaxItems)
+                {
                     return Fail(schemaId, "maxItems", ref path, out failure);
+                }
 
                 failure = null;
                 return true;
@@ -1236,7 +1382,9 @@ internal sealed class StreamingJsonSchemaValidator(
                         ref compositionMatches,
                         recordCompositionMatches,
                         referenceDepth))
+                {
                     return false;
+                }
             }
             else
             {
@@ -1265,9 +1413,13 @@ internal sealed class StreamingJsonSchemaValidator(
 
         var length = GetStringScalarCount(ref reader);
         if (length < node.MinLength)
+        {
             return Fail(schemaId, "minLength", ref path, out failure);
+        }
         if (length > node.MaxLength)
+        {
             return Fail(schemaId, "maxLength", ref path, out failure);
+        }
 
         failure = null;
         return true;
@@ -1291,18 +1443,24 @@ internal sealed class StreamingJsonSchemaValidator(
         {
             var comparison = value.CompareTo(minimum);
             if (comparison < 0 || (node.ExclusiveMinimum && comparison == 0))
+            {
                 return Fail(schemaId, node.ExclusiveMinimum ? "exclusiveMinimum" : "minimum", ref path, out failure);
+            }
         }
 
         if (node.Maximum is { } maximum)
         {
             var comparison = value.CompareTo(maximum);
             if (comparison > 0 || (node.ExclusiveMaximum && comparison == 0))
+            {
                 return Fail(schemaId, node.ExclusiveMaximum ? "exclusiveMaximum" : "maximum", ref path, out failure);
+            }
         }
 
         if (node.MultipleOf is { } multipleOf && !value.IsMultipleOf(multipleOf))
+        {
             return Fail(schemaId, "multipleOf", ref path, out failure);
+        }
 
         failure = null;
         return true;
@@ -1311,7 +1469,9 @@ internal sealed class StreamingJsonSchemaValidator(
     private static bool MatchesType(ref Utf8JsonReader reader, JsonSchemaType allowed)
     {
         if (allowed == JsonSchemaType.Any)
+        {
             return true;
+        }
 
         return reader.TokenType switch
         {
@@ -1344,7 +1504,9 @@ internal sealed class StreamingJsonSchemaValidator(
     private static int GetStringScalarCount(ref Utf8JsonReader reader)
     {
         if (!reader.ValueIsEscaped)
+        {
             return CountUtf8Scalars(reader.ValueSpan);
+        }
 
         var maximumLength = reader.ValueSpan.Length;
         byte[]? rented = null;
@@ -1359,7 +1521,9 @@ internal sealed class StreamingJsonSchemaValidator(
         finally
         {
             if (rented is not null)
+            {
                 ArrayPool<byte>.Shared.Return(rented);
+            }
         }
     }
 
@@ -1370,7 +1534,9 @@ internal sealed class StreamingJsonSchemaValidator(
         {
             var status = Rune.DecodeFromUtf8(value, out _, out var consumed);
             if (status != OperationStatus.Done)
+            {
                 throw new JsonException("Invalid UTF-8 JSON string.");
+            }
             value = value[consumed..];
             count++;
         }
@@ -1451,8 +1617,14 @@ internal sealed class StreamingJsonSchemaValidator(
         }
 
         internal readonly ReadOnlySpan<byte> Source => _source;
-        internal bool LastPropertyWins { get; set; }
-        internal bool CollectViolations { get; set; }
+        internal bool LastPropertyWins
+        {
+            get; set;
+        }
+        internal bool CollectViolations
+        {
+            get; set;
+        }
         internal readonly int ReadIndex => _readIndex;
         internal readonly bool HasPendingMatches => _readIndex < _readEnd;
 
@@ -1460,7 +1632,9 @@ internal sealed class StreamingJsonSchemaValidator(
         {
             var depth = _checkpointDepth++;
             if (_rentedMatches is not null)
+            {
                 _currentStorageCheckpointReferences++;
+            }
             return new ValidationCompositionMatchCheckpoint(
                 _rentedMatches,
                 _count,
@@ -1489,9 +1663,13 @@ internal sealed class StreamingJsonSchemaValidator(
             EnsureCapacity();
             var matchIndex = _count++;
             if (_rentedMatches is null)
+            {
                 Unsafe.AsRef(in _initialMatches[matchIndex]).BranchIndex = branchIndex;
+            }
             else
+            {
                 _rentedMatches[matchIndex].BranchIndex = branchIndex;
+            }
             return matchIndex;
         }
 
@@ -1519,7 +1697,9 @@ internal sealed class StreamingJsonSchemaValidator(
         internal ValidationCompositionBranchMatch ReadBranch(int expectedBranchIndex, out int matchIndex)
         {
             if ((uint)_readIndex >= (uint)_readEnd)
+            {
                 throw new InvalidOperationException("Cached composition matches were exhausted early.");
+            }
 
             matchIndex = _readIndex++;
             var match = _rentedMatches is null
@@ -1548,10 +1728,14 @@ internal sealed class StreamingJsonSchemaValidator(
             {
                 var matches = GetRetainedStorage(index).Matches;
                 if (matches is not null)
+                {
                     ArrayPool<ValidationCompositionBranchMatch>.Shared.Return(matches);
+                }
             }
             if (_rentedMatches is not null)
+            {
                 ArrayPool<ValidationCompositionBranchMatch>.Shared.Return(_rentedMatches);
+            }
             if (_rentedRetainedStorage is not null)
             {
                 ArrayPool<RetainedValidationCompositionStorage>.Shared.Return(
@@ -1564,7 +1748,9 @@ internal sealed class StreamingJsonSchemaValidator(
         {
             var capacity = _rentedMatches?.Length ?? InitialCompositionMatchCapacity;
             if (_count < capacity)
+            {
                 return;
+            }
 
             var rentedMatches = ArrayPool<ValidationCompositionBranchMatch>.Shared.Rent(
                 capacity * 2);
@@ -1577,9 +1763,13 @@ internal sealed class StreamingJsonSchemaValidator(
             {
                 _rentedMatches.AsSpan(0, _count).CopyTo(rentedMatches);
                 if (_currentStorageCheckpointReferences == 0)
+                {
                     ArrayPool<ValidationCompositionBranchMatch>.Shared.Return(_rentedMatches);
+                }
                 else
+                {
                     RetainStorage(_rentedMatches, _currentStorageCheckpointReferences);
+                }
             }
             _rentedMatches = rentedMatches;
             _currentStorageCheckpointReferences = 0;
@@ -1588,11 +1778,15 @@ internal sealed class StreamingJsonSchemaValidator(
         private void ReleaseCheckpoint(ValidationCompositionMatchCheckpoint checkpoint)
         {
             if (checkpoint.Depth != _checkpointDepth - 1)
+            {
                 throw new InvalidOperationException("Composition checkpoints must be released in stack order.");
+            }
 
             _checkpointDepth--;
             if (checkpoint.RentedMatches is null)
+            {
                 return;
+            }
             if (ReferenceEquals(checkpoint.RentedMatches, _rentedMatches))
             {
                 _currentStorageCheckpointReferences--;
@@ -1603,14 +1797,20 @@ internal sealed class StreamingJsonSchemaValidator(
             {
                 ref var retained = ref GetRetainedStorage(index);
                 if (!ReferenceEquals(retained.Matches, checkpoint.RentedMatches))
+                {
                     continue;
+                }
                 if (--retained.References != 0)
+                {
                     return;
+                }
 
                 ArrayPool<ValidationCompositionBranchMatch>.Shared.Return(checkpoint.RentedMatches);
                 var lastIndex = --_retainedStorageCount;
                 if (index != lastIndex)
+                {
                     retained = GetRetainedStorage(lastIndex);
+                }
                 GetRetainedStorage(lastIndex) = default;
                 return;
             }
@@ -1632,11 +1832,15 @@ internal sealed class StreamingJsonSchemaValidator(
         {
             var capacity = _rentedRetainedStorage?.Length ?? InitialRetainedCompositionStorageCapacity;
             if (_retainedStorageCount < capacity)
+            {
                 return;
+            }
 
             var storage = ArrayPool<RetainedValidationCompositionStorage>.Shared.Rent(capacity * 2);
             for (var index = 0; index < _retainedStorageCount; index++)
+            {
                 storage[index] = GetRetainedStorage(index);
+            }
             if (_rentedRetainedStorage is not null)
             {
                 ArrayPool<RetainedValidationCompositionStorage>.Shared.Return(
@@ -1719,7 +1923,10 @@ internal sealed class SchemaCompiler : IDisposable
         _options = options;
     }
 
-    internal string? ValidationRulesDeclarationError { get; private set; }
+    internal string? ValidationRulesDeclarationError
+    {
+        get; private set;
+    }
 
     internal CompiledSchemaNode Compile(RegistrySchema schema, Uri retrievalUri)
     {
@@ -1741,7 +1948,9 @@ internal sealed class SchemaCompiler : IDisposable
     public void Dispose()
     {
         for (var i = 0; i < _documents.Count; i++)
+        {
             _documents[i].Dispose();
+        }
     }
 
     private SchemaDocument AddDocument(RegistrySchema schema, Uri retrievalUri)
@@ -1778,7 +1987,9 @@ internal sealed class SchemaCompiler : IDisposable
     {
         var references = schema.References;
         if (references is null)
+        {
             return;
+        }
 
         for (var i = 0; i < references.Count; i++)
         {
@@ -1786,7 +1997,9 @@ internal sealed class SchemaCompiler : IDisposable
             var referenceUri = ResolveUri(parent.EffectiveBaseUri, reference.Name);
             var key = new SchemaReferenceKey(reference.Subject, reference.Version, referenceUri.AbsoluteUri);
             if (!visited.Add(key))
+            {
                 continue;
+            }
 
             var registered = ResolveReference(reference);
             if (registered.Schema.SchemaType != SchemaType.Json)
@@ -1830,9 +2043,13 @@ internal sealed class SchemaCompiler : IDisposable
         SchemaDialect dialect)
     {
         if (schema.ValueKind is JsonValueKind.True or JsonValueKind.False)
+        {
             return;
+        }
         if (schema.ValueKind != JsonValueKind.Object)
+        {
             return;
+        }
 
         var declaresResource = schema.TryGetProperty("$id", out _);
         baseUri = GetEffectiveBaseUri(schema, baseUri);
@@ -1878,22 +2095,30 @@ internal sealed class SchemaCompiler : IDisposable
         SchemaDialect dialect)
     {
         if (dialect == SchemaDialect.Draft7)
+        {
             return;
+        }
 
         var target = new ReferenceTarget(document, schema, pointer, baseUri, dialect);
         if (schema.TryGetProperty("$anchor", out var anchor))
+        {
             AddAnchor(target, "$anchor", anchor, isDynamic: false);
+        }
 
         // Dynamic anchors are counted per distinct resource URI, so a document registered under two
         // reference names still counts once when deciding whether a dynamic reference is static.
         if (dialect == SchemaDialect.Draft202012 &&
             schema.TryGetProperty("$dynamicAnchor", out var dynamicAnchor))
+        {
             AddAnchor(target, "$dynamicAnchor", dynamicAnchor, isDynamic: true);
+        }
 
         if (dialect == SchemaDialect.Draft201909 &&
             schema.TryGetProperty("$recursiveAnchor", out var recursiveAnchor) &&
             recursiveAnchor.ValueKind == JsonValueKind.True)
+        {
             _recursiveAnchorResources.Add(WithoutFragment(baseUri).AbsoluteUri);
+        }
     }
 
     private void AddAnchor(ReferenceTarget target, string keyword, JsonElement anchor, bool isDynamic)
@@ -1903,9 +2128,13 @@ internal sealed class SchemaCompiler : IDisposable
         var key = WithoutFragment(target.BaseUri).AbsoluteUri + "#" + name;
         var exists = _anchorsByUri.TryGetValue(key, out var existing);
         if (!exists)
+        {
             existing = new SchemaAnchor(target, false);
+        }
         if (isDynamic && !existing.IsDynamic)
+        {
             _dynamicAnchorCounts[name] = _dynamicAnchorCounts.GetValueOrDefault(name) + 1;
+        }
         _anchorsByUri[key] = existing with { IsDynamic = existing.IsDynamic || isDynamic };
     }
 
@@ -1918,7 +2147,9 @@ internal sealed class SchemaCompiler : IDisposable
         SchemaDialect dialect)
     {
         if (!schema.TryGetProperty(keyword, out var map) || map.ValueKind != JsonValueKind.Object)
+        {
             return;
+        }
 
         var mapPointer = AppendPointer(pointer, keyword);
         foreach (var property in map.EnumerateObject())
@@ -1941,7 +2172,9 @@ internal sealed class SchemaCompiler : IDisposable
         SchemaDialect dialect)
     {
         if (!schema.TryGetProperty(keyword, out var value))
+        {
             return;
+        }
 
         if (value.ValueKind == JsonValueKind.Array)
         {
@@ -1961,7 +2194,9 @@ internal sealed class SchemaCompiler : IDisposable
         SchemaDialect dialect)
     {
         if (!schema.TryGetProperty(keyword, out var values) || values.ValueKind != JsonValueKind.Array)
+        {
             return;
+        }
 
         var arrayPointer = AppendPointer(pointer, keyword);
         var index = 0;
@@ -1987,11 +2222,15 @@ internal sealed class SchemaCompiler : IDisposable
         bool baseUriIsResolved = false)
     {
         if (depth > _options.MaxSchemaDepth)
+        {
             throw new InvalidOperationException($"JSON Schema exceeds maximum depth {_options.MaxSchemaDepth}.");
+        }
 
         var key = new NodeKey(document.Id, pointer);
         if (_compiledNodes.TryGetValue(key, out var existing))
+        {
             return existing;
+        }
 
         var node = new CompiledSchemaNode
         {
@@ -2007,12 +2246,16 @@ internal sealed class SchemaCompiler : IDisposable
         }
 
         if (schema.ValueKind != JsonValueKind.Object)
+        {
             throw new InvalidOperationException($"JSON Schema at '{pointer}' must be an object or boolean.");
+        }
 
         // Indexed reference targets and the document root already include this node's $id.
         // Structural children still inherit their parent's base and must resolve their own $id.
         if (!baseUriIsResolved)
+        {
             baseUri = GetEffectiveBaseUri(schema, baseUri);
+        }
         dialect = GetDialect(schema, dialect);
         if (schema.TryGetProperty("$ref", out var referenceElement))
         {
@@ -2054,9 +2297,13 @@ internal sealed class SchemaCompiler : IDisposable
         ParseNumericAssertions(schema, node);
         node.AllOf = CompileSchemaArray(document, schema, "allOf", pointer, baseUri, dialect, depth);
         if (dialect == SchemaDialect.Draft202012)
+        {
             AttachDynamicReference(node, CompileDynamicReference(schema, baseUri, depth));
+        }
         else if (dialect == SchemaDialect.Draft201909)
+        {
             AttachDynamicReference(node, CompileRecursiveReference(schema, baseUri, depth));
+        }
         node.HasAnyOf = schema.TryGetProperty("anyOf", out _);
         node.AnyOf = CompileSchemaArray(document, schema, "anyOf", pointer, baseUri, dialect, depth);
         node.HasOneOf = schema.TryGetProperty("oneOf", out _);
@@ -2084,11 +2331,17 @@ internal sealed class SchemaCompiler : IDisposable
     private static void AttachDynamicReference(CompiledSchemaNode node, CompiledSchemaNode? reference)
     {
         if (reference is null)
+        {
             return;
+        }
         if (node.Reference is null)
+        {
             node.Reference = reference;
+        }
         else
+        {
             node.AllOf = [.. node.AllOf, reference];
+        }
     }
 
     // The validator compiles a static graph, so $dynamicRef is supported only when it cannot resolve
@@ -2097,7 +2350,9 @@ internal sealed class SchemaCompiler : IDisposable
     private CompiledSchemaNode? CompileDynamicReference(JsonElement schema, Uri baseUri, int depth)
     {
         if (!schema.TryGetProperty("$dynamicRef", out var referenceElement))
+        {
             return null;
+        }
 
         var referenceText = referenceElement.GetString()
             ?? throw new InvalidOperationException("JSON Schema $dynamicRef must be a string.");
@@ -2121,12 +2376,16 @@ internal sealed class SchemaCompiler : IDisposable
     private CompiledSchemaNode? CompileRecursiveReference(JsonElement schema, Uri baseUri, int depth)
     {
         if (!schema.TryGetProperty("$recursiveRef", out var referenceElement))
+        {
             return null;
+        }
 
         var referenceText = referenceElement.GetString()
             ?? throw new InvalidOperationException("JSON Schema $recursiveRef must be a string.");
         if (referenceText != "#")
+        {
             throw new NotSupportedException($"JSON Schema $recursiveRef '{referenceText}' is not supported; only '#' is defined.");
+        }
 
         var target = ResolveTarget(baseUri, referenceText);
         if (_recursiveAnchorResources.Count > 1 &&
@@ -2146,7 +2405,9 @@ internal sealed class SchemaCompiler : IDisposable
         for (var index = 0; index < nodes.Length; index++)
         {
             if (nodes[index].ContainsCompositionTraversal)
+            {
                 return true;
+            }
         }
         return false;
     }
@@ -2161,9 +2422,13 @@ internal sealed class SchemaCompiler : IDisposable
         int depth)
     {
         if (!schema.TryGetProperty(keyword, out var elements))
+        {
             return [];
+        }
         if (elements.ValueKind != JsonValueKind.Array)
+        {
             throw new InvalidOperationException($"JSON Schema '{keyword}' at '{pointer}' must be an array.");
+        }
 
         var compiled = new List<CompiledSchemaNode>();
         var index = 0;
@@ -2191,7 +2456,9 @@ internal sealed class SchemaCompiler : IDisposable
         usesSize = false;
         usesCachedEquality = false;
         if (!schema.TryGetProperty("confluent:rules", out var rules))
+        {
             return [];
+        }
         if (rules.ValueKind != JsonValueKind.Array)
         {
             ValidationRulesDeclarationError ??= "JSON Schema 'confluent:rules' must be an array.";
@@ -2256,7 +2523,9 @@ internal sealed class SchemaCompiler : IDisposable
     {
         var parents = new int[_compiledNodeList.Count];
         for (var index = 0; index < parents.Length; index++)
+        {
             parents[index] = index;
+        }
         return parents;
     }
 
@@ -2278,7 +2547,9 @@ internal sealed class SchemaCompiler : IDisposable
         CompiledSchemaNode? other)
     {
         if (other is not null)
+        {
             UnionValidationMemberIndexes(parents, index, other.CompilationIndex);
+        }
     }
 
     private static void UnionValidationMemberNodes(
@@ -2287,7 +2558,9 @@ internal sealed class SchemaCompiler : IDisposable
         CompiledSchemaNode[] others)
     {
         for (var otherIndex = 0; otherIndex < others.Length; otherIndex++)
+        {
             UnionValidationMemberIndexes(parents, index, others[otherIndex].CompilationIndex);
+        }
     }
 
     private Dictionary<int, HashSet<int>> CollectValidationMembers(
@@ -2300,11 +2573,15 @@ internal sealed class SchemaCompiler : IDisposable
         {
             var localMembers = _compiledNodeList[index].ValidationRuleMemberIndexes;
             if (localMembers.Length == 0)
+            {
                 continue;
+            }
 
             var root = FindValidationMemberRoot(parents, index);
             if (!membersByRoot.TryGetValue(root, out var groupMembers))
+            {
                 membersByRoot.Add(root, groupMembers = []);
+            }
             groupMembers.UnionWith(localMembers);
             memberNodeCounts[root] = memberNodeCounts.GetValueOrDefault(root) + 1;
         }
@@ -2335,7 +2612,9 @@ internal sealed class SchemaCompiler : IDisposable
         for (var index = 0; index < _compiledNodeList.Count; index++)
         {
             if (_compiledNodeList[index].ValidationRulesUseSize)
+            {
                 counts[FindValidationMemberRoot(parents, index)]++;
+            }
         }
         return counts;
     }
@@ -2366,7 +2645,9 @@ internal sealed class SchemaCompiler : IDisposable
     {
         var root = index;
         while (parents[root] != root)
+        {
             root = parents[root];
+        }
         while (parents[index] != index)
         {
             var parent = parents[index];
@@ -2381,7 +2662,9 @@ internal sealed class SchemaCompiler : IDisposable
         var leftRoot = FindValidationMemberRoot(parents, left);
         var rightRoot = FindValidationMemberRoot(parents, right);
         if (leftRoot != rightRoot)
+        {
             parents[rightRoot] = leftRoot;
+        }
     }
 
     private void CompileObjectKeywords(
@@ -2397,7 +2680,9 @@ internal sealed class SchemaCompiler : IDisposable
         if (schema.TryGetProperty("required", out var requiredElement))
         {
             if (requiredElement.ValueKind != JsonValueKind.Array)
+            {
                 throw new InvalidOperationException($"JSON Schema 'required' at '{pointer}' must be an array.");
+            }
 
             required = new HashSet<string>(StringComparer.Ordinal);
             foreach (var item in requiredElement.EnumerateArray())
@@ -2405,7 +2690,9 @@ internal sealed class SchemaCompiler : IDisposable
                 var name = item.GetString()
                     ?? throw new InvalidOperationException("JSON Schema required names must be strings.");
                 if (!required.Add(name))
+                {
                     throw new InvalidOperationException($"JSON Schema required name '{name}' is duplicated.");
+                }
                 if (required.Count > MaxRequiredProperties)
                 {
                     throw new NotSupportedException(
@@ -2418,7 +2705,9 @@ internal sealed class SchemaCompiler : IDisposable
         if (schema.TryGetProperty("properties", out var propertiesElement))
         {
             if (propertiesElement.ValueKind != JsonValueKind.Object)
+            {
                 throw new InvalidOperationException($"JSON Schema 'properties' at '{pointer}' must be an object.");
+            }
 
             foreach (var property in propertiesElement.EnumerateObject())
             {
@@ -2444,24 +2733,32 @@ internal sealed class SchemaCompiler : IDisposable
                 }
 
                 if (!found)
+                {
                     entries.Add(new CompiledProperty(name, null, isDeclared: false));
+                }
             }
 
             var requiredIndex = 0;
             for (var i = 0; i < entries.Count; i++)
             {
                 if (required.Contains(entries[i].Name))
+                {
                     entries[i].RequiredIndex = requiredIndex++;
+                }
             }
 
             node.RequiredCount = requiredIndex;
         }
 
         if (entries.Count != 0)
+        {
             node.Properties = new CompiledPropertyTable(entries);
+        }
 
         if (!schema.TryGetProperty("additionalProperties", out var additionalProperties))
+        {
             return;
+        }
 
         if (additionalProperties.ValueKind is JsonValueKind.True or JsonValueKind.False)
         {
@@ -2501,7 +2798,9 @@ internal sealed class SchemaCompiler : IDisposable
         if (hasPrefixItems && dialect == SchemaDialect.Draft202012)
         {
             if (prefixItems.ValueKind != JsonValueKind.Array)
+            {
                 throw new InvalidOperationException($"JSON Schema 'prefixItems' at '{pointer}' must be an array.");
+            }
 
             var prefixNodes = new CompiledSchemaNode[prefixItems.GetArrayLength()];
             var index = 0;
@@ -2561,31 +2860,41 @@ internal sealed class SchemaCompiler : IDisposable
         isDynamicAnchor = false;
         var targetUri = ResolveUri(baseUri, reference);
         if (!_resourcesByUri.TryGetValue(WithoutFragment(targetUri).AbsoluteUri, out var resource))
+        {
             throw new InvalidOperationException($"JSON Schema reference '{reference}' was not registered.");
+        }
 
         var pointer = Uri.UnescapeDataString(targetUri.Fragment);
         if (pointer.Length == 0)
+        {
             return new ReferenceTarget(
                 resource.Document,
                 resource.Element,
                 resource.Pointer,
                 resource.BaseUri,
                 resource.Dialect);
+        }
         if (pointer[0] != '#')
+        {
             throw new InvalidOperationException($"JSON Schema reference '{reference}' has an invalid fragment.");
+        }
         pointer = pointer[1..];
         if (pointer.Length == 0)
+        {
             return new ReferenceTarget(
                 resource.Document,
                 resource.Element,
                 resource.Pointer,
                 resource.BaseUri,
                 resource.Dialect);
+        }
         if (pointer[0] != '/')
         {
             if (resource.Dialect == SchemaDialect.Draft7 ||
                 !_anchorsByUri.TryGetValue(WithoutFragment(resource.BaseUri).AbsoluteUri + "#" + pointer, out var anchor))
+            {
                 throw new NotSupportedException($"JSON Schema anchor reference '{reference}' is not supported.");
+            }
             isDynamicAnchor = anchor.IsDynamic;
             return anchor.Target;
         }
@@ -2605,7 +2914,9 @@ internal sealed class SchemaCompiler : IDisposable
             if (current.ValueKind == JsonValueKind.Object)
             {
                 if (!current.TryGetProperty(segment, out current))
+                {
                     throw new InvalidOperationException($"JSON Schema reference '{reference}' was not found.");
+                }
             }
             else if (current.ValueKind == JsonValueKind.Array &&
                      int.TryParse(segment, NumberStyles.None, CultureInfo.InvariantCulture, out var index) &&
@@ -2622,7 +2933,9 @@ internal sealed class SchemaCompiler : IDisposable
             currentDialect = GetDialect(current, currentDialect);
             absolutePointer = AppendPointer(absolutePointer, segment);
             if (separator < 0)
+            {
                 break;
+            }
             position = separator + 1;
         }
 
@@ -2632,16 +2945,24 @@ internal sealed class SchemaCompiler : IDisposable
     private static JsonSchemaType ParseTypes(JsonElement schema)
     {
         if (!schema.TryGetProperty("type", out var typeElement))
+        {
             return JsonSchemaType.Any;
+        }
 
         if (typeElement.ValueKind == JsonValueKind.String)
+        {
             return ParseType(typeElement.GetString()!);
+        }
         if (typeElement.ValueKind != JsonValueKind.Array)
+        {
             throw new InvalidOperationException("JSON Schema 'type' must be a string or array.");
+        }
 
         var types = JsonSchemaType.None;
         foreach (var item in typeElement.EnumerateArray())
+        {
             types |= ParseType(item.GetString() ?? throw new InvalidOperationException("JSON Schema types must be strings."));
+        }
         return types;
     }
 
@@ -2660,9 +2981,13 @@ internal sealed class SchemaCompiler : IDisposable
     private static void ParseNumericAssertions(JsonElement schema, CompiledSchemaNode node)
     {
         if (schema.TryGetProperty("minimum", out var minimum))
+        {
             SetMinimum(node, CompiledJsonNumber.Parse(minimum), exclusive: false);
+        }
         if (schema.TryGetProperty("maximum", out var maximum))
+        {
             SetMaximum(node, CompiledJsonNumber.Parse(maximum), exclusive: false);
+        }
         if (schema.TryGetProperty("exclusiveMinimum", out var exclusiveMinimum))
         {
             if (exclusiveMinimum.ValueKind == JsonValueKind.Number)
@@ -2689,7 +3014,9 @@ internal sealed class SchemaCompiler : IDisposable
         {
             var compiled = CompiledJsonNumber.Parse(multipleOf, requireCoefficient: true);
             if (compiled.Sign <= 0)
+            {
                 throw new InvalidOperationException("JSON Schema 'multipleOf' must be greater than zero.");
+            }
             node.MultipleOf = compiled;
         }
 
@@ -2768,9 +3095,13 @@ internal sealed class SchemaCompiler : IDisposable
     private static int GetNonNegativeInt32(JsonElement schema, string propertyName, int defaultValue)
     {
         if (!schema.TryGetProperty(propertyName, out var value))
+        {
             return defaultValue;
+        }
         if (!value.TryGetInt32(out var result) || result < 0)
+        {
             throw new InvalidOperationException($"JSON Schema '{propertyName}' must be a non-negative integer.");
+        }
         return result;
     }
 
@@ -2789,18 +3120,26 @@ internal sealed class SchemaCompiler : IDisposable
     {
         if (schema.ValueKind != JsonValueKind.Object ||
             !schema.TryGetProperty("$schema", out var declaration))
+        {
             return inherited;
+        }
 
         var value = declaration.GetString()
             ?? throw new InvalidOperationException("JSON Schema $schema must be a string.");
         if (value.Contains("draft-04", StringComparison.OrdinalIgnoreCase) ||
             value.Contains("draft-06", StringComparison.OrdinalIgnoreCase) ||
             value.Contains("draft-07", StringComparison.OrdinalIgnoreCase))
+        {
             return SchemaDialect.Draft7;
+        }
         if (value.Contains("2019-09", StringComparison.OrdinalIgnoreCase))
+        {
             return SchemaDialect.Draft201909;
+        }
         if (value.Contains("2020-12", StringComparison.OrdinalIgnoreCase))
+        {
             return SchemaDialect.Draft202012;
+        }
 
         throw new NotSupportedException($"JSON Schema dialect '{value}' is not supported.");
     }
@@ -2808,14 +3147,18 @@ internal sealed class SchemaCompiler : IDisposable
     private static Uri ResolveUri(Uri baseUri, string value)
     {
         if (Uri.TryCreate(value, UriKind.Absolute, out var absolute))
+        {
             return absolute;
+        }
         return new Uri(baseUri, value);
     }
 
     private static Uri WithoutFragment(Uri uri)
     {
         if (string.IsNullOrEmpty(uri.Fragment))
+        {
             return uri;
+        }
         var builder = new UriBuilder(uri) { Fragment = string.Empty };
         return builder.Uri;
     }
@@ -2824,20 +3167,25 @@ internal sealed class SchemaCompiler : IDisposable
         $"{pointer}/{segment.Replace("~", "~0", StringComparison.Ordinal).Replace("/", "~1", StringComparison.Ordinal)}";
 
     private sealed record SchemaDocument(int Id, JsonDocument Document, Uri EffectiveBaseUri);
+
     private readonly record struct SchemaResource(
         SchemaDocument Document,
         JsonElement Element,
         string Pointer,
         Uri BaseUri,
         SchemaDialect Dialect);
+
     private readonly record struct SchemaReferenceKey(string Subject, int Version, string Uri);
+
     private readonly record struct NodeKey(int DocumentId, string Pointer);
+
     private readonly record struct ReferenceTarget(
         SchemaDocument Document,
         JsonElement Element,
         string Pointer,
         Uri BaseUri,
         SchemaDialect Dialect);
+
     private readonly record struct SchemaAnchor(ReferenceTarget Target, bool IsDynamic);
 }
 
@@ -2864,46 +3212,166 @@ internal enum JsonSchemaType : byte
 
 internal sealed class CompiledSchemaNode
 {
-    internal int CompilationIndex { get; init; }
-    internal bool IsFalse { get; set; }
-    internal bool HasLocalAssertions { get; set; }
-    internal JsonSchemaType Types { get; set; } = JsonSchemaType.Any;
-    internal CompiledSchemaNode? Reference { get; set; }
-    internal CompiledValidationRule[] ValidationRules { get; set; } = [];
-    internal bool ValidationRulesUseSize { get; set; }
-    internal bool ValidationRulesUseCachedEquality { get; set; }
-    internal bool SharesValidationRuleSizes { get; set; }
-    internal int[] ValidationRuleMemberIndexes { get; set; } = [];
-    internal ValidationCelMemberTable? ValidationRuleMembers { get; set; }
-    internal bool SharesValidationRuleMembers { get; set; }
-    internal int ValidationRuleMemberGroupId { get; set; }
-    internal CompiledSchemaNode[] AllOf { get; set; } = [];
-    internal bool HasAnyOf { get; set; }
-    internal CompiledSchemaNode[] AnyOf { get; set; } = [];
-    internal bool AnyOfRequiresCompositionMatchCache { get; set; }
-    internal bool HasOneOf { get; set; }
-    internal CompiledSchemaNode[] OneOf { get; set; } = [];
-    internal bool OneOfRequiresCompositionMatchCache { get; set; }
-    internal bool ContainsCompositionTraversal { get; set; }
-    internal bool HasLocalValidationTraversal { get; set; }
-    internal CompiledPropertyTable? Properties { get; set; }
-    internal int RequiredCount { get; set; }
-    internal bool AllowsAdditionalProperties { get; set; } = true;
-    internal CompiledSchemaNode? AdditionalProperties { get; set; }
-    internal CompiledSchemaNode? Items { get; set; }
-    internal CompiledSchemaNode[] PrefixItems { get; set; } = [];
-    internal int MinProperties { get; set; }
-    internal int MaxProperties { get; set; } = int.MaxValue;
-    internal int MinItems { get; set; }
-    internal int MaxItems { get; set; } = int.MaxValue;
-    internal int MinLength { get; set; }
-    internal int MaxLength { get; set; } = int.MaxValue;
-    internal CompiledJsonNumber? Minimum { get; set; }
-    internal CompiledJsonNumber? Maximum { get; set; }
-    internal bool ExclusiveMinimum { get; set; }
-    internal bool ExclusiveMaximum { get; set; }
-    internal CompiledJsonNumber? MultipleOf { get; set; }
-    internal bool HasNumericAssertions { get; set; }
+    internal int CompilationIndex
+    {
+        get; init;
+    }
+    internal bool IsFalse
+    {
+        get; set;
+    }
+    internal bool HasLocalAssertions
+    {
+        get; set;
+    }
+    internal JsonSchemaType Types
+    {
+        get; set;
+    } = JsonSchemaType.Any;
+    internal CompiledSchemaNode? Reference
+    {
+        get; set;
+    }
+    internal CompiledValidationRule[] ValidationRules
+    {
+        get; set;
+    } = [];
+    internal bool ValidationRulesUseSize
+    {
+        get; set;
+    }
+    internal bool ValidationRulesUseCachedEquality
+    {
+        get; set;
+    }
+    internal bool SharesValidationRuleSizes
+    {
+        get; set;
+    }
+    internal int[] ValidationRuleMemberIndexes
+    {
+        get; set;
+    } = [];
+    internal ValidationCelMemberTable? ValidationRuleMembers
+    {
+        get; set;
+    }
+    internal bool SharesValidationRuleMembers
+    {
+        get; set;
+    }
+    internal int ValidationRuleMemberGroupId
+    {
+        get; set;
+    }
+    internal CompiledSchemaNode[] AllOf
+    {
+        get; set;
+    } = [];
+    internal bool HasAnyOf
+    {
+        get; set;
+    }
+    internal CompiledSchemaNode[] AnyOf
+    {
+        get; set;
+    } = [];
+    internal bool AnyOfRequiresCompositionMatchCache
+    {
+        get; set;
+    }
+    internal bool HasOneOf
+    {
+        get; set;
+    }
+    internal CompiledSchemaNode[] OneOf
+    {
+        get; set;
+    } = [];
+    internal bool OneOfRequiresCompositionMatchCache
+    {
+        get; set;
+    }
+    internal bool ContainsCompositionTraversal
+    {
+        get; set;
+    }
+    internal bool HasLocalValidationTraversal
+    {
+        get; set;
+    }
+    internal CompiledPropertyTable? Properties
+    {
+        get; set;
+    }
+    internal int RequiredCount
+    {
+        get; set;
+    }
+    internal bool AllowsAdditionalProperties
+    {
+        get; set;
+    } = true;
+    internal CompiledSchemaNode? AdditionalProperties
+    {
+        get; set;
+    }
+    internal CompiledSchemaNode? Items
+    {
+        get; set;
+    }
+    internal CompiledSchemaNode[] PrefixItems
+    {
+        get; set;
+    } = [];
+    internal int MinProperties
+    {
+        get; set;
+    }
+    internal int MaxProperties
+    {
+        get; set;
+    } = int.MaxValue;
+    internal int MinItems
+    {
+        get; set;
+    }
+    internal int MaxItems
+    {
+        get; set;
+    } = int.MaxValue;
+    internal int MinLength
+    {
+        get; set;
+    }
+    internal int MaxLength
+    {
+        get; set;
+    } = int.MaxValue;
+    internal CompiledJsonNumber? Minimum
+    {
+        get; set;
+    }
+    internal CompiledJsonNumber? Maximum
+    {
+        get; set;
+    }
+    internal bool ExclusiveMinimum
+    {
+        get; set;
+    }
+    internal bool ExclusiveMaximum
+    {
+        get; set;
+    }
+    internal CompiledJsonNumber? MultipleOf
+    {
+        get; set;
+    }
+    internal bool HasNumericAssertions
+    {
+        get; set;
+    }
 }
 
 internal struct ValidationPathBuilder
@@ -2920,7 +3388,10 @@ internal struct ValidationPathBuilder
         _buffer[0] = '$';
     }
 
-    internal int Length { get; private set; }
+    internal int Length
+    {
+        get; private set;
+    }
 
     internal void AppendProperty(string name)
     {
@@ -2988,11 +3459,15 @@ internal struct ValidationPathBuilder
     private static bool IsSimplePropertyName(string name)
     {
         if (name.Length == 0 || !IsAsciiIdentifierStart(name[0]))
+        {
             return false;
+        }
         for (var index = 1; index < name.Length; index++)
         {
             if (!IsAsciiIdentifierStart(name[index]) && name[index] is not (>= '0' and <= '9'))
+            {
                 return false;
+            }
         }
         return true;
     }
@@ -3033,7 +3508,9 @@ internal struct ValidationPathBuilder
     private void EnsureCapacity(int additionalLength)
     {
         if (Length + additionalLength <= _buffer.Length)
+        {
             return;
+        }
         var expanded = new char[Math.Max(Length + additionalLength, _buffer.Length * 2)];
         _buffer.AsSpan(0, Length).CopyTo(expanded);
         _buffer = expanded;
@@ -3051,15 +3528,29 @@ internal readonly struct CompiledJsonNumber
         Coefficient = coefficient;
     }
 
-    internal int Sign { get; }
-    internal byte[] Digits { get; }
-    internal long Exponent { get; }
-    internal UInt128 Coefficient { get; }
+    internal int Sign
+    {
+        get;
+    }
+    internal byte[] Digits
+    {
+        get;
+    }
+    internal long Exponent
+    {
+        get;
+    }
+    internal UInt128 Coefficient
+    {
+        get;
+    }
 
     internal static CompiledJsonNumber Parse(JsonElement element, bool requireCoefficient = false)
     {
         if (element.ValueKind != JsonValueKind.Number)
+        {
             throw new InvalidOperationException("JSON Schema numeric assertions must be numbers.");
+        }
 
         var utf8 = Encoding.UTF8.GetBytes(element.GetRawText());
         var value = new JsonNumberView(utf8);
@@ -3078,9 +3569,13 @@ internal readonly struct CompiledJsonNumber
     internal int CompareTo(CompiledJsonNumber other)
     {
         if (Sign != other.Sign)
+        {
             return Sign.CompareTo(other.Sign);
+        }
         if (Sign == 0)
+        {
             return 0;
+        }
 
         var comparison = JsonNumberMath.CompareMagnitude(
             Digits,
@@ -3097,7 +3592,9 @@ internal readonly struct CompiledJsonNumber
         {
             var digit = (uint)(digits[i] - (byte)'0');
             if (coefficient > (UInt128.MaxValue - digit) / 10)
+            {
                 return false;
+            }
             coefficient = (coefficient * 10) + digit;
         }
 
@@ -3170,16 +3667,29 @@ internal readonly ref struct JsonNumberView
         _lastDigit = lastDigit;
     }
 
-    internal int Sign { get; }
-    internal int DigitCount { get; }
-    internal long Exponent { get; }
+    internal int Sign
+    {
+        get;
+    }
+    internal int DigitCount
+    {
+        get;
+    }
+    internal long Exponent
+    {
+        get;
+    }
 
     internal int CompareTo(CompiledJsonNumber other)
     {
         if (Sign != other.Sign)
+        {
             return Sign.CompareTo(other.Sign);
+        }
         if (Sign == 0)
+        {
             return 0;
+        }
 
         var order = JsonNumberMath.SaturatingAdd(Exponent, DigitCount);
         var otherOrder = JsonNumberMath.SaturatingAdd(other.Exponent, other.Digits.Length);
@@ -3194,7 +3704,9 @@ internal readonly ref struct JsonNumberView
                 var otherDigit = i < other.Digits.Length ? other.Digits[i] : (byte)'0';
                 comparison = digit.CompareTo(otherDigit);
                 if (comparison != 0)
+                {
                     break;
+                }
             }
         }
 
@@ -3204,13 +3716,19 @@ internal readonly ref struct JsonNumberView
     internal bool IsMultipleOf(CompiledJsonNumber divisor)
     {
         if (Sign == 0)
+        {
             return true;
+        }
         if (Exponent < divisor.Exponent)
+        {
             return false;
+        }
 
         var modulus = divisor.Coefficient;
         if (modulus == 1)
+        {
             return true;
+        }
 
         var remainder = (UInt128)0;
         var digits = GetDigits();
@@ -3224,7 +3742,9 @@ internal readonly ref struct JsonNumberView
         }
 
         if (remainder == 0)
+        {
             return true;
+        }
 
         var exponentDifference = JsonNumberMath.PositiveDifference(Exponent, divisor.Exponent);
         var power = JsonNumberMath.Pow10Modulo(exponentDifference, modulus);
@@ -3236,7 +3756,9 @@ internal readonly ref struct JsonNumberView
         var digits = GetDigits();
         var index = 0;
         while (digits.MoveNext())
+        {
             destination[index++] = digits.Current;
+        }
     }
 
     private JsonDigitEnumerator GetDigits() => new(_value, _firstDigit, _lastDigit);
@@ -3250,7 +3772,9 @@ internal readonly ref struct JsonNumberView
         {
             var digit = value[position] - (byte)'0';
             if (result > (long.MaxValue - digit) / 10)
+            {
                 return negative ? long.MinValue : long.MaxValue;
+            }
             result = (result * 10) + digit;
         }
 
@@ -3271,14 +3795,19 @@ internal readonly ref struct JsonNumberView
             Current = 0;
         }
 
-        internal byte Current { get; private set; }
+        internal byte Current
+        {
+            get; private set;
+        }
 
         internal bool MoveNext()
         {
             while (++_position <= _last)
             {
                 if (_value[_position] == (byte)'.')
+                {
                     continue;
+                }
                 Current = _value[_position];
                 return true;
             }
@@ -3300,7 +3829,9 @@ internal static class JsonNumberMath
         var rightOrder = SaturatingAdd(rightExponent, rightDigits.Length);
         var comparison = leftOrder.CompareTo(rightOrder);
         if (comparison != 0)
+        {
             return comparison;
+        }
 
         var count = Math.Max(leftDigits.Length, rightDigits.Length);
         for (var i = 0; i < count; i++)
@@ -3309,7 +3840,9 @@ internal static class JsonNumberMath
             var right = i < rightDigits.Length ? rightDigits[i] : (byte)'0';
             comparison = left.CompareTo(right);
             if (comparison != 0)
+            {
                 return comparison;
+            }
         }
 
         return 0;
@@ -3318,16 +3851,22 @@ internal static class JsonNumberMath
     internal static long SaturatingAdd(long value, long addend)
     {
         if (addend > 0 && value > long.MaxValue - addend)
+        {
             return long.MaxValue;
+        }
         if (addend < 0 && value < long.MinValue - addend)
+        {
             return long.MinValue;
+        }
         return value + addend;
     }
 
     internal static long PositiveDifference(long left, long right)
     {
         if (right < 0 && left > long.MaxValue + right)
+        {
             return long.MaxValue;
+        }
         return left - right;
     }
 
@@ -3348,10 +3887,14 @@ internal static class JsonNumberMath
         while (right != 0)
         {
             if ((right & 1) != 0)
+            {
                 result = AddModulo(result, left, modulus);
+            }
             right >>= 1;
             if (right != 0)
+            {
                 left = AddModulo(left, left, modulus);
+            }
         }
 
         return result;
@@ -3364,10 +3907,14 @@ internal static class JsonNumberMath
         while (exponent != 0)
         {
             if ((exponent & 1) != 0)
+            {
                 result = MultiplyModulo(result, value, modulus);
+            }
             exponent >>= 1;
             if (exponent != 0)
+            {
                 value = MultiplyModulo(value, value, modulus);
+            }
         }
 
         return result;
@@ -3385,12 +3932,30 @@ internal sealed class CompiledProperty
         Hash = CompiledPropertyTable.Hash(Utf8Name);
     }
 
-    internal string Name { get; }
-    internal byte[] Utf8Name { get; }
-    internal uint Hash { get; }
-    internal CompiledSchemaNode? Schema { get; }
-    internal bool IsDeclared { get; }
-    internal int RequiredIndex { get; set; } = -1;
+    internal string Name
+    {
+        get;
+    }
+    internal byte[] Utf8Name
+    {
+        get;
+    }
+    internal uint Hash
+    {
+        get;
+    }
+    internal CompiledSchemaNode? Schema
+    {
+        get;
+    }
+    internal bool IsDeclared
+    {
+        get;
+    }
+    internal int RequiredIndex
+    {
+        get; set;
+    } = -1;
 }
 
 internal sealed class CompiledPropertyTable
@@ -3403,7 +3968,9 @@ internal sealed class CompiledPropertyTable
         _properties = [.. properties];
         var capacity = 4;
         while (capacity < properties.Count * 2)
+        {
             capacity <<= 1;
+        }
         _buckets = new int[capacity];
         for (var i = 0; i < _properties.Length; i++)
         {
@@ -3411,16 +3978,23 @@ internal sealed class CompiledPropertyTable
                 _properties[i].Schema?.ContainsCompositionTraversal == true;
             var bucket = (int)(_properties[i].Hash & (uint)(capacity - 1));
             while (_buckets[bucket] != 0)
+            {
                 bucket = (bucket + 1) & (capacity - 1);
+            }
             _buckets[bucket] = i + 1;
         }
     }
 
-    internal bool ContainsCompositionTraversal { get; }
+    internal bool ContainsCompositionTraversal
+    {
+        get;
+    }
     internal CompiledProperty? Find(ref Utf8JsonReader reader)
     {
         if (!reader.ValueIsEscaped)
+        {
             return Find(reader.ValueSpan);
+        }
 
         var maximumLength = reader.ValueSpan.Length;
         byte[]? rented = null;
@@ -3435,14 +4009,18 @@ internal sealed class CompiledPropertyTable
         finally
         {
             if (rented is not null)
+            {
                 ArrayPool<byte>.Shared.Return(rented);
+            }
         }
     }
 
     private CompiledProperty? Find(ReadOnlySpan<byte> name)
     {
         if (_properties.Length == 1)
+        {
             return name.SequenceEqual(_properties[0].Utf8Name) ? _properties[0] : null;
+        }
 
         var hash = Hash(name);
         var bucket = (int)(hash & (uint)(_buckets.Length - 1));
@@ -3450,10 +4028,14 @@ internal sealed class CompiledPropertyTable
         {
             var stored = _buckets[bucket];
             if (stored == 0)
+            {
                 return null;
+            }
             var property = _properties[stored - 1];
             if (property.Hash == hash && name.SequenceEqual(property.Utf8Name))
+            {
                 return property;
+            }
             bucket = (bucket + 1) & (_buckets.Length - 1);
         }
     }
@@ -3464,7 +4046,9 @@ internal sealed class CompiledPropertyTable
         const uint prime = 16777619;
         var hash = offset;
         for (var i = 0; i < value.Length; i++)
+        {
             hash = (hash ^ value[i]) * prime;
+        }
         return hash;
     }
 }
@@ -3483,7 +4067,10 @@ internal struct JsonPathBuilder
         _buffer[0] = '$';
     }
 
-    internal int Length { get; private set; }
+    internal int Length
+    {
+        get; private set;
+    }
 
     internal void AppendProperty(string name)
     {
@@ -3518,7 +4105,9 @@ internal struct JsonPathBuilder
         for (var i = 0; i < written; i++)
         {
             if (_buffer[contentStart + i] is '\\' or '\'')
+            {
                 escapes++;
+            }
         }
 
         var destination = contentStart + written + escapes - 1;
@@ -3527,7 +4116,9 @@ internal struct JsonPathBuilder
             var character = _buffer[source];
             _buffer[destination--] = character;
             if (character is '\\' or '\'')
+            {
                 _buffer[destination--] = '\\';
+            }
         }
 
         Length = contentStart + written + escapes;
@@ -3551,7 +4142,9 @@ internal struct JsonPathBuilder
     private void EnsureCapacity(int additionalLength)
     {
         if (Length + additionalLength <= _buffer.Length)
+        {
             return;
+        }
 
         var expanded = new char[Math.Max(Length + additionalLength, _buffer.Length * 2)];
         _buffer.AsSpan(0, Length).CopyTo(expanded);

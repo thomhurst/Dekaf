@@ -107,7 +107,10 @@ public sealed class MetadataRecoveryTests(KafkaTestContainer kafka) : KafkaInteg
         {
             consumed.Add(msg);
             partitionsSeen.Add(msg.Partition);
-            if (consumed.Count >= 4) break;
+            if (consumed.Count >= 4)
+            {
+                break;
+            }
         }
 
         // Assert - should see messages from all 4 partitions

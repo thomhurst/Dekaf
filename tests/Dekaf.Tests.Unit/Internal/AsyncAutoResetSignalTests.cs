@@ -29,7 +29,9 @@ public class AsyncAutoResetSignalTests
         using var signal = new AsyncAutoResetSignal(inlineTimeoutContinuations: true);
 
         for (var i = 0; i < 100; i++)
+        {
             await Assert.That(await signal.WaitAsync(1)).IsFalse();
+        }
 
         for (var i = 0; i < 100; i++)
         {
@@ -138,7 +140,9 @@ public class AsyncAutoResetSignalTests
             afterTimeoutCallbackForTesting: () =>
             {
                 if (releaseCallback.IsSet)
+                {
                     callbackFinished.Set();
+                }
             });
 
         var first = signal.WaitAsync(1);

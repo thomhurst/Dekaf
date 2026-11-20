@@ -81,7 +81,10 @@ public sealed class ExactlyOnceProcessingTests(KafkaTestContainer kafka) : Trans
             await txn.CommitAsync();
 
             processedCount++;
-            if (processedCount >= messageCount) break;
+            if (processedCount >= messageCount)
+            {
+                break;
+            }
         }
 
         // Verify output topic has all transformed messages
@@ -100,7 +103,10 @@ public sealed class ExactlyOnceProcessingTests(KafkaTestContainer kafka) : Trans
         await foreach (var msg in outputConsumer.ConsumeAsync(cts2.Token))
         {
             outputMessages.Add(msg);
-            if (outputMessages.Count >= messageCount) break;
+            if (outputMessages.Count >= messageCount)
+            {
+                break;
+            }
         }
 
         await Assert.That(outputMessages).Count().IsEqualTo(messageCount);
@@ -239,7 +245,10 @@ public sealed class ExactlyOnceProcessingTests(KafkaTestContainer kafka) : Trans
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))
         {
             messages.Add(msg);
-            if (messages.Count >= 2) break;
+            if (messages.Count >= 2)
+            {
+                break;
+            }
         }
 
         await Assert.That(messages).Count().IsEqualTo(2);

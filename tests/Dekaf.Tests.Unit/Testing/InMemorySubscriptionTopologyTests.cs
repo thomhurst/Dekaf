@@ -25,9 +25,13 @@ public sealed class InMemorySubscriptionTopologyTests
         consumer.Pause(new TopicPartition("orders", 0));
 
         if (typedExpansion)
+        {
             await ((IAdminClient)admin).CreatePartitionsAsync(new Dictionary<string, NewPartitions> { ["orders"] = new() { TotalCount = 3 } });
+        }
         else
+        {
             await admin.CreatePartitionsAsync(new Dictionary<string, int> { ["orders"] = 3 });
+        }
         await Produce(producer, "orders", 1, "second");
         await Produce(producer, "orders", 2, "third");
 
@@ -66,9 +70,13 @@ public sealed class InMemorySubscriptionTopologyTests
         await using var consumer = CreateConsumer(cluster);
         await using var producer = new InMemoryProducer<string, string>(cluster);
         if (pattern)
+        {
             consumer.SubscribePattern("orders-.*");
+        }
         else
+        {
             consumer.Subscribe(static topic => topic.StartsWith("orders-", StringComparison.Ordinal));
+        }
         await Assert.That(await consumer.ConsumeOneAsync(TimeSpan.Zero)).IsNull();
         if (!autoCreate)
         {
@@ -99,7 +107,9 @@ public sealed class InMemorySubscriptionTopologyTests
         await Produce(producer, "orders", 1, "zero");
         await Produce(producer, "orders", 1, "one");
         if (committed)
+        {
             cluster.CommitOffsets("group", (IEnumerable<TopicPartitionOffset>)[new("orders", 1, 1)]);
+        }
         await Assert.That(consumer.Assignment).Count().IsEqualTo(2);
         await Assert.That(consumer.GetPosition(new TopicPartition("orders", 1))).IsEqualTo(expected);
     }
@@ -121,12 +131,16 @@ public sealed class InMemorySubscriptionTopologyTests
         await Assert.That(firstAssignment.Overlaps(secondAssignment)).IsFalse();
         await using var producer = new InMemoryProducer<string, string>(cluster);
         for (var partition = 0; partition < 4; partition++)
+        {
             await Produce(producer, "orders", partition, partition.ToString());
+        }
         var received = new HashSet<int>();
         foreach (var consumer in new[] { first, second })
         {
             while (await consumer.ConsumeOneAsync(TimeSpan.Zero) is { } record)
+            {
                 await Assert.That(received.Add(record.Partition)).IsTrue();
+            }
         }
         await Assert.That(received).Count().IsEqualTo(4);
     }
@@ -145,7 +159,9 @@ public sealed class InMemorySubscriptionTopologyTests
         _ = await consumer.ConsumeOneAsync(TimeSpan.Zero);
         cluster.DeleteTopic("orders");
         if (observeDeletion)
+        {
             await Assert.That(consumer.Assignment).IsEmpty();
+        }
         cluster.CreateTopic("orders");
         await Produce(producer, "orders", 0, "new");
         await Assert.That((await consumer.ConsumeOneAsync(TimeSpan.Zero))!.Value.Value).IsEqualTo("new");
@@ -182,7 +198,9 @@ public sealed class InMemorySubscriptionTopologyTests
         {
             cluster.DeleteTopic("orders");
             if (observeDeletion)
+            {
                 await Assert.That(consumer.Assignment).IsEmpty();
+            }
             cluster.CreateTopic("orders");
             await Produce(producer, "orders", 0, "new");
             if (observeRecreation)
@@ -190,7 +208,9 @@ public sealed class InMemorySubscriptionTopologyTests
                 await Assert.That(consumer.Assignment).Contains(partition);
                 await Assert.That(consumer.GetPosition(partition)).IsEqualTo(0);
                 if (resume)
+                {
                     consumer.Resume(partition);
+                }
                 // A concurrent poll must not take over the invalidated reservation before its owner completes.
                 await Assert.That(await consumer.ConsumeOneAsync(TimeSpan.Zero, cancellation.Token)).IsNull();
             }
@@ -257,11 +277,15 @@ public sealed class InMemorySubscriptionTopologyTests
         consumer.Subscribe(static _ => true);
         switch (operation)
         {
-            case "assign": consumer.Assign(new TopicPartition("manual", 0)); break;
+            case "assign":
+                consumer.Assign(new TopicPartition("manual", 0));
+                break;
             case "incremental":
                 consumer.IncrementalAssign([new TopicPartitionOffset("manual", 0, 0)]);
                 break;
-            case "unsubscribe": consumer.Unsubscribe(); break;
+            case "unsubscribe":
+                consumer.Unsubscribe();
+                break;
             case "unsubscribe-unassign":
                 consumer.Unsubscribe();
                 consumer.Unassign();

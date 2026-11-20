@@ -17,39 +17,60 @@ public sealed class ShareGroupHeartbeatResponse : IKafkaResponse
     /// <summary>
     /// Throttle time in milliseconds.
     /// </summary>
-    public int ThrottleTimeMs { get; init; }
+    public int ThrottleTimeMs
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The top-level error code, or 0 if there was no error.
     /// </summary>
-    public required ErrorCode ErrorCode { get; init; }
+    public required ErrorCode ErrorCode
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The error message, or null if there was no error.
     /// </summary>
-    public string? ErrorMessage { get; init; }
+    public string? ErrorMessage
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The member ID. Echoes the client-generated UUID v4 back.
     /// </summary>
-    public string? MemberId { get; init; }
+    public string? MemberId
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The current member epoch. The member must use this epoch for subsequent heartbeats.
     /// </summary>
-    public int MemberEpoch { get; init; }
+    public int MemberEpoch
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The heartbeat interval in milliseconds.
     /// The member should send the next heartbeat before this interval expires.
     /// </summary>
-    public int HeartbeatIntervalMs { get; init; }
+    public int HeartbeatIntervalMs
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The assignment for this member, or null if the assignment has not changed.
     /// Contains the partitions assigned to this member by the server.
     /// </summary>
-    public ShareGroupHeartbeatAssignment? Assignment { get; init; }
+    public ShareGroupHeartbeatAssignment? Assignment
+    {
+        get; init;
+    }
 
     public static IKafkaResponse Read(ref KafkaProtocolReader reader, short version)
     {
@@ -93,7 +114,10 @@ public sealed class ShareGroupHeartbeatAssignment
     /// <summary>
     /// The partitions assigned to this member.
     /// </summary>
-    public required IReadOnlyList<ShareGroupHeartbeatTopicPartitions> TopicPartitions { get; init; }
+    public required IReadOnlyList<ShareGroupHeartbeatTopicPartitions> TopicPartitions
+    {
+        get; init;
+    }
 
     public static ShareGroupHeartbeatAssignment Read(ref KafkaProtocolReader reader)
     {
@@ -119,12 +143,18 @@ public sealed class ShareGroupHeartbeatTopicPartitions
     /// <summary>
     /// The topic ID (UUID).
     /// </summary>
-    public required Guid TopicId { get; init; }
+    public required Guid TopicId
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The partition indexes.
     /// </summary>
-    public required IReadOnlyList<int> Partitions { get; init; }
+    public required IReadOnlyList<int> Partitions
+    {
+        get; init;
+    }
 
     public void Write(ref KafkaProtocolWriter writer)
     {

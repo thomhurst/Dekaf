@@ -24,8 +24,7 @@ internal static class ConfluentProducerBackpressure
                 producer.Produce(topic, message, deliveryHandler);
                 return;
             }
-            catch (ConfluentKafka.ProduceException<TKey, TValue> ex)
-                when (ex.Error.Code == ConfluentKafka.ErrorCode.Local_QueueFull &&
+            catch (ConfluentKafka.ProduceException<TKey, TValue> ex) when (ex.Error.Code == ConfluentKafka.ErrorCode.Local_QueueFull &&
                       ShouldRetry(startedAt, retryTimeout))
             {
                 cancellationToken.ThrowIfCancellationRequested();

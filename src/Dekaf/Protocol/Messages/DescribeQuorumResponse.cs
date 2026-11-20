@@ -16,10 +16,22 @@ public sealed class DescribeQuorumResponse : IKafkaResponse
     public static short LowestSupportedVersion => 0;
     public static short HighestSupportedVersion => 2;
 
-    public ErrorCode ErrorCode { get; init; }
-    public string? ErrorMessage { get; init; }
-    public required IReadOnlyList<DescribeQuorumResponseTopic> Topics { get; init; }
-    public IReadOnlyList<DescribeQuorumResponseNode> Nodes { get; init; } = [];
+    public ErrorCode ErrorCode
+    {
+        get; init;
+    }
+    public string? ErrorMessage
+    {
+        get; init;
+    }
+    public required IReadOnlyList<DescribeQuorumResponseTopic> Topics
+    {
+        get; init;
+    }
+    public IReadOnlyList<DescribeQuorumResponseNode> Nodes
+    {
+        get; init;
+    } = [];
 
     public static IKafkaResponse Read(ref KafkaProtocolReader reader, short version)
     {
@@ -51,8 +63,14 @@ public sealed class DescribeQuorumResponse : IKafkaResponse
 
 public sealed class DescribeQuorumResponseTopic
 {
-    public required string TopicName { get; init; }
-    public required IReadOnlyList<DescribeQuorumResponsePartition> Partitions { get; init; }
+    public required string TopicName
+    {
+        get; init;
+    }
+    public required IReadOnlyList<DescribeQuorumResponsePartition> Partitions
+    {
+        get; init;
+    }
 
     public static DescribeQuorumResponseTopic Read(ref KafkaProtocolReader reader, short version)
     {
@@ -75,14 +93,38 @@ public sealed class DescribeQuorumResponseTopic
 
 public sealed class DescribeQuorumResponsePartition
 {
-    public int PartitionIndex { get; init; }
-    public ErrorCode ErrorCode { get; init; }
-    public string? ErrorMessage { get; init; }
-    public int LeaderId { get; init; }
-    public int LeaderEpoch { get; init; }
-    public long HighWatermark { get; init; }
-    public required IReadOnlyList<DescribeQuorumReplicaState> CurrentVoters { get; init; }
-    public required IReadOnlyList<DescribeQuorumReplicaState> Observers { get; init; }
+    public int PartitionIndex
+    {
+        get; init;
+    }
+    public ErrorCode ErrorCode
+    {
+        get; init;
+    }
+    public string? ErrorMessage
+    {
+        get; init;
+    }
+    public int LeaderId
+    {
+        get; init;
+    }
+    public int LeaderEpoch
+    {
+        get; init;
+    }
+    public long HighWatermark
+    {
+        get; init;
+    }
+    public required IReadOnlyList<DescribeQuorumReplicaState> CurrentVoters
+    {
+        get; init;
+    }
+    public required IReadOnlyList<DescribeQuorumReplicaState> Observers
+    {
+        get; init;
+    }
 
     public static DescribeQuorumResponsePartition Read(ref KafkaProtocolReader reader, short version)
     {
@@ -127,11 +169,26 @@ public sealed class DescribeQuorumResponsePartition
 
 public sealed class DescribeQuorumReplicaState
 {
-    public int ReplicaId { get; init; }
-    public Guid? ReplicaDirectoryId { get; init; }
-    public long LogEndOffset { get; init; }
-    public long LastFetchTimestamp { get; init; } = -1;
-    public long LastCaughtUpTimestamp { get; init; } = -1;
+    public int ReplicaId
+    {
+        get; init;
+    }
+    public Guid? ReplicaDirectoryId
+    {
+        get; init;
+    }
+    public long LogEndOffset
+    {
+        get; init;
+    }
+    public long LastFetchTimestamp
+    {
+        get; init;
+    } = -1;
+    public long LastCaughtUpTimestamp
+    {
+        get; init;
+    } = -1;
 
     public static DescribeQuorumReplicaState Read(ref KafkaProtocolReader reader, short version)
     {
@@ -156,8 +213,14 @@ public sealed class DescribeQuorumReplicaState
 
 public sealed class DescribeQuorumResponseNode
 {
-    public int NodeId { get; init; }
-    public required IReadOnlyList<RaftVoterEndpointData> Listeners { get; init; }
+    public int NodeId
+    {
+        get; init;
+    }
+    public required IReadOnlyList<RaftVoterEndpointData> Listeners
+    {
+        get; init;
+    }
 
     public static DescribeQuorumResponseNode Read(ref KafkaProtocolReader reader)
     {

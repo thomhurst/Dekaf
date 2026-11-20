@@ -28,7 +28,10 @@ public class ConsumerFollowerOffsetRetryBenchmarks
     private long _expectedFollowerPosition;
 
     [Params(false, true)]
-    public bool Prefetch { get; set; }
+    public bool Prefetch
+    {
+        get; set;
+    }
 
     [GlobalSetup]
     public void Setup()
@@ -56,8 +59,11 @@ public class ConsumerFollowerOffsetRetryBenchmarks
                         new PartitionMetadata
                         {
                             ErrorCode = ErrorCode.None,
-                            PartitionIndex = 0, LeaderId = 1, LeaderEpoch = 5,
-                            ReplicaNodes = [1, 2], IsrNodes = [1, 2]
+                            PartitionIndex = 0,
+                            LeaderId = 1,
+                            LeaderEpoch = 5,
+                            ReplicaNodes = [1, 2],
+                            IsrNodes = [1, 2]
                         }
                     ]
                 }
@@ -65,8 +71,10 @@ public class ConsumerFollowerOffsetRetryBenchmarks
         });
         _consumer = new KafkaConsumer<byte[], byte[]>(new ConsumerOptions
         {
-            BootstrapServers = ["localhost:9092"], ClientRack = "rack-a",
-            EnableFetchSessions = false, AutoOffsetReset = AutoOffsetReset.Latest
+            BootstrapServers = ["localhost:9092"],
+            ClientRack = "rack-a",
+            EnableFetchSessions = false,
+            AutoOffsetReset = AutoOffsetReset.Latest
         }, Serializers.ByteArray, Serializers.ByteArray, pool, metadata);
         _consumer.Assign(Partition);
         var preservesFollowerPosition = BufferedConsumerHarness.BindFollowerFetchHandlers(
@@ -117,26 +125,38 @@ public class ConsumerFollowerOffsetRetryBenchmarks
     private void Fetch(int brokerId)
     {
         if (Prefetch)
+        {
             _prefetch(brokerId, _partitions, 0, 1, 0, _epoch, default).GetAwaiter().GetResult();
+        }
         else
         {
             var pending = _fetch(brokerId, _partitions, _epoch, default).GetAwaiter().GetResult();
             if (pending is not null)
+            {
                 throw new InvalidOperationException("The empty-response fixture unexpectedly queued records.");
+            }
         }
     }
 
     private void ValidateScenarios()
     {
         if (SuccessfulFetch() != 42 || _leader.SendCount != 1 || _follower.SendCount != 0)
+        {
             throw new InvalidOperationException("SuccessfulFetch must request only the leader and preserve the position.");
+        }
         if (FollowerError() != _expectedFollowerPosition || _leader.SendCount != 1 || _follower.SendCount != 1)
+        {
             throw new InvalidOperationException("FollowerError must match the revision's declared position policy without an inline retry.");
+        }
         if (FollowerErrorThenLeaderSuccess() != 42 || _leader.SendCount != 2 || _follower.SendCount != 2
             || _leader.LastFetchOffset != 42 || _follower.LastFetchOffset != 42)
+        {
             throw new InvalidOperationException("The controlled retry must request the leader at the explicitly restored position.");
+        }
         if (LeaderError() != -1 || _leader.SendCount != 3 || _follower.SendCount != 2)
+        {
             throw new InvalidOperationException("Only the leader error may reset the position to Latest.");
+        }
         _leader.Error = ErrorCode.None;
         _follower.Error = ErrorCode.None;
     }
@@ -178,7 +198,9 @@ public class ConsumerFollowerOffsetRetryBenchmarks
             where TRequest : IKafkaRequest<TResponse> where TResponse : IKafkaResponse
         {
             if (request is not FetchRequest fetch)
+            {
                 throw new InvalidOperationException("The fixture supports only fetch requests.");
+            }
             SendCount++;
             LastFetchOffset = fetch.Topics[0].Partitions[0].FetchOffset;
             return new((TResponse)(object)CreateResponse());
@@ -202,9 +224,13 @@ public class ConsumerFollowerOffsetRetryBenchmarks
         public ValueTask<IKafkaConnection> GetConnectionAsync(string host, int port, CancellationToken cancellationToken = default)
         {
             if (host == leader.Host && port == leader.Port)
+            {
                 return new(leader);
+            }
             if (host == follower.Host && port == follower.Port)
+            {
                 return new(follower);
+            }
             throw new InvalidOperationException("Unexpected broker endpoint.");
         }
         private IKafkaConnection GetConnection(int brokerId) => brokerId switch
@@ -213,7 +239,9 @@ public class ConsumerFollowerOffsetRetryBenchmarks
             2 => follower,
             _ => throw new InvalidOperationException("Unexpected broker ID.")
         };
-        public void RegisterBroker(int brokerId, string host, int port) { }
+        public void RegisterBroker(int brokerId, string host, int port)
+        {
+        }
         public ValueTask<int> ScaleConnectionGroupAsync(int brokerId, int newCount, CancellationToken cancellationToken = default) => new(1);
         public ValueTask<IKafkaConnection?> ShrinkConnectionGroupAsync(int brokerId, int newCount, CancellationToken cancellationToken = default) => new((IKafkaConnection?)null);
         public ValueTask RemoveConnectionAsync(int brokerId) => default;

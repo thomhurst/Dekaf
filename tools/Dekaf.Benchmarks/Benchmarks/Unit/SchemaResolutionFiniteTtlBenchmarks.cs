@@ -31,13 +31,19 @@ public class SchemaResolutionFiniteTtlBenchmarks<TValue>
         for (var i = 0; i < 32; i++)
         {
             if (!_cache.TryRemove(_subject, _schema, _value) || _cache.CachedEntryCount != 0)
+            {
                 throw new InvalidOperationException("The completed cache entry was not invalidated.");
+            }
             var refreshed = Resolve();
             if (!refreshed.IsCompletedSuccessfully)
+            {
                 throw new InvalidOperationException("The fixture must resolve synchronously.");
+            }
             if (!EqualityComparer<TValue>.Default.Equals(await refreshed, _value) ||
                 _cache.CachedEntryCount != 1)
+            {
                 throw new InvalidOperationException("The refreshed cache entry was not published.");
+            }
         }
     }
 

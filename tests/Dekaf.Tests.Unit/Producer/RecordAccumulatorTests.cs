@@ -620,7 +620,9 @@ public class RecordAccumulatorTests
         {
             headerValue.Release();
             if (!disposed)
+            {
                 await accumulator.DisposeAsync();
+            }
         }
     }
 
@@ -637,7 +639,9 @@ public class RecordAccumulatorTests
         });
         // Leave less than one record free without making any record exceed BufferMemory.
         for (var i = 0; i < 3; i++)
+        {
             await AppendNullRecordAsync(accumulator);
+        }
         var queueLock = GetPrivateField<object>(accumulator, "_pendingAppendQueueLock");
         var queueLockHeld = false;
         Task<bool>? disposeTask = null;
@@ -682,7 +686,9 @@ public class RecordAccumulatorTests
         finally
         {
             if (queueLockHeld)
+            {
                 Monitor.Exit(queueLock);
+            }
 
             if (disposeTask is null)
             {
@@ -726,7 +732,9 @@ public class RecordAccumulatorTests
                 try
                 {
                     if (!releaseHandoff.Wait(TimeSpan.FromSeconds(5)))
+                    {
                         throw new TimeoutException("Timed out waiting to release admission handoff.");
+                    }
                 }
                 finally
                 {
@@ -762,7 +770,9 @@ public class RecordAccumulatorTests
         {
             releaseHandoff.Set();
             if (!disposed)
+            {
                 await accumulator.DisposeAsync();
+            }
         }
     }
 
@@ -784,7 +794,9 @@ public class RecordAccumulatorTests
         {
             enqueueReached.Set();
             if (!releaseEnqueue.Wait(TimeSpan.FromSeconds(10)))
+            {
                 throw new TimeoutException("Timed out waiting to release completed batch enqueue.");
+            }
         };
 
         try
@@ -819,9 +831,13 @@ public class RecordAccumulatorTests
         {
             releaseEnqueue.Set();
             if (appendTask is not null)
+            {
                 await appendTask.WaitAsync(TimeSpan.FromSeconds(5));
+            }
             if (!disposed)
+            {
                 await accumulator.DisposeAsync();
+            }
             await pool.DisposeAsync();
         }
     }
@@ -845,7 +861,9 @@ public class RecordAccumulatorTests
         {
             enqueueReached.Set();
             if (!releaseEnqueue.Wait(TimeSpan.FromSeconds(10)))
+            {
                 throw new TimeoutException("Timed out waiting to release completed batch enqueue.");
+            }
         };
 
         try
@@ -886,7 +904,9 @@ public class RecordAccumulatorTests
         {
             releaseEnqueue.Set();
             if (appendTask is not null)
+            {
                 await appendTask.WaitAsync(TimeSpan.FromSeconds(5));
+            }
             await accumulator.DisposeAsync();
             await pool.DisposeAsync();
         }
@@ -912,7 +932,9 @@ public class RecordAccumulatorTests
         {
             publishReached.Set();
             if (!releasePublish.Wait(TimeSpan.FromSeconds(10)))
+            {
                 throw new TimeoutException("Timed out waiting to release the batch publication.");
+            }
         };
 
         try
@@ -955,7 +977,9 @@ public class RecordAccumulatorTests
         {
             releasePublish.Set();
             if (appendTask is not null)
+            {
                 await appendTask.WaitAsync(TimeSpan.FromSeconds(5));
+            }
             await accumulator.DisposeAsync();
             await pool.DisposeAsync();
         }
@@ -1064,7 +1088,9 @@ public class RecordAccumulatorTests
         {
             releaseFail.Set();
             if (second is not null)
+            {
                 await second.WaitAsync(TimeSpan.FromSeconds(5), CancellationToken.None);
+            }
             accumulator.ReopenTransactionalAppends();
             await accumulator.DisposeAsync();
         }
@@ -1127,7 +1153,10 @@ public class RecordAccumulatorTests
             await accumulator.DisposeAsync();
             if (pendingAppend is not null)
             {
-                try { await pendingAppend.WaitAsync(TimeSpan.FromSeconds(5), CancellationToken.None); }
+                try
+                {
+                    await pendingAppend.WaitAsync(TimeSpan.FromSeconds(5), CancellationToken.None);
+                }
                 catch (Exception) { }
             }
         }
@@ -1442,7 +1471,9 @@ public class RecordAccumulatorTests
         finally
         {
             if (readyBatch is not null)
+            {
                 accumulator.ReturnReadyBatch(readyBatch);
+            }
 
             await accumulator.DisposeAsync();
             await pool.DisposeAsync();
@@ -1517,7 +1548,9 @@ public class RecordAccumulatorTests
         finally
         {
             if (inFlightBatch is not null)
+            {
                 accumulator.ReturnReadyBatch(inFlightBatch);
+            }
 
             if (nextBatch is not null)
             {
@@ -1561,10 +1594,14 @@ public class RecordAccumulatorTests
                     null, 0, null, CancellationToken.None));
 
             while (accumulator.BufferPressureEvents == 0 && !appendTask.IsCompleted)
+            {
                 await Task.Yield();
+            }
 
             while (accumulator.PendingAppendCountForTest == 0 && !appendTask.IsCompleted)
+            {
                 await Task.Yield();
+            }
 
             await Assert.That(appendTask.IsCompleted).IsFalse();
 
@@ -1578,7 +1615,9 @@ public class RecordAccumulatorTests
         finally
         {
             if (releaseSyntheticReservation)
+            {
                 accumulator.ReleaseMemory(syntheticReservation);
+            }
 
             await accumulator.DisposeAsync();
         }
@@ -2052,11 +2091,17 @@ public class RecordAccumulatorTests
         ProducerDataPool.BytePool.Return(returnedValueArray, clearArray: false);
         ProducerContainerPools.Headers.Return(returnedHeaders, clearArray: true);
         if (!keyReturned)
+        {
             ProducerDataPool.BytePool.Return(keyArray, clearArray: false);
+        }
         if (!valueReturned)
+        {
             ProducerDataPool.BytePool.Return(valueArray, clearArray: false);
+        }
         if (!headersReturned)
+        {
             ProducerContainerPools.Headers.Return(headers, clearArray: true);
+        }
 
         await Assert.That(keyReturned).IsTrue();
         await Assert.That(valueReturned).IsTrue();
@@ -2417,7 +2462,9 @@ public class RecordAccumulatorTests
         var callbackCount = 0;
         var staleCallbacks = ProducerContainerPools.Callbacks.Rent(16);
         for (var i = 0; i < 6; i++)
+        {
             staleCallbacks[i] = (_, _) => staleCallbackCount++;
+        }
         ProducerContainerPools.Callbacks.Return(staleCallbacks, clearArray: false);
 
         var options = new ProducerOptions
@@ -2652,7 +2699,9 @@ public class RecordAccumulatorTests
         finally
         {
             if (drainedBatch is not null)
+            {
                 accumulator.ReturnReadyBatch(drainedBatch);
+            }
             await accumulator.DisposeAsync();
             await pool.DisposeAsync();
         }
@@ -3236,7 +3285,9 @@ public class RecordAccumulatorTests
                             completion);
 
                         if (result)
+                        {
                             successCount++;
+                        }
                     }
 
                     return successCount;
@@ -3356,7 +3407,10 @@ public class RecordAccumulatorTests
                     null,
                     0, null, null, CancellationToken.None);
 
-                if (result) successCount++;
+                if (result)
+                {
+                    successCount++;
+                }
             }
 
             await Assert.That(successCount).IsEqualTo(appendCount);
@@ -3893,7 +3947,9 @@ public class RecordAccumulatorTests
         // to ArrayPool, so using 'new' would cause "buffer not associated with this pool".
         var sources = ArrayPool<PooledValueTaskSource<RecordMetadata>>.Shared.Rent(messageCount);
         for (var i = 0; i < messageCount; i++)
+        {
             sources[i] = pool.Rent();
+        }
 
         batch.Initialize(
             tp,
@@ -4332,13 +4388,17 @@ public class RecordAccumulatorTests
                 {
                     barrier.SignalAndWait();
                     if (accumulator.OnBatchExitsPipeline(batch))
+                    {
                         Interlocked.Increment(ref trueCount);
+                    }
                 });
                 var task2 = Task.Run(() =>
                 {
                     barrier.SignalAndWait();
                     if (accumulator.OnBatchExitsPipeline(batch))
+                    {
                         Interlocked.Increment(ref trueCount);
+                    }
                 });
 
                 await Task.WhenAll(task1, task2);
@@ -4612,7 +4672,9 @@ public class RecordAccumulatorTests
         finally
         {
             if (op.TryFail(new ObjectDisposedException(nameof(RecordAccumulator))))
+            {
                 op.ReturnToPoolAfterTryFail();
+            }
         }
     }
 
@@ -4639,7 +4701,9 @@ public class RecordAccumulatorTests
             SetPrivateField(accumulator, "_draining", 0);
             queue.TryDequeue(out _);
             if (op.TryFail(new ObjectDisposedException(nameof(RecordAccumulator))))
+            {
                 op.ReturnToPoolAfterTryFail();
+            }
         }
     }
 
@@ -4675,7 +4739,9 @@ public class RecordAccumulatorTests
         int ResolveLeaderId(string _, int partition)
         {
             if (Interlocked.Increment(ref resolverCalls) != 1)
+            {
                 return 1;
+            }
 
             var pending = CreatePendingAppend(accumulator!, pool, partition);
             pendingResult = new ValueTask<bool>(
@@ -4744,13 +4810,16 @@ public class RecordAccumulatorTests
         using var secondPartitionResolverEntered = new ManualResetEventSlim();
         using var continueSecondPartitionResolver = new ManualResetEventSlim();
         var secondPartitionResolverCalls = 0;
+
         int ResolveLeaderId(string _, int partition)
         {
             if (partition == 1 && Interlocked.Increment(ref secondPartitionResolverCalls) == 1)
             {
                 secondPartitionResolverEntered.Set();
                 if (!continueSecondPartitionResolver.Wait(TimeSpan.FromSeconds(5)))
+                {
                     throw new TimeoutException("Timed out waiting to continue the partition 1 leader resolver.");
+                }
             }
 
             return partition;
@@ -4794,7 +4863,9 @@ public class RecordAccumulatorTests
             secondBudget.Release(secondCharge);
             queue.TryDequeue(out _);
             if (second.TryFail(new ObjectDisposedException(nameof(RecordAccumulator))))
+            {
                 second.ReturnToPoolAfterTryFail();
+            }
         }
     }
 
@@ -4832,10 +4903,14 @@ public class RecordAccumulatorTests
                     null, 0, null, CancellationToken.None));
 
             while (accumulator.BufferPressureEvents == 0 && !appendTask.IsCompleted)
+            {
                 await Task.Yield();
+            }
 
             while (accumulator.PendingAppendCountForTest == 0 && !appendTask.IsCompleted)
+            {
                 await Task.Yield();
+            }
 
             await Assert.That(appendTask.IsCompleted).IsFalse();
 
@@ -4912,7 +4987,9 @@ public class RecordAccumulatorTests
         }
 
         for (var i = cancellationSources.Length - 1; i > 0; i--)
+        {
             cancellationSources[i].Cancel();
+        }
 
         await Assert.That(accumulator.PendingAppendDrainEntryCountForTest).IsEqualTo(1)
             .Because("tail cancellations cannot unblock the FIFO head");
@@ -4933,7 +5010,9 @@ public class RecordAccumulatorTests
         }
 
         foreach (var cancellationSource in cancellationSources)
+        {
             cancellationSource.Dispose();
+        }
     }
 
     [Test]
@@ -5073,7 +5152,9 @@ public class RecordAccumulatorTests
         var parameters = new object[] { topicPartition, null! };
         var found = (bool)tryGetValueMethod!.Invoke(deques, parameters)!;
         if (!found)
+        {
             throw new InvalidOperationException("Partition deque was not found.");
+        }
 
         return parameters[1]!;
     }
@@ -5230,7 +5311,9 @@ public class RecordAccumulatorTests
         while (!condition())
         {
             if (stopwatch.Elapsed >= timeout)
+            {
                 throw new TimeoutException("Condition was not met before timeout.");
+            }
 
             await Task.Yield();
         }
@@ -5269,7 +5352,10 @@ public class RecordAccumulatorTests
     {
         private readonly FieldInfo _lockField = partitionDeque.GetType().GetField("Lock")!;
 
-        public int GetSpanCalls { get; private set; }
+        public int GetSpanCalls
+        {
+            get; private set;
+        }
 
         public ReadOnlyMemory<byte> ReadOnlyMemory => CreateMemory(buffer.Length);
 
@@ -5277,7 +5363,9 @@ public class RecordAccumulatorTests
         {
             var partitionLock = _lockField.GetValue(partitionDeque)!;
             if (IsHeldByCurrentThread(partitionLock))
+            {
                 throw new InvalidOperationException("Record encode touched header value while holding the partition lock.");
+            }
 
             GetSpanCalls++;
             return buffer;
@@ -5286,7 +5374,9 @@ public class RecordAccumulatorTests
         private static bool IsHeldByCurrentThread(object partitionLock)
         {
             if (partitionLock is SpinLock spinLock)
+            {
                 return spinLock.IsHeldByCurrentThread;
+            }
 
             var property = partitionLock.GetType().GetProperty("IsHeldByCurrentThread");
             return property != null && (bool)property.GetValue(partitionLock)!;

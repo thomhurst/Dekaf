@@ -979,7 +979,9 @@ public sealed class MetadataRecoveryStrategyTests
             connectionFactory: (_, host, _, _, _) =>
             {
                 lock (connectedHosts)
+                {
                     connectedHosts.Add(host);
+                }
 
                 // A connection's TLS target is the host it was created for. The certificate names
                 // only the hostname, so a raw-IP target fails validation, which is fatal.
@@ -1214,7 +1216,10 @@ public sealed class MetadataRecoveryStrategyTests
 
     private sealed class RecordingDnsLookup(params IPAddress[] addresses) : IDnsLookup
     {
-        public int InvocationCount { get; private set; }
+        public int InvocationCount
+        {
+            get; private set;
+        }
 
         public ValueTask<IPAddress[]> GetHostAddressesAsync(string host, CancellationToken cancellationToken)
         {

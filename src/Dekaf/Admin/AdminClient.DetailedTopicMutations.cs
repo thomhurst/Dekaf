@@ -50,7 +50,10 @@ public sealed partial class AdminClient : IDetailedTopicMutationAdminClient
         ArgumentOutOfRangeException.ThrowIfNegative(timeout);
         var ids = SnapshotMutationKeys(topicIds, nameof(topicIds), static id =>
         {
-            if (id == Guid.Empty) throw new ArgumentException("Topic IDs cannot contain the empty UUID.", nameof(topicIds));
+            if (id == Guid.Empty)
+            {
+                throw new ArgumentException("Topic IDs cannot contain the empty UUID.", nameof(topicIds));
+            }
         });
         return ExecuteDetailedMutationAsync<Guid, Guid, DeleteTopicsRequest, DeleteTopicsResponse>(
             ids, static id => id,
@@ -117,13 +120,19 @@ public sealed partial class AdminClient : IDetailedTopicMutationAdminClient
                 if (response.ErrorCode != ErrorCode.None)
                 {
                     foreach (var item in pending)
+                    {
                         results.Add(item.Key, AdminMutationResult.FromResponse(response.ErrorCode, response.ErrorMessage));
+                    }
                     return results;
                 }
                 foreach (var topic in response.Responses)
+                {
                     foreach (var partition in topic.Partitions)
+                    {
                         AddMutationResult(results, new(topic.Name, partition.PartitionIndex),
                             AdminMutationResult.FromResponse(partition.ErrorCode, partition.ErrorMessage));
+                    }
+                }
                 return results;
             }, cancellationToken);
     }
@@ -136,7 +145,10 @@ public sealed partial class AdminClient : IDetailedTopicMutationAdminClient
         foreach (var key in keys)
         {
             validate(key);
-            if (!seen.Add(key)) throw new ArgumentException("Mutation entities must be distinct.", parameterName);
+            if (!seen.Add(key))
+            {
+                throw new ArgumentException("Mutation entities must be distinct.", parameterName);
+            }
             result.Add(key);
         }
         return result;
@@ -151,12 +163,19 @@ public sealed partial class AdminClient : IDetailedTopicMutationAdminClient
         {
             ArgumentNullException.ThrowIfNull(topic);
             ArgumentException.ThrowIfNullOrWhiteSpace(topic.Name);
-            if (!names.Add(topic.Name)) throw new ArgumentException("Topic names must be distinct.", nameof(topics));
+            if (!names.Add(topic.Name))
+            {
+                throw new ArgumentException("Topic names must be distinct.", nameof(topics));
+            }
             var hasAssignments = topic.ReplicaAssignments is { Count: > 0 };
             if (!hasAssignments && (topic.NumPartitions < -1 || topic.NumPartitions == 0))
+            {
                 throw new ArgumentOutOfRangeException(nameof(topics), "Partition count must be positive or -1 for broker defaults.");
+            }
             if (!hasAssignments && (topic.ReplicationFactor < -1 || topic.ReplicationFactor == 0))
+            {
                 throw new ArgumentOutOfRangeException(nameof(topics), "Replication factor must be positive or -1 for broker defaults.");
+            }
             List<CreateTopicAssignment>? assignments = null;
             if (topic.ReplicaAssignments is { } requested)
             {
@@ -193,7 +212,10 @@ public sealed partial class AdminClient : IDetailedTopicMutationAdminClient
                 ArgumentNullException.ThrowIfNull(pair.Value.Value);
                 var requested = pair.Value.Value.TargetReplicas;
                 ArgumentNullException.ThrowIfNull(requested);
-                if (requested.Count != 0) replicas = CopyMutationReplicas(requested);
+                if (requested.Count != 0)
+                {
+                    replicas = CopyMutationReplicas(requested);
+                }
             }
             result.Add(new(pair.Key, replicas));
         }
@@ -203,13 +225,19 @@ public sealed partial class AdminClient : IDetailedTopicMutationAdminClient
     private static int[] CopyMutationReplicas(IReadOnlyList<int> replicas)
     {
         ArgumentNullException.ThrowIfNull(replicas);
-        if (replicas.Count == 0) throw new ArgumentException("Replica assignments cannot be empty.", nameof(replicas));
+        if (replicas.Count == 0)
+        {
+            throw new ArgumentException("Replica assignments cannot be empty.", nameof(replicas));
+        }
         var copy = new int[replicas.Count];
         var seen = new HashSet<int>();
         for (var i = 0; i < copy.Length; i++)
         {
             ArgumentOutOfRangeException.ThrowIfNegative(replicas[i]);
-            if (!seen.Add(replicas[i])) throw new ArgumentException("Replica IDs must be distinct.", nameof(replicas));
+            if (!seen.Add(replicas[i]))
+            {
+                throw new ArgumentException("Replica IDs must be distinct.", nameof(replicas));
+            }
             copy[i] = replicas[i];
         }
         return copy;
@@ -222,11 +250,16 @@ public sealed partial class AdminClient : IDetailedTopicMutationAdminClient
         foreach (var item in items)
         {
             if (!topics.TryGetValue(item.Key.Topic, out var partitions))
+            {
                 topics.Add(item.Key.Topic, partitions = new());
+            }
             partitions.Add(new() { PartitionIndex = item.Key.Partition, Replicas = item.Value });
         }
         var result = new List<AlterPartitionReassignmentsRequestTopic>(topics.Count);
-        foreach (var topic in topics) result.Add(new() { Name = topic.Key, Partitions = topic.Value });
+        foreach (var topic in topics)
+        {
+            result.Add(new() { Name = topic.Key, Partitions = topic.Value });
+        }
         return result;
     }
 }

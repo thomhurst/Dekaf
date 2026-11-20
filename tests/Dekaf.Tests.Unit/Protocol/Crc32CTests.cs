@@ -70,7 +70,9 @@ public class Crc32CTests
     public async Task ComputeHardwareX86_WhenSupported_MatchesBitwiseReference()
     {
         if (!Sse42.IsSupported)
+        {
             return;
+        }
 
         foreach (var length in MixedLengths())
         {
@@ -85,7 +87,9 @@ public class Crc32CTests
     public async Task ComputeHardwareX86Scalar_WhenSupported_MatchesBitwiseReference()
     {
         if (!Sse42.IsSupported)
+        {
             return;
+        }
 
         foreach (var length in MixedLengths())
         {
@@ -100,7 +104,9 @@ public class Crc32CTests
     public async Task ComputeHardwareX86Optimized_WhenSupported_MatchesBitwiseReference()
     {
         if (!Sse42.X64.IsSupported)
+        {
             return;
+        }
 
         foreach (var length in MixedLengths())
         {
@@ -115,7 +121,9 @@ public class Crc32CTests
     public async Task ComputeHardwareArm_WhenSupported_MatchesBitwiseReference()
     {
         if (!ArmCrc32.IsSupported)
+        {
             return;
+        }
 
         foreach (var length in MixedLengths())
         {
@@ -130,7 +138,9 @@ public class Crc32CTests
     public async Task ComputeHardwareArmScalar_WhenSupported_MatchesBitwiseReference()
     {
         if (!ArmCrc32.IsSupported)
+        {
             return;
+        }
 
         foreach (var length in MixedLengths())
         {
@@ -145,7 +155,9 @@ public class Crc32CTests
     public async Task ComputeHardwareArmOptimized_WhenSupported_MatchesBitwiseReference()
     {
         if (!ArmCrc32.Arm64.IsSupported)
+        {
             return;
+        }
 
         foreach (var length in MixedLengths())
         {

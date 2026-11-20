@@ -28,7 +28,9 @@ internal sealed class SaslReauthenticationGate
         {
             var observed = Interlocked.CompareExchange(ref _active, active + 1, active);
             if (observed == active)
+            {
                 return true;
+            }
             active = observed;
         }
         return false;
@@ -42,9 +44,13 @@ internal sealed class SaslReauthenticationGate
             cancellationToken.ThrowIfCancellationRequested();
             var resumed = Volatile.Read(ref _resumed);
             if (TryEnter())
+            {
                 return;
+            }
             if (resumed is not null)
+            {
                 await resumed.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
+            }
         }
     }
 
@@ -58,11 +64,15 @@ internal sealed class SaslReauthenticationGate
         {
             var observed = Interlocked.CompareExchange(ref _active, active | int.MinValue, active);
             if (observed == active)
+            {
                 break;
+            }
             active = observed;
         }
         if (active == 0 || Volatile.Read(ref _closed) != 0)
+        {
             drained.TrySetResult(true);
+        }
         return drained.Task.WaitAsync(cancellationToken);
     }
 
@@ -74,7 +84,9 @@ internal sealed class SaslReauthenticationGate
         {
             var observed = Interlocked.CompareExchange(ref _active, active & int.MaxValue, active);
             if (observed == active)
+            {
                 break;
+            }
             active = observed;
         }
         Volatile.Write(ref _drained, null);
@@ -91,6 +103,8 @@ internal sealed class SaslReauthenticationGate
     public void Exit()
     {
         if (Interlocked.Decrement(ref _active) == int.MinValue)
+        {
             Volatile.Read(ref _drained)?.TrySetResult(true);
+        }
     }
 }

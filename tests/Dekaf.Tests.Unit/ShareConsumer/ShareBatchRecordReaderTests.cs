@@ -50,6 +50,7 @@ public sealed class ShareBatchRecordReaderTests
     {
         var inputs = new ReadOnlyMemory<byte>[256];
         for (var index = 0; index < inputs.Length; index++)
+        {
             inputs[index] = Encode(new Record
             {
                 OffsetDelta = index,
@@ -58,11 +59,14 @@ public sealed class ShareBatchRecordReaderTests
                 Headers = [new Header($"header-{index}", new byte[] { 1 })],
                 HeaderCount = 1
             });
+        }
         _ = Parse(inputs[0]);
         var before = GC.GetAllocatedBytesForCurrentThread();
         long checksum = 0;
         for (var index = 0; index < inputs.Length; index++)
+        {
             checksum += Parse(inputs[index]).OffsetDelta;
+        }
         var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
         await Assert.That(checksum).IsEqualTo(32640);
         await Assert.That(allocated).IsEqualTo(0);
@@ -80,7 +84,9 @@ public sealed class ShareBatchRecordReaderTests
         var reader = new KafkaProtocolReader(data);
         var record = ShareBatchRecordReader.Read(ref reader);
         if (!reader.End)
+        {
             throw new InvalidOperationException("The record reader left trailing bytes.");
+        }
         return record;
     }
 

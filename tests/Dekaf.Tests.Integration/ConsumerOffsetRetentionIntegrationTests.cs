@@ -186,7 +186,9 @@ public sealed class ConsumerOffsetRetentionIntegrationTests(OffsetRetentionKafka
         {
             var record = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(30), cancellationToken).ConfigureAwait(false);
             if (record is null)
+            {
                 throw new TimeoutException($"Consumed {records.Count} of {count} expected records.");
+            }
             records.Add(record.Value);
         }
 
@@ -206,7 +208,9 @@ public sealed class ConsumerOffsetRetentionIntegrationTests(OffsetRetentionKafka
         {
             var offsets = await admin.ListConsumerGroupOffsetsAsync(groupId, cancellationToken).ConfigureAwait(false);
             if (offsets.ContainsKey(partition) == shouldExist)
+            {
                 return;
+            }
             await Task.Delay(500, cancellationToken).ConfigureAwait(false);
         }
 
@@ -223,7 +227,9 @@ public sealed class ConsumerOffsetRetentionIntegrationTests(OffsetRetentionKafka
         while (stopwatch.Elapsed < TimeSpan.FromSeconds(30))
         {
             if (consumer.GetPosition(partition) == expected)
+            {
                 return;
+            }
             await Task.Delay(100, cancellationToken).ConfigureAwait(false);
         }
 

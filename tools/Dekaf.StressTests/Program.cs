@@ -78,7 +78,9 @@ public static class Program
             if (options.IsWorkerPoolCheck)
             {
                 if (fixedWorkers == 0)
+                {
                     throw new ArgumentException("check-worker-pool requires a positive DEKAF_STRESS_FIXED_WORKER_THREADS value.");
+                }
                 // Exceed the runtime's default 20-second idle retirement interval.
                 Thread.Sleep(TimeSpan.FromSeconds(25));
                 FixedWorkerPool.VerifyWorkerCount(fixedWorkers);
@@ -122,7 +124,9 @@ public static class Program
     private static async Task<int> RunStressTestsAsync(CliOptions options)
     {
         if (options.Scenario == "consumer-keyed")
+        {
             KeyedConsumerWorkload.Validate(options.KeyedShape, options.Partitions, options.KeyedRecordsPerPartition, options.MessageSizeBytes);
+        }
         Console.WriteLine("Dekaf Stress Test Runner");
         Console.WriteLine($"Duration: {options.DurationMinutes} minutes");
         Console.WriteLine($"Message Size: {options.MessageSizeBytes} bytes");
@@ -150,14 +154,20 @@ public static class Program
         Console.WriteLine($"Progress watchdog: stacks at {ProgressWatchdog.DefaultCaptureAfter.TotalSeconds:F0}s; " +
             $"fail at {ProgressWatchdog.DefaultExitAfter.TotalMinutes:F0} minutes");
         if (options.ConnectionsPerBroker > 1)
+        {
             Console.WriteLine($"Multi-connection: {options.ConnectionsPerBroker} connections per broker (Dekaf only)");
+        }
         // Adaptive scaling is only effective on the single-connection pass; the 3-connection
         // control pass pins its count even when the flag is forwarded to it (see
         // StressTestOptions.AdaptiveConnections below), so the banner mirrors that condition.
         if (options.AdaptiveConnections && options.ConnectionsPerBroker == 1)
+        {
             Console.WriteLine("Adaptive connections: Dekaf producer scaling left at the library default (Dekaf only)");
+        }
         else if (options.AdaptiveConnections)
+        {
             Console.WriteLine("Adaptive connections: requested but pinned for this multi-connection pass");
+        }
         Console.WriteLine(new string('-', 50));
 
         Directory.CreateDirectory(options.OutputPath);
@@ -199,13 +209,17 @@ public static class Program
         // Transaction verification reads from earliest after the workload, while consumer
         // scenarios replay their seeded data. Broker retention must not delete either data set.
         if (followerRecovery)
+        {
             await kafka.CreateFollowerRecoveryTopicAsync(consumerTopic, options.Partitions, replayTopicConfigs).ConfigureAwait(false);
+        }
         else
+        {
             await kafka.CreateTopicAsync(
                 consumerTopic,
                 options.Partitions,
                 replicationFactor,
                 replayTopicConfigs).ConfigureAwait(false);
+        }
 
         if (options.Scenario is "consumer" or "consumer-batch" or "consumer-raw" or "consumer-raw-batch" or "consumer-follower-recovery" or "all")
         {
@@ -213,8 +227,10 @@ public static class Program
         }
 
         if (options.Scenario == "consumer-keyed")
+        {
             await KeyedConsumerStressTest.SeedAsync(kafka.BootstrapServers, consumerTopic, options.KeyedShape,
                 options.Partitions, options.KeyedRecordsPerPartition, options.MessageSizeBytes).ConfigureAwait(false);
+        }
 
         var results = new List<StressTestResult>();
         var runStartedAt = DateTime.UtcNow;
@@ -333,7 +349,9 @@ public static class Program
 
                 var result = await RunScenarioAsync(scenario, connectionsPerBroker: 1).ConfigureAwait(false);
                 if (options.AdaptiveConnections && scenario.Client == "Dekaf" && UsesProducerTopic(scenario.Name))
+                {
                     result.Client = "Dekaf (adaptive)";
+                }
                 results.Add(result);
 
                 GC.Collect();
@@ -359,7 +377,9 @@ public static class Program
 
                 var result = await RunScenarioAsync(scenario, connectionsPerBroker).ConfigureAwait(false);
                 if (connectionsPerBroker > 1)
+                {
                     result.Client = $"Dekaf ({connectionsPerBroker}conn)";
+                }
                 results.Add(result);
 
                 GC.Collect();
@@ -568,14 +588,18 @@ public static class Program
             if (result.Scenario == "consumer-keyed" && (result.KeyedConsumer is not { } keyed
                 || keyed.CompletedPasses <= 0 || keyed.CompletedRecords != accepted
                 || keyed.CompletedRecords != keyed.CompletedPasses * keyed.Partitions * keyed.RecordsPerPartition))
+            {
                 reasons.Add("keyed consumer replay did not complete every seeded pass");
+            }
 
             if (result.Outbox is { } outbox
                 && (!outbox.HasCompleteDuration(result.DurationMinutes, result.Throughput.ElapsedSeconds)
                     || outbox.CommittedMessages != accepted || outbox.UniqueConsumedMessages != accepted
                     || outbox.ActiveOperations.Published != accepted || outbox.ActiveOperations.Errors != 0
                     || outbox.Idle.Operations.Published != 0 || outbox.Idle.Operations.Errors != 0))
+            {
                 reasons.Add("outbox phases or committed publication/drain counts are incomplete");
+            }
 
             var maxStall = MaxConsecutiveZeroSamples(result.Throughput.MessagesPerSecondSamples);
             if (maxStall >= StallThresholdSamples)
@@ -644,7 +668,9 @@ public static class Program
         IReadOnlyCollection<Exception> exceptions)
     {
         if (exceptions.Count == 0)
+        {
             return exitCode;
+        }
 
         Console.WriteLine($"  {exceptions.Count:N0} unobserved task exception(s):");
         var printed = 0;
@@ -1217,43 +1243,154 @@ public static class Program
 
     private sealed class CliOptions
     {
-        public bool IsReport { get; set; }
-        public bool IsWorkerPoolCheck { get; set; }
-        public bool IsFaultInjection { get; set; }
-        public int DurationMinutes { get; set; } = 15;
-        public int ProducerWarmupSeconds { get; set; } = ProducerWarmup.DefaultSeconds;
-        public int MessageSizeBytes { get; set; } = 1000;
-        public string Scenario { get; set; } = "all";
-        public string Client { get; set; } = "all";
-        public string OutputPath { get; set; } = "./results";
-        public string InputPath { get; set; } = "./results";
-        public int Partitions { get; set; } = 6;
-        public int LingerMs { get; set; } = 5;
-        public int BatchSize { get; set; } = 1048576;
-        public string Compression { get; set; } = "none";
-        public int Brokers { get; set; } = 1;
-        public int ConnectionsPerBroker { get; set; } = 1;
-        public bool AdaptiveConnections { get; set; }
-        public int SeedMessages { get; set; } = 2_000_000;
-        public string KeyedShape { get; set; } = "scalar";
-        public int KeyedRecordsPerPartition { get; set; } = KeyedConsumerWorkload.DefaultRecordsPerPartition;
-        public int RoundTripSteadySeconds { get; set; } = 60;
-        public bool EnableProducerDeliveryDiagnostics { get; set; }
-        public bool EnableConsumerFetchDiagnostics { get; set; }
-        public string FaultProfile { get; set; } = "all";
-        public int FaultDurationSeconds { get; set; } = 5;
-        public int MessagesBeforeFault { get; set; } = 2_000;
-        public int MaxMessagesDuringFault { get; set; } = 20_000;
-        public int MessagesAfterFault { get; set; } = 2_000;
-        public HashSet<string> AllowedFailureWindows { get; } = new(StringComparer.OrdinalIgnoreCase);
-        public int SoakMessagesPerSecond { get; set; } = 5_000;
+        public bool IsReport
+        {
+            get; set;
+        }
+        public bool IsWorkerPoolCheck
+        {
+            get; set;
+        }
+        public bool IsFaultInjection
+        {
+            get; set;
+        }
+        public int DurationMinutes
+        {
+            get; set;
+        } = 15;
+        public int ProducerWarmupSeconds
+        {
+            get; set;
+        } = ProducerWarmup.DefaultSeconds;
+        public int MessageSizeBytes
+        {
+            get; set;
+        } = 1000;
+        public string Scenario
+        {
+            get; set;
+        } = "all";
+        public string Client
+        {
+            get; set;
+        } = "all";
+        public string OutputPath
+        {
+            get; set;
+        } = "./results";
+        public string InputPath
+        {
+            get; set;
+        } = "./results";
+        public int Partitions
+        {
+            get; set;
+        } = 6;
+        public int LingerMs
+        {
+            get; set;
+        } = 5;
+        public int BatchSize
+        {
+            get; set;
+        } = 1048576;
+        public string Compression
+        {
+            get; set;
+        } = "none";
+        public int Brokers
+        {
+            get; set;
+        } = 1;
+        public int ConnectionsPerBroker
+        {
+            get; set;
+        } = 1;
+        public bool AdaptiveConnections
+        {
+            get; set;
+        }
+        public int SeedMessages
+        {
+            get; set;
+        } = 2_000_000;
+        public string KeyedShape
+        {
+            get; set;
+        } = "scalar";
+        public int KeyedRecordsPerPartition
+        {
+            get; set;
+        } = KeyedConsumerWorkload.DefaultRecordsPerPartition;
+        public int RoundTripSteadySeconds
+        {
+            get; set;
+        } = 60;
+        public bool EnableProducerDeliveryDiagnostics
+        {
+            get; set;
+        }
+        public bool EnableConsumerFetchDiagnostics
+        {
+            get; set;
+        }
+        public string FaultProfile
+        {
+            get; set;
+        } = "all";
+        public int FaultDurationSeconds
+        {
+            get; set;
+        } = 5;
+        public int MessagesBeforeFault
+        {
+            get; set;
+        } = 2_000;
+        public int MaxMessagesDuringFault
+        {
+            get; set;
+        } = 20_000;
+        public int MessagesAfterFault
+        {
+            get; set;
+        } = 2_000;
+        public HashSet<string> AllowedFailureWindows
+        {
+            get;
+        } = new(StringComparer.OrdinalIgnoreCase);
+        public int SoakMessagesPerSecond
+        {
+            get; set;
+        } = 5_000;
         public bool SoakUnbounded => SoakMessagesPerSecond == 0;
-        public double ResourceSampleIntervalSeconds { get; set; } = 60;
-        public double SoakWarmupMinutes { get; set; } = 60;
-        public int SoakMinimumSamples { get; set; } = 30;
-        public double MaxWorkingSetSlopeMibPerHour { get; set; } = 8;
-        public double MaxGcHeapSlopeMibPerHour { get; set; } = 4;
-        public double MaxLohSlopeMibPerHour { get; set; } = 4;
-        public double MaxThroughputDecayPercentPerHour { get; set; } = 5;
+        public double ResourceSampleIntervalSeconds
+        {
+            get; set;
+        } = 60;
+        public double SoakWarmupMinutes
+        {
+            get; set;
+        } = 60;
+        public int SoakMinimumSamples
+        {
+            get; set;
+        } = 30;
+        public double MaxWorkingSetSlopeMibPerHour
+        {
+            get; set;
+        } = 8;
+        public double MaxGcHeapSlopeMibPerHour
+        {
+            get; set;
+        } = 4;
+        public double MaxLohSlopeMibPerHour
+        {
+            get; set;
+        } = 4;
+        public double MaxThroughputDecayPercentPerHour
+        {
+            get; set;
+        } = 5;
     }
 }

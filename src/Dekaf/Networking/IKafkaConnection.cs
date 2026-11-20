@@ -13,22 +13,34 @@ public interface IKafkaConnection : IAsyncDisposable
     /// <summary>
     /// The broker ID this connection is connected to.
     /// </summary>
-    int BrokerId { get; }
+    int BrokerId
+    {
+        get;
+    }
 
     /// <summary>
     /// The host this connection is connected to.
     /// </summary>
-    string Host { get; }
+    string Host
+    {
+        get;
+    }
 
     /// <summary>
     /// The port this connection is connected to.
     /// </summary>
-    int Port { get; }
+    int Port
+    {
+        get;
+    }
 
     /// <summary>
     /// Whether the connection is currently connected.
     /// </summary>
-    bool IsConnected { get; }
+    bool IsConnected
+    {
+        get;
+    }
 
     /// <summary>
     /// Sends a request and waits for the response.
@@ -249,7 +261,9 @@ internal readonly struct PipelinedResponse<TResponse>
     public ExternalOwnershipClaimResult TryRetainExternalOwner()
     {
         if (_source is not IPipelinedResponseExternalOwnership externalOwnership)
+        {
             return ExternalOwnershipClaimResult.Unsupported;
+        }
 
         return externalOwnership.TryRetainExternalOwner(_ownershipGeneration)
             ? ExternalOwnershipClaimResult.Retained

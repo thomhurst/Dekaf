@@ -51,7 +51,9 @@ public class PartitionQueueAccountingBenchmarks
     public long AtomicPartitionCounter()
     {
         for (var i = 0; i < 1_000; i++)
+        {
             _atomicQueueBytes.Add(BatchBytes);
+        }
 
         return Volatile.Read(ref _atomicQueueBytes.Value);
     }
@@ -78,7 +80,9 @@ public class PartitionQueueAccountingBenchmarks
     private void DrainAtomicCounter()
     {
         while (Volatile.Read(ref _stopping) == 0)
+        {
             _atomicQueueBytes.Remove(BatchBytes);
+        }
     }
 
     private static long SaturatingAdd(long current, int value)
@@ -99,7 +103,9 @@ public class PartitionQueueAccountingBenchmarks
                 var updated = SaturatingAdd(current, bytes);
                 var observed = Interlocked.CompareExchange(ref Value, updated, current);
                 if (observed == current)
+                {
                     return;
+                }
 
                 current = observed;
             }
@@ -113,7 +119,9 @@ public class PartitionQueueAccountingBenchmarks
                 var updated = Math.Max(0, current - bytes);
                 var observed = Interlocked.CompareExchange(ref Value, updated, current);
                 if (observed == current)
+                {
                     return;
+                }
 
                 current = observed;
             }

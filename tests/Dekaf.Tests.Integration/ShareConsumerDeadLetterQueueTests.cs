@@ -63,7 +63,9 @@ public class ShareConsumerDeadLetterQueueTests(KafkaTestContainer kafka) : Kafka
             consumer.Acknowledge(record, AcknowledgeType.Release);
             await consumer.CommitAsync(timeout.Token);
             if (record.DeliveryCount >= deliveryLimit)
+            {
                 break;
+            }
         }
 
         await AssertDeadLetterRecordAsync(deadLetterTopic, topic, group, copyRecord, deliveryLimit, timeout.Token);

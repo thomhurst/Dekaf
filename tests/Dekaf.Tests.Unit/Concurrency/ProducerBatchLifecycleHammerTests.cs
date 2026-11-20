@@ -113,7 +113,9 @@ public sealed class ProducerBatchLifecycleHammerTests
                 await flushTask.WaitAsync(cancellationToken);
 
                 if (!workerErrors.IsEmpty)
+                {
                     throw new AggregateException(workerErrors);
+                }
 
                 var completed = false;
                 try
@@ -219,9 +221,13 @@ public sealed class ProducerBatchLifecycleHammerTests
         void CompleteAndCleanup(ReadyBatch batch, bool succeeded)
         {
             if (succeeded)
+            {
                 batch.CompleteSend(currentIteration, DateTimeOffset.UtcNow);
+            }
             else
+            {
                 batch.Fail(new ExpectedHammerException());
+            }
 
             accumulator.ReleaseBatchMemory(batch);
 
@@ -234,7 +240,9 @@ public sealed class ProducerBatchLifecycleHammerTests
     {
         Thread.SpinWait(((iteration + 1) * (workerId + 3) * 17) & 63);
         if (((iteration << 1) + workerId) % 7 == 0)
+        {
             Thread.Yield();
+        }
     }
 
     private static long GetInFlightBatchCount(RecordAccumulator accumulator)
@@ -276,7 +284,9 @@ public sealed class ProducerBatchLifecycleHammerTests
         {
             pool.Return(batches[0]);
             if (!ReferenceEquals(batches[0], batches[1]))
+            {
                 pool.Return(batches[1]);
+            }
         }
     }
 

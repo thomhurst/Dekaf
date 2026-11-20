@@ -435,7 +435,9 @@ public sealed class TransactionTests
         leader.SendProducePipelinedAfterWriteForRequest = request =>
         {
             lock (sent)
+            {
                 sent.AddRange(request.Batches);
+            }
             return ValueTask.FromResult(Task.FromResult(CreateProduceSuccessResponse(request)));
         };
         await using var harness = BuildAbortDrainHarness(leader);
@@ -457,7 +459,9 @@ public sealed class TransactionTests
         await committedProduce.AsTask().WaitAsync(cancellationToken);
         int sentRecords;
         lock (sent)
+        {
             sentRecords = sent.Sum(batch => batch.RecordCount);
+        }
         await Assert.That(sentRecords).IsEqualTo(1);
         await Assert.That(generationAtEndTxn).IsNotEqualTo(admittedGeneration);
         await Assert.That(producer._transactionState).IsEqualTo(TransactionState.Ready);
@@ -528,11 +532,17 @@ public sealed class TransactionTests
         harness.Producer._transactionState = TransactionState.InTransaction;
         var transaction = new Transaction<string, string>(harness.Producer);
         var reportTaken = true;
+
         void ReportFence() => reportTaken = harness.Producer.OnTransactionalBatchFailed(42, 5, ErrorCode.ProducerFenced);
+
         if (transactionFeatureVersion >= 2)
+        {
             harness.BeforeEndTxnResponse = ReportFence;
+        }
         else
+        {
             harness.BeforeInitProducerIdResponse = ReportFence;
+        }
 
         await transaction.AbortAsync();
 
@@ -667,7 +677,8 @@ public sealed class TransactionTests
                 second();
                 Volatile.Write(ref secondDone, i);
             }
-        }) { IsBackground = true };
+        })
+        { IsBackground = true };
         secondThread.Start();
 
         for (var i = 1; i <= rounds && !cancellationToken.IsCancellationRequested; i++)
@@ -678,7 +689,9 @@ public sealed class TransactionTests
             first();
             GcSafeSpin.UntilAtLeast(ref secondDone, i);
             if (!isValid())
+            {
                 lost++;
+            }
         }
 
         cancellationToken.ThrowIfCancellationRequested();
@@ -878,7 +891,9 @@ public sealed class TransactionTests
         leader.SendProducePipelinedAfterWriteForRequest = request =>
         {
             lock (sent)
+            {
                 sent.AddRange(request.Batches);
+            }
             return ValueTask.FromResult(Task.FromResult(CreateProduceSuccessResponse(request)));
         };
         await using var harness = BuildAbortDrainHarness(leader);
@@ -894,7 +909,9 @@ public sealed class TransactionTests
             new ProducerMessage<string, string> { Topic = AbortDrainTopic, Key = "key", Value = "aborted" },
             (_, error) => abortedDelivery.TrySetResult(error));
         while (accumulator.UnsealedBatchCount == 0 && !abortedDelivery.Task.IsCompleted)
+        {
             await Task.Delay(5, cancellationToken);
+        }
         await Assert.That(accumulator.UnsealedBatchCount).IsEqualTo(1);
 
         await transaction.AbortAsync(cancellationToken);
@@ -906,7 +923,9 @@ public sealed class TransactionTests
 
         CapturedProduceBatch[] sentBatches;
         lock (sent)
+        {
             sentBatches = [.. sent];
+        }
         // Producer ID / epoch / base sequence / record count of every batch on the wire: only the
         // next transaction's record, under the bumped epoch, starting the partition at sequence 0.
         var wire = string.Join(
@@ -1029,8 +1048,7 @@ public sealed class TransactionTests
             maxBlockMs: maxBlockMs,
             brokerCount: 2,
             brokerConnection: brokerId => brokerId == leader.BrokerId ? leader : null,
-            topics:
-            [
+            topics: [
                 new TopicMetadata
                 {
                     ErrorCode = ErrorCode.None,
@@ -1803,7 +1821,9 @@ public sealed class TransactionTests
         harness.AddPartitionsError = (requestNumber, _) =>
         {
             if (requestNumber == 1)
+            {
                 return ErrorCode.UnknownTopicOrPartition;
+            }
 
             releasedBeforeRetry |= enrollmentCompleted.Task.IsCompleted;
             return ErrorCode.None;
@@ -1824,7 +1844,9 @@ public sealed class TransactionTests
         await Assert.That(harness.Producer.TryEnsurePartitionsInTransaction(
             [batch],
             1,
-            static _ => { },
+            static _ =>
+            {
+            },
             [],
             []).IsEnrolled).IsTrue();
     }
@@ -2875,7 +2897,9 @@ public sealed class TransactionTests
                 throw new IOException("Transient connection failure");
             }
             if (Interlocked.Exchange(ref failNextEnrollment, 0) == 1)
+            {
                 throw new TransactionException("Partition enrollment failed.");
+            }
 
             retryRequestStarted.TrySetResult([.. partitions]);
             await completeRequest.Task.WaitAsync(cancellationToken);
@@ -2909,7 +2933,9 @@ public sealed class TransactionTests
         var implicitResult = producer.TryEnsurePartitionsInTransaction(
             [implicitBatch],
             1,
-            static _ => { },
+            static _ =>
+            {
+            },
             [],
             []);
         await Assert.That(implicitResult.IsEnrolled).IsTrue();
@@ -2954,7 +2980,9 @@ public sealed class TransactionTests
         await Assert.That(producer.TryEnsurePartitionsInTransaction(
             batches,
             batches.Length,
-            static _ => { },
+            static _ =>
+            {
+            },
             [],
             []).IsEnrolled).IsTrue();
 
@@ -2992,7 +3020,9 @@ public sealed class TransactionTests
         var failedResult = producer.TryEnsurePartitionsInTransaction(
             [failedBatch],
             1,
-            static _ => { },
+            static _ =>
+            {
+            },
             [],
             failedPendingPartitions);
         await Assert.That(failedResult.Error).IsTypeOf<TransactionException>();
@@ -3012,7 +3042,9 @@ public sealed class TransactionTests
         await Assert.That(producer.TryEnsurePartitionsInTransaction(
             [unrelatedBatch],
             1,
-            static _ => { },
+            static _ =>
+            {
+            },
             [],
             []).IsEnrolled).IsTrue();
     }
@@ -3126,7 +3158,9 @@ public sealed class TransactionTests
         await Assert.That(producer.TryEnsurePartitionsInTransaction(
             [batch],
             1,
-            static _ => { },
+            static _ =>
+            {
+            },
             [],
             []).Error).IsTypeOf<AuthenticationException>();
     }
@@ -3219,7 +3253,9 @@ public sealed class TransactionTests
         var failed = producer.TryEnsurePartitionsInTransaction(
             [batch],
             1,
-            static _ => { },
+            static _ =>
+            {
+            },
             [],
             failedPartitions);
         await Assert.That(failed.Error).IsTypeOf<SocketException>();
@@ -3251,7 +3287,9 @@ public sealed class TransactionTests
             .WithTransactionalId("test-txn-id");
 
         if (enableTwoPhaseCommit)
+        {
             builder.WithTwoPhaseCommit();
+        }
 
         var producer = (KafkaProducer<string, string>)builder.Build();
         SetInstanceField(producer, "_initialized", true);
@@ -3368,7 +3406,9 @@ public sealed class TransactionTests
                 // A broker that serves produce requests (a partition leader) instead of the
                 // transaction coordinator.
                 if (brokerConnection?.Invoke(brokerId) is { } brokerOverride)
+                {
                     return new ValueTask<IKafkaConnection>(brokerOverride);
+                }
 
                 return new ValueTask<IKafkaConnection>(connection);
             });
@@ -3461,7 +3501,9 @@ public sealed class TransactionTests
         const int count = 64;
         var failures = new Queue<Exception>(count);
         for (var i = 0; i < count; i++)
+        {
             failures.Enqueue(failure());
+        }
         return failures;
     }
 
@@ -3537,7 +3579,10 @@ public sealed class TransactionTests
         List<int> connectionAttemptBrokerIds,
         HashSet<int> deadBrokerIds) : IAsyncDisposable
     {
-        public KafkaProducer<string, string> Producer { get; } = producer;
+        public KafkaProducer<string, string> Producer
+        {
+            get;
+        } = producer;
 
         public int ConnectionAttempts => Volatile.Read(ref connectionAttempts.Value);
 
@@ -3584,14 +3629,18 @@ public sealed class TransactionTests
         public int ConnectionAttemptsTo(int brokerId)
         {
             lock (connectionAttemptBrokerIds)
+            {
                 return connectionAttemptBrokerIds.Count(id => id == brokerId);
+            }
         }
 
         /// <summary>Connection setup to this broker is refused from now on.</summary>
         public void KillBroker(int brokerId)
         {
             lock (connectionAttemptBrokerIds)
+            {
                 deadBrokerIds.Add(brokerId);
+            }
         }
 
         public EndTxnRequest CapturedRequest => connection.CapturedEndTxnRequest
@@ -3697,16 +3746,34 @@ public sealed class TransactionTests
         public string Host => "localhost";
         public int Port => 9092;
         public bool IsConnected => true;
-        public int CoordinatorNodeId { get; set; } = 1;
-        public EndTxnRequest? CapturedEndTxnRequest { get; private set; }
+        public int CoordinatorNodeId
+        {
+            get; set;
+        } = 1;
+        public EndTxnRequest? CapturedEndTxnRequest
+        {
+            get; private set;
+        }
         public int LeaseCount => Volatile.Read(ref _leaseCount);
         public int LeaseCountDuringRequest => Volatile.Read(ref _leaseCountDuringRequest);
         public int ActiveOperationCount => 0;
         public int PipelinedResponseAbandonCalls => _pipelinedResponseSource.AbandonCalls;
-        public int FindCoordinatorRequests { get; private set; }
-        public int InitProducerIdRequests { get; private set; }
-        public int AddPartitionsRequests { get; private set; }
-        public int EndTxnRequests { get; private set; }
+        public int FindCoordinatorRequests
+        {
+            get; private set;
+        }
+        public int InitProducerIdRequests
+        {
+            get; private set;
+        }
+        public int AddPartitionsRequests
+        {
+            get; private set;
+        }
+        public int EndTxnRequests
+        {
+            get; private set;
+        }
         public Task InitProducerIdStarted => _initProducerIdStarted.Task;
         public Task EndTxnStarted => _endTxnStarted.Task;
 
@@ -3722,8 +3789,12 @@ public sealed class TransactionTests
         }
 
         public void ReleaseLease() => Interlocked.Decrement(ref _leaseCount);
-        public void BeginRetirement() { }
-        public void CompleteRetirement() { }
+        public void BeginRetirement()
+        {
+        }
+        public void CompleteRetirement()
+        {
+        }
         public ValueTask ConnectAsync(CancellationToken cancellationToken = default) => ValueTask.CompletedTask;
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
 
@@ -3736,7 +3807,9 @@ public sealed class TransactionTests
         {
             Volatile.Write(ref _leaseCountDuringRequest, LeaseCount);
             if (request is AddPartitionsToTxnRequest)
+            {
                 AddPartitionsApiVersion = apiVersion;
+            }
 
             if (request is InitProducerIdRequest && initProducerIdWaitsForCancellation)
             {
@@ -3828,11 +3901,15 @@ public sealed class TransactionTests
             var failsAfterWrite = request is EndTxnRequest && endTxnFailsAfterWrite
                 || request is InitProducerIdRequest && initProducerIdFailsAfterWrite;
             if (!failsAfterWrite && TryTakeTransportFailure(request, out var failureBeforeWrite))
+            {
                 return ValueTask.FromException<TResponse>(failureBeforeWrite);
+            }
 
             requestWriteStarted();
             if (failsAfterWrite && TryTakeTransportFailure(request, out var failureAfterWrite))
+            {
                 return ValueTask.FromException<TResponse>(failureAfterWrite);
+            }
 
             return SendAsync<TRequest, TResponse>(request, apiVersion, cancellationToken);
         }
@@ -3877,7 +3954,9 @@ public sealed class TransactionTests
             FindCoordinatorRequests++;
             transactionClock?.Advance(findCoordinatorAdvanceMs);
             if (FindCoordinatorRequests <= emptyCoordinatorResponsesBeforeSuccess)
+            {
                 return new FindCoordinatorResponse { Coordinators = [] };
+            }
 
             return new FindCoordinatorResponse
             {
@@ -3897,7 +3976,10 @@ public sealed class TransactionTests
             };
         }
 
-        public Action? BeforeInitProducerIdResponse { get; set; }
+        public Action? BeforeInitProducerIdResponse
+        {
+            get; set;
+        }
 
         private InitProducerIdResponse CreateInitProducerIdResponse()
         {
@@ -3914,9 +3996,18 @@ public sealed class TransactionTests
             };
         }
 
-        public Func<int, int, ErrorCode>? AddPartitionsError { get; set; }
-        public Func<int, ErrorCode>? AddPartitionsTopLevelError { get; set; }
-        public short? AddPartitionsApiVersion { get; private set; }
+        public Func<int, int, ErrorCode>? AddPartitionsError
+        {
+            get; set;
+        }
+        public Func<int, ErrorCode>? AddPartitionsTopLevelError
+        {
+            get; set;
+        }
+        public short? AddPartitionsApiVersion
+        {
+            get; private set;
+        }
 
         private AddPartitionsToTxnResponse CreateAddPartitionsResponse(AddPartitionsToTxnRequest request)
         {
@@ -3946,7 +4037,10 @@ public sealed class TransactionTests
             };
         }
 
-        public Action? BeforeEndTxnResponse { get; set; }
+        public Action? BeforeEndTxnResponse
+        {
+            get; set;
+        }
 
         private EndTxnResponse CreateEndTxnResponse(EndTxnRequest request)
         {
@@ -4004,7 +4098,9 @@ public sealed class TransactionTests
             where TResponse : IKafkaResponse
         {
             if (request is not EndTxnRequest endTxnRequest)
+            {
                 throw new NotSupportedException();
+            }
 
             Volatile.Write(ref _leaseCountDuringRequest, LeaseCount);
             _pipelinedResponseSource.SetResult(CreateEndTxnResponse(endTxnRequest));
@@ -4052,7 +4148,10 @@ public sealed class TransactionTests
     {
         private TResponse? _response;
 
-        public int AbandonCalls { get; private set; }
+        public int AbandonCalls
+        {
+            get; private set;
+        }
 
         public void SetResult(TResponse response) => _response = response;
 

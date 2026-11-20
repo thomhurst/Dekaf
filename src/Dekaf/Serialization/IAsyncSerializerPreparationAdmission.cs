@@ -22,7 +22,7 @@ internal interface IAsyncSerializerPreparationAdmission<in T> : IAsyncSerializer
 #if NET9_0_OR_GREATER
         , allows ref struct
 #endif
-        ;
+    ;
 }
 
 /// <summary>
@@ -35,9 +35,21 @@ internal readonly struct SerializerPreparationAdmission(
     object schema,
     byte[]? schemaGuidFrame = null)
 {
-    internal string? Subject { get; } = subject;
-    internal int SchemaId { get; } = schemaId;
-    internal object? Schema { get; } = schema;
-    internal byte[]? SchemaGuidFrame { get; } = schemaGuidFrame;
+    internal string? Subject
+    {
+        get;
+    } = subject;
+    internal int SchemaId
+    {
+        get;
+    } = schemaId;
+    internal object? Schema
+    {
+        get;
+    } = schema;
+    internal byte[]? SchemaGuidFrame
+    {
+        get;
+    } = schemaGuidFrame;
     internal bool IsPrepared => Subject is not null;
 }

@@ -5,10 +5,10 @@ using Dekaf.Internal;
 using Dekaf.Metadata;
 using Dekaf.Networking;
 using Dekaf.Producer;
+using Dekaf.Protocol.Messages;
 using Dekaf.Retry;
 using Dekaf.Security;
 using Dekaf.Security.Sasl;
-using Dekaf.Protocol.Messages;
 using Dekaf.Serialization;
 using Dekaf.ShareConsumer;
 using Dekaf.Telemetry;
@@ -194,7 +194,9 @@ public sealed class ProducerBuilder<TKey, TValue>
         BufferMemoryAllocationStrategy strategy)
     {
         if (!ProducerOptions.IsBufferMemoryAllocationStrategyDefined(strategy))
+        {
             throw new ArgumentOutOfRangeException(nameof(strategy));
+        }
         _bufferMemoryAllocationStrategy = strategy;
         return this;
     }
@@ -213,7 +215,9 @@ public sealed class ProducerBuilder<TKey, TValue>
     public ProducerBuilder<TKey, TValue> WithMaxBlock(TimeSpan maxBlock)
     {
         if (maxBlock <= TimeSpan.Zero)
+        {
             throw new ArgumentOutOfRangeException(nameof(maxBlock), "MaxBlock must be positive");
+        }
         ArgumentOutOfRangeException.ThrowIfGreaterThan(maxBlock.TotalMilliseconds, int.MaxValue, nameof(maxBlock));
 
         _maxBlockMs = (int)maxBlock.TotalMilliseconds;
@@ -236,7 +240,9 @@ public sealed class ProducerBuilder<TKey, TValue>
     public ProducerBuilder<TKey, TValue> WithDeliveryLatencyTarget(TimeSpan target)
     {
         if (target < TimeSpan.Zero)
+        {
             throw new ArgumentOutOfRangeException(nameof(target), "DeliveryLatencyTarget cannot be negative");
+        }
         ArgumentOutOfRangeException.ThrowIfGreaterThan(target.TotalMilliseconds, int.MaxValue, nameof(target));
 
         _deliveryLatencyTargetMs = (int)target.TotalMilliseconds;
@@ -330,7 +336,9 @@ public sealed class ProducerBuilder<TKey, TValue>
         ArgumentOutOfRangeException.ThrowIfGreaterThan(connectionsPerBroker, 32);
         _connectionsPerBroker = connectionsPerBroker;
         if (!_isMaxConnectionsPerBrokerConfigured)
+        {
             _maxConnectionsPerBroker = Math.Max(_maxConnectionsPerBroker, connectionsPerBroker);
+        }
         return this;
     }
 
@@ -364,7 +372,9 @@ public sealed class ProducerBuilder<TKey, TValue>
     internal ProducerBuilder<TKey, TValue> WithAdaptiveScaleCooldownForTesting(TimeSpan cooldown)
     {
         if (cooldown < TimeSpan.Zero)
+        {
             throw new ArgumentOutOfRangeException(nameof(cooldown), "Adaptive scale cooldown cannot be negative");
+        }
 
         _scaleCooldownMsOverride = (long)cooldown.TotalMilliseconds;
         return this;
@@ -492,7 +502,9 @@ public sealed class ProducerBuilder<TKey, TValue>
     public ProducerBuilder<TKey, TValue> WithTransactionTimeout(TimeSpan timeout)
     {
         if (timeout <= TimeSpan.Zero)
+        {
             throw new ArgumentOutOfRangeException(nameof(timeout), "Transaction timeout must be positive");
+        }
         ArgumentOutOfRangeException.ThrowIfGreaterThan(timeout.TotalMilliseconds, int.MaxValue, nameof(timeout));
 
         _transactionTimeoutMs = (int)timeout.TotalMilliseconds;
@@ -550,7 +562,9 @@ public sealed class ProducerBuilder<TKey, TValue>
     public ProducerBuilder<TKey, TValue> WithPartitionerAvailabilityTimeout(TimeSpan timeout)
     {
         if (timeout < TimeSpan.Zero)
+        {
             throw new ArgumentOutOfRangeException(nameof(timeout), "Partitioner availability timeout cannot be negative");
+        }
         ArgumentOutOfRangeException.ThrowIfGreaterThan(timeout.TotalMilliseconds, int.MaxValue, nameof(timeout));
 
         _partitionerAvailabilityTimeoutMs = (int)timeout.TotalMilliseconds;
@@ -1015,7 +1029,9 @@ public sealed class ProducerBuilder<TKey, TValue>
     {
         ThrowIfClientOwnedConnectionSettings();
         if (interval <= TimeSpan.Zero)
+        {
             throw new ArgumentOutOfRangeException(nameof(interval), "Metadata max age must be positive");
+        }
 
         _metadataMaxAge = interval;
         return this;
@@ -1111,7 +1127,9 @@ public sealed class ProducerBuilder<TKey, TValue>
                 globalInterceptors.Count + (_interceptors?.Count ?? 0));
             builder._interceptors.AddRange(globalInterceptors);
             if (_interceptors is not null)
+            {
                 builder._interceptors.AddRange(_interceptors);
+            }
         }
 
         return builder.Build();
@@ -1127,7 +1145,9 @@ public sealed class ProducerBuilder<TKey, TValue>
     public ProducerBuilder<TKey, TValue> WithDeliveryTimeout(TimeSpan timeout)
     {
         if (timeout <= TimeSpan.Zero)
+        {
             throw new ArgumentOutOfRangeException(nameof(timeout), "Delivery timeout must be positive");
+        }
         ArgumentOutOfRangeException.ThrowIfGreaterThan(timeout.TotalMilliseconds, int.MaxValue, nameof(timeout));
 
         _deliveryTimeoutMs = (int)timeout.TotalMilliseconds;
@@ -1154,7 +1174,9 @@ public sealed class ProducerBuilder<TKey, TValue>
     public ProducerBuilder<TKey, TValue> WithRequestTimeout(TimeSpan timeout)
     {
         if (timeout <= TimeSpan.Zero)
+        {
             throw new ArgumentOutOfRangeException(nameof(timeout), "Request timeout must be positive");
+        }
         ArgumentOutOfRangeException.ThrowIfGreaterThan(timeout.TotalMilliseconds, int.MaxValue, nameof(timeout));
 
         _requestTimeoutMs = (int)timeout.TotalMilliseconds;
@@ -1268,7 +1290,9 @@ public sealed class ProducerBuilder<TKey, TValue>
     {
         ThrowIfClientOwnedConnectionSettings();
         if (backoff < TimeSpan.Zero)
+        {
             throw new ArgumentOutOfRangeException(nameof(backoff), "Retry backoff cannot be negative");
+        }
         ArgumentOutOfRangeException.ThrowIfGreaterThan(backoff.TotalMilliseconds, int.MaxValue, nameof(backoff));
 
         _retryBackoffMs = (int)backoff.TotalMilliseconds;
@@ -1283,7 +1307,9 @@ public sealed class ProducerBuilder<TKey, TValue>
     {
         ThrowIfClientOwnedConnectionSettings();
         if (backoff < TimeSpan.Zero)
+        {
             throw new ArgumentOutOfRangeException(nameof(backoff), "Maximum retry backoff cannot be negative");
+        }
         ArgumentOutOfRangeException.ThrowIfGreaterThan(backoff.TotalMilliseconds, int.MaxValue, nameof(backoff));
 
         _retryBackoffMaxMs = (int)backoff.TotalMilliseconds;
@@ -1293,7 +1319,9 @@ public sealed class ProducerBuilder<TKey, TValue>
     internal ProducerBuilder<TKey, TValue> WithCloseTimeout(TimeSpan timeout)
     {
         if (timeout < TimeSpan.Zero)
+        {
             throw new ArgumentOutOfRangeException(nameof(timeout), "Close timeout cannot be negative");
+        }
         ArgumentOutOfRangeException.ThrowIfGreaterThan(timeout.TotalMilliseconds, int.MaxValue, nameof(timeout));
 
         _closeTimeoutMs = (int)timeout.TotalMilliseconds;
@@ -1391,37 +1419,51 @@ public sealed class ProducerBuilder<TKey, TValue>
     public IKafkaProducer<TKey, TValue> Build()
     {
         if (_bootstrapServers.Count == 0)
+        {
             throw new InvalidOperationException("Bootstrap servers must be specified. Call WithBootstrapServers() before Build().");
+        }
 
         if (_compressionType == Protocol.Records.CompressionType.Brotli)
+        {
             throw new NotSupportedException(
                 "Brotli compression (CompressionType.Brotli = 5) is not part of the Apache Kafka protocol specification. " +
                 "Standard Kafka brokers will reject produce requests using this compression type. " +
                 "Installing Dekaf.Compression.Brotli on both clients does not change this; use BrotliCompressionCodec " +
                 "directly for client-side use cases such as local or custom storage. " +
                 "For standard Kafka broker communication, use Gzip, Snappy, Lz4, or Zstd instead.");
+        }
 
         if (_transactionalId is not null && !_enableIdempotence)
+        {
             throw new InvalidOperationException("Idempotence cannot be disabled when TransactionalId is set. Transactions require idempotence for correctness.");
+        }
 
         if (_transactionalId is not null && _connectionsPerBroker > 1)
+        {
             throw new InvalidOperationException(
                 "ConnectionsPerBroker cannot be greater than 1 when TransactionalId is set. " +
                 "Transaction coordination requests require a single connection per broker. " +
                 "Either remove WithTransactionalId() or use ConnectionsPerBroker = 1.");
+        }
 
         if (_enableTwoPhaseCommit && _transactionalId is null)
+        {
             throw new InvalidOperationException("Two-phase commit requires TransactionalId to be set.");
+        }
 
         if (_enableIdempotence && _acks == Acks.None)
+        {
             throw new InvalidOperationException("Acks.None is incompatible with idempotence because the broker cannot acknowledge sequence numbers without sending a response.");
+        }
 
         ProducerOptions.ValidateRetries(_enableIdempotence, _retries);
 
         if (_enableAdaptiveConnections && _maxConnectionsPerBroker < _connectionsPerBroker)
+        {
             throw new InvalidOperationException(
                 $"MaxConnectionsPerBroker ({_maxConnectionsPerBroker}) must be >= ConnectionsPerBroker ({_connectionsPerBroker}). " +
                 $"Adaptive scaling would be permanently disabled since the initial connection count already exceeds the maximum.");
+        }
         var reconnectBackoffMaxMs = ReconnectBackoffValidation.ResolveMaximumMilliseconds(
             _reconnectBackoffMs,
             _reconnectBackoffMaxMs,
@@ -1467,16 +1509,22 @@ public sealed class ProducerBuilder<TKey, TValue>
         }
 
         if (_clientInfrastructure is null)
+        {
             GssapiConfig.ValidateForBuild(_saslMechanism, _gssapiConfig);
+        }
 
         if (_keySerializer is not null && _asyncKeySerializer is not null)
+        {
             throw new InvalidOperationException(
                 "Both a synchronous and an asynchronous key serializer are configured. Configure only one of " +
                 "WithKeySerializer(ISerializer<TKey>) or WithKeySerializer(IAsyncSerializer<TKey>).");
+        }
         if (_valueSerializer is not null && _asyncValueSerializer is not null)
+        {
             throw new InvalidOperationException(
                 "Both a synchronous and an asynchronous value serializer are configured. Configure only one of " +
                 "WithValueSerializer(ISerializer<TValue>) or WithValueSerializer(IAsyncSerializer<TValue>).");
+        }
 
         // A component with an async serializer never reaches the synchronous serialize path;
         // its sync slot holds a throwing placeholder as defense in depth.
@@ -1615,9 +1663,13 @@ public sealed class ProducerBuilder<TKey, TValue>
         // return with the preview limit; the active dispatcher applies the latest snapshot after
         // its current callbacks finish. Auto-tuned limits are eventually consistent in that case.
         if (options.IsAutoTuned)
+        {
             memoryBudget.RegisterProducer(producer);
+        }
         else
+        {
             memoryBudget.ReserveExplicit(_bufferMemory!.Value);
+        }
 
         return producer;
     }
@@ -1641,19 +1693,33 @@ public sealed class ProducerBuilder<TKey, TValue>
     private static ISerializer<T> GetDefaultSerializer<T>(string componentName, string configureMethod)
     {
         if (typeof(T) == typeof(string))
+        {
             return (ISerializer<T>)(object)Serializers.String;
+        }
         if (typeof(T) == typeof(byte[]))
+        {
             return (ISerializer<T>)(object)Serializers.ByteArray;
+        }
         if (typeof(T) == typeof(ReadOnlyMemory<byte>))
+        {
             return (ISerializer<T>)(object)Serializers.RawBytes;
+        }
         if (typeof(T) == typeof(int))
+        {
             return (ISerializer<T>)(object)Serializers.Int32;
+        }
         if (typeof(T) == typeof(long))
+        {
             return (ISerializer<T>)(object)Serializers.Int64;
+        }
         if (typeof(T) == typeof(Guid))
+        {
             return (ISerializer<T>)(object)Serializers.Guid;
+        }
         if (typeof(T) == typeof(Ignore))
+        {
             return (ISerializer<T>)(object)Serializers.Ignore;
+        }
 
         throw new InvalidOperationException(
             $"No built-in {componentName} serializer exists for type '{typeof(T).FullName}'. " +
@@ -1664,13 +1730,17 @@ public sealed class ProducerBuilder<TKey, TValue>
     private void ThrowIfClientOwnedBootstrap()
     {
         if (_clientInfrastructure is not null)
+        {
             throw new InvalidOperationException("Bootstrap servers are owned by KafkaClient. Configure them on Kafka.Connect(...).");
+        }
     }
 
     private void ThrowIfClientOwnedConnectionSettings()
     {
         if (_clientInfrastructure is not null)
+        {
             throw new InvalidOperationException("Connection settings are owned by KafkaClient. Configure them on Kafka.Connect(...).");
+        }
     }
 }
 
@@ -2086,7 +2156,9 @@ public sealed class ConsumerBuilder<TKey, TValue>
     public ConsumerBuilder<TKey, TValue> WithFetchMinBytes(int minBytes)
     {
         if (minBytes < 1)
+        {
             throw new ArgumentOutOfRangeException(nameof(minBytes), "Fetch min bytes must be at least 1");
+        }
         _fetchMinBytes = minBytes;
         return this;
     }
@@ -2101,10 +2173,14 @@ public sealed class ConsumerBuilder<TKey, TValue>
     public ConsumerBuilder<TKey, TValue> WithFetchMaxBytes(int maxBytes)
     {
         if (maxBytes < 1)
+        {
             throw new ArgumentOutOfRangeException(nameof(maxBytes), "Fetch max bytes must be at least 1");
+        }
         _fetchMaxBytes = maxBytes;
         if (_usesHighThroughputAdaptiveDefaults)
+        {
             ApplyHighThroughputAdaptiveDefaults();
+        }
         return this;
     }
 
@@ -2133,10 +2209,14 @@ public sealed class ConsumerBuilder<TKey, TValue>
     public ConsumerBuilder<TKey, TValue> WithMaxPartitionFetchBytes(int maxBytes)
     {
         if (maxBytes < 1)
+        {
             throw new ArgumentOutOfRangeException(nameof(maxBytes), "Max partition fetch bytes must be at least 1");
+        }
         _maxPartitionFetchBytes = maxBytes;
         if (_usesHighThroughputAdaptiveDefaults)
+        {
             ApplyHighThroughputAdaptiveDefaults();
+        }
         return this;
     }
 
@@ -2169,7 +2249,9 @@ public sealed class ConsumerBuilder<TKey, TValue>
     public ConsumerBuilder<TKey, TValue> WithFetchMaxWait(TimeSpan maxWait)
     {
         if (maxWait <= TimeSpan.Zero)
+        {
             throw new ArgumentOutOfRangeException(nameof(maxWait), "Fetch max wait must be positive");
+        }
         ArgumentOutOfRangeException.ThrowIfGreaterThan(maxWait.TotalMilliseconds, int.MaxValue, nameof(maxWait));
         _fetchMaxWaitMs = (int)maxWait.TotalMilliseconds;
         return this;
@@ -2197,7 +2279,9 @@ public sealed class ConsumerBuilder<TKey, TValue>
     public ConsumerBuilder<TKey, TValue> WithSessionTimeout(TimeSpan timeout)
     {
         if (timeout < TimeSpan.FromMilliseconds(1))
+        {
             throw new ArgumentOutOfRangeException(nameof(timeout), "Session timeout must be at least one millisecond");
+        }
         ArgumentOutOfRangeException.ThrowIfGreaterThan(timeout.TotalMilliseconds, int.MaxValue, nameof(timeout));
         _sessionTimeoutMs = (int)timeout.TotalMilliseconds;
         return this;
@@ -2213,7 +2297,9 @@ public sealed class ConsumerBuilder<TKey, TValue>
     public ConsumerBuilder<TKey, TValue> WithDefaultApiTimeout(TimeSpan timeout)
     {
         if (timeout < TimeSpan.FromMilliseconds(1))
+        {
             throw new ArgumentOutOfRangeException(nameof(timeout), "Default API timeout must be at least one millisecond");
+        }
         ArgumentOutOfRangeException.ThrowIfGreaterThan(timeout.TotalMilliseconds, int.MaxValue, nameof(timeout));
 
         _defaultApiTimeoutMs = (int)timeout.TotalMilliseconds;
@@ -2234,7 +2320,9 @@ public sealed class ConsumerBuilder<TKey, TValue>
     public ConsumerBuilder<TKey, TValue> WithHeartbeatInterval(TimeSpan interval)
     {
         if (interval <= TimeSpan.Zero)
+        {
             throw new ArgumentOutOfRangeException(nameof(interval), "Heartbeat interval must be positive");
+        }
         ArgumentOutOfRangeException.ThrowIfGreaterThan(interval.TotalMilliseconds, int.MaxValue, nameof(interval));
 
         _heartbeatIntervalMs = (int)interval.TotalMilliseconds;
@@ -2597,9 +2685,13 @@ public sealed class ConsumerBuilder<TKey, TValue>
         int maxCachedEntries = DefaultMaxCachedStringValueEntries)
     {
         if (maxCachedBytes <= 0)
+        {
             throw new ArgumentOutOfRangeException(nameof(maxCachedBytes), maxCachedBytes, "Value must be positive.");
+        }
         if (maxCachedEntries <= 0)
+        {
             throw new ArgumentOutOfRangeException(nameof(maxCachedEntries), maxCachedEntries, "Value must be positive.");
+        }
 
         _cacheStringValues = true;
         _maxCachedStringValueBytes = maxCachedBytes;
@@ -2651,7 +2743,9 @@ public sealed class ConsumerBuilder<TKey, TValue>
     public ConsumerBuilder<TKey, TValue> WithPartitionStopTimeout(TimeSpan timeout)
     {
         if (timeout < TimeSpan.FromMilliseconds(1))
+        {
             throw new ArgumentOutOfRangeException(nameof(timeout), "Partition stop timeout must be at least one millisecond");
+        }
         ArgumentOutOfRangeException.ThrowIfGreaterThan(timeout.TotalMilliseconds, int.MaxValue, nameof(timeout));
 
         _partitionStopTimeout = timeout;
@@ -2704,7 +2798,9 @@ public sealed class ConsumerBuilder<TKey, TValue>
     public ConsumerBuilder<TKey, TValue> WithQueuedMinMessages(int count)
     {
         if (count < 1)
+        {
             throw new ArgumentOutOfRangeException(nameof(count), "Queued min messages must be at least 1");
+        }
         _queuedMinMessages = count;
         return this;
     }
@@ -2717,7 +2813,9 @@ public sealed class ConsumerBuilder<TKey, TValue>
     public ConsumerBuilder<TKey, TValue> WithQueuedMaxMessagesKbytes(int kbytes)
     {
         if (kbytes < 1)
+        {
             throw new ArgumentOutOfRangeException(nameof(kbytes), "Queued max messages kbytes must be at least 1");
+        }
         _queuedMaxMessagesKbytes = kbytes;
         return this;
     }
@@ -2738,7 +2836,9 @@ public sealed class ConsumerBuilder<TKey, TValue>
         // Capped at 8: beyond this, additional in-flight fetches saturate broker
         // connections and buffer memory without meaningful throughput improvement.
         if (depth is < 1 or > 8)
+        {
             throw new ArgumentOutOfRangeException(nameof(depth), "Prefetch pipeline depth must be between 1 and 8");
+        }
         _prefetchPipelineDepth = depth;
         return this;
     }
@@ -2766,7 +2866,9 @@ public sealed class ConsumerBuilder<TKey, TValue>
         ArgumentOutOfRangeException.ThrowIfLessThan(connectionsPerBroker, 1);
         _connectionsPerBroker = connectionsPerBroker;
         if (!_isMaxConnectionsPerBrokerConfigured)
+        {
             _maxConnectionsPerBroker = Math.Max(_maxConnectionsPerBroker, connectionsPerBroker);
+        }
         return this;
     }
 
@@ -2886,7 +2988,9 @@ public sealed class ConsumerBuilder<TKey, TValue>
     {
         ThrowIfClientOwnedConnectionSettings();
         if (interval <= TimeSpan.Zero)
+        {
             throw new ArgumentOutOfRangeException(nameof(interval), "Metadata max age must be positive");
+        }
 
         _metadataMaxAge = interval;
         return this;
@@ -2917,7 +3021,9 @@ public sealed class ConsumerBuilder<TKey, TValue>
     {
         ThrowIfClientOwnedConnectionSettings();
         if (backoff < TimeSpan.Zero)
+        {
             throw new ArgumentOutOfRangeException(nameof(backoff), "Retry backoff cannot be negative");
+        }
         ArgumentOutOfRangeException.ThrowIfGreaterThan(backoff.TotalMilliseconds, int.MaxValue, nameof(backoff));
         _retryBackoffMs = (int)backoff.TotalMilliseconds;
         return this;
@@ -2931,7 +3037,9 @@ public sealed class ConsumerBuilder<TKey, TValue>
     {
         ThrowIfClientOwnedConnectionSettings();
         if (backoff < TimeSpan.Zero)
+        {
             throw new ArgumentOutOfRangeException(nameof(backoff), "Maximum retry backoff cannot be negative");
+        }
         ArgumentOutOfRangeException.ThrowIfGreaterThan(backoff.TotalMilliseconds, int.MaxValue, nameof(backoff));
         _retryBackoffMaxMs = (int)backoff.TotalMilliseconds;
         return this;
@@ -3164,7 +3272,9 @@ public sealed class ConsumerBuilder<TKey, TValue>
                 globalInterceptors.Count + (_interceptors?.Count ?? 0));
             builder._interceptors.AddRange(globalInterceptors);
             if (_interceptors is not null)
+            {
                 builder._interceptors.AddRange(_interceptors);
+            }
         }
 
         return builder.Build();
@@ -3207,7 +3317,9 @@ public sealed class ConsumerBuilder<TKey, TValue>
     internal ConsumerBuilder<TKey, TValue> WithMaxPollInterval(TimeSpan interval)
     {
         if (interval <= TimeSpan.Zero)
+        {
             throw new ArgumentOutOfRangeException(nameof(interval), "Max poll interval must be positive");
+        }
         ArgumentOutOfRangeException.ThrowIfGreaterThan(interval.TotalMilliseconds, int.MaxValue, nameof(interval));
 
         _maxPollIntervalMs = (int)interval.TotalMilliseconds;
@@ -3217,7 +3329,9 @@ public sealed class ConsumerBuilder<TKey, TValue>
     internal ConsumerBuilder<TKey, TValue> WithRebalanceTimeout(TimeSpan timeout)
     {
         if (timeout <= TimeSpan.Zero)
+        {
             throw new ArgumentOutOfRangeException(nameof(timeout), "Rebalance timeout must be positive");
+        }
         ArgumentOutOfRangeException.ThrowIfGreaterThan(timeout.TotalMilliseconds, int.MaxValue, nameof(timeout));
 
         _rebalanceTimeoutMs = (int)timeout.TotalMilliseconds;
@@ -3227,7 +3341,9 @@ public sealed class ConsumerBuilder<TKey, TValue>
     internal ConsumerBuilder<TKey, TValue> WithRequestTimeout(TimeSpan timeout)
     {
         if (timeout <= TimeSpan.Zero)
+        {
             throw new ArgumentOutOfRangeException(nameof(timeout), "Request timeout must be positive");
+        }
         ArgumentOutOfRangeException.ThrowIfGreaterThan(timeout.TotalMilliseconds, int.MaxValue, nameof(timeout));
 
         _requestTimeoutMs = (int)timeout.TotalMilliseconds;
@@ -3308,19 +3424,27 @@ public sealed class ConsumerBuilder<TKey, TValue>
     public IKafkaConsumer<TKey, TValue> Build()
     {
         if (_bootstrapServers.Count == 0)
+        {
             throw new InvalidOperationException("Bootstrap servers must be specified. Call WithBootstrapServers() before Build().");
+        }
 
         if (_topicPatternToSubscribe is not null && string.IsNullOrWhiteSpace(_groupId))
+        {
             throw new InvalidOperationException("SubscribeToPattern requires WithGroupId(...) to be called before Build().");
+        }
 
         if (_keyDeserializer is not null && _asyncKeyDeserializer is not null)
+        {
             throw new InvalidOperationException(
                 "Both a synchronous and an asynchronous key deserializer are configured. Configure only one of " +
                 "WithKeyDeserializer(IDeserializer<TKey>) or WithKeyDeserializer(IAsyncDeserializer<TKey>).");
+        }
         if (_valueDeserializer is not null && _asyncValueDeserializer is not null)
+        {
             throw new InvalidOperationException(
                 "Both a synchronous and an asynchronous value deserializer are configured. Configure only one of " +
                 "WithValueDeserializer(IDeserializer<TValue>) or WithValueDeserializer(IAsyncDeserializer<TValue>).");
+        }
 
         // A component with an async deserializer never reaches the synchronous deserialize path;
         // its sync slot holds a throwing placeholder as defense in depth.
@@ -3354,9 +3478,11 @@ public sealed class ConsumerBuilder<TKey, TValue>
         }
 
         if (_enableAdaptiveConnections && _maxConnectionsPerBroker < _connectionsPerBroker)
+        {
             throw new InvalidOperationException(
                 $"MaxConnectionsPerBroker ({_maxConnectionsPerBroker}) must be >= ConnectionsPerBroker ({_connectionsPerBroker}). " +
                 $"Adaptive scaling would be permanently disabled since the initial connection count already exceeds the maximum.");
+        }
         var reconnectBackoffMaxMs = ReconnectBackoffValidation.ResolveMaximumMilliseconds(
             _reconnectBackoffMs,
             _reconnectBackoffMaxMs,
@@ -3493,9 +3619,13 @@ public sealed class ConsumerBuilder<TKey, TValue>
         // the preview stale. If a dispatcher is active, it applies the latest limit after its
         // current callbacks finish, potentially after Build() returns. See the producer note.
         if (options.IsAutoTuned)
+        {
             memoryBudget.RegisterConsumer(consumer);
+        }
         else
+        {
             memoryBudget.ReserveExplicit((ulong)_queuedMaxMessagesKbytes!.Value * 1024);
+        }
 
         if (_topicPatternToSubscribe is not null)
         {
@@ -3512,19 +3642,33 @@ public sealed class ConsumerBuilder<TKey, TValue>
     private static IDeserializer<T> GetDefaultDeserializer<T>(string componentName, string configureMethod)
     {
         if (typeof(T) == typeof(string))
+        {
             return (IDeserializer<T>)(object)Serializers.String;
+        }
         if (typeof(T) == typeof(byte[]))
+        {
             return (IDeserializer<T>)(object)Serializers.ByteArray;
+        }
         if (typeof(T) == typeof(ReadOnlyMemory<byte>))
+        {
             return (IDeserializer<T>)(object)Serializers.RawBytes;
+        }
         if (typeof(T) == typeof(int))
+        {
             return (IDeserializer<T>)(object)Serializers.Int32;
+        }
         if (typeof(T) == typeof(long))
+        {
             return (IDeserializer<T>)(object)Serializers.Int64;
+        }
         if (typeof(T) == typeof(Guid))
+        {
             return (IDeserializer<T>)(object)Serializers.Guid;
+        }
         if (typeof(T) == typeof(Ignore))
+        {
             return (IDeserializer<T>)(object)Serializers.Ignore;
+        }
 
         throw new InvalidOperationException(
             $"No built-in {componentName} deserializer exists for type '{typeof(T).FullName}'. " +
@@ -3535,13 +3679,17 @@ public sealed class ConsumerBuilder<TKey, TValue>
     private void ThrowIfClientOwnedBootstrap()
     {
         if (_clientInfrastructure is not null)
+        {
             throw new InvalidOperationException("Bootstrap servers are owned by KafkaClient. Configure them on Kafka.Connect(...).");
+        }
     }
 
     private void ThrowIfClientOwnedConnectionSettings()
     {
         if (_clientInfrastructure is not null)
+        {
             throw new InvalidOperationException("Connection settings are owned by KafkaClient. Configure them on Kafka.Connect(...).");
+        }
     }
 }
 
@@ -3661,9 +3809,13 @@ public sealed class ShareConsumerBuilder<TKey, TValue>
     public ShareConsumerBuilder<TKey, TValue> WithAutoOffsetReset(AutoOffsetReset autoOffsetReset)
     {
         if (autoOffsetReset == AutoOffsetReset.ByDuration)
+        {
             throw new ArgumentException("Use WithAutoOffsetResetByDuration(TimeSpan) to configure duration-based offset reset.", nameof(autoOffsetReset));
+        }
         if (autoOffsetReset is not (AutoOffsetReset.Earliest or AutoOffsetReset.Latest))
+        {
             throw new ArgumentOutOfRangeException(nameof(autoOffsetReset), autoOffsetReset, "Share groups support Earliest, Latest, or ByDuration.");
+        }
         _autoOffsetReset = autoOffsetReset;
         _autoOffsetResetDuration = null;
         return this;
@@ -3701,7 +3853,9 @@ public sealed class ShareConsumerBuilder<TKey, TValue>
     internal ShareConsumerBuilder<TKey, TValue> WithDeadLetterQueueOptions(string? topicName, bool? copyRecord)
     {
         if (topicName is not null)
+        {
             ShareDeadLetterQueueConfiguration.ValidateTopicName(topicName, nameof(topicName));
+        }
         _deadLetterQueueTopic = topicName;
         _deadLetterQueueCopyRecord = copyRecord;
         return this;
@@ -3824,7 +3978,9 @@ public sealed class ShareConsumerBuilder<TKey, TValue>
     {
         ThrowIfClientOwnedConnectionSettings();
         if (backoff < TimeSpan.Zero)
+        {
             throw new ArgumentOutOfRangeException(nameof(backoff), "Retry backoff cannot be negative");
+        }
         ArgumentOutOfRangeException.ThrowIfGreaterThan(backoff.TotalMilliseconds, int.MaxValue, nameof(backoff));
         _retryBackoffMs = (int)backoff.TotalMilliseconds;
         return this;
@@ -3838,7 +3994,9 @@ public sealed class ShareConsumerBuilder<TKey, TValue>
     {
         ThrowIfClientOwnedConnectionSettings();
         if (backoff < TimeSpan.Zero)
+        {
             throw new ArgumentOutOfRangeException(nameof(backoff), "Maximum retry backoff cannot be negative");
+        }
         ArgumentOutOfRangeException.ThrowIfGreaterThan(backoff.TotalMilliseconds, int.MaxValue, nameof(backoff));
         _retryBackoffMaxMs = (int)backoff.TotalMilliseconds;
         return this;
@@ -4318,7 +4476,9 @@ public sealed class ShareConsumerBuilder<TKey, TValue>
     internal ShareConsumerOptions BuildOptions()
     {
         if (_bootstrapServers.Count == 0)
+        {
             throw new InvalidOperationException("Bootstrap servers must be specified. Call WithBootstrapServers() before Build().");
+        }
         ArgumentNullException.ThrowIfNullOrEmpty(_groupId, nameof(_groupId));
         var reconnectBackoffMaxMs = ReconnectBackoffValidation.ResolveMaximumMilliseconds(
             _reconnectBackoffMs,
@@ -4411,19 +4571,33 @@ public sealed class ShareConsumerBuilder<TKey, TValue>
     private static IDeserializer<T> GetDefaultDeserializer<T>(string componentName, string configureMethod)
     {
         if (typeof(T) == typeof(string))
+        {
             return (IDeserializer<T>)(object)Serializers.String;
+        }
         if (typeof(T) == typeof(byte[]))
+        {
             return (IDeserializer<T>)(object)Serializers.ByteArray;
+        }
         if (typeof(T) == typeof(ReadOnlyMemory<byte>))
+        {
             return (IDeserializer<T>)(object)Serializers.RawBytes;
+        }
         if (typeof(T) == typeof(int))
+        {
             return (IDeserializer<T>)(object)Serializers.Int32;
+        }
         if (typeof(T) == typeof(long))
+        {
             return (IDeserializer<T>)(object)Serializers.Int64;
+        }
         if (typeof(T) == typeof(Guid))
+        {
             return (IDeserializer<T>)(object)Serializers.Guid;
+        }
         if (typeof(T) == typeof(Ignore))
+        {
             return (IDeserializer<T>)(object)Serializers.Ignore;
+        }
 
         throw new InvalidOperationException(
             $"No built-in {componentName} deserializer exists for type '{typeof(T).FullName}'. " +
@@ -4434,12 +4608,16 @@ public sealed class ShareConsumerBuilder<TKey, TValue>
     private void ThrowIfClientOwnedBootstrap()
     {
         if (_clientInfrastructure is not null)
+        {
             throw new InvalidOperationException("Bootstrap servers are owned by KafkaClient. Configure them on Kafka.Connect(...).");
+        }
     }
 
     private void ThrowIfClientOwnedConnectionSettings()
     {
         if (_clientInfrastructure is not null)
+        {
             throw new InvalidOperationException("Connection settings are owned by KafkaClient. Configure them on Kafka.Connect(...).");
+        }
     }
 }

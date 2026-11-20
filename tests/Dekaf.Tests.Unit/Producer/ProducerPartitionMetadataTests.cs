@@ -287,8 +287,14 @@ public sealed class ProducerPartitionMetadataTests
         ConnectionPool connectionPool,
         IKafkaConnection connection) : IAsyncDisposable
     {
-        public KafkaProducer<string, string> Producer { get; } = producer;
-        public IKafkaConnection Connection { get; } = connection;
+        public KafkaProducer<string, string> Producer
+        {
+            get;
+        } = producer;
+        public IKafkaConnection Connection
+        {
+            get;
+        } = connection;
 
         public async ValueTask DisposeAsync()
         {

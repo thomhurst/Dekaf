@@ -8,18 +8,26 @@ internal static class TopicPartitionOffsetValidator
     internal static void Validate(in TopicPartitionOffset offset, string paramName)
     {
         if (string.IsNullOrEmpty(offset.Topic))
+        {
             throw new ArgumentException("Topic must be specified.", paramName);
+        }
 
         if (offset.Partition < 0)
+        {
             throw new ArgumentOutOfRangeException(paramName, offset.Partition, "Partition must be non-negative.");
+        }
 
         if (offset.Offset < 0)
+        {
             throw new ArgumentOutOfRangeException(paramName, offset.Offset, "Offset must be non-negative.");
+        }
     }
 
     internal static void Validate(IReadOnlyList<TopicPartitionOffset> offsets, string paramName)
     {
         for (var index = 0; index < offsets.Count; index++)
+        {
             Validate(offsets[index], paramName);
+        }
     }
 }

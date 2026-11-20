@@ -124,12 +124,12 @@ public class StreamsGroupDescribeProtocolBenchmarks
         string? sinkTopic,
         IReadOnlyList<string> stores,
         IReadOnlyList<string> successors) => new()
-    {
-        Name = name,
-        NodeType = nodeType,
-        SourceTopics = sourceTopics,
-        SinkTopic = sinkTopic,
-        Stores = stores,
-        Successors = successors
-    };
+        {
+            Name = name,
+            NodeType = nodeType,
+            SourceTopics = sourceTopics,
+            SinkTopic = sinkTopic,
+            Stores = stores,
+            Successors = successors
+        };
 }

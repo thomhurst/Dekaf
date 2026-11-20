@@ -12,10 +12,16 @@ namespace Dekaf.Benchmarks.Benchmarks.Unit;
 public class AdminDetailedClientQuotaBenchmarks
 {
     [Params(1, 32)]
-    public int EntityCount { get; set; }
+    public int EntityCount
+    {
+        get; set;
+    }
 
     [Params(false, true)]
-    public bool Mixed { get; set; }
+    public bool Mixed
+    {
+        get; set;
+    }
 
     private AdminClient _admin = null!;
     private ClientQuotaAlteration[] _alterations = null!;
@@ -29,7 +35,8 @@ public class AdminDetailedClientQuotaBenchmarks
         var metadata = new MetadataResponse
         {
             Brokers = [new() { NodeId = 1, Host = "localhost", Port = 9092 }],
-            ControllerId = 1, Topics = []
+            ControllerId = 1,
+            Topics = []
         };
         var response = new AlterClientQuotasResponse
         {
@@ -49,7 +56,9 @@ public class AdminDetailedClientQuotaBenchmarks
         _admin = new AdminClient(new AdminClientOptions { BootstrapServers = ["localhost:9092"] }, pool, manager);
         var results = await Alter();
         if (results.Count != EntityCount || results[_alterations[^1].Entity].IsSuccess == Mixed)
+        {
             throw new InvalidOperationException("Quota benchmark returned incorrect outcomes.");
+        }
     }
 
     [Benchmark]
@@ -89,7 +98,9 @@ public class AdminDetailedClientQuotaBenchmarks
         public ValueTask<IKafkaConnection> GetConnectionAsync(int brokerId, CancellationToken token = default) => ValueTask.FromResult<IKafkaConnection>(connection);
         public ValueTask<IKafkaConnection> GetConnectionAsync(string host, int port, CancellationToken token = default) => ValueTask.FromResult<IKafkaConnection>(connection);
         public ValueTask<IKafkaConnection> GetConnectionByIndexAsync(int brokerId, int index, CancellationToken token = default) => ValueTask.FromResult<IKafkaConnection>(connection);
-        public void RegisterBroker(int id, string host, int port) { }
+        public void RegisterBroker(int id, string host, int port)
+        {
+        }
         public ValueTask<int> ScaleConnectionGroupAsync(int id, int count, CancellationToken token = default) => ValueTask.FromResult(1);
         public ValueTask<IKafkaConnection?> ShrinkConnectionGroupAsync(int id, int count, CancellationToken token = default) => ValueTask.FromResult<IKafkaConnection?>(null);
         public ValueTask RemoveConnectionAsync(int id) => ValueTask.CompletedTask;

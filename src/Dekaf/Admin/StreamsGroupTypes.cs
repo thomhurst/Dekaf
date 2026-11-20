@@ -5,26 +5,53 @@ namespace Dekaf.Admin;
 /// </summary>
 public sealed class StreamsGroupDescription
 {
-    public required string GroupId { get; init; }
-    public required string GroupState { get; init; }
-    public int GroupEpoch { get; init; }
-    public int AssignmentEpoch { get; init; }
-    public StreamsGroupTopology? Topology { get; init; }
-    public required IReadOnlyList<StreamsGroupMemberDescription> Members { get; init; }
-    public int AuthorizedOperations { get; init; } = int.MinValue;
+    public required string GroupId
+    {
+        get; init;
+    }
+    public required string GroupState
+    {
+        get; init;
+    }
+    public int GroupEpoch
+    {
+        get; init;
+    }
+    public int AssignmentEpoch
+    {
+        get; init;
+    }
+    public StreamsGroupTopology? Topology
+    {
+        get; init;
+    }
+    public required IReadOnlyList<StreamsGroupMemberDescription> Members
+    {
+        get; init;
+    }
+    public int AuthorizedOperations
+    {
+        get; init;
+    } = int.MinValue;
 
     /// <summary>
     /// The full processing-graph description (KIP-1331). Non-null only when
     /// <see cref="TopologyDescriptionStatus"/> is <see cref="StreamsGroupTopologyDescriptionStatus.Available"/>.
     /// </summary>
-    public StreamsGroupTopologyDescription? TopologyDescription { get; init; }
+    public StreamsGroupTopologyDescription? TopologyDescription
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Whether the topology description was requested and could be retrieved. This status is independent of
     /// the group's describe error: a group with <see cref="StreamsGroupTopologyDescriptionStatus.Error"/> is
     /// still described.
     /// </summary>
-    public StreamsGroupTopologyDescriptionStatus TopologyDescriptionStatus { get; init; }
+    public StreamsGroupTopologyDescriptionStatus TopologyDescriptionStatus
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The broker-side task assignor that the next assignment computation uses (KIP-1357): the group's
@@ -32,7 +59,10 @@ public sealed class StreamsGroupDescription
     /// <c>group.streams.assignors</c> list when the group selects none. Changing the configuration does not
     /// trigger a rebalance by itself. Null when the coordinator negotiates StreamsGroupDescribe v0.
     /// </summary>
-    public string? AssignorName { get; init; }
+    public string? AssignorName
+    {
+        get; init;
+    }
 }
 
 /// <summary>
@@ -58,8 +88,14 @@ public enum StreamsGroupTopologyDescriptionStatus : sbyte
 /// </summary>
 public sealed class StreamsGroupTopologyDescription
 {
-    public required IReadOnlyList<StreamsGroupTopologyDescriptionSubtopology> Subtopologies { get; init; }
-    public required IReadOnlyList<StreamsGroupGlobalStore> GlobalStores { get; init; }
+    public required IReadOnlyList<StreamsGroupTopologyDescriptionSubtopology> Subtopologies
+    {
+        get; init;
+    }
+    public required IReadOnlyList<StreamsGroupGlobalStore> GlobalStores
+    {
+        get; init;
+    }
 }
 
 /// <summary>
@@ -67,8 +103,14 @@ public sealed class StreamsGroupTopologyDescription
 /// </summary>
 public sealed class StreamsGroupTopologyDescriptionSubtopology
 {
-    public required string SubtopologyId { get; init; }
-    public required IReadOnlyList<StreamsGroupTopologyNode> Nodes { get; init; }
+    public required string SubtopologyId
+    {
+        get; init;
+    }
+    public required IReadOnlyList<StreamsGroupTopologyNode> Nodes
+    {
+        get; init;
+    }
 }
 
 /// <summary>
@@ -87,20 +129,38 @@ public enum StreamsGroupTopologyNodeType : sbyte
 /// </summary>
 public sealed class StreamsGroupTopologyNode
 {
-    public required string Name { get; init; }
-    public StreamsGroupTopologyNodeType NodeType { get; init; }
+    public required string Name
+    {
+        get; init;
+    }
+    public StreamsGroupTopologyNodeType NodeType
+    {
+        get; init;
+    }
 
     /// <summary>Topics read by a source node; empty when dynamically determined or for other node types.</summary>
-    public required IReadOnlyList<string> SourceTopics { get; init; }
+    public required IReadOnlyList<string> SourceTopics
+    {
+        get; init;
+    }
 
     /// <summary>Topic written by a sink node; null when dynamically determined or for other node types.</summary>
-    public string? SinkTopic { get; init; }
+    public string? SinkTopic
+    {
+        get; init;
+    }
 
     /// <summary>State stores accessed by a processor node.</summary>
-    public required IReadOnlyList<string> Stores { get; init; }
+    public required IReadOnlyList<string> Stores
+    {
+        get; init;
+    }
 
     /// <summary>Names of the nodes this node forwards records to.</summary>
-    public required IReadOnlyList<string> Successors { get; init; }
+    public required IReadOnlyList<string> Successors
+    {
+        get; init;
+    }
 }
 
 /// <summary>
@@ -108,8 +168,14 @@ public sealed class StreamsGroupTopologyNode
 /// </summary>
 public sealed class StreamsGroupGlobalStore
 {
-    public required StreamsGroupTopologyNode Source { get; init; }
-    public required StreamsGroupTopologyNode Processor { get; init; }
+    public required StreamsGroupTopologyNode Source
+    {
+        get; init;
+    }
+    public required StreamsGroupTopologyNode Processor
+    {
+        get; init;
+    }
 }
 
 /// <summary>
@@ -117,8 +183,14 @@ public sealed class StreamsGroupGlobalStore
 /// </summary>
 public sealed class StreamsGroupTopology
 {
-    public int Epoch { get; init; }
-    public IReadOnlyList<StreamsGroupSubtopology>? Subtopologies { get; init; }
+    public int Epoch
+    {
+        get; init;
+    }
+    public IReadOnlyList<StreamsGroupSubtopology>? Subtopologies
+    {
+        get; init;
+    }
 }
 
 /// <summary>
@@ -126,11 +198,26 @@ public sealed class StreamsGroupTopology
 /// </summary>
 public sealed class StreamsGroupSubtopology
 {
-    public required string SubtopologyId { get; init; }
-    public required IReadOnlyList<string> SourceTopics { get; init; }
-    public required IReadOnlyList<string> RepartitionSinkTopics { get; init; }
-    public required IReadOnlyList<StreamsGroupTopicInfo> StateChangelogTopics { get; init; }
-    public required IReadOnlyList<StreamsGroupTopicInfo> RepartitionSourceTopics { get; init; }
+    public required string SubtopologyId
+    {
+        get; init;
+    }
+    public required IReadOnlyList<string> SourceTopics
+    {
+        get; init;
+    }
+    public required IReadOnlyList<string> RepartitionSinkTopics
+    {
+        get; init;
+    }
+    public required IReadOnlyList<StreamsGroupTopicInfo> StateChangelogTopics
+    {
+        get; init;
+    }
+    public required IReadOnlyList<StreamsGroupTopicInfo> RepartitionSourceTopics
+    {
+        get; init;
+    }
 }
 
 /// <summary>
@@ -138,10 +225,22 @@ public sealed class StreamsGroupSubtopology
 /// </summary>
 public sealed class StreamsGroupTopicInfo
 {
-    public required string Name { get; init; }
-    public int Partitions { get; init; }
-    public short ReplicationFactor { get; init; }
-    public required IReadOnlyList<StreamsGroupKeyValue> TopicConfigs { get; init; }
+    public required string Name
+    {
+        get; init;
+    }
+    public int Partitions
+    {
+        get; init;
+    }
+    public short ReplicationFactor
+    {
+        get; init;
+    }
+    public required IReadOnlyList<StreamsGroupKeyValue> TopicConfigs
+    {
+        get; init;
+    }
 }
 
 /// <summary>
@@ -149,8 +248,14 @@ public sealed class StreamsGroupTopicInfo
 /// </summary>
 public sealed class StreamsGroupKeyValue
 {
-    public required string Key { get; init; }
-    public required string Value { get; init; }
+    public required string Key
+    {
+        get; init;
+    }
+    public required string Value
+    {
+        get; init;
+    }
 }
 
 /// <summary>
@@ -158,21 +263,66 @@ public sealed class StreamsGroupKeyValue
 /// </summary>
 public sealed class StreamsGroupMemberDescription
 {
-    public required string MemberId { get; init; }
-    public int MemberEpoch { get; init; }
-    public string? InstanceId { get; init; }
-    public string? RackId { get; init; }
-    public required string ClientId { get; init; }
-    public required string ClientHost { get; init; }
-    public int TopologyEpoch { get; init; }
-    public required string ProcessId { get; init; }
-    public StreamsGroupEndpoint? UserEndpoint { get; init; }
-    public required IReadOnlyList<StreamsGroupKeyValue> ClientTags { get; init; }
-    public required IReadOnlyList<StreamsGroupTaskOffset> TaskOffsets { get; init; }
-    public required IReadOnlyList<StreamsGroupTaskOffset> TaskEndOffsets { get; init; }
-    public required StreamsGroupMemberAssignment Assignment { get; init; }
-    public required StreamsGroupMemberAssignment TargetAssignment { get; init; }
-    public bool IsClassic { get; init; }
+    public required string MemberId
+    {
+        get; init;
+    }
+    public int MemberEpoch
+    {
+        get; init;
+    }
+    public string? InstanceId
+    {
+        get; init;
+    }
+    public string? RackId
+    {
+        get; init;
+    }
+    public required string ClientId
+    {
+        get; init;
+    }
+    public required string ClientHost
+    {
+        get; init;
+    }
+    public int TopologyEpoch
+    {
+        get; init;
+    }
+    public required string ProcessId
+    {
+        get; init;
+    }
+    public StreamsGroupEndpoint? UserEndpoint
+    {
+        get; init;
+    }
+    public required IReadOnlyList<StreamsGroupKeyValue> ClientTags
+    {
+        get; init;
+    }
+    public required IReadOnlyList<StreamsGroupTaskOffset> TaskOffsets
+    {
+        get; init;
+    }
+    public required IReadOnlyList<StreamsGroupTaskOffset> TaskEndOffsets
+    {
+        get; init;
+    }
+    public required StreamsGroupMemberAssignment Assignment
+    {
+        get; init;
+    }
+    public required StreamsGroupMemberAssignment TargetAssignment
+    {
+        get; init;
+    }
+    public bool IsClassic
+    {
+        get; init;
+    }
 }
 
 /// <summary>
@@ -180,8 +330,14 @@ public sealed class StreamsGroupMemberDescription
 /// </summary>
 public sealed class StreamsGroupEndpoint
 {
-    public required string Host { get; init; }
-    public int Port { get; init; }
+    public required string Host
+    {
+        get; init;
+    }
+    public int Port
+    {
+        get; init;
+    }
 }
 
 /// <summary>
@@ -189,9 +345,18 @@ public sealed class StreamsGroupEndpoint
 /// </summary>
 public sealed class StreamsGroupTaskOffset
 {
-    public required string SubtopologyId { get; init; }
-    public int Partition { get; init; }
-    public long Offset { get; init; }
+    public required string SubtopologyId
+    {
+        get; init;
+    }
+    public int Partition
+    {
+        get; init;
+    }
+    public long Offset
+    {
+        get; init;
+    }
 }
 
 /// <summary>
@@ -199,9 +364,18 @@ public sealed class StreamsGroupTaskOffset
 /// </summary>
 public sealed class StreamsGroupMemberAssignment
 {
-    public required IReadOnlyList<StreamsGroupTaskIds> ActiveTasks { get; init; }
-    public required IReadOnlyList<StreamsGroupTaskIds> StandbyTasks { get; init; }
-    public required IReadOnlyList<StreamsGroupTaskIds> WarmupTasks { get; init; }
+    public required IReadOnlyList<StreamsGroupTaskIds> ActiveTasks
+    {
+        get; init;
+    }
+    public required IReadOnlyList<StreamsGroupTaskIds> StandbyTasks
+    {
+        get; init;
+    }
+    public required IReadOnlyList<StreamsGroupTaskIds> WarmupTasks
+    {
+        get; init;
+    }
 }
 
 /// <summary>
@@ -209,8 +383,14 @@ public sealed class StreamsGroupMemberAssignment
 /// </summary>
 public sealed class StreamsGroupTaskIds
 {
-    public required string SubtopologyId { get; init; }
-    public required IReadOnlyList<int> Partitions { get; init; }
+    public required string SubtopologyId
+    {
+        get; init;
+    }
+    public required IReadOnlyList<int> Partitions
+    {
+        get; init;
+    }
 }
 
 /// <summary>
@@ -218,7 +398,10 @@ public sealed class StreamsGroupTaskIds
 /// </summary>
 public sealed class ListStreamsGroupsOptions
 {
-    public IReadOnlyList<string>? States { get; init; }
+    public IReadOnlyList<string>? States
+    {
+        get; init;
+    }
 }
 
 /// <summary>
@@ -229,7 +412,10 @@ public sealed class ListStreamsGroupOffsetsSpec
     /// <summary>
     /// Partitions to list, or null to list every committed partition in the group.
     /// </summary>
-    public IReadOnlyList<TopicPartition>? TopicPartitions { get; init; }
+    public IReadOnlyList<TopicPartition>? TopicPartitions
+    {
+        get; init;
+    }
 }
 
 /// <summary>
@@ -237,8 +423,14 @@ public sealed class ListStreamsGroupOffsetsSpec
 /// </summary>
 public sealed class ListStreamsGroupOffsetsOptions
 {
-    public bool RequireStable { get; init; }
-    public int TimeoutMs { get; init; } = 30000;
+    public bool RequireStable
+    {
+        get; init;
+    }
+    public int TimeoutMs
+    {
+        get; init;
+    } = 30000;
 }
 
 /// <summary>
@@ -246,9 +438,18 @@ public sealed class ListStreamsGroupOffsetsOptions
 /// </summary>
 public sealed class StreamsGroupOffsetsResult
 {
-    public required string GroupId { get; init; }
-    public Protocol.ErrorCode ErrorCode { get; init; }
-    public required IReadOnlyDictionary<TopicPartition, StreamsGroupOffsetDescription> Offsets { get; init; }
+    public required string GroupId
+    {
+        get; init;
+    }
+    public Protocol.ErrorCode ErrorCode
+    {
+        get; init;
+    }
+    public required IReadOnlyDictionary<TopicPartition, StreamsGroupOffsetDescription> Offsets
+    {
+        get; init;
+    }
 }
 
 /// <summary>
@@ -256,11 +457,26 @@ public sealed class StreamsGroupOffsetsResult
 /// </summary>
 public sealed class StreamsGroupOffsetDescription
 {
-    public required TopicPartition TopicPartition { get; init; }
-    public long Offset { get; init; } = -1;
-    public int LeaderEpoch { get; init; } = -1;
-    public string? Metadata { get; init; }
-    public Protocol.ErrorCode ErrorCode { get; init; }
+    public required TopicPartition TopicPartition
+    {
+        get; init;
+    }
+    public long Offset
+    {
+        get; init;
+    } = -1;
+    public int LeaderEpoch
+    {
+        get; init;
+    } = -1;
+    public string? Metadata
+    {
+        get; init;
+    }
+    public Protocol.ErrorCode ErrorCode
+    {
+        get; init;
+    }
 }
 
 /// <summary>
@@ -268,7 +484,10 @@ public sealed class StreamsGroupOffsetDescription
 /// </summary>
 public sealed class AlterStreamsGroupOffsetsOptions
 {
-    public int TimeoutMs { get; init; } = 30000;
+    public int TimeoutMs
+    {
+        get; init;
+    } = 30000;
 }
 
 /// <summary>
@@ -276,7 +495,10 @@ public sealed class AlterStreamsGroupOffsetsOptions
 /// </summary>
 public sealed class DeleteStreamsGroupOffsetsOptions
 {
-    public int TimeoutMs { get; init; } = 30000;
+    public int TimeoutMs
+    {
+        get; init;
+    } = 30000;
 }
 
 /// <summary>
@@ -284,8 +506,14 @@ public sealed class DeleteStreamsGroupOffsetsOptions
 /// </summary>
 public sealed class StreamsGroupOffsetOperationResult
 {
-    public required TopicPartition TopicPartition { get; init; }
-    public Protocol.ErrorCode ErrorCode { get; init; }
+    public required TopicPartition TopicPartition
+    {
+        get; init;
+    }
+    public Protocol.ErrorCode ErrorCode
+    {
+        get; init;
+    }
 }
 
 /// <summary>
@@ -293,7 +521,10 @@ public sealed class StreamsGroupOffsetOperationResult
 /// </summary>
 public sealed class DeleteStreamsGroupsOptions
 {
-    public int TimeoutMs { get; init; } = 30000;
+    public int TimeoutMs
+    {
+        get; init;
+    } = 30000;
 }
 
 /// <summary>
@@ -301,12 +532,21 @@ public sealed class DeleteStreamsGroupsOptions
 /// </summary>
 public sealed class DeleteStreamsGroupResult
 {
-    public required string GroupId { get; init; }
-    public Protocol.ErrorCode ErrorCode { get; init; }
+    public required string GroupId
+    {
+        get; init;
+    }
+    public Protocol.ErrorCode ErrorCode
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The broker's error message for this group, or null when the broker sent none. Brokers send one from
     /// DeleteGroups v3 (Kafka 4.4+), for example with <see cref="Protocol.ErrorCode.GroupDeletionFailed"/>.
     /// </summary>
-    public string? ErrorMessage { get; init; }
+    public string? ErrorMessage
+    {
+        get; init;
+    }
 }

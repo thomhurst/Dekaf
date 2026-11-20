@@ -36,7 +36,10 @@ internal sealed class TransactionalCrashClientProcess : IAsyncDisposable
     private readonly string _readyPath;
     private readonly BoundedProcessDiagnostics _diagnostics;
 
-    internal Func<Process, Task>? BeforeForceTerminateForTestAsync { get; set; }
+    internal Func<Process, Task>? BeforeForceTerminateForTestAsync
+    {
+        get; set;
+    }
 
     private TransactionalCrashClientProcess(
         Process process,

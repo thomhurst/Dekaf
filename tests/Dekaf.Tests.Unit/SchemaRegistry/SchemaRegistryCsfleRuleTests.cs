@@ -678,7 +678,9 @@ public sealed partial class SchemaRegistryCsfleRuleTests
             {
                 var transformed = Transform();
                 if (!ReadAvroBytes(avroSchema, transformed).AsSpan().SequenceEqual(replacement))
+                {
                     Interlocked.Increment(ref failures);
+                }
             }
             catch (SchemaRegistryRuleException)
             {
@@ -1146,7 +1148,9 @@ public sealed partial class SchemaRegistryCsfleRuleTests
             var transformer = provider.Get(expected);
             var actual = (Schema)registrySchemaField.GetValue(transformer)!;
             if (!ReferenceEquals(expected, actual))
+            {
                 Interlocked.Increment(ref mismatches);
+            }
         });
 
         await Assert.That(mismatches).IsEqualTo(0);
@@ -1995,7 +1999,9 @@ public sealed partial class SchemaRegistryCsfleRuleTests
         await Task.WhenAll(tasks);
 
         foreach (var task in tasks)
+        {
             await Assert.That(task.Result.ToArray()).IsEquivalentTo(payload);
+        }
 
         await Assert.That(client.GetDekCallCount).IsEqualTo(1);
     }
@@ -2354,7 +2360,9 @@ public sealed partial class SchemaRegistryCsfleRuleTests
         {
             var output = input.ToArray();
             for (var index = 0; index < output.Length; index++)
+            {
                 output[index] ^= 0x5a;
+            }
             return output;
         }
     }
@@ -2385,7 +2393,10 @@ public sealed partial class SchemaRegistryCsfleRuleTests
     {
         internal const string ActionType = "REENTER";
 
-        internal Action Callback { get; set; } = null!;
+        internal Action Callback
+        {
+            get; set;
+        } = null!;
 
         public string Type => ActionType;
 
@@ -2404,7 +2415,10 @@ public sealed partial class SchemaRegistryCsfleRuleTests
 
     private sealed class CapturingTaggedFieldTransformer : ISchemaRegistryTaggedFieldTransformer
     {
-        internal byte[]? CapturedOutput { get; private set; }
+        internal byte[]? CapturedOutput
+        {
+            get; private set;
+        }
 
         public ReadOnlyMemory<byte> Transform<TState>(
             ReadOnlyMemory<byte> payload,
@@ -2414,7 +2428,9 @@ public sealed partial class SchemaRegistryCsfleRuleTests
         {
             var transformed = transform(payload, context, state);
             if (!System.Runtime.InteropServices.MemoryMarshal.TryGetArray(transformed, out var segment))
+            {
                 throw new InvalidOperationException("Expected an array-backed CSFLE field output.");
+            }
             CapturedOutput = segment.Array;
             return transformed.ToArray();
         }
@@ -2535,10 +2551,14 @@ public sealed partial class SchemaRegistryCsfleRuleTests
         using var blockStream = new MemoryStream();
         var blockEncoder = new BinaryEncoder(blockStream);
         if (map)
+        {
             blockEncoder.WriteString("first");
+        }
         blockEncoder.WriteBytes(first);
         if (map)
+        {
             blockEncoder.WriteString("second");
+        }
         blockEncoder.WriteBytes(second);
         blockEncoder.Flush();
         var block = blockStream.ToArray();
@@ -2547,7 +2567,9 @@ public sealed partial class SchemaRegistryCsfleRuleTests
         var encoder = new BinaryEncoder(stream);
         encoder.WriteLong(negativeCount ? -2 : 2);
         if (negativeCount)
+        {
             encoder.WriteLong(block.Length);
+        }
         encoder.Flush();
         stream.Write(block);
         encoder.WriteLong(0);
@@ -2561,7 +2583,9 @@ public sealed partial class SchemaRegistryCsfleRuleTests
         var encoder = new BinaryEncoder(stream);
         encoder.WriteLong(-1);
         if (!truncatedSize)
+        {
             encoder.WriteLong(10);
+        }
         encoder.Flush();
         return stream.ToArray();
     }
@@ -2631,7 +2655,9 @@ public sealed partial class SchemaRegistryCsfleRuleTests
         var arguments = new object?[] { handler, null };
         var found = (bool)workspaces.GetType().GetMethod("TryGetValue")!.Invoke(workspaces, arguments)!;
         if (!found)
+        {
             throw new InvalidOperationException("CSFLE workspace was not created.");
+        }
 
         return arguments[1]!;
     }
@@ -2707,17 +2733,35 @@ public sealed partial class SchemaRegistryCsfleRuleTests
         private int _getDekCallCount;
         private int _registerDekCallCount;
 
-        public TimeSpan GetDekDelay { get; set; }
+        public TimeSpan GetDekDelay
+        {
+            get; set;
+        }
 
-        public TimeSpan RegisterDekDelay { get; set; }
+        public TimeSpan RegisterDekDelay
+        {
+            get; set;
+        }
 
-        public string? RegisteredDekKeyMaterial { get; set; }
+        public string? RegisteredDekKeyMaterial
+        {
+            get; set;
+        }
 
-        public RegisterDekRequest? LastRegisterDekRequest { get; private set; }
+        public RegisterDekRequest? LastRegisterDekRequest
+        {
+            get; private set;
+        }
 
-        public Action? BeforeRegisterDek { get; set; }
+        public Action? BeforeRegisterDek
+        {
+            get; set;
+        }
 
-        public Action? BeforeRegisterKek { get; set; }
+        public Action? BeforeRegisterKek
+        {
+            get; set;
+        }
 
         public int GetKekCallCount
         {
@@ -2781,7 +2825,9 @@ public sealed partial class SchemaRegistryCsfleRuleTests
             _deksByVersion[(dek.KekName, dek.Subject, dek.Version, dek.Algorithm)] = dek;
             var key = (dek.KekName, dek.Subject, dek.Algorithm);
             if (!_latestDeks.TryGetValue(key, out var latest) || dek.Version >= latest.Version)
+            {
                 _latestDeks[key] = dek;
+            }
         }
 
         public Task<Kek> GetKekAsync(
@@ -2793,7 +2839,9 @@ public sealed partial class SchemaRegistryCsfleRuleTests
             {
                 _getKekCallCount++;
                 if (_keks.TryGetValue(name, out var kek) && (deleted || !kek.Deleted))
+                {
                     return Task.FromResult(kek);
+                }
             }
 
             throw new SchemaRegistryException(40470, $"KEK '{name}' not found");
@@ -2808,7 +2856,9 @@ public sealed partial class SchemaRegistryCsfleRuleTests
             lock (_gate)
             {
                 if (_keks.ContainsKey(request.Name))
+                {
                     throw new SchemaRegistryException(40971, $"KEK '{request.Name}' already exists");
+                }
 
                 var kek = new Kek
                 {
@@ -2847,7 +2897,9 @@ public sealed partial class SchemaRegistryCsfleRuleTests
             CancellationToken cancellationToken = default)
         {
             if (GetDekDelay > TimeSpan.Zero)
+            {
                 Thread.Sleep(GetDekDelay);
+            }
 
             lock (_gate)
             {
@@ -2856,7 +2908,9 @@ public sealed partial class SchemaRegistryCsfleRuleTests
                     ? _latestDeks.TryGetValue((kekName, subject, algorithm), out var dek)
                     : _deksByVersion.TryGetValue((kekName, subject, version, algorithm), out dek);
                 if (found && (deleted || !dek!.Deleted))
+                {
                     return Task.FromResult(dek!);
+                }
             }
 
             throw new SchemaRegistryException(40471, $"DEK version '{version}' not found for algorithm '{algorithm}'");
@@ -2870,7 +2924,9 @@ public sealed partial class SchemaRegistryCsfleRuleTests
             LastRegisterDekRequest = request;
             BeforeRegisterDek?.Invoke();
             if (RegisterDekDelay > TimeSpan.Zero)
+            {
                 Thread.Sleep(RegisterDekDelay);
+            }
 
             lock (_gate)
             {
@@ -2913,7 +2969,9 @@ public sealed partial class SchemaRegistryCsfleRuleTests
         public Task<Schema> GetSchemaAsync(int id, CancellationToken cancellationToken = default)
         {
             if (_schemasById.TryGetValue(id, out var schema))
+            {
                 return Task.FromResult(schema);
+            }
 
             throw new SchemaRegistryException(40403, $"Schema '{id}' not found");
         }
@@ -2928,7 +2986,9 @@ public sealed partial class SchemaRegistryCsfleRuleTests
                 for (var i = 0; i < schemas.Count; i++)
                 {
                     if (schemas[i].Id == id)
+                    {
                         return Task.FromResult(schemas[i].Schema);
+                    }
                 }
             }
 
@@ -2941,7 +3001,9 @@ public sealed partial class SchemaRegistryCsfleRuleTests
             CancellationToken cancellationToken = default)
         {
             if (!_schemasBySubject.TryGetValue(subject, out var versions) || versions.Count == 0)
+            {
                 throw new SchemaRegistryException(40401, $"Subject '{subject}' not found");
+            }
 
             var entry = version == "latest"
                 ? versions[^1]
@@ -2989,9 +3051,13 @@ public sealed partial class SchemaRegistryCsfleRuleTests
         private static bool SchemasAreEquivalent(Schema left, Schema right)
         {
             if (left.SchemaType != right.SchemaType)
+            {
                 return false;
+            }
             if (string.Equals(left.SchemaString, right.SchemaString, StringComparison.Ordinal))
+            {
                 return true;
+            }
             if (left.SchemaType == SchemaType.Avro)
             {
                 return AvroSchema.Parse(left.SchemaString)
@@ -3016,7 +3082,9 @@ public sealed partial class SchemaRegistryCsfleRuleTests
             {
                 var existing = versions.FirstOrDefault(item => item.Schema.SchemaString == schema.SchemaString);
                 if (existing != default)
+                {
                     return Task.FromResult(existing.Id);
+                }
             }
 
             return RegisterSchemaAsync(subject, schema, cancellationToken);
@@ -3028,7 +3096,9 @@ public sealed partial class SchemaRegistryCsfleRuleTests
         public Task<IReadOnlyList<int>> GetVersionsAsync(string subject, CancellationToken cancellationToken = default)
         {
             if (!_schemasBySubject.TryGetValue(subject, out var versions))
+            {
                 throw new SchemaRegistryException(40401, $"Subject '{subject}' not found");
+            }
 
             return Task.FromResult<IReadOnlyList<int>>(versions.Select(static item => item.Version).ToList());
         }
@@ -3046,10 +3116,14 @@ public sealed partial class SchemaRegistryCsfleRuleTests
             CancellationToken cancellationToken = default)
         {
             if (!_schemasBySubject.Remove(subject, out var versions))
+            {
                 throw new SchemaRegistryException(40401, $"Subject '{subject}' not found");
+            }
 
             foreach (var (_, id, _) in versions)
+            {
                 _schemasById.Remove(id);
+            }
 
             return Task.FromResult<IReadOnlyList<int>>(versions.Select(static item => item.Version).ToList());
         }

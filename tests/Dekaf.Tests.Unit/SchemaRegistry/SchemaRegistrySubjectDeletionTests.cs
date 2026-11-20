@@ -129,9 +129,13 @@ public sealed class SchemaRegistrySubjectDeletionTests
         {
             await paused.Entered.Task.WaitAsync(TimeSpan.FromSeconds(10));
             if (failedDelete)
+            {
                 await Assert.ThrowsAsync<SchemaRegistryException>(() => client.DeleteSubjectAsync("events"));
+            }
             else
+            {
                 await client.DeleteSubjectAsync("events");
+            }
         }
         finally
         {
@@ -238,27 +242,47 @@ public sealed class SchemaRegistrySubjectDeletionTests
 
     private static SchemaRegistryClient CreateClient(StatefulRegistry registry, bool normalize = false) => new(new SchemaRegistryConfig
     {
-        Url = "https://registry.test", NormalizeSchemas = normalize
+        Url = "https://registry.test",
+        NormalizeSchemas = normalize
     }, registry);
 
     private static async Task ReadOrRegister(SchemaRegistryClient client, string operation, string subject, int id)
     {
         switch (operation)
         {
-            case "register": await client.RegisterSchemaAsync(subject, StringSchema); break;
-            case "get-or-register": await client.GetOrRegisterSchemaAsync(subject, StringSchema); break;
-            case "lookup": await client.LookupSchemaAsync(subject, StringSchema); break;
-            case "subject-id": await client.GetSchemaAsync(id, subject); break;
-            case "formatted-id": await client.GetSchemaAsync(id, subject, "serialized"); break;
-            case "formatted-version": await client.GetSchemaBySubjectAsync(subject, "latest", true, "serialized"); break;
-            default: throw new ArgumentOutOfRangeException(nameof(operation));
+            case "register":
+                await client.RegisterSchemaAsync(subject, StringSchema);
+                break;
+            case "get-or-register":
+                await client.GetOrRegisterSchemaAsync(subject, StringSchema);
+                break;
+            case "lookup":
+                await client.LookupSchemaAsync(subject, StringSchema);
+                break;
+            case "subject-id":
+                await client.GetSchemaAsync(id, subject);
+                break;
+            case "formatted-id":
+                await client.GetSchemaAsync(id, subject, "serialized");
+                break;
+            case "formatted-version":
+                await client.GetSchemaBySubjectAsync(subject, "latest", true, "serialized");
+                break;
+            default:
+                throw new ArgumentOutOfRangeException(nameof(operation));
         }
     }
 
     private sealed class PausedResponse
     {
-        public TaskCompletionSource Entered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        public TaskCompletionSource Release { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource Entered
+        {
+            get;
+        } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource Release
+        {
+            get;
+        } = new(TaskCreationOptions.RunContinuationsAsynchronously);
     }
 
     private sealed class StatefulRegistry : HttpMessageHandler
@@ -269,8 +293,14 @@ public sealed class SchemaRegistrySubjectDeletionTests
         private readonly Dictionary<string, int> _ids = new(StringComparer.Ordinal);
         private readonly Dictionary<string, int> _registrations = new(StringComparer.Ordinal);
         private (string Subject, PausedResponse Response)? _nextPause;
-        public bool FailDeletion { get; init; }
-        public bool MalformedDeletionResponse { get; init; }
+        public bool FailDeletion
+        {
+            get; init;
+        }
+        public bool MalformedDeletionResponse
+        {
+            get; init;
+        }
 
         public static Guid SchemaGuid(int id) => Guid.Parse(id.ToString("x32"));
 
@@ -279,9 +309,13 @@ public sealed class SchemaRegistrySubjectDeletionTests
             lock (_gate)
             {
                 if (!_ids.TryGetValue(schema, out var id))
+                {
                     _ids.Add(schema, id = _ids.Count + 1);
+                }
                 if (!_subjects.TryGetValue(subject, out var schemas))
+                {
                     _subjects.Add(subject, schemas = new(StringComparer.Ordinal));
+                }
                 schemas[schema] = id;
                 return id;
             }
@@ -289,12 +323,18 @@ public sealed class SchemaRegistrySubjectDeletionTests
 
         public bool ContainsSubject(string subject)
         {
-            lock (_gate) return _subjects.ContainsKey(subject);
+            lock (_gate)
+            {
+                return _subjects.ContainsKey(subject);
+            }
         }
 
         public int Registrations(string subject)
         {
-            lock (_gate) return _registrations.GetValueOrDefault(subject);
+            lock (_gate)
+            {
+                return _registrations.GetValueOrDefault(subject);
+            }
         }
 
         public PausedResponse PauseNext(string subject)
@@ -348,9 +388,18 @@ public sealed class SchemaRegistrySubjectDeletionTests
         {
             if (method == HttpMethod.Delete)
             {
-                if (FailDeletion) return Json(new { error_code = 40301, message = "denied" }, HttpStatusCode.Forbidden);
-                if (!_subjects.Remove(subject)) return Missing();
-                if (MalformedDeletionResponse) return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("{") };
+                if (FailDeletion)
+                {
+                    return Json(new { error_code = 40301, message = "denied" }, HttpStatusCode.Forbidden);
+                }
+                if (!_subjects.Remove(subject))
+                {
+                    return Missing();
+                }
+                if (MalformedDeletionResponse)
+                {
+                    return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("{") };
+                }
                 return Json(DeletedVersions);
             }
             if (method == HttpMethod.Post && parts.Length == 3)
@@ -359,12 +408,20 @@ public sealed class SchemaRegistrySubjectDeletionTests
                 var id = Seed(subject, schema!);
                 return Json(new { id, guid = SchemaGuid(id).ToString("D") });
             }
-            if (!_subjects.TryGetValue(subject, out var schemas)) return Missing();
+            if (!_subjects.TryGetValue(subject, out var schemas))
+            {
+                return Missing();
+            }
             if (parts[0] == "schemas")
             {
                 var id = int.Parse(parts[2]);
                 foreach (var pair in schemas)
-                    if (pair.Value == id) return SchemaResponse(subject, pair.Key, id);
+                {
+                    if (pair.Value == id)
+                    {
+                        return SchemaResponse(subject, pair.Key, id);
+                    }
+                }
                 return Missing();
             }
             if (schema is null)
@@ -378,13 +435,23 @@ public sealed class SchemaRegistrySubjectDeletionTests
         private static string QuerySubject(Uri uri)
         {
             foreach (var part in uri.Query.TrimStart('?').Split('&'))
-                if (part.StartsWith("subject=", StringComparison.Ordinal)) return Uri.UnescapeDataString(part[8..]);
+            {
+                if (part.StartsWith("subject=", StringComparison.Ordinal))
+                {
+                    return Uri.UnescapeDataString(part[8..]);
+                }
+            }
             throw new InvalidOperationException("Expected subject-qualified lookup");
         }
 
         private static HttpResponseMessage SchemaResponse(string subject, string schema, int id) => Json(new
         {
-            subject, schema, id, version = 1, schemaType = "AVRO", guid = SchemaGuid(id).ToString("D")
+            subject,
+            schema,
+            id,
+            version = 1,
+            schemaType = "AVRO",
+            guid = SchemaGuid(id).ToString("D")
         });
 
         private static HttpResponseMessage Missing() => Json(new { error_code = 40401, message = "missing subject" }, HttpStatusCode.NotFound);

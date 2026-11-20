@@ -15,7 +15,10 @@ public sealed class OutboxTraceContextTests
     private const string HeaderName = "x-outbox-message-id";
     private const string StoredTraceparent = "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01";
 
-    private static RecordMetadata Metadata { get; } = new()
+    private static RecordMetadata Metadata
+    {
+        get;
+    } = new()
     {
         Topic = "topic",
         Partition = 0,
@@ -254,7 +257,9 @@ public sealed class OutboxTraceContextTests
             {
                 relay = activity;
                 if (removeListener)
+                {
                     listener.Dispose();
+                }
             }
         };
         ActivitySource.AddActivityListener(listener);
@@ -331,7 +336,9 @@ public sealed class OutboxTraceContextTests
             ActivityStopped = activity =>
             {
                 if (Equals(activity.GetTagItem(DekafDiagnostics.MessagingMessageId), messageId))
+                {
                     stopped.Enqueue(activity);
+                }
             }
         };
         ActivitySource.AddActivityListener(listener);

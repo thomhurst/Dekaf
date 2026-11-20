@@ -8,7 +8,11 @@ namespace Dekaf.Benchmarks.Benchmarks.Unit;
 [MemoryDiagnoser]
 public class InMemoryShareOffsetDescriptionBenchmarks
 {
-    [Params(1, 32)] public int Groups { get; set; }
+    [Params(1, 32)]
+    public int Groups
+    {
+        get; set;
+    }
     private InMemoryAdminClient _admin = null!;
     private string[] _groups = null!;
 
@@ -27,7 +31,9 @@ public class InMemoryShareOffsetDescriptionBenchmarks
             var result = await _admin.DescribeShareGroupOffsetsAsync(group).ConfigureAwait(false);
             if (result.Count != 1 || result[0].TopicPartition != new TopicPartition("orders", 0)
                 || result[0].StartOffset != 0 || result[0].LeaderEpoch != 0 || result[0].Lag != 0)
+            {
                 throw new InvalidOperationException("The inventory fixture changed its completed result.");
+            }
         }
     }
 
@@ -36,7 +42,9 @@ public class InMemoryShareOffsetDescriptionBenchmarks
     {
         var completed = 0;
         foreach (var group in _groups)
+        {
             completed += (await _admin.DescribeShareGroupOffsetsAsync(group).ConfigureAwait(false)).Count;
+        }
         return completed;
     }
 

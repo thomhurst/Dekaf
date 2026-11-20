@@ -785,12 +785,12 @@ public sealed class TransactionalProduceFaultTests
         };
 
         var exception = await Assert.That(async () => await transaction.ProduceAsync(new ProducerMessage<string, string>
-            {
-                Topic = Topic,
-                Key = "key",
-                Value = "retried",
-                Partition = 0
-            }, cancellationToken))
+        {
+            Topic = Topic,
+            Key = "key",
+            Value = "retried",
+            Partition = 0
+        }, cancellationToken))
             .Throws<ProduceException>();
         await Assert.That(exception!.Kind).IsEqualTo(ProduceErrorKind.TransactionAborted);
         await Assert.That(serializer.Calls).IsEqualTo(2);
@@ -826,9 +826,13 @@ public sealed class TransactionalProduceFaultTests
         var exception = await Assert.That(async () =>
             {
                 if (componentwise)
+                {
                     await transaction.ProduceAsync(Topic, "key", "value", cancellationToken);
+                }
                 else
+                {
                     await transaction.ProduceAsync(Message(partition: 0), cancellationToken);
+                }
             })
             .Throws<ProduceException>();
         await Assert.That(exception!.Kind).IsEqualTo(ProduceErrorKind.TransactionAborted);
@@ -883,7 +887,9 @@ public sealed class TransactionalProduceFaultTests
         public ProducerMessage<string, string> OnSend(ProducerMessage<string, string> message)
         {
             if (Interlocked.Increment(ref _calls) == 1)
+            {
                 onSend();
+            }
             return message;
         }
 
@@ -959,7 +965,9 @@ public sealed class TransactionalProduceFaultTests
             , allows ref struct
         {
             if (value == failingValue && Interlocked.Increment(ref _calls) == 1)
+            {
                 throw new KafkaException(ErrorCode.NotEnoughReplicas, "Transient failure for the test.");
+            }
 
             Serializers.String.Serialize(value, ref destination, context);
         }
@@ -986,7 +994,9 @@ public sealed class TransactionalProduceFaultTests
         protected void BlockIfHeld(string value)
         {
             if (value != heldValue)
+            {
                 return;
+            }
 
             _entered.TrySetResult();
             _release.Wait(TimeSpan.FromSeconds(30));
@@ -997,7 +1007,9 @@ public sealed class TransactionalProduceFaultTests
             , allows ref struct
         {
             if (BlocksInSerialize)
+            {
                 BlockIfHeld(value);
+            }
 
             Serializers.String.Serialize(value, ref destination, context);
         }
@@ -1075,9 +1087,15 @@ public sealed class TransactionalProduceFaultTests
             Producer = producer;
         }
 
-        public ScriptedTransactionalBroker Broker { get; }
+        public ScriptedTransactionalBroker Broker
+        {
+            get;
+        }
 
-        public KafkaProducer<string, string> Producer { get; }
+        public KafkaProducer<string, string> Producer
+        {
+            get;
+        }
 
         public static async Task<TransactionalProduceHarness> CreateAsync(
             short transactionVersion,
@@ -1241,10 +1259,16 @@ public sealed class TransactionalProduceFaultTests
         private int _abortRequests;
         private int _coordinatorRequests;
 
-        public Func<int, int, ErrorCode> ProduceError { get; set; } = produceError;
+        public Func<int, int, ErrorCode> ProduceError
+        {
+            get; set;
+        } = produceError;
 
         /// <summary>Delays the answer to the n-th produce request (1-based) until the task completes.</summary>
-        public Func<int, Task?>? HoldProduceResponse { get; set; }
+        public Func<int, Task?>? HoldProduceResponse
+        {
+            get; set;
+        }
 
         public int BrokerId => 1;
         public string Host => "localhost";
@@ -1260,7 +1284,9 @@ public sealed class TransactionalProduceFaultTests
             get
             {
                 lock (_sync)
+                {
                     return _epoch;
+                }
             }
         }
 
@@ -1269,14 +1295,18 @@ public sealed class TransactionalProduceFaultTests
             get
             {
                 lock (_sync)
+                {
                     return [.. _produced];
+                }
             }
         }
 
         public int ProduceAttempts(int partition)
         {
             lock (_sync)
+            {
                 return _attemptsByPartition.GetValueOrDefault(partition);
+            }
         }
 
         public Task WaitForAbortAsync(CancellationToken cancellationToken)
@@ -1287,7 +1317,9 @@ public sealed class TransactionalProduceFaultTests
             lock (_sync)
             {
                 if (_produceRequests >= count)
+                {
                     return Task.CompletedTask;
+                }
 
                 var signal = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
                 _produceWaiters.Add((count, signal));
@@ -1303,7 +1335,9 @@ public sealed class TransactionalProduceFaultTests
             where TResponse : IKafkaResponse
         {
             if (request is not MetadataRequest)
+            {
                 Interlocked.Increment(ref _coordinatorRequests);
+            }
 
             IKafkaResponse response = request switch
             {
@@ -1430,7 +1464,9 @@ public sealed class TransactionalProduceFaultTests
                 for (var i = _produceWaiters.Count - 1; i >= 0; i--)
                 {
                     if (_produceRequests < _produceWaiters[i].Count)
+                    {
                         continue;
+                    }
 
                     (ready ??= []).Add(_produceWaiters[i].Signal);
                     _produceWaiters.RemoveAt(i);
@@ -1440,11 +1476,15 @@ public sealed class TransactionalProduceFaultTests
             if (ready is not null)
             {
                 foreach (var signal in ready)
+                {
                     signal.TrySetResult();
+                }
             }
 
             if (HoldProduceResponse?.Invoke(requestNumber) is { } hold)
+            {
                 await hold.ConfigureAwait(false);
+            }
 
             var response = new ProduceResponse
             {
@@ -1497,7 +1537,9 @@ public sealed class TransactionalProduceFaultTests
             {
                 // Transaction version 2 bumps the epoch at every transaction end and returns it.
                 if (bumpsEpochAtEndTxn)
+                {
                     _epoch++;
+                }
                 return new EndTxnResponse
                 {
                     ErrorCode = ErrorCode.None,
@@ -1546,8 +1588,14 @@ public sealed class TransactionalProduceFaultTests
         int IRetirableKafkaConnection.LeaseCount => 0;
         int IRetirableKafkaConnection.ActiveOperationCount => 0;
         bool IRetirableKafkaConnection.TryAcquireLease() => true;
-        void IRetirableKafkaConnection.ReleaseLease() { }
-        void IRetirableKafkaConnection.BeginRetirement() { }
-        void IRetirableKafkaConnection.CompleteRetirement() { }
+        void IRetirableKafkaConnection.ReleaseLease()
+        {
+        }
+        void IRetirableKafkaConnection.BeginRetirement()
+        {
+        }
+        void IRetirableKafkaConnection.CompleteRetirement()
+        {
+        }
     }
 }

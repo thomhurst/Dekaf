@@ -70,7 +70,9 @@ public sealed partial class OffsetStoreTimingTests
             await foreach (var result in consumer.ConsumeAsync(CancellationToken.None))
             {
                 if (result.Offset == 22)
+                {
                     throw new InvalidOperationException("processing failed");
+                }
             }
         }).Throws<InvalidOperationException>();
 
@@ -177,7 +179,9 @@ public sealed partial class OffsetStoreTimingTests
         await Assert.That(async () =>
         {
             await foreach (var result in consumer.ConsumeAsync(CancellationToken.None))
+            {
                 await Assert.That(result.Offset).IsEqualTo(20L);
+            }
         }).Throws<RecordDeserializationException>();
 
         await Assert.That(GetDirtyStoredOffsets(consumer)[tp]).IsEqualTo(21L);
@@ -250,7 +254,9 @@ public sealed partial class OffsetStoreTimingTests
         await foreach (var result in consumer.ConsumeAsync(CancellationToken.None))
         {
             if (result.Offset == 21)
+            {
                 break; // Dispose without pulling again: record 21 remains in doubt.
+            }
         }
 
         // Record 20 was proven (the loop pulled record 21); record 21 was processed but
@@ -301,7 +307,9 @@ public sealed partial class OffsetStoreTimingTests
         await foreach (var result in consumer.ConsumeAsync(CancellationToken.None))
         {
             if (result.Offset == 21)
+            {
                 break;
+            }
         }
 
         consumer.StageExplicitCommitOffsetsForTesting();
@@ -375,7 +383,9 @@ public sealed partial class OffsetStoreTimingTests
         {
             await foreach (var batch in consumer.ConsumeBatchAsync(CancellationToken.None))
             {
-                foreach (var _ in batch) { }
+                foreach (var _ in batch)
+                {
+                }
                 throw new InvalidOperationException("processing failed");
             }
         }).Throws<InvalidOperationException>();
@@ -401,7 +411,9 @@ public sealed partial class OffsetStoreTimingTests
         {
             await foreach (var batch in consumer.ConsumeBatchAsync(cts.Token))
             {
-                foreach (var _ in batch) { }
+                foreach (var _ in batch)
+                {
+                }
                 // Cancel without breaking: the next MoveNextAsync proves this batch
                 // was processed before the loop observes cancellation.
                 cts.Cancel();
@@ -430,7 +442,9 @@ public sealed partial class OffsetStoreTimingTests
         {
             await foreach (var batch in consumer.ConsumeBatchAsync(CancellationToken.None))
             {
-                foreach (var _ in batch) { }
+                foreach (var _ in batch)
+                {
+                }
                 consumer.StageExplicitCommitOffsetsForTesting();
                 throw new InvalidOperationException("stop after explicit handoff");
             }
@@ -455,7 +469,9 @@ public sealed partial class OffsetStoreTimingTests
         {
             await foreach (var batch in consumer.ConsumeRawBatchAsync(CancellationToken.None))
             {
-                foreach (var _ in batch) { }
+                foreach (var _ in batch)
+                {
+                }
                 consumer.StageExplicitCommitOffsetsForTesting();
                 throw new InvalidOperationException("stop after explicit handoff");
             }
@@ -537,7 +553,9 @@ public sealed partial class OffsetStoreTimingTests
                 await foreach (var batch in consumer.ConsumeRawBatchAsync(CancellationToken.None))
                 {
                     foreach (var _ in batch)
+                    {
                         throw new InvalidOperationException("stop during batch processing");
+                    }
                 }
             }
             else
@@ -545,7 +563,9 @@ public sealed partial class OffsetStoreTimingTests
                 await foreach (var batch in consumer.ConsumeBatchAsync(CancellationToken.None))
                 {
                     foreach (var _ in batch)
+                    {
                         throw new InvalidOperationException("stop during batch processing");
+                    }
                 }
             }
         }).Throws<InvalidOperationException>();
@@ -621,7 +641,9 @@ public sealed partial class OffsetStoreTimingTests
         {
             await foreach (var batch in consumer.ConsumeRawBatchAsync(CancellationToken.None))
             {
-                foreach (var _ in batch) { }
+                foreach (var _ in batch)
+                {
+                }
                 break;
             }
         }
@@ -629,7 +651,9 @@ public sealed partial class OffsetStoreTimingTests
         {
             await foreach (var batch in consumer.ConsumeBatchAsync(CancellationToken.None))
             {
-                foreach (var _ in batch) { }
+                foreach (var _ in batch)
+                {
+                }
                 break;
             }
         }
@@ -656,7 +680,9 @@ public sealed partial class OffsetStoreTimingTests
         {
             await foreach (var batch in consumer.ConsumeRawBatchAsync(CancellationToken.None))
             {
-                foreach (var _ in batch) { }
+                foreach (var _ in batch)
+                {
+                }
                 break;
             }
         }
@@ -664,7 +690,9 @@ public sealed partial class OffsetStoreTimingTests
         {
             await foreach (var batch in consumer.ConsumeBatchAsync(CancellationToken.None))
             {
-                foreach (var _ in batch) { }
+                foreach (var _ in batch)
+                {
+                }
                 break;
             }
         }
@@ -911,7 +939,9 @@ public sealed partial class OffsetStoreTimingTests
         consumer.Subscribe("jobs");
 
         await foreach (var _ in consumer.ConsumeAsync(cts.Token))
+        {
             cts.Cancel();
+        }
 
         await consumer.CloseAsync();
         var offsets = await admin.ListConsumerGroupOffsetsAsync("workers");
@@ -1135,7 +1165,9 @@ public sealed partial class OffsetStoreTimingTests
         SetInitialized(consumer);
 
         foreach (var fetch in fetches)
+        {
             InjectPendingFetch(consumer, fetch);
+        }
 
         return consumer;
     }

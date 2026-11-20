@@ -290,7 +290,6 @@ public class BrotliCompressionCodecTests
         await Assert.That(decompressedBuffer.WrittenSpan.ToArray()).IsEquivalentTo(data);
     }
 
-
     #endregion
 
     #region Helper Classes

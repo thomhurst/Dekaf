@@ -183,9 +183,13 @@ public class HeaderRoundTripTests(KafkaTestContainer kafka) : KafkaIntegrationTe
         {
             var header = decodedHeaders.Span[index];
             if (header.Key == "null-header")
+            {
                 sawNullHeader = header.IsValueNull;
+            }
             else if (header.Key == "normal-header")
+            {
                 normalHeaderValue = Encoding.UTF8.GetString(header.Value.Span);
+            }
         }
 
         await Assert.That(batch.TopicPartition).IsEqualTo(partition);

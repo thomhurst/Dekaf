@@ -277,8 +277,7 @@ public sealed class DynamicConfigurationIntegrationTests(RackAwareKafkaContainer
                 return await producer.ProduceAsync(topic, null, message, cancellationToken)
                     .ConfigureAwait(false);
             }
-            catch (ProduceException exception)
-                when (exception.ErrorCode == ErrorCode.MessageTooLarge
+            catch (ProduceException exception) when (exception.ErrorCode == ErrorCode.MessageTooLarge
                     && stopwatch.Elapsed < TimeSpan.FromSeconds(15))
             {
                 await Task.Delay(100, cancellationToken).ConfigureAwait(false);
@@ -322,7 +321,9 @@ public sealed class DynamicConfigurationIntegrationTests(RackAwareKafkaContainer
         {
             actual = await GetTopicConfigAsync(admin, resource, name, cancellationToken).ConfigureAwait(false);
             if (actual == expected)
+            {
                 return;
+            }
             await Task.Delay(100, cancellationToken).ConfigureAwait(false);
         }
 
@@ -365,7 +366,9 @@ public sealed class DynamicConfigurationIntegrationTests(RackAwareKafkaContainer
             var record = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(15), cancellationToken)
                 .ConfigureAwait(false);
             if (record is null)
+            {
                 throw new TimeoutException($"Consumed {index} of {expectedSizes.Count} expected records.");
+            }
 
             await Assert.That(record.Value.Offset).IsEqualTo(index);
             await Assert.That(record.Value.Value.Length).IsEqualTo(expectedSizes[index]);

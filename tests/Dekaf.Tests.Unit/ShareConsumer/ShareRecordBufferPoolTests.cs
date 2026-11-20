@@ -18,10 +18,17 @@ public sealed class ShareRecordBufferPoolTests
         byte[] payload = [10, 20, 30, 40];
         using (var source = new RecordBatch
         {
-            Records = [new Record { IsKeyNull = true, Value = payload,
-                Headers = [new Header("key", payload)], HeaderCount = 1 }]
+            Records = [new Record
+            {
+                IsKeyNull = true,
+                Value = payload,
+                Headers = [new Header("key", payload)],
+                HeaderCount = 1
+            }]
         })
+        {
             source.Write(bytes, compression);
+        }
         using var pool = new ShareRecordBufferPool(1024 * 1024);
         var reader = new KafkaProtocolReader(bytes.WrittenMemory);
         var batch = RecordBatch.ReadForShareConsumer(ref reader, null, pool);
@@ -100,15 +107,23 @@ public sealed class ShareRecordBufferPoolTests
         for (var round = 0; round < 2; round++)
         {
             for (var index = 0; index < arrays.Length; index++)
+            {
                 arrays[index] = pool.Rent(16);
+            }
             foreach (var array in arrays)
+            {
                 pool.Return(array);
+            }
         }
         var before = GC.GetAllocatedBytesForCurrentThread();
         for (var index = 0; index < arrays.Length; index++)
+        {
             arrays[index] = pool.Rent(16);
+        }
         foreach (var array in arrays)
+        {
             pool.Return(array);
+        }
         var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
         await Assert.That(allocated).IsEqualTo(0L);
         await Assert.That(pool.RetainedBytes).IsEqualTo(1024 * 16);

@@ -58,7 +58,10 @@ public sealed class IdempotentProducerEdgeCaseTests(KafkaTestContainer kafka) : 
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))
         {
             messages.Add(msg);
-            if (messages.Count >= messageCount) break;
+            if (messages.Count >= messageCount)
+            {
+                break;
+            }
         }
 
         await Assert.That(messages).Count().IsEqualTo(messageCount);
@@ -114,7 +117,10 @@ public sealed class IdempotentProducerEdgeCaseTests(KafkaTestContainer kafka) : 
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))
         {
             messages.Add(msg);
-            if (messages.Count >= tasksCount * messagesPerTask) break;
+            if (messages.Count >= tasksCount * messagesPerTask)
+            {
+                break;
+            }
         }
 
         await Assert.That(messages).Count().IsEqualTo(tasksCount * messagesPerTask);
@@ -163,7 +169,10 @@ public sealed class IdempotentProducerEdgeCaseTests(KafkaTestContainer kafka) : 
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))
         {
             messages.Add(msg);
-            if (messages.Count >= messageCount) break;
+            if (messages.Count >= messageCount)
+            {
+                break;
+            }
         }
 
         await Assert.That(messages).Count().IsEqualTo(messageCount);
@@ -207,7 +216,10 @@ public sealed class IdempotentProducerEdgeCaseTests(KafkaTestContainer kafka) : 
         consumer.Subscribe(topic);
 
         var messagesByPartition = new Dictionary<int, List<ConsumeResult<string, string>>>();
-        for (var p = 0; p < 4; p++) messagesByPartition[p] = [];
+        for (var p = 0; p < 4; p++)
+        {
+            messagesByPartition[p] = [];
+        }
 
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
 
@@ -215,7 +227,10 @@ public sealed class IdempotentProducerEdgeCaseTests(KafkaTestContainer kafka) : 
         {
             messagesByPartition[msg.Partition].Add(msg);
             var total = messagesByPartition.Values.Sum(l => l.Count);
-            if (total >= 4 * messagesPerPartition) break;
+            if (total >= 4 * messagesPerPartition)
+            {
+                break;
+            }
         }
 
         // Each partition should have ordered messages with increasing offsets
@@ -286,7 +301,10 @@ public sealed class IdempotentProducerEdgeCaseTests(KafkaTestContainer kafka) : 
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))
         {
             messages.Add(msg);
-            if (messages.Count >= 20) break;
+            if (messages.Count >= 20)
+            {
+                break;
+            }
         }
 
         await Assert.That(messages).Count().IsEqualTo(20);
@@ -337,7 +355,10 @@ public sealed class IdempotentProducerEdgeCaseTests(KafkaTestContainer kafka) : 
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))
         {
             messages.Add(msg);
-            if (messages.Count >= messageCount) break;
+            if (messages.Count >= messageCount)
+            {
+                break;
+            }
         }
 
         await Assert.That(messages).Count().IsEqualTo(messageCount);

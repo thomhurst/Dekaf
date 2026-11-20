@@ -11,23 +11,37 @@ public class ShareConsumerTelemetryPollBenchmarks
     private ShareConsumerPollBenchmarks _poll = null!;
 
     [Params(1, 1024)]
-    public int RecordCount { get; set; }
+    public int RecordCount
+    {
+        get; set;
+    }
 
     [Params(false, true)]
-    public bool Subscribed { get; set; }
+    public bool Subscribed
+    {
+        get; set;
+    }
 
     [Params(false, true)]
-    public bool AsynchronousResponse { get; set; }
+    public bool AsynchronousResponse
+    {
+        get; set;
+    }
 
     [GlobalSetup]
     public async ValueTask Setup()
     {
         _poll = new ShareConsumerPollBenchmarks
         {
-            RecordCount = RecordCount, BatchCount = 1, AsynchronousResponse = AsynchronousResponse
+            RecordCount = RecordCount,
+            BatchCount = 1,
+            AsynchronousResponse = AsynchronousResponse
         };
         await _poll.Setup();
-        if (!Subscribed) return;
+        if (!Subscribed)
+        {
+            return;
+        }
         foreach (var name in new[] { "_compatibility", "_borrowed" })
         {
             var consumer = typeof(ShareConsumerPollBenchmarks)

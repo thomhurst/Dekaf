@@ -81,7 +81,9 @@ public sealed class InMemoryStreamsGroupMember : IStreamsGroupMember, IStreamsGr
         _group = cluster?.GetOrCreateStreamsGroup(options.GroupId);
         _gate = (object?)_group ?? new object();
         if (options.AssignmentListener is { } assignmentListener)
+        {
             _assignmentNotifier = new StreamsGroupAssignmentNotifier(assignmentListener);
+        }
     }
 
     /// <inheritdoc />
@@ -99,7 +101,9 @@ public sealed class InMemoryStreamsGroupMember : IStreamsGroupMember, IStreamsGr
         get
         {
             lock (_gate)
+            {
                 return new Dictionary<TopicPartition, long>(_committedOffsets);
+            }
         }
     }
 
@@ -114,17 +118,23 @@ public sealed class InMemoryStreamsGroupMember : IStreamsGroupMember, IStreamsGr
         lock (_gate)
         {
             if (!_snapshot.IsJoined)
+            {
                 throw new Dekaf.Errors.GroupException(
                     Dekaf.Protocol.ErrorCode.UnknownMemberId,
                     "Offsets cannot be committed because the Streams group member is not joined.");
+            }
 
             if (_snapshot.MembershipGeneration != membershipGeneration)
+            {
                 throw new Dekaf.Errors.GroupException(
                     Dekaf.Protocol.ErrorCode.FencedMemberEpoch,
                     "Offsets cannot be committed because the Streams group member lost the membership they were consumed under.");
+            }
 
             foreach (var offset in offsets)
+            {
                 _committedOffsets[new TopicPartition(offset.Topic, offset.Partition)] = offset.Offset;
+            }
         }
 
         return default;
@@ -136,7 +146,9 @@ public sealed class InMemoryStreamsGroupMember : IStreamsGroupMember, IStreamsGr
         get
         {
             lock (_gate)
+            {
                 return _lastUpdate;
+            }
         }
     }
 
@@ -146,7 +158,9 @@ public sealed class InMemoryStreamsGroupMember : IStreamsGroupMember, IStreamsGr
         get
         {
             lock (_gate)
+            {
                 return _lastTaskOffsetReport;
+            }
         }
     }
 
@@ -156,7 +170,9 @@ public sealed class InMemoryStreamsGroupMember : IStreamsGroupMember, IStreamsGr
         get
         {
             lock (_gate)
+            {
                 return _lastCloseOptions;
+            }
         }
     }
 
@@ -180,7 +196,9 @@ public sealed class InMemoryStreamsGroupMember : IStreamsGroupMember, IStreamsGr
     {
         ArgumentNullException.ThrowIfNull(initialState);
         if (initialState.Topology is null)
+        {
             throw new ArgumentException("The initial Streams group state must include a topology.", nameof(initialState));
+        }
         cancellationToken.ThrowIfCancellationRequested();
 
         lock (_gate)
@@ -188,7 +206,9 @@ public sealed class InMemoryStreamsGroupMember : IStreamsGroupMember, IStreamsGr
             ThrowIfClosed();
             ThrowIfNotInitialized();
             if (_snapshot.IsJoined)
+            {
                 throw new InvalidOperationException("The Streams group member has already joined.");
+            }
 
             _lastUpdate = initialState;
             return ValueTask.FromResult(ApplyUpdate(initialState, isJoin: true));
@@ -248,13 +268,17 @@ public sealed class InMemoryStreamsGroupMember : IStreamsGroupMember, IStreamsGr
     {
         ArgumentNullException.ThrowIfNull(options);
         if (!Enum.IsDefined(options.GroupMembershipOperation))
+        {
             throw new ArgumentOutOfRangeException(nameof(options));
+        }
         cancellationToken.ThrowIfCancellationRequested();
 
         lock (_gate)
         {
             if (_snapshot.IsClosed)
+            {
                 return StopAssignmentNotifierAsync(cancellationToken);
+            }
 
             _lastCloseOptions = options;
             // The in-memory cluster has no session timer, so a cluster-backed dynamic member always leaves on
@@ -306,7 +330,9 @@ public sealed class InMemoryStreamsGroupMember : IStreamsGroupMember, IStreamsGr
     private StreamsGroupHeartbeatResult ApplyUpdate(StreamsGroupMemberUpdate update, bool isJoin)
     {
         if (_group is not null)
+        {
             return ApplyGroupUpdate(_group, _cluster!, update, isJoin);
+        }
 
         var isTopologyJoin = update.Topology is not null;
         var activeTasks = isTopologyJoin ? null : CopyTaskSets(update.ActiveTasks);
@@ -376,7 +402,9 @@ public sealed class InMemoryStreamsGroupMember : IStreamsGroupMember, IStreamsGr
         }
 
         if (update.Topology is not null)
+        {
             group.Topology = update.Topology;
+        }
 
         Publish(new StreamsGroupMemberSnapshot
         {
@@ -398,7 +426,9 @@ public sealed class InMemoryStreamsGroupMember : IStreamsGroupMember, IStreamsGr
     private int FindClosedStaticMember(InMemoryStreamsGroup group)
     {
         if (_options.InstanceId is null)
+        {
             return -1;
+        }
 
         for (var index = 0; index < group.Members.Count; index++)
         {
@@ -422,7 +452,9 @@ public sealed class InMemoryStreamsGroupMember : IStreamsGroupMember, IStreamsGr
     {
         var members = group.Members;
         if (members.Count == 0)
+        {
             return;
+        }
 
         var assigned = new List<StreamsGroupTaskSet>?[members.Count];
         var subtopologies = group.Topology?.Subtopologies ?? [];
@@ -431,11 +463,15 @@ public sealed class InMemoryStreamsGroupMember : IStreamsGroupMember, IStreamsGr
         {
             var taskCount = GetTaskCount(subtopology, cluster);
             if (taskCount == 0)
+            {
                 continue;
+            }
 
             var partitions = new List<int>?[members.Count];
             for (var partition = 0; partition < taskCount; partition++)
+            {
                 (partitions[next++ % members.Count] ??= []).Add(partition);
+            }
 
             for (var index = 0; index < members.Count; index++)
             {
@@ -451,7 +487,9 @@ public sealed class InMemoryStreamsGroupMember : IStreamsGroupMember, IStreamsGr
         }
 
         for (var index = 0; index < members.Count; index++)
+        {
             members[index].ApplyAssignment(assigned[index]?.ToArray() ?? []);
+        }
     }
 
     private static int GetTaskCount(StreamsGroupSubtopology subtopology, InMemoryKafkaCluster cluster)
@@ -460,7 +498,9 @@ public sealed class InMemoryStreamsGroupMember : IStreamsGroupMember, IStreamsGr
         foreach (var topic in subtopology.SourceTopics)
         {
             if (cluster.TryGetTopicPartitionCount(topic, out var partitionCount))
+            {
                 taskCount = Math.Max(taskCount, partitionCount);
+            }
         }
 
         foreach (var topic in subtopology.RepartitionSourceTopics)
@@ -478,7 +518,9 @@ public sealed class InMemoryStreamsGroupMember : IStreamsGroupMember, IStreamsGr
     {
         var current = _snapshot;
         if (SameTasks(current.Assignment.ActiveTasks, activeTasks))
+        {
             return;
+        }
 
         _assignmentPending = true;
         Publish(new StreamsGroupMemberSnapshot
@@ -506,7 +548,9 @@ public sealed class InMemoryStreamsGroupMember : IStreamsGroupMember, IStreamsGr
     private static bool SameTasks(IReadOnlyList<StreamsGroupTaskSet> left, IReadOnlyList<StreamsGroupTaskSet> right)
     {
         if (left.Count != right.Count)
+        {
             return false;
+        }
 
         for (var index = 0; index < left.Count; index++)
         {
@@ -556,7 +600,9 @@ public sealed class InMemoryStreamsGroupMember : IStreamsGroupMember, IStreamsGr
         IReadOnlyList<StreamsGroupTaskSet>? taskSets)
     {
         if (taskSets is null)
+        {
             return null;
+        }
 
         var copy = new StreamsGroupTaskSet[taskSets.Count];
         for (var index = 0; index < taskSets.Count; index++)
@@ -564,7 +610,9 @@ public sealed class InMemoryStreamsGroupMember : IStreamsGroupMember, IStreamsGr
             var taskSet = taskSets[index];
             var partitions = new int[taskSet.Partitions.Count];
             for (var partitionIndex = 0; partitionIndex < partitions.Length; partitionIndex++)
+            {
                 partitions[partitionIndex] = taskSet.Partitions[partitionIndex];
+            }
             copy[index] = new StreamsGroupTaskSet
             {
                 SubtopologyId = taskSet.SubtopologyId,
@@ -580,7 +628,9 @@ public sealed class InMemoryStreamsGroupMember : IStreamsGroupMember, IStreamsGr
         ThrowIfClosed();
         ThrowIfNotInitialized();
         if (!_snapshot.IsJoined)
+        {
             throw new InvalidOperationException("The Streams group member has not joined.");
+        }
     }
 
     private void ThrowIfNotInitialized()

@@ -25,10 +25,16 @@ public class ProducerActivityDisabledBenchmarks
 
     // -1: no listener, 0: declines activities, 3: samples activities.
     [Params(-1, 0, 3)]
-    public int Sampling { get; set; }
+    public int Sampling
+    {
+        get; set;
+    }
 
     [Params(false, true)]
-    public bool StoredContext { get; set; }
+    public bool StoredContext
+    {
+        get; set;
+    }
 
     [GlobalSetup]
     public void Setup()
@@ -61,7 +67,9 @@ public class ProducerActivityDisabledBenchmarks
             ActivitySource.AddActivityListener(_listener);
         }
         if (StoredContext)
+        {
             DekafDiagnostics.SendParentContext.Value = ActivityContext.Parse(_storedParent.GetValueAsString()!, "vendor=value");
+        }
     }
 
     [GlobalCleanup]

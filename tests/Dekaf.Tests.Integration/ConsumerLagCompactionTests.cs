@@ -192,7 +192,10 @@ public sealed class ConsumerLagCompactionTests(KafkaTestContainer kafka) : Kafka
         {
             await foreach (var msg in consumer.ConsumeAsync(cts.Token))
             {
-                if (msg.Key != lagBoundaryKey) continue;
+                if (msg.Key != lagBoundaryKey)
+                {
+                    continue;
+                }
 
                 processedOffset = msg.Offset;
                 break;
@@ -399,7 +402,10 @@ public sealed class ConsumerLagCompactionTests(KafkaTestContainer kafka) : Kafka
             allConsumed.Add(msg);
 
             // Stop once we reach the high watermark
-            if (msg.Offset + 1 >= watermarks4.High) break;
+            if (msg.Offset + 1 >= watermarks4.High)
+            {
+                break;
+            }
         }
 
         // After consuming everything, position should match high watermark

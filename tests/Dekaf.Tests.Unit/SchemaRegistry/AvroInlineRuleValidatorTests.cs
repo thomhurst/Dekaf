@@ -123,7 +123,9 @@ public partial class AvroInlineRuleValidatorTests
         validator.Validate(payload, 17, failFast: false);
         var before = GC.GetAllocatedBytesForCurrentThread();
         for (var index = 0; index < 100; index++)
+        {
             validator.Validate(payload, 17, failFast: false);
+        }
         var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
 
         record.Add("items", new[] { 1, -1 });
@@ -167,7 +169,9 @@ public partial class AvroInlineRuleValidatorTests
         validator.Validate(payload, 17, failFast: false);
         var before = GC.GetAllocatedBytesForCurrentThread();
         for (var index = 0; index < 100; index++)
+        {
             validator.Validate(payload, 17, failFast: false);
+        }
         var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
 
         record.Add("items", new[] { 1, -1 });
@@ -212,7 +216,9 @@ public partial class AvroInlineRuleValidatorTests
         validator.Validate(payload, 28, failFast: false);
         var before = GC.GetAllocatedBytesForCurrentThread();
         for (var index = 0; index < 100; index++)
+        {
             validator.Validate(payload, 28, failFast: false);
+        }
         var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
 
         child.Add("code", -1);
@@ -269,7 +275,9 @@ public partial class AvroInlineRuleValidatorTests
         validator.Validate(payload, 30, failFast: false);
         var before = GC.GetAllocatedBytesForCurrentThread();
         for (var index = 0; index < 100; index++)
+        {
             validator.Validate(payload, 30, failFast: false);
+        }
         var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
 
         child.Add("code", -1);
@@ -323,7 +331,9 @@ public partial class AvroInlineRuleValidatorTests
         validator.Validate(payload, 17, failFast: false);
         var before = GC.GetAllocatedBytesForCurrentThread();
         for (var index = 0; index < 100; index++)
+        {
             validator.Validate(payload, 17, failFast: false);
+        }
         var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
 
         await Assert.That(allocated).IsEqualTo(0);
@@ -437,7 +447,9 @@ public partial class AvroInlineRuleValidatorTests
         validator.Validate(payload, 17, failFast: false);
         var before = GC.GetAllocatedBytesForCurrentThread();
         for (var index = 0; index < 100; index++)
+        {
             validator.Validate(payload, 17, failFast: false);
+        }
         var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
 
         record.Add("labels", new Dictionary<string, string> { ["region"] = "eu" });
@@ -517,7 +529,9 @@ public partial class AvroInlineRuleValidatorTests
         validator.Validate(payload, 18, failFast: false);
         var before = GC.GetAllocatedBytesForCurrentThread();
         for (var index = 0; index < 100; index++)
+        {
             validator.Validate(payload, 18, failFast: false);
+        }
         var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
 
         child.Add("code", 8);
@@ -630,7 +644,9 @@ public partial class AvroInlineRuleValidatorTests
             schema);
         var manyValues = new Dictionary<string, object>(128) { ["selected"] = invalidValue };
         for (var index = 1; index < 128; index++)
+        {
             manyValues.Add($"entry-{index}", invalidValue);
+        }
         var manyPayload = Serialize(manyValues, schema);
         var validator = new AvroInlineRuleValidator(schema);
 
@@ -679,7 +695,9 @@ public partial class AvroInlineRuleValidatorTests
         validator.Validate(payload, 18, failFast: false);
         var before = GC.GetAllocatedBytesForCurrentThread();
         for (var index = 0; index < 100; index++)
+        {
             validator.Validate(payload, 18, failFast: false);
+        }
         var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
 
         await Assert.That(allocated).IsEqualTo(0);
@@ -897,7 +915,9 @@ public partial class AvroInlineRuleValidatorTests
 
         var before = GC.GetAllocatedBytesForCurrentThread();
         for (var index = 0; index < 100; index++)
+        {
             validator.Validate(payload, 38, failFast: false);
+        }
         var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
 
         await Assert.That(allocated).IsEqualTo(0);
@@ -942,7 +962,9 @@ public partial class AvroInlineRuleValidatorTests
         validator.Validate(payload, 30, failFast: false);
         var before = GC.GetAllocatedBytesForCurrentThread();
         for (var index = 0; index < 100; index++)
+        {
             validator.Validate(payload, 30, failFast: false);
+        }
         var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
 
         value.Add("code", -1);
@@ -985,7 +1007,9 @@ public partial class AvroInlineRuleValidatorTests
 
         var before = GC.GetAllocatedBytesForCurrentThread();
         for (var index = 0; index < 100; index++)
+        {
             validator.Validate(payload, 39, failFast: false);
+        }
         var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
 
         await Assert.That(allocated).IsEqualTo(0);
@@ -1059,7 +1083,9 @@ public partial class AvroInlineRuleValidatorTests
         validator.Validate(payload, 26, failFast: false);
         var before = GC.GetAllocatedBytesForCurrentThread();
         for (var index = 0; index < 100; index++)
+        {
             validator.Validate(payload, 26, failFast: false);
+        }
         var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
 
         await Assert.That(allocated).IsEqualTo(0);
@@ -1207,7 +1233,9 @@ public partial class AvroInlineRuleValidatorTests
         validator.Validate(payload, 27, failFast: false);
         var before = GC.GetAllocatedBytesForCurrentThread();
         for (var index = 0; index < 100; index++)
+        {
             validator.Validate(payload, 27, failFast: false);
+        }
         var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
 
         right.Add("a", 2);
@@ -1240,7 +1268,9 @@ public partial class AvroInlineRuleValidatorTests
         validator.Validate(payload, 27, failFast: false);
         var before = GC.GetAllocatedBytesForCurrentThread();
         for (var index = 0; index < 100; index++)
+        {
             validator.Validate(payload, 27, failFast: false);
+        }
         var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
 
         await Assert.That(allocated).IsEqualTo(0);
@@ -1270,7 +1300,9 @@ public partial class AvroInlineRuleValidatorTests
         validator.Validate(payload, 27, failFast: false);
         var before = GC.GetAllocatedBytesForCurrentThread();
         for (var index = 0; index < 100; index++)
+        {
             validator.Validate(payload, 27, failFast: false);
+        }
         var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
 
         record.Add("longs", new long[] { 1, 3 });
@@ -1304,7 +1336,9 @@ public partial class AvroInlineRuleValidatorTests
         validator.Validate(payload, 27, failFast: false);
         var before = GC.GetAllocatedBytesForCurrentThread();
         for (var index = 0; index < 100; index++)
+        {
             validator.Validate(payload, 27, failFast: false);
+        }
         var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
 
         await Assert.That(allocated).IsEqualTo(0);
@@ -1334,7 +1368,9 @@ public partial class AvroInlineRuleValidatorTests
         validator.Validate(payload, 27, failFast: false);
         var before = GC.GetAllocatedBytesForCurrentThread();
         for (var index = 0; index < 100; index++)
+        {
             validator.Validate(payload, 27, failFast: false);
+        }
         var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
 
         await Assert.That(allocated).IsEqualTo(0);
@@ -1366,7 +1402,9 @@ public partial class AvroInlineRuleValidatorTests
         validator.Validate(payload, 27, failFast: false);
         var before = GC.GetAllocatedBytesForCurrentThread();
         for (var index = 0; index < 100; index++)
+        {
             validator.Validate(payload, 27, failFast: false);
+        }
 
         await Assert.That(GC.GetAllocatedBytesForCurrentThread() - before).IsEqualTo(0);
     }
@@ -1391,7 +1429,9 @@ public partial class AvroInlineRuleValidatorTests
         validator.Validate(payload, 27, failFast: false);
         var before = GC.GetAllocatedBytesForCurrentThread();
         for (var index = 0; index < 100; index++)
+        {
             validator.Validate(payload, 27, failFast: false);
+        }
         var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
 
         record.Add("payload", new byte[] { 0, 254 });
@@ -1435,7 +1475,9 @@ public partial class AvroInlineRuleValidatorTests
         validator.Validate(equalPayload, 27, failFast: false);
         var before = GC.GetAllocatedBytesForCurrentThread();
         for (var index = 0; index < 100; index++)
+        {
             validator.Validate(equalPayload, 27, failFast: false);
+        }
         var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
 
         Assert.Throws<ValidationRulesFailedException>(() =>
@@ -1474,7 +1516,9 @@ public partial class AvroInlineRuleValidatorTests
         validator.Validate(payload, 27, failFast: false);
         var before = GC.GetAllocatedBytesForCurrentThread();
         for (var index = 0; index < 100; index++)
+        {
             validator.Validate(payload, 27, failFast: false);
+        }
         var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
 
         record.Add("right", TwoFloat);
@@ -1558,9 +1602,13 @@ public partial class AvroInlineRuleValidatorTests
         var left = new Dictionary<string, object>();
         var right = new Dictionary<string, object>();
         for (var index = 0; index < 17; index++)
+        {
             left.Add(index.ToString(CultureInfo.InvariantCulture), index);
+        }
         for (var index = 16; index >= 0; index--)
+        {
             right.Add(index.ToString(CultureInfo.InvariantCulture), index);
+        }
         var record = new GenericRecord(schema);
         record.Add("left", left);
         record.Add("right", right);
@@ -1570,7 +1618,9 @@ public partial class AvroInlineRuleValidatorTests
         validator.Validate(payload, 31, failFast: false);
         var before = GC.GetAllocatedBytesForCurrentThread();
         for (var index = 0; index < 100; index++)
+        {
             validator.Validate(payload, 31, failFast: false);
+        }
         var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
 
         await Assert.That(allocated).IsEqualTo(0);
@@ -2003,7 +2053,9 @@ public partial class AvroInlineRuleValidatorTests
         validator.Validate(payload, 34, failFast: false);
         var before = GC.GetAllocatedBytesForCurrentThread();
         for (var index = 0; index < 100; index++)
+        {
             validator.Validate(payload, 34, failFast: false);
+        }
         var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
 
         record.Add("status", new GenericEnum(enumSchema, "CLOSED"));
@@ -2628,7 +2680,9 @@ public partial class AvroInlineRuleValidatorTests
 
         var before = GC.GetAllocatedBytesForCurrentThread();
         for (var index = 0; index < 100; index++)
+        {
             validator.Validate(payload, 23, failFast: false);
+        }
         var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
 
         await Assert.That(allocated).IsEqualTo(0);
@@ -2908,7 +2962,9 @@ public partial class AvroInlineRuleValidatorTests
 
         var before = GC.GetAllocatedBytesForCurrentThread();
         for (var index = 0; index < 100; index++)
+        {
             _ = provider.Register(registrySchema, avroSchema);
+        }
         var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
 
         await Assert.That(allocated).IsEqualTo(0);
@@ -3050,7 +3106,10 @@ internal sealed class InlineSpecificRecord : ISpecificRecord
         {"type":"record","name":"InlineSpecificRecord","namespace":"Dekaf.Tests","fields":[{"name":"age","type":"int","confluent:rules":[{"name":"age","expr":"this >= 0"}]}]}
         """);
 
-    public int Age { get; set; }
+    public int Age
+    {
+        get; set;
+    }
     public AvroSchema Schema => _SCHEMA;
 
     public object Get(int fieldPos)

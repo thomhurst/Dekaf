@@ -17,6 +17,8 @@
     <NuGetAuditLevel>low</NuGetAuditLevel>
     <!-- Keep audit results visible during restores without failing builds on advisories published outside our changes. -->
     <WarningsNotAsErrors>$(WarningsNotAsErrors);NU1900;NU1901;NU1902;NU1903;NU1904;NU1905</WarningsNotAsErrors>
+    <!-- Keep the shared profile's advisory rules as warnings in strict builds. IDE0011 remains an error. -->
+    <WarningsNotAsErrors>$(WarningsNotAsErrors);IDE0007;IDE0008;IDE0021;IDE0022;IDE0023;IDE0024;IDE0025;IDE0026;IDE0027;IDE0040;IDE0044;IDE0049;IDE0053;IDE0055;IDE0061;IDE0065;IDE0161;IDE1006;IDE2000;IDE2001;IDE2002;IDE2003</WarningsNotAsErrors>
     <!-- Suppress rules that are too pedantic for a protocol library -->
     <NoWarn>
       CA1028;CA1720;CA1819;CA1062;CA1848;CA1031;CA1513;CA1849;CA1815;CA1008;CA1069;CA1805;CA1001;CA1716;CA1024;CA2012;CA1305;CA1859

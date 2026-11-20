@@ -101,7 +101,9 @@ public sealed class InMemoryPartitioningTests
         await Assert.That(async () => await producer.ProduceAsync("orders", "key", "value"))
             .Throws<InvalidOperationException>();
         for (var partition = 0; partition < 3; partition++)
+        {
             await Assert.That(cluster.ReadRecords("orders", partition)).IsEmpty();
+        }
     }
 
     [Test]
@@ -141,7 +143,9 @@ public sealed class InMemoryPartitioningTests
         await Assert.That(async () => await producer.ProduceAsync("orders", key, "value"))
             .Throws<NotSupportedException>();
         for (var partition = 0; partition < 3; partition++)
+        {
             await Assert.That(cluster.ReadRecords("orders", partition)).IsEmpty();
+        }
     }
 
     [Test]
@@ -175,7 +179,10 @@ public sealed class InMemoryPartitioningTests
 
     private sealed class FixedPartitioner(int partition) : IPartitioner
     {
-        public int Calls { get; private set; }
+        public int Calls
+        {
+            get; private set;
+        }
 
         public int Partition(string topic, ReadOnlySpan<byte> key, bool keyIsNull, int partitionCount)
         {

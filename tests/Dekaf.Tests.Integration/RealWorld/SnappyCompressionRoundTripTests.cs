@@ -89,7 +89,10 @@ public sealed class SnappyCompressionRoundTripTests(KafkaTestContainer kafka) : 
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))
         {
             messages.Add(msg);
-            if (messages.Count >= messageCount) break;
+            if (messages.Count >= messageCount)
+            {
+                break;
+            }
         }
 
         await Assert.That(messages).Count().IsEqualTo(messageCount);
@@ -189,7 +192,10 @@ public sealed class SnappyCompressionRoundTripTests(KafkaTestContainer kafka) : 
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))
         {
             messages.Add(msg);
-            if (messages.Count >= expectedMessages.Count) break;
+            if (messages.Count >= expectedMessages.Count)
+            {
+                break;
+            }
         }
 
         await Assert.That(messages).Count().IsEqualTo(expectedMessages.Count);
@@ -323,7 +329,10 @@ public sealed class SnappyCompressionRoundTripTests(KafkaTestContainer kafka) : 
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))
         {
             messages.Add(msg);
-            if (messages.Count >= messageCount) break;
+            if (messages.Count >= messageCount)
+            {
+                break;
+            }
         }
 
         await Assert.That(messages).Count().IsEqualTo(messageCount);

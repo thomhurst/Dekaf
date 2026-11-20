@@ -14,17 +14,24 @@ public class ShareConsumerAssignmentRefreshBenchmarks
     private ShareConsumerPollBufferBenchmarks _poll = null!;
 
     [Params(1, 64)]
-    public int PartitionCount { get; set; }
+    public int PartitionCount
+    {
+        get; set;
+    }
 
     [Params(false, true)]
-    public bool Overflow { get; set; }
+    public bool Overflow
+    {
+        get; set;
+    }
 
     [GlobalSetup]
     public async Task Setup()
     {
         _poll = new ShareConsumerPollBufferBenchmarks
         {
-            PartitionCount = PartitionCount, Overflow = Overflow
+            PartitionCount = PartitionCount,
+            Overflow = Overflow
         };
         await _poll.Setup();
     }

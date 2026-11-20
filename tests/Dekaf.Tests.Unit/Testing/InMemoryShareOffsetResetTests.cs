@@ -25,7 +25,9 @@ public sealed class InMemoryShareOffsetResetTests
         first.Subscribe("jobs");
         await producer.ProduceAsync("jobs", "key", "before-poll");
         if (withFault)
+        {
             cluster.FaultPlan.PauseNext(new(KafkaFaultOperation.ShareConsume, "jobs", 0, "dekaf-in-memory-share")).Release();
+        }
 
         await Assert.That(await first.PollAsync().ToListAsync()).IsEmpty();
         await using var admin = new InMemoryAdminClient(cluster);
@@ -75,7 +77,9 @@ public sealed class InMemoryShareOffsetResetTests
         await using var member = new InMemoryShareConsumer<string, string>(cluster);
         member.Subscribe("jobs");
         if (withFault)
+        {
             cluster.FaultPlan.PauseNext(new(KafkaFaultOperation.ShareConsume, "jobs", 0, "dekaf-in-memory-share")).Release();
+        }
 
         var records = await member.PollAsync().ToListAsync();
         var expected = policy switch
@@ -112,7 +116,9 @@ public sealed class InMemoryShareOffsetResetTests
         {
             configured.Subscribe("jobs");
             if (pollBeforeDeletion)
+            {
                 await Assert.That((await configured.PollAsync().ToListAsync()).Count).IsEqualTo(1);
+            }
         }
 
         await using var admin = new InMemoryAdminClient(cluster);
@@ -223,7 +229,9 @@ public sealed class InMemoryShareOffsetResetTests
         });
         consumer.Subscribe("jobs");
         if (withFault)
+        {
             cluster.FaultPlan.PauseNext(new(KafkaFaultOperation.ShareConsume, "jobs", 0, "workers")).Release();
+        }
 
         await Assert.That(await consumer.PollAsync().ToListAsync()).IsEmpty();
         var offsets = await admin.ListShareGroupOffsetsAsync(new Dictionary<string, ListShareGroupOffsetsSpec> { ["workers"] = new() });
@@ -311,14 +319,23 @@ public sealed class InMemoryShareOffsetResetTests
                 builder.WithBootstrapServers("unused:9092").WithGroupId("workers")
                     .WithAcknowledgementMode(ShareAcknowledgementMode.Explicit);
                 if (policy == AutoOffsetReset.ByDuration)
+                {
                     builder.WithAutoOffsetResetByDuration(TimeSpan.FromHours(1));
+                }
                 else
+                {
                     builder.WithAutoOffsetReset(policy);
+                }
             }
+
             if (keyed)
+            {
                 dekaf.AddShareConsumer<string, string>("worker", Configure);
+            }
             else
+            {
                 dekaf.AddShareConsumer<string, string>(Configure);
+            }
         });
         services.AddSingleton(new InMemoryShareConsumerOptions { MemberId = "configured-member" });
         services.AddDekafInMemory();
@@ -347,7 +364,9 @@ public sealed class InMemoryShareOffsetResetTests
         var records = await consumer.PollAsync().ToListAsync();
         await Assert.That(records.Count).IsEqualTo(policy == AutoOffsetReset.Earliest ? 2 : policy == AutoOffsetReset.ByDuration ? 1 : 0);
         if (policy == AutoOffsetReset.ByDuration)
+        {
             await Assert.That(records[0].Value).IsEqualTo("recent");
+        }
         if (records.Count > 0)
         {
             await consumer.CommitAsync();
@@ -371,11 +390,15 @@ public sealed class InMemoryShareOffsetResetTests
         services.AddDekaf(dekaf =>
         {
             if (keyed)
+            {
                 dekaf.AddShareConsumerService<ResetWorker, string, string>("worker", builder => builder
                     .WithBootstrapServers("unused:9092").WithGroupId("workers").WithAutoOffsetReset(AutoOffsetReset.Earliest));
+            }
             else
+            {
                 dekaf.AddShareConsumerService<ResetWorker, string, string>(builder => builder
                     .WithBootstrapServers("unused:9092").WithGroupId("workers").WithAutoOffsetReset(AutoOffsetReset.Earliest));
+            }
         });
         services.AddSingleton(new InMemoryShareConsumerOptions { MemberId = "configured-member" });
         services.AddDekafInMemory();

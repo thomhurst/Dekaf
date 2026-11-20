@@ -9,7 +9,9 @@ public class FollowerRecoveryOracleTests
     {
         var oracle = new FollowerRecoveryOracle([100]);
         for (var i = 1; i < FollowerRecoveryOracle.FaultInterval; i++)
+        {
             await Assert.That(oracle.ObserveFollowerData(0, 10, oracle.Epoch)).IsFalse();
+        }
         await Assert.That(oracle.ObserveFollowerData(0, 10, oracle.Epoch)).IsTrue();
         oracle.ObserveLeaderResponse(0, 0, oracle.Epoch);
         await Assert.That(oracle.Snapshot().MatchingLeaderResponses).IsEqualTo(0);
@@ -62,11 +64,15 @@ public class FollowerRecoveryOracleTests
     {
         var oracle = new FollowerRecoveryOracle([100]);
         for (var i = 0; i < FollowerRecoveryOracle.FaultInterval; i++)
+        {
             oracle.ObserveFollowerData(0, 10, oracle.Epoch);
+        }
         oracle.ObserveLeaderResponse(0, 11, oracle.Epoch);
         await Assert.That(oracle.Snapshot().LeaderResponsesAfterVerifiedProgress).IsEqualTo(0);
         for (var i = 0; i <= 10; i++)
+        {
             oracle.RecordConsumed(0, i);
+        }
         oracle.ObserveLeaderResponse(0, 11, oracle.Epoch);
         await Assert.That(oracle.Snapshot()).IsEqualTo(new FollowerRecoverySnapshot(1, 0, 0, 1, UnmatchedLeaderResponses: 1));
     }
@@ -77,14 +83,18 @@ public class FollowerRecoveryOracleTests
         var oracle = new FollowerRecoveryOracle([1]);
         var oldEpoch = oracle.Epoch;
         for (var i = 0; i < FollowerRecoveryOracle.FaultInterval; i++)
+        {
             oracle.ObserveFollowerData(0, 0, oldEpoch);
+        }
         oracle.RecordConsumed(0, 0);
         await Assert.That(oracle.ObserveFollowerData(0, 0, oldEpoch)).IsFalse();
         await Assert.That(oracle.ObserveFollowerData(0, 0, oracle.Epoch)).IsFalse();
         oracle.CompleteRewind();
         oracle.ObserveLeaderResponse(0, 1, oldEpoch);
         for (var i = 0; i < FollowerRecoveryOracle.FaultInterval; i++)
+        {
             oracle.ObserveFollowerData(0, 0, oracle.Epoch);
+        }
         oracle.ObserveLeaderResponse(0, 0, oracle.Epoch);
         await Assert.That(oracle.Snapshot()).IsEqualTo(new FollowerRecoverySnapshot(2, 1, 1));
     }
@@ -94,7 +104,9 @@ public class FollowerRecoveryOracleTests
     {
         var oracle = new FollowerRecoveryOracle([100]);
         for (var i = 0; i < FollowerRecoveryOracle.FaultInterval; i++)
+        {
             oracle.ObserveFollowerData(0, 10, oracle.Epoch);
+        }
         oracle.BeginPhase();
         oracle.ObserveLeaderResponse(0, 0, oracle.Epoch);
         await Assert.That(oracle.Snapshot().Violations).IsEqualTo(0);

@@ -59,7 +59,10 @@ public class OffsetTopicIdProtocolBenchmarks
     };
 
     [Params((short)9, (short)10)]
-    public short Version { get; set; }
+    public short Version
+    {
+        get; set;
+    }
 
     [Benchmark]
     public void WriteOffsetCommitRequest()

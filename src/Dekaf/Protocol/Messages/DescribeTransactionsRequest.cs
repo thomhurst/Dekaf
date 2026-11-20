@@ -12,7 +12,10 @@ public sealed class DescribeTransactionsRequest : IKafkaRequest<DescribeTransact
     // is kept for a future release, but v1 must not be negotiated until a released schema is re-verified.
     public static short HighestSupportedVersion => 0;
 
-    public required IReadOnlyList<string> TransactionalIds { get; init; }
+    public required IReadOnlyList<string> TransactionalIds
+    {
+        get; init;
+    }
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {

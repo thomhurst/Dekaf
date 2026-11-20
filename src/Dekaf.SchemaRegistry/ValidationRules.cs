@@ -38,16 +38,28 @@ public enum ValidationRulesExecution
 public sealed class ValidationRule
 {
     /// <summary>The rule name.</summary>
-    public string? Name { get; init; }
+    public string? Name
+    {
+        get; init;
+    }
 
     /// <summary>Human-readable rule documentation.</summary>
-    public string? Doc { get; init; }
+    public string? Doc
+    {
+        get; init;
+    }
 
     /// <summary>The CEL expression.</summary>
-    public string? Expr { get; init; }
+    public string? Expr
+    {
+        get; init;
+    }
 
     /// <summary>The equivalent SQL expression, when supplied.</summary>
-    public string? Sql { get; init; }
+    public string? Sql
+    {
+        get; init;
+    }
 }
 
 /// <summary>One inline validation rule violation.</summary>
@@ -67,16 +79,28 @@ public sealed class ValidationRuleError
     }
 
     /// <summary>The rule that failed.</summary>
-    public ValidationRule Rule { get; }
+    public ValidationRule Rule
+    {
+        get;
+    }
 
     /// <summary>The dotted path of the value that failed.</summary>
-    public string FieldPath { get; }
+    public string FieldPath
+    {
+        get;
+    }
 
     /// <summary>An optional dynamic message returned by the rule.</summary>
-    public string? Message { get; }
+    public string? Message
+    {
+        get;
+    }
 
     /// <summary>The evaluation exception, when evaluation failed.</summary>
-    public Exception? Cause { get; }
+    public Exception? Cause
+    {
+        get;
+    }
 
     /// <inheritdoc />
     public override string ToString()
@@ -107,12 +131,17 @@ public sealed class ValidationRulesFailedException : KafkaException
     }
 
     /// <summary>Every violation found during the schema walk.</summary>
-    public IReadOnlyList<ValidationRuleError> Violations { get; }
+    public IReadOnlyList<ValidationRuleError> Violations
+    {
+        get;
+    }
 
     private static string BuildMessage(IReadOnlyList<ValidationRuleError>? violations)
     {
         if (violations is null || violations.Count == 0)
+        {
             return "Validation rule failed (no detail)";
+        }
 
         var builder = new StringBuilder();
         builder.Append("Validation rule failed (");
@@ -218,13 +247,34 @@ internal sealed class CompiledValidationRule
         _compilationError = compilationError;
     }
 
-    internal ValidationRule Rule { get; }
-    internal bool UsesRootValue { get; }
-    internal bool UsesRootSize { get; }
-    internal bool UsesSize { get; }
-    internal ValidationCelEqualityPair[] EqualityPairs { get; }
-    internal bool UsesCachedEquality { get; }
-    internal bool UsesRootAggregateEquality { get; }
+    internal ValidationRule Rule
+    {
+        get;
+    }
+    internal bool UsesRootValue
+    {
+        get;
+    }
+    internal bool UsesRootSize
+    {
+        get;
+    }
+    internal bool UsesSize
+    {
+        get;
+    }
+    internal ValidationCelEqualityPair[] EqualityPairs
+    {
+        get;
+    }
+    internal bool UsesCachedEquality
+    {
+        get;
+    }
+    internal bool UsesRootAggregateEquality
+    {
+        get;
+    }
 
     internal static CompiledValidationRule Compile(
         ValidationRule rule,
@@ -318,7 +368,9 @@ internal sealed class CompiledValidationRule
         IValidationCelAggregateComparer? rootAggregateComparer)
     {
         if (_compilationError is not null)
+        {
             throw new SchemaRegistryRuleException(_compilationError);
+        }
 
         try
         {
@@ -355,7 +407,9 @@ internal sealed class CompiledValidationRule
     {
         var values = t_memberValues;
         if (values is null || values.Length < count)
+        {
             t_memberValues = values = new ValidationCelMemberSlot[Math.Max(count, 8)];
+        }
 
         var generation = unchecked(++t_memberGeneration);
         if (generation == 0)
@@ -370,7 +424,9 @@ internal sealed class CompiledValidationRule
     {
         var sizes = t_sizes;
         if (sizes is null || sizes.Length < count)
+        {
             t_sizes = sizes = new ValidationCelSizeSlot[Math.Max(count, 8)];
+        }
 
         var generation = unchecked(++t_sizeGeneration);
         if (generation == 0)
@@ -387,7 +443,9 @@ internal sealed class CompiledValidationRule
         var frameIndex = index - 1;
         var frames = t_valueResolutionFrames;
         if (frameIndex >= 0 && (frames is null || frames.Length <= frameIndex))
+        {
             GrowValueResolutionFrames(frameIndex + 1);
+        }
         return new ValidationCelValueResolution(index);
     }
 
@@ -403,13 +461,17 @@ internal sealed class CompiledValidationRule
         ValidationCelValueResolution resolution)
     {
         if (resolution.Index == 0)
+        {
             return GetMemberValues(count);
+        }
 
         var index = resolution.Index - 1;
         ref var frame = ref t_valueResolutionFrames![index];
         var values = frame.MemberValues;
         if (values is null || values.Length < count)
+        {
             frame.MemberValues = values = new ValidationCelMemberSlot[Math.Max(count, 8)];
+        }
 
         ref var generation = ref frame.MemberGeneration;
         generation = unchecked(generation + 1);
@@ -426,13 +488,17 @@ internal sealed class CompiledValidationRule
         ValidationCelValueResolution resolution)
     {
         if (resolution.Index == 0)
+        {
             return GetSizeValues(count);
+        }
 
         var index = resolution.Index - 1;
         ref var frame = ref t_valueResolutionFrames![index];
         var sizes = frame.SizeValues;
         if (sizes is null || sizes.Length < count)
+        {
             frame.SizeValues = sizes = new ValidationCelSizeSlot[Math.Max(count, 8)];
+        }
 
         ref var generation = ref frame.SizeGeneration;
         generation = unchecked(generation + 1);
@@ -447,7 +513,9 @@ internal sealed class CompiledValidationRule
     internal static void EndValueResolution(ValidationCelValueResolution resolution)
     {
         if (t_valueResolutionDepth != resolution.Index + 1)
+        {
             throw new InvalidOperationException("CEL value resolutions must be released in reverse order.");
+        }
         t_valueResolutionDepth--;
     }
 
@@ -462,7 +530,9 @@ internal sealed class CompiledValidationRule
     {
         var equalities = t_equalities;
         if (equalities is null)
+        {
             t_equalities = equalities = new ValidationCelEqualitySlot[8];
+        }
         if (unchecked(++t_equalityGeneration) == 0)
         {
             Array.Clear(equalities);
@@ -494,7 +564,9 @@ internal sealed class CompiledValidationRule
         bool value)
     {
         if (equalityGeneration == 0)
+        {
             return;
+        }
         EnsureEqualityCapacity(equalityIndex);
         ref var slot = ref t_equalities![equalityIndex];
         slot.Value = value;
@@ -527,7 +599,9 @@ internal sealed class CompiledValidationRule
         bool value)
     {
         if (equalityGeneration == 0)
+        {
             return;
+        }
         NormalizeEqualityIndexes(ref leftIndex, ref rightIndex);
         ref var slot = ref t_pairEqualities[GetEqualitySlot(leftIndex, rightIndex)];
         slot.LeftIndex = leftIndex;
@@ -539,7 +613,9 @@ internal sealed class CompiledValidationRule
     private static void NormalizeEqualityIndexes(ref int leftIndex, ref int rightIndex)
     {
         if (leftIndex > rightIndex)
+        {
             (leftIndex, rightIndex) = (rightIndex, leftIndex);
+        }
     }
 
     private static int GetEqualitySlot(int leftIndex, int rightIndex) =>
@@ -549,7 +625,9 @@ internal sealed class CompiledValidationRule
     private static void EnsureEqualityCapacity(int equalityIndex)
     {
         if ((uint)equalityIndex < (uint)t_equalities!.Length)
+        {
             return;
+        }
         var equalities = t_equalities;
         Array.Resize(ref equalities, Math.Max(equalityIndex + 1, equalities.Length * 2));
         t_equalities = equalities;
@@ -603,7 +681,10 @@ internal sealed class CompiledValidationRule
 
 internal readonly struct ValidationCelValueResolution(int index) : IDisposable
 {
-    internal int Index { get; } = index;
+    internal int Index
+    {
+        get;
+    } = index;
 
     public void Dispose() => CompiledValidationRule.EndValueResolution(this);
 }
@@ -661,7 +742,9 @@ internal readonly struct ValidationCelMemberValues(
     {
         ref readonly var value = ref values[index];
         if (value.Generation != generation)
+        {
             return ValidationCelValue.Missing;
+        }
         return value.IsTyped
             ? value.Value
             : ValidationCelValue.FromJson(source.Slice(value.Start, value.Length), index + 1);
@@ -764,7 +847,10 @@ internal readonly record struct ValidationCelEqualityOperands(
 
 internal static class ValidationCelJsonReader
 {
-    internal static JsonReaderOptions Options { get; } = new()
+    internal static JsonReaderOptions Options
+    {
+        get;
+    } = new()
     {
         CommentHandling = JsonCommentHandling.Disallow,
         MaxDepth = 128
@@ -817,11 +903,15 @@ internal ref struct JsonObjectPropertyIndex
         while (scan.Read() && scan.TokenType != JsonTokenType.EndObject)
         {
             if (scan.TokenType != JsonTokenType.PropertyName)
+            {
                 return;
+            }
 
             AddOrReplace(ref scan, source);
             if (!scan.Read())
+            {
                 return;
+            }
             scan.Skip();
         }
     }
@@ -834,11 +924,15 @@ internal ref struct JsonObjectPropertyIndex
         {
             var entryIndex = GetBucket(bucket);
             if (entryIndex < 0)
+            {
                 return false;
+            }
 
             var entry = GetEntry(entryIndex);
             if (entry.Hash == hash && NameEquals(source, entry, ref reader))
+            {
                 return entry.TokenStart == checked((int)reader.TokenStartIndex);
+            }
             bucket = (bucket + 1) & (_bucketCapacity - 1);
         }
     }
@@ -876,9 +970,13 @@ internal ref struct JsonObjectPropertyIndex
     internal void Dispose()
     {
         if (_rentedBuckets is not null)
+        {
             ArrayPool<int>.Shared.Return(_rentedBuckets);
+        }
         if (_rentedEntries is not null)
+        {
             ArrayPool<Entry>.Shared.Return(_rentedEntries);
+        }
     }
 
     private readonly int FindBucket(
@@ -910,21 +1008,29 @@ internal ref struct JsonObjectPropertyIndex
         var newEntries = entries.AsSpan(0, entryCapacity);
         var newBuckets = buckets.AsSpan(0, bucketCapacity);
         for (var index = 0; index < _count; index++)
+        {
             newEntries[index] = GetEntry(index);
+        }
         newBuckets.Fill(-1);
 
         for (var index = 0; index < _count; index++)
         {
             var bucket = (int)(newEntries[index].Hash & (uint)(bucketCapacity - 1));
             while (newBuckets[bucket] >= 0)
+            {
                 bucket = (bucket + 1) & (bucketCapacity - 1);
+            }
             newBuckets[bucket] = index;
         }
 
         if (_rentedBuckets is not null)
+        {
             ArrayPool<int>.Shared.Return(_rentedBuckets);
+        }
         if (_rentedEntries is not null)
+        {
             ArrayPool<Entry>.Shared.Return(_rentedEntries);
+        }
         _rentedEntries = entries;
         _rentedBuckets = buckets;
         _entryCapacity = entryCapacity;
@@ -938,9 +1044,13 @@ internal ref struct JsonObjectPropertyIndex
     private void SetEntry(int index, Entry entry)
     {
         if (_rentedEntries is null)
+        {
             _initialEntries[index] = entry;
+        }
         else
+        {
             _rentedEntries[index] = entry;
+        }
     }
 
     private readonly int GetBucket(int index) => _rentedBuckets is null
@@ -950,9 +1060,13 @@ internal ref struct JsonObjectPropertyIndex
     private void SetBucket(int index, int value)
     {
         if (_rentedBuckets is null)
+        {
             _initialBuckets[index] = value;
+        }
         else
+        {
             _rentedBuckets[index] = value;
+        }
     }
 
     private static Entry CreateEntry(uint hash, ref Utf8JsonReader reader) => new()
@@ -970,7 +1084,9 @@ internal ref struct JsonObjectPropertyIndex
         ref Utf8JsonReader reader)
     {
         if (!entry.NameEscaped)
+        {
             return reader.ValueTextEquals(source.Slice(entry.NameStart, entry.NameLength));
+        }
 
         var leftReader = new Utf8JsonReader(
             source.Slice(entry.NameStart - 1, entry.NameLength + 2),
@@ -988,14 +1104,18 @@ internal ref struct JsonObjectPropertyIndex
         finally
         {
             if (rented is not null)
+            {
                 ArrayPool<byte>.Shared.Return(rented);
+            }
         }
     }
 
     private static uint HashName(ref Utf8JsonReader reader)
     {
         if (!reader.ValueIsEscaped)
+        {
             return Hash(reader.ValueSpan);
+        }
 
         var maximumLength = reader.ValueSpan.Length;
         byte[]? rented = null;
@@ -1009,7 +1129,9 @@ internal ref struct JsonObjectPropertyIndex
         finally
         {
             if (rented is not null)
+            {
                 ArrayPool<byte>.Shared.Return(rented);
+            }
         }
     }
 
@@ -1017,7 +1139,9 @@ internal ref struct JsonObjectPropertyIndex
     {
         var hash = 2166136261u;
         for (var index = 0; index < value.Length; index++)
+        {
             hash = (hash ^ value[index]) * 16777619u;
+        }
         return hash;
     }
 
@@ -1050,13 +1174,18 @@ internal sealed class ValidationCelMemberTable
         _root = root.Build();
     }
 
-    internal int Count { get; }
+    internal int Count
+    {
+        get;
+    }
 
     internal void Resolve(ReadOnlyMemory<byte> json, ValidationCelMemberValues values)
     {
         var reader = new Utf8JsonReader(json.Span, ValidationCelJsonReader.Options);
         if (!reader.Read() || reader.TokenType != JsonTokenType.StartObject)
+        {
             return;
+        }
 
         _root.Resolve(ref reader, json, values);
     }
@@ -1083,21 +1212,33 @@ internal sealed class ValidationCelMemberTable
             while (reader.Read() && reader.TokenType != JsonTokenType.EndObject)
             {
                 if (reader.TokenType != JsonTokenType.PropertyName)
+                {
                     return;
+                }
                 var index = Find(ref reader);
                 if (!reader.Read())
+                {
                     return;
+                }
                 var start = checked((int)reader.TokenStartIndex);
                 if (index >= 0 && _children[index] is { } child)
                 {
                     if (values.IsSet(child._markerValueIndex))
+                    {
                         child.Clear(values);
+                    }
                     if (reader.TokenType == JsonTokenType.StartObject)
+                    {
                         child.Resolve(ref reader, json, values);
+                    }
                     else
+                    {
                         reader.Skip();
+                    }
                     if (!values.IsSet(child._markerValueIndex))
+                    {
                         values.Set(child._markerValueIndex, 0, 0);
+                    }
                 }
                 else
                 {
@@ -1117,7 +1258,9 @@ internal sealed class ValidationCelMemberTable
         private void Clear(ValidationCelMemberValues values)
         {
             for (var index = 0; index < _terminalValueIndexes.Length; index++)
+            {
                 values.Clear(_terminalValueIndexes[index]);
+            }
         }
 
         private int Find(ref Utf8JsonReader reader)
@@ -1140,17 +1283,23 @@ internal sealed class ValidationCelMemberTable
                 {
                     var stored = _buckets[bucket];
                     if (stored == 0)
+                    {
                         return -1;
+                    }
                     var index = stored - 1;
                     if (name.SequenceEqual(_names[index]))
+                    {
                         return index;
+                    }
                     bucket = (bucket + 1) & (_buckets.Length - 1);
                 }
             }
             finally
             {
                 if (rented is not null)
+                {
                     ArrayPool<byte>.Shared.Return(rented);
+                }
             }
         }
     }
@@ -1180,7 +1329,9 @@ internal sealed class ValidationCelMemberTable
         {
             var children = new MemberNode?[_children.Count];
             for (var index = 0; index < children.Length; index++)
+            {
                 children[index] = _children[index]?.Build();
+            }
             return new MemberNode(
                 [.. _names],
                 [.. _valueIndexes],
@@ -1193,7 +1344,9 @@ internal sealed class ValidationCelMemberTable
             for (var index = 0; index < _names.Count; index++)
             {
                 if (name.AsSpan().SequenceEqual(_names[index]))
+                {
                     return index;
+                }
             }
 
             _names.Add(name);
@@ -1207,13 +1360,17 @@ internal sealed class ValidationCelMemberTable
     {
         var capacity = 4;
         while (capacity < names.Length * 2)
+        {
             capacity <<= 1;
+        }
         var buckets = new int[capacity];
         for (var index = 0; index < names.Length; index++)
         {
             var bucket = (int)(Hash(names[index]) & (uint)(capacity - 1));
             while (buckets[bucket] != 0)
+            {
                 bucket = (bucket + 1) & (capacity - 1);
+            }
             buckets[bucket] = index + 1;
         }
         return buckets;
@@ -1223,7 +1380,9 @@ internal sealed class ValidationCelMemberTable
     {
         var hash = 2166136261u;
         for (var index = 0; index < value.Length; index++)
+        {
             hash = (hash ^ value[index]) * 16777619u;
+        }
         return hash;
     }
 }
@@ -1242,7 +1401,10 @@ internal enum ValidationCelValueKind : byte
 
 internal interface IValidationCelAggregateComparer
 {
-    object? RawEqualityToken { get; }
+    object? RawEqualityToken
+    {
+        get;
+    }
 
     int GetSize(ReadOnlyMemory<byte> value);
 
@@ -1266,10 +1428,22 @@ internal readonly record struct ValidationCelValue(
     bool IsFloating = false,
     bool IsFloatingLiteral = false)
 {
-    internal static ValidationCelValue Missing { get; } = new(ValidationCelValueKind.Missing, default, false, 0, null, default);
-    internal static ValidationCelValue Null { get; } = new(ValidationCelValueKind.Null, default, false, 0, null, default);
-    internal static ValidationCelValue True { get; } = new(ValidationCelValueKind.Boolean, default, true, 0, null, default);
-    internal static ValidationCelValue False { get; } = new(ValidationCelValueKind.Boolean, default, false, 0, null, default);
+    internal static ValidationCelValue Missing
+    {
+        get;
+    } = new(ValidationCelValueKind.Missing, default, false, 0, null, default);
+    internal static ValidationCelValue Null
+    {
+        get;
+    } = new(ValidationCelValueKind.Null, default, false, 0, null, default);
+    internal static ValidationCelValue True
+    {
+        get;
+    } = new(ValidationCelValueKind.Boolean, default, true, 0, null, default);
+    internal static ValidationCelValue False
+    {
+        get;
+    } = new(ValidationCelValueKind.Boolean, default, false, 0, null, default);
 
     internal static ValidationCelValue FromBoolean(bool value) => value ? True : False;
     internal static ValidationCelValue FromNumber(decimal value) =>
@@ -1289,7 +1463,9 @@ internal readonly record struct ValidationCelValue(
     internal static ValidationCelValue NegateNumber(ValidationCelValue value)
     {
         if (value.Kind != ValidationCelValueKind.Number)
+        {
             throw Unsupported("CEL arithmetic operators require numeric operands.");
+        }
         return value with
         {
             Number = !value.IsFloating && value.Boolean
@@ -1306,7 +1482,9 @@ internal readonly record struct ValidationCelValue(
     internal static ValidationCelValue FromNumberLiteral(string text)
     {
         if (!IsNumberLiteral(text))
+        {
             throw Unsupported($"Invalid CEL number '{text}'.");
+        }
 
         var utf8 = Encoding.UTF8.GetBytes(text);
         var hasDecimal = decimal.TryParse(
@@ -1338,27 +1516,39 @@ internal readonly record struct ValidationCelValue(
     {
         var position = 0;
         while (position < text.Length && IsAsciiDigit(text[position]))
+        {
             position++;
+        }
         if (position == 0)
+        {
             return false;
+        }
 
         if (position < text.Length && text[position] == '.')
         {
             position++;
             while (position < text.Length && IsAsciiDigit(text[position]))
+            {
                 position++;
+            }
         }
 
         if (position < text.Length && text[position] is 'e' or 'E')
         {
             position++;
             if (position < text.Length && text[position] is '+' or '-')
+            {
                 position++;
+            }
             var exponentStart = position;
             while (position < text.Length && IsAsciiDigit(text[position]))
+            {
                 position++;
+            }
             if (position == exponentStart)
+            {
                 return false;
+            }
         }
 
         return position == text.Length;
@@ -1406,10 +1596,14 @@ internal readonly record struct ValidationCelValue(
     internal static ValidationCelValue FromJson(ReadOnlyMemory<byte> json, int sizeIndex = -1)
     {
         if (json.IsEmpty)
+        {
             return Missing;
+        }
         var reader = new Utf8JsonReader(json.Span, ValidationCelJsonReader.Options);
         if (!reader.Read())
+        {
             return Missing;
+        }
         return reader.TokenType switch
         {
             JsonTokenType.Null => Null,
@@ -1443,9 +1637,13 @@ internal readonly record struct ValidationCelValue(
     internal string GetString()
     {
         if (Literal is not null)
+        {
             return Literal;
+        }
         if (IsUtf8Literal)
+        {
             return Encoding.UTF8.GetString(Utf8Literal.Span);
+        }
         var reader = new Utf8JsonReader(Json.Span, ValidationCelJsonReader.Options);
         _ = reader.Read();
         return reader.GetString() ?? string.Empty;
@@ -1487,9 +1685,13 @@ internal readonly ref struct ValidationCelJsonNumber
                 var exponentStart = index + 1;
                 exponentNegative = value[exponentStart] == (byte)'-';
                 if (value[exponentStart] is (byte)'+' or (byte)'-')
+                {
                     exponentStart++;
+                }
                 while (exponentStart < value.Length && value[exponentStart] == (byte)'0')
+                {
                     exponentStart++;
+                }
                 exponentDigits = value[exponentStart..];
                 break;
             }
@@ -1536,16 +1738,29 @@ internal readonly ref struct ValidationCelJsonNumber
         _lastDigit = lastDigit;
     }
 
-    private int Sign { get; }
-    private int DigitCount { get; }
-    private long ExponentAdjustment { get; }
+    private int Sign
+    {
+        get;
+    }
+    private int DigitCount
+    {
+        get;
+    }
+    private long ExponentAdjustment
+    {
+        get;
+    }
 
     internal int CompareTo(ValidationCelJsonNumber other)
     {
         if (Sign != other.Sign)
+        {
             return Sign.CompareTo(other.Sign);
+        }
         if (Sign == 0)
+        {
             return 0;
+        }
 
         var comparison = CompareAdjustedExponents(other);
         if (comparison == 0)
@@ -1561,7 +1776,9 @@ internal readonly ref struct ValidationCelJsonNumber
                     : (byte)'0';
                 comparison = digit.CompareTo(otherDigit);
                 if (comparison != 0)
+                {
                     break;
+                }
             }
         }
 
@@ -1603,21 +1820,31 @@ internal readonly ref struct ValidationCelJsonNumber
                 right,
                 out var rightSign);
             if (leftSign != rightSign)
+            {
                 return leftSign.CompareTo(rightSign);
+            }
             if (leftSign == 0)
+            {
                 return 0;
+            }
 
             var comparison = leftLength.CompareTo(rightLength);
             if (comparison == 0)
+            {
                 comparison = left[..leftLength].SequenceCompareTo(right[..rightLength]);
+            }
             return leftSign > 0 ? comparison : -comparison;
         }
         finally
         {
             if (rentedRight is not null)
+            {
                 ArrayPool<byte>.Shared.Return(rentedRight);
+            }
             if (rentedLeft is not null)
+            {
                 ArrayPool<byte>.Shared.Return(rentedLeft);
+            }
         }
     }
 
@@ -1634,9 +1861,13 @@ internal readonly ref struct ValidationCelJsonNumber
 
         value = 0;
         for (var index = 0; index < magnitude.Length; index++)
+        {
             value = (value * 10) + magnitude[index] - (byte)'0';
+        }
         if (negative)
+        {
             value = -value;
+        }
         return true;
     }
 
@@ -1648,7 +1879,9 @@ internal readonly ref struct ValidationCelJsonNumber
         out int sign)
     {
         if (magnitude.IsEmpty)
+        {
             return WriteInt64(adjustment, destination, out sign);
+        }
         if (adjustment == 0)
         {
             magnitude.CopyTo(destination);
@@ -1670,7 +1903,9 @@ internal readonly ref struct ValidationCelJsonNumber
         _ = Utf8Formatter.TryFormat(adjustmentMagnitude, adjustmentText, out var adjustmentLength);
         var comparison = magnitude.Length.CompareTo(adjustmentLength);
         if (comparison == 0)
+        {
             comparison = magnitude.SequenceCompareTo(adjustmentText[..adjustmentLength]);
+        }
         if (comparison == 0)
         {
             sign = 0;
@@ -1747,7 +1982,9 @@ internal readonly ref struct ValidationCelJsonNumber
 
         var start = 0;
         while (destination[start] == (byte)'0')
+        {
             start++;
+        }
         var length = magnitude.Length - start;
         destination.Slice(start, length).CopyTo(destination);
         return length;
@@ -1757,7 +1994,9 @@ internal readonly ref struct ValidationCelJsonNumber
     {
         var value = 0UL;
         for (var index = 0; index < magnitude.Length; index++)
+        {
             value = (value * 10) + magnitude[index] - (byte)'0';
+        }
         return value;
     }
 
@@ -1775,14 +2014,19 @@ internal readonly ref struct ValidationCelJsonNumber
             Current = 0;
         }
 
-        internal byte Current { get; private set; }
+        internal byte Current
+        {
+            get; private set;
+        }
 
         internal bool MoveNext()
         {
             while (++_position <= _last)
             {
                 if (_value[_position] == (byte)'.')
+                {
                     continue;
+                }
                 Current = _value[_position];
                 return true;
             }
@@ -1890,9 +2134,13 @@ internal sealed class ValidationCelBinaryNode(
             ? left.EvaluateAggregate(context, out leftValueIndex)
             : left.Evaluate(context);
         if (operation == ValidationCelTokenKind.And && !RequireBoolean(leftValue))
+        {
             return ValidationCelValue.False;
+        }
         if (operation == ValidationCelTokenKind.Or && RequireBoolean(leftValue))
+        {
             return ValidationCelValue.True;
+        }
 
         var rightValueIndex = -1;
         var rightValue = isEquality
@@ -1924,9 +2172,13 @@ internal sealed class ValidationCelBinaryNode(
         int rightValueIndex)
     {
         if (left.Kind == ValidationCelValueKind.Missing || right.Kind == ValidationCelValueKind.Missing)
+        {
             throw Unsupported("Cannot compare a missing CEL member; guard optional members with has(...).");
+        }
         if (left.Kind != right.Kind)
+        {
             return false;
+        }
         return left.Kind switch
         {
             ValidationCelValueKind.Null => true,
@@ -1955,13 +2207,17 @@ internal sealed class ValidationCelBinaryNode(
             return value;
         }
         if (leftValueIndex < 0 || rightValueIndex < 0)
+        {
             return CompareAggregateValues(left, right);
+        }
         if (CompiledValidationRule.TryGetEquality(
                 context.EqualityGeneration,
                 leftValueIndex,
                 rightValueIndex,
                 out value))
+        {
             return value;
+        }
 
         value = CompareAggregateValues(
             left,
@@ -1997,14 +2253,18 @@ internal sealed class ValidationCelBinaryNode(
         if (left.Json.IsEmpty || right.Json.IsEmpty)
         {
             if (!left.Json.IsEmpty || !right.Json.IsEmpty)
+            {
                 return false;
+            }
             if (left.Utf8Literal.Span.SequenceEqual(right.Utf8Literal.Span) &&
                 (leftComparer is null
                     ? rightComparer is null
                     : rightComparer is not null &&
                       leftComparer.RawEqualityToken is { } leftToken &&
                       ReferenceEquals(leftToken, rightComparer.RawEqualityToken)))
+            {
                 return true;
+            }
             if (leftComparer is not null && rightComparer is not null)
             {
                 return leftComparer.AreEqual(
@@ -2021,16 +2281,22 @@ internal sealed class ValidationCelBinaryNode(
     private static int? Compare(ValidationCelValue left, ValidationCelValue right)
     {
         if (left.Kind == ValidationCelValueKind.Number && right.Kind == ValidationCelValueKind.Number)
+        {
             return CompareNumbers(left, right);
+        }
         if (left.Kind == ValidationCelValueKind.String && right.Kind == ValidationCelValueKind.String)
+        {
             return ValidationCelStrings.Compare(left, right);
+        }
         throw Unsupported("Comparison operands must have matching numeric or string types.");
     }
 
     private static ValidationCelValue Add(ValidationCelValue left, ValidationCelValue right)
     {
         if (!left.IsFloating && !right.IsFloating)
+        {
             return ValidationCelValue.FromNumber(RequireNumber(left) + RequireNumber(right));
+        }
         var leftFloating = GetFloatingNumber(left);
         var rightFloating = GetFloatingNumber(right);
         if (!RequiresDecimalMixedArithmetic(left, leftFloating) &&
@@ -2047,7 +2313,9 @@ internal sealed class ValidationCelBinaryNode(
     private static ValidationCelValue Subtract(ValidationCelValue left, ValidationCelValue right)
     {
         if (!left.IsFloating && !right.IsFloating)
+        {
             return ValidationCelValue.FromNumber(RequireNumber(left) - RequireNumber(right));
+        }
         var leftFloating = GetFloatingNumber(left);
         var rightFloating = GetFloatingNumber(right);
         if (!RequiresDecimalMixedArithmetic(left, leftFloating) &&
@@ -2097,19 +2365,25 @@ internal sealed class ValidationCelBinaryNode(
         if (left.IsFloating && right.IsFloating)
         {
             if (double.IsNaN(left.Floating) || double.IsNaN(right.Floating))
+            {
                 return null;
+            }
             return left.Floating.CompareTo(right.Floating);
         }
         if (left.IsFloating)
         {
             if (right.IsFloatingLiteral)
+            {
                 return left.Floating.CompareTo(right.Floating);
+            }
             return CompareFloatingToExact(left.Floating, right);
         }
         if (right.IsFloating)
         {
             if (left.IsFloatingLiteral)
+            {
                 return left.Floating.CompareTo(right.Floating);
+            }
             var comparison = CompareFloatingToExact(right.Floating, left);
             return comparison.HasValue ? -comparison.Value : null;
         }
@@ -2119,7 +2393,9 @@ internal sealed class ValidationCelBinaryNode(
         {
             var comparison = left.Number.CompareTo(right.Number);
             if (comparison != 0 || !HasSourceText(left) && !HasSourceText(right))
+            {
                 return comparison;
+            }
         }
 
         return CompareExactNumbers(left, right);
@@ -2128,14 +2404,22 @@ internal sealed class ValidationCelBinaryNode(
     private static int? CompareFloatingToExact(double floating, ValidationCelValue exact)
     {
         if (double.IsNaN(floating))
+        {
             return null;
+        }
         if (double.IsPositiveInfinity(floating))
+        {
             return 1;
+        }
         if (double.IsNegativeInfinity(floating))
+        {
             return -1;
+        }
 
         if (exact.Boolean && TryConvertIntegralFloating(floating, out var integral))
+        {
             return integral.CompareTo(exact.Number);
+        }
 
         Span<byte> floatingBuffer = stackalloc byte[1152];
         var written = FormatExactFloating(floating, floatingBuffer);
@@ -2215,12 +2499,16 @@ internal sealed class ValidationCelBinaryNode(
                 carry = product / limbBase;
             }
             if (carry != 0)
+            {
                 limbs[limbCount++] = (uint)carry;
+            }
         }
 
         Span<byte> digits = stackalloc byte[1100];
         if (!Utf8Formatter.TryFormat(limbs[limbCount - 1], digits, out var digitCount))
+        {
             throw Unsupported("CEL floating-point number could not be formatted.");
+        }
         for (var index = limbCount - 2; index >= 0; index--)
         {
             if (!Utf8Formatter.TryFormat(
@@ -2236,7 +2524,9 @@ internal sealed class ValidationCelBinaryNode(
 
         var written = 0;
         if (negative)
+        {
             destination[written++] = (byte)'-';
+        }
         var scale = binaryExponent < 0 ? -binaryExponent : 0;
         if (scale == 0)
         {
@@ -2279,11 +2569,17 @@ internal sealed class ValidationCelBinaryNode(
         Span<byte> buffer)
     {
         if (!value.Json.IsEmpty)
+        {
             return value.Json.Span;
+        }
         if (!value.Utf8Literal.IsEmpty)
+        {
             return value.Utf8Literal.Span;
+        }
         if (Utf8Formatter.TryFormat(value.Number, buffer, out var written))
+        {
             return buffer[..written];
+        }
         throw Unsupported("CEL number could not be formatted.");
     }
 }
@@ -2297,7 +2593,9 @@ internal static class ValidationCelJsonEquality
     {
         var nodeCount = CountValues(left);
         if (nodeCount == 0)
+        {
             return false;
+        }
 
         EqualityNode[]? rentedNodes = null;
         Span<EqualityNode> nodes = nodeCount <= StackNodeCount
@@ -2309,7 +2607,9 @@ internal static class ValidationCelJsonEquality
         try
         {
             if (BuildIndex(left, nodes) != nodeCount)
+            {
                 return false;
+            }
 
             var bucketCount = ConfigureObjectBuckets(nodes);
             Span<int> buckets = bucketCount <= StackBucketCount
@@ -2328,9 +2628,13 @@ internal static class ValidationCelJsonEquality
         finally
         {
             if (rentedBuckets is not null)
+            {
                 ArrayPool<int>.Shared.Return(rentedBuckets);
+            }
             if (rentedNodes is not null)
+            {
                 ArrayPool<EqualityNode>.Shared.Return(rentedNodes);
+            }
         }
     }
 
@@ -2341,7 +2645,9 @@ internal static class ValidationCelJsonEquality
         while (reader.Read())
         {
             if (IsValueToken(reader.TokenType))
+            {
                 count++;
+            }
         }
         return count;
     }
@@ -2374,7 +2680,9 @@ internal static class ValidationCelJsonEquality
             }
 
             if (!IsValueToken(reader.TokenType))
+            {
                 continue;
+            }
 
             var nodeIndex = nodeCount++;
             nodes[nodeIndex] = new EqualityNode
@@ -2396,9 +2704,13 @@ internal static class ValidationCelJsonEquality
             {
                 ref var parent = ref nodes[parentIndex];
                 if (parent.FirstChild < 0)
+                {
                     parent.FirstChild = nodeIndex;
+                }
                 else
+                {
                     nodes[parent.LastChild].NextSibling = nodeIndex;
+                }
                 parent.LastChild = nodeIndex;
                 parent.ChildCount++;
             }
@@ -2408,7 +2720,9 @@ internal static class ValidationCelJsonEquality
             nameHash = 0;
             nameEscaped = false;
             if (reader.TokenType is JsonTokenType.StartArray or JsonTokenType.StartObject)
+            {
                 parentIndex = nodeIndex;
+            }
         }
 
         return nodeCount;
@@ -2421,12 +2735,16 @@ internal static class ValidationCelJsonEquality
         {
             ref var node = ref nodes[index];
             if (node.TokenType != JsonTokenType.StartObject || node.ChildCount == 0)
+            {
                 continue;
+            }
 
             var capacity = 4;
             var minimum = checked(node.ChildCount * 2);
             while (capacity < minimum)
+            {
                 capacity = checked(capacity << 1);
+            }
             node.BucketStart = total;
             node.BucketCount = capacity;
             total = checked(total + capacity);
@@ -2443,7 +2761,9 @@ internal static class ValidationCelJsonEquality
         {
             ref var parent = ref nodes[index];
             if (parent.BucketCount == 0)
+            {
                 continue;
+            }
 
             parent.ChildCount = 0;
             for (var childIndex = parent.FirstChild;
@@ -2484,7 +2804,9 @@ internal static class ValidationCelJsonEquality
     {
         ref var node = ref nodes[nodeIndex];
         if (node.TokenType != rightReader.TokenType)
+        {
             return false;
+        }
 
         return node.TokenType switch
         {
@@ -2531,7 +2853,9 @@ internal static class ValidationCelJsonEquality
     private static bool StringsEqual(ref Utf8JsonReader left, ref Utf8JsonReader right)
     {
         if (!left.ValueIsEscaped)
+        {
             return right.ValueTextEquals(left.ValueSpan);
+        }
 
         var maximumLength = left.ValueSpan.Length;
         byte[]? rented = null;
@@ -2546,7 +2870,9 @@ internal static class ValidationCelJsonEquality
         finally
         {
             if (rented is not null)
+            {
                 ArrayPool<byte>.Shared.Return(rented);
+            }
         }
     }
 
@@ -2562,10 +2888,14 @@ internal static class ValidationCelJsonEquality
         while (rightReader.Read())
         {
             if (rightReader.TokenType == JsonTokenType.EndArray)
+            {
                 return childIndex < 0;
+            }
             if (childIndex < 0 ||
                 !NodesEqual(childIndex, source, nodes, buckets, ref rightReader, ref equalityEpoch))
+            {
                 return false;
+            }
             childIndex = nodes[childIndex].NextSibling;
         }
         return false;
@@ -2584,9 +2914,13 @@ internal static class ValidationCelJsonEquality
         while (rightReader.Read())
         {
             if (rightReader.TokenType == JsonTokenType.EndObject)
+            {
                 return matched == node.ChildCount;
+            }
             if (rightReader.TokenType != JsonTokenType.PropertyName || node.BucketCount == 0)
+            {
                 return false;
+            }
 
             var hash = HashName(ref rightReader);
             var bucket = node.BucketStart + (int)(hash & (uint)(node.BucketCount - 1));
@@ -2594,12 +2928,16 @@ internal static class ValidationCelJsonEquality
             {
                 var childIndex = buckets[bucket];
                 if (childIndex < 0)
+                {
                     return false;
+                }
                 ref var child = ref nodes[childIndex];
                 if (child.NameHash == hash && NameEquals(source, child, ref rightReader))
                 {
                     if (!rightReader.Read())
+                    {
                         return false;
+                    }
 
                     var valueReader = rightReader;
                     var equal = NodesEqual(
@@ -2610,15 +2948,21 @@ internal static class ValidationCelJsonEquality
                         ref valueReader,
                         ref equalityEpoch);
                     if (equal)
+                    {
                         rightReader = valueReader;
+                    }
                     else if (rightReader.TokenType is JsonTokenType.StartArray or JsonTokenType.StartObject)
+                    {
                         rightReader.Skip();
+                    }
 
                     if (child.SeenEpoch != objectEpoch)
                     {
                         child.SeenEpoch = objectEpoch;
                         if (equal)
+                        {
                             matched++;
+                        }
                     }
                     else if (child.Matched != equal)
                     {
@@ -2640,7 +2984,9 @@ internal static class ValidationCelJsonEquality
         ref Utf8JsonReader rightReader)
     {
         if (!node.NameEscaped)
+        {
             return rightReader.ValueTextEquals(source.Slice(node.NameStart, node.NameLength));
+        }
         var leftReader = ReadName(node, source);
         return StringsEqual(ref leftReader, ref rightReader);
     }
@@ -2673,7 +3019,9 @@ internal static class ValidationCelJsonEquality
     private static uint HashName(ref Utf8JsonReader reader)
     {
         if (!reader.ValueIsEscaped)
+        {
             return Hash(reader.ValueSpan);
+        }
         var maximumLength = reader.ValueSpan.Length;
         byte[]? rented = null;
         Span<byte> decoded = maximumLength <= 256
@@ -2686,7 +3034,9 @@ internal static class ValidationCelJsonEquality
         finally
         {
             if (rented is not null)
+            {
                 ArrayPool<byte>.Shared.Return(rented);
+            }
         }
     }
 
@@ -2694,7 +3044,9 @@ internal static class ValidationCelJsonEquality
     {
         var hash = 2166136261u;
         for (var index = 0; index < value.Length; index++)
+        {
             hash = (hash ^ value[index]) * 16777619u;
+        }
         return hash;
     }
 
@@ -2778,7 +3130,9 @@ internal sealed class ValidationCelFunctionNode(
             var value = receiver is null ? GetArgument(0, 2, context) : receiver.Evaluate(context);
             var candidate = receiver is null ? GetArgument(1, 2, context) : GetArgument(0, 1, context);
             if (value.Kind != ValidationCelValueKind.String || candidate.Kind != ValidationCelValueKind.String)
+            {
                 throw Unsupported($"CEL function '{name}' requires string operands.");
+            }
             return ValidationCelValue.FromBoolean(ValidationCelStrings.Evaluate(value, candidate, name switch
             {
                 "startsWith" => ValidationCelStringOperation.StartsWith,
@@ -2799,20 +3153,26 @@ internal sealed class ValidationCelFunctionNode(
     private void RequireArgumentCount(int expected)
     {
         if (arguments.Length != expected)
+        {
             throw Unsupported($"CEL function '{name}' expects {expected.ToString(CultureInfo.InvariantCulture)} argument(s).");
+        }
     }
 
     private static int GetSize(ValidationCelValue value, ValidationCelContext context)
     {
         if (value.SizeIndex >= 0 && context.Sizes.TryGet(value.SizeIndex, out var cached))
+        {
             return cached;
+        }
 
         var size = value.Kind is ValidationCelValueKind.Array or ValidationCelValueKind.Object &&
                    value.Json.IsEmpty
             ? GetEncodedAggregateSize(value, context)
             : GetSizeCore(value);
         if (value.SizeIndex >= 0)
+        {
             context.Sizes.Set(value.SizeIndex, size);
+        }
         return size;
     }
 
@@ -2830,11 +3190,17 @@ internal sealed class ValidationCelFunctionNode(
     private static int GetSizeCore(ValidationCelValue value)
     {
         if (value.Kind == ValidationCelValueKind.String)
+        {
             return ValidationCelStrings.GetLength(value);
+        }
         if (value.Kind == ValidationCelValueKind.Bytes)
+        {
             return value.Utf8Literal.Length;
+        }
         if (value.Kind is not (ValidationCelValueKind.Array or ValidationCelValueKind.Object))
+        {
             throw Unsupported("CEL function 'size' requires a string, list, or map.");
+        }
 
         var reader = new Utf8JsonReader(value.Json.Span, ValidationCelJsonReader.Options);
         _ = reader.Read();
@@ -2907,10 +3273,14 @@ internal static class ValidationCelStrings
         t_maximumLength = maximumLength;
         t_written = 0;
         if (unchecked(++t_generation) != 0)
+        {
             return;
+        }
 
         if (t_values is not null)
+        {
             Array.Clear(t_values);
+        }
         t_generation = 1;
     }
 
@@ -2922,7 +3292,9 @@ internal static class ValidationCelStrings
         t_maximumLength = 0;
         t_written = 0;
         if (buffer is not null)
+        {
             ArrayPool<byte>.Shared.Return(buffer);
+        }
     }
 
     internal static bool Evaluate(
@@ -2989,7 +3361,9 @@ internal static class ValidationCelStrings
         {
             var status = Rune.DecodeFromUtf8(text, out _, out var consumed);
             if (status != OperationStatus.Done)
+            {
                 throw Unsupported("CEL string contains invalid UTF-8.");
+            }
             text = text[consumed..];
             count++;
         }
@@ -3018,23 +3392,33 @@ internal static class ValidationCelStrings
     private static ReadOnlySpan<byte> Decode(ValidationCelValue value)
     {
         if (value.Literal is not null || value.IsUtf8Literal)
+        {
             return value.Utf8Literal.Span;
+        }
 
         var valueIndex = value.SizeIndex;
         if ((uint)valueIndex >= (uint)t_valueCount)
+        {
             throw Unsupported("CEL string cache index is invalid.");
+        }
 
         var values = t_values;
         if (values is null || values.Length < t_valueCount)
+        {
             t_values = values = new ValidationCelStringSlot[Math.Max(t_valueCount, 8)];
+        }
 
         ref var slot = ref values[valueIndex];
         var buffer = t_buffer;
         if (slot.Generation == t_generation)
+        {
             return buffer!.AsSpan(slot.Start, slot.Length);
+        }
 
         if (buffer is null)
+        {
             t_buffer = buffer = ArrayPool<byte>.Shared.Rent(Math.Max(t_maximumLength, 1));
+        }
 
         var reader = new Utf8JsonReader(value.Json.Span, ValidationCelJsonReader.Options);
         _ = reader.Read();
@@ -3120,16 +3504,31 @@ internal sealed class ValidationCelParser
         return result;
     }
 
-    internal bool UsesSize { get; private set; }
+    internal bool UsesSize
+    {
+        get; private set;
+    }
     internal ValidationCelEqualityPair[] EqualityPairs => [.. _equalityPairs];
 
     private readonly List<ValidationCelEqualityPair> _equalityPairs = [];
     private readonly int _equalityIndexOffset;
     private readonly Dictionary<ValidationCelEqualityOperands, int>? _equalityIndexes;
-    internal bool UsesRootValue { get; private set; }
-    internal bool UsesRootSize { get; private set; }
-    internal bool UsesCachedEquality { get; private set; }
-    internal bool UsesRootAggregateEquality { get; private set; }
+    internal bool UsesRootValue
+    {
+        get; private set;
+    }
+    internal bool UsesRootSize
+    {
+        get; private set;
+    }
+    internal bool UsesCachedEquality
+    {
+        get; private set;
+    }
+    internal bool UsesRootAggregateEquality
+    {
+        get; private set;
+    }
 
     private ValidationCelNode ParseConditional()
     {
@@ -3139,7 +3538,9 @@ internal sealed class ValidationCelParser
         var usedRootSize = UsesRootSize;
         var condition = ParseOr();
         if (!TryTake(ValidationCelTokenKind.Question))
+        {
             return condition;
+        }
         if (sizedMemberCount >= 0)
         {
             RollbackSizedMembers(sizedMemberCount);
@@ -3149,7 +3550,9 @@ internal sealed class ValidationCelParser
         Expect(ValidationCelTokenKind.Colon);
         var whenFalse = ParseConditional();
         if (sizedMemberCount >= 0)
+        {
             RollbackSizedMembers(sizedMemberCount);
+        }
         return new ValidationCelConditionalNode(condition, whenTrue, whenFalse);
     }
 
@@ -3157,7 +3560,9 @@ internal sealed class ValidationCelParser
     {
         var left = ParseAnd();
         while (TryTake(ValidationCelTokenKind.Or))
+        {
             left = new ValidationCelBinaryNode(ValidationCelTokenKind.Or, left, ParseAnd());
+        }
         return left;
     }
 
@@ -3165,7 +3570,9 @@ internal sealed class ValidationCelParser
     {
         var left = ParseEquality();
         while (TryTake(ValidationCelTokenKind.And))
+        {
             left = new ValidationCelBinaryNode(ValidationCelTokenKind.And, left, ParseEquality());
+        }
         return left;
     }
 
@@ -3196,13 +3603,17 @@ internal sealed class ValidationCelParser
     private int GetEqualityIndex(int leftValueIndex, int rightValueIndex)
     {
         if (_equalityIndexes is null)
+        {
             return _equalityIndexOffset + _equalityPairs.Count;
+        }
 
         var operands = leftValueIndex <= rightValueIndex
             ? new ValidationCelEqualityOperands(leftValueIndex, rightValueIndex)
             : new ValidationCelEqualityOperands(rightValueIndex, leftValueIndex);
         if (_equalityIndexes.TryGetValue(operands, out var equalityIndex))
+        {
             return equalityIndex;
+        }
 
         equalityIndex = _equalityIndexes.Count;
         _equalityIndexes.Add(operands, equalityIndex);
@@ -3235,7 +3646,9 @@ internal sealed class ValidationCelParser
     private ValidationCelNode ParseUnary()
     {
         if (_current.Kind is not (ValidationCelTokenKind.Not or ValidationCelTokenKind.Minus))
+        {
             return ParsePrimary();
+        }
         return new ValidationCelUnaryNode(Take().Kind, ParseUnary());
     }
 
@@ -3286,7 +3699,9 @@ internal sealed class ValidationCelParser
         {
             var isSize = identifier == "size";
             if (isSize)
+            {
                 _sizeArgumentDepth++;
+            }
             ValidationCelNode[] arguments;
             try
             {
@@ -3295,7 +3710,9 @@ internal sealed class ValidationCelParser
             finally
             {
                 if (isSize)
+                {
                     _sizeArgumentDepth--;
+                }
             }
             UsesSize |= isSize;
             return identifier == "timestamp"
@@ -3308,11 +3725,15 @@ internal sealed class ValidationCelParser
         }
 
         if (!TryTake(ValidationCelTokenKind.LeftParen))
+        {
             return node;
+        }
 
         var separator = identifier.LastIndexOf('.');
         if (separator <= 0)
+        {
             throw Unsupported($"Unsupported CEL call '{identifier}'.");
+        }
         return new ValidationCelFunctionNode(identifier[(separator + 1)..], ParseArguments(), node);
     }
 
@@ -3320,7 +3741,9 @@ internal sealed class ValidationCelParser
     {
         if (arguments is not [ValidationCelLiteralNode { Value.Kind: ValidationCelValueKind.String } literal] ||
             !TryParseTimestampMilliseconds(literal.Value.Literal, out var timestampMilliseconds))
+        {
             throw Unsupported("CEL function 'timestamp' requires one ISO-8601 string literal.");
+        }
 
         return new ValidationCelLiteralNode(
             ValidationCelValue.FromNumber(timestampMilliseconds));
@@ -3352,15 +3775,23 @@ internal sealed class ValidationCelParser
         {
             var digit = value[index] - '0';
             if ((uint)digit > 9)
+            {
                 break;
+            }
             if (++digitCount > 9)
+            {
                 return false;
+            }
             nanoseconds = nanoseconds * 10 + digit;
         }
         if (digitCount == 0)
+        {
             return false;
+        }
         while (digitCount++ < 9)
+        {
             nanoseconds *= 10;
+        }
 
         var wholeSecondTicks = utcTicks - utcTicks % TimeSpan.TicksPerSecond;
         milliseconds =
@@ -3384,7 +3815,9 @@ internal sealed class ValidationCelParser
         for (var index = 0; index < segments.Length; index++)
         {
             if (segments[index].Length == 0)
+            {
                 throw Unsupported($"Unsupported CEL identifier '{identifier}'.");
+            }
             path[index] = Encoding.UTF8.GetBytes(segments[index]);
         }
         if (!_memberIndexes.TryGetValue(memberPath, out var memberIndex))
@@ -3395,7 +3828,9 @@ internal sealed class ValidationCelParser
         }
         _usedMemberIndexes.Add(memberIndex);
         if (_sizeArgumentDepth != 0 && _sizedMemberIndexes?.Add(memberIndex) == true)
+        {
             _sizedMemberAdditions!.Add(memberIndex);
+        }
         return new ValidationCelThisNode(memberIndex);
     }
 
@@ -3403,9 +3838,13 @@ internal sealed class ValidationCelParser
     {
         var additions = _sizedMemberAdditions;
         if (additions is null || additions.Count == count)
+        {
             return;
+        }
         for (var index = additions.Count - 1; index >= count; index--)
+        {
             _sizedMemberIndexes!.Remove(additions[index]);
+        }
         additions.RemoveRange(count, additions.Count - count);
     }
 
@@ -3419,7 +3858,9 @@ internal sealed class ValidationCelParser
     private ValidationCelNode[] ParseArguments()
     {
         if (TryTake(ValidationCelTokenKind.RightParen))
+        {
             return [];
+        }
         var arguments = new List<ValidationCelNode>();
         do
         {
@@ -3433,9 +3874,13 @@ internal sealed class ValidationCelParser
     private ValidationCelToken ReadNextToken()
     {
         while (_position < _expression.Length && char.IsWhiteSpace(_expression[_position]))
+        {
             _position++;
+        }
         if (_position == _expression.Length)
+        {
             return new ValidationCelToken(ValidationCelTokenKind.End, string.Empty);
+        }
 
         var character = _expression[_position];
         switch (character)
@@ -3485,9 +3930,13 @@ internal sealed class ValidationCelParser
                     return ReadBytes(_expression[_position]);
                 }
                 if (char.IsDigit(character))
+                {
                     return ReadNumber();
+                }
                 if (char.IsLetter(character) || character == '_')
+                {
                     return ReadIdentifier();
+                }
                 throw Unsupported($"Unsupported CEL character '{character}'.");
         }
     }
@@ -3510,7 +3959,9 @@ internal sealed class ValidationCelParser
     {
         _position++;
         if (_position >= _expression.Length || _expression[_position] != second)
+        {
             throw Unsupported($"Expected '{second}{second}'.");
+        }
         _position++;
         return new ValidationCelToken(kind, string.Empty);
     }
@@ -3520,7 +3971,9 @@ internal sealed class ValidationCelParser
         var start = _position++;
         while (_position < _expression.Length &&
                (char.IsLetterOrDigit(_expression[_position]) || _expression[_position] is '_' or '.'))
+        {
             _position++;
+        }
         var text = _expression[start.._position];
         return text switch
         {
@@ -3535,22 +3988,30 @@ internal sealed class ValidationCelParser
     {
         var start = _position++;
         while (_position < _expression.Length && char.IsDigit(_expression[_position]))
+        {
             _position++;
+        }
 
         if (_position < _expression.Length && _expression[_position] == '.')
         {
             _position++;
             while (_position < _expression.Length && char.IsDigit(_expression[_position]))
+            {
                 _position++;
+            }
         }
 
         if (_position < _expression.Length && _expression[_position] is 'e' or 'E')
         {
             _position++;
             if (_position < _expression.Length && _expression[_position] is '+' or '-')
+            {
                 _position++;
+            }
             while (_position < _expression.Length && char.IsDigit(_expression[_position]))
+            {
                 _position++;
+            }
         }
 
         return new ValidationCelToken(ValidationCelTokenKind.Number, _expression[start.._position]);
@@ -3564,14 +4025,18 @@ internal sealed class ValidationCelParser
         {
             var character = _expression[_position++];
             if (character == quote)
+            {
                 return new ValidationCelToken(ValidationCelTokenKind.String, builder.ToString());
+            }
             if (character != '\\')
             {
                 builder.Append(character);
                 continue;
             }
             if (_position == _expression.Length)
+            {
                 throw Unsupported("Unterminated CEL string escape.");
+            }
             builder.Append(_expression[_position++] switch
             {
                 'n' => '\n',
@@ -3608,7 +4073,9 @@ internal sealed class ValidationCelParser
                 continue;
             }
             if (_position == _expression.Length)
+            {
                 throw Unsupported("Unterminated CEL bytes escape.");
+            }
 
             var escaped = _expression[_position++];
             if (escaped is 'x' or 'X')
@@ -3627,7 +4094,9 @@ internal sealed class ValidationCelParser
             {
                 var codePoint = ReadHexEscape(escaped == 'u' ? 4 : 8);
                 if ((uint)codePoint > 0x10ffff || codePoint is >= 0xd800 and <= 0xdfff)
+                {
                     throw Unsupported("CEL Unicode escape must contain a valid scalar value.");
+                }
                 if (codePoint <= char.MaxValue)
                 {
                     text.Append((char)codePoint);
@@ -3664,7 +4133,9 @@ internal sealed class ValidationCelParser
     private int ReadHexEscape(int digits)
     {
         if (_position + digits > _expression.Length)
+        {
             throw Unsupported("Incomplete CEL hexadecimal escape.");
+        }
 
         var value = 0;
         for (var index = 0; index < digits; index++)
@@ -3685,18 +4156,24 @@ internal sealed class ValidationCelParser
     private byte ReadOctalEscape(char first)
     {
         if (_position + 2 > _expression.Length)
+        {
             throw Unsupported("Incomplete CEL octal escape.");
+        }
         var second = _expression[_position++];
         var third = _expression[_position++];
         if (second is not (>= '0' and <= '7') || third is not (>= '0' and <= '7'))
+        {
             throw Unsupported("Invalid CEL octal escape.");
+        }
         return (byte)(((first - '0') << 6) | ((second - '0') << 3) | third - '0');
     }
 
     private static void AppendUtf8(StringBuilder text, List<byte> bytes)
     {
         if (text.Length == 0)
+        {
             return;
+        }
         bytes.AddRange(Encoding.UTF8.GetBytes(text.ToString()));
         text.Clear();
     }
@@ -3704,7 +4181,9 @@ internal sealed class ValidationCelParser
     private bool TryTake(ValidationCelTokenKind kind)
     {
         if (_current.Kind != kind)
+        {
             return false;
+        }
         _current = ReadNextToken();
         return true;
     }
@@ -3719,7 +4198,9 @@ internal sealed class ValidationCelParser
     private void Expect(ValidationCelTokenKind kind)
     {
         if (_current.Kind != kind)
+        {
             throw Unsupported($"Expected {kind} but found '{_current.Text}'.");
+        }
         _current = ReadNextToken();
     }
 }
@@ -3734,9 +4215,13 @@ internal static class ValidationCelHelpers
     internal static decimal RequireNumber(ValidationCelValue value)
     {
         if (value.Kind != ValidationCelValueKind.Number)
+        {
             throw Unsupported("CEL arithmetic operators require numeric operands.");
+        }
         if (value.Boolean)
+        {
             return value.Number;
+        }
         throw Unsupported("CEL arithmetic operands must fit the decimal range.");
     }
 

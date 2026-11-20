@@ -69,7 +69,9 @@ public sealed class BackpressureIntegrationTests(KafkaTestContainer kafka) : Kaf
         finally
         {
             if (reservationHeld)
+            {
                 accumulator.ReleaseMemory(bufferMemory);
+            }
         }
     }
 
@@ -175,7 +177,10 @@ public sealed class BackpressureIntegrationTests(KafkaTestContainer kafka) : Kaf
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))
         {
             consumed.Add(msg);
-            if (consumed.Count >= messageCount) break;
+            if (consumed.Count >= messageCount)
+            {
+                break;
+            }
         }
 
         // Assert - no message loss
@@ -276,7 +281,10 @@ public sealed class BackpressureIntegrationTests(KafkaTestContainer kafka) : Kaf
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))
         {
             consumed.Add(msg);
-            if (consumed.Count >= messageCount) break;
+            if (consumed.Count >= messageCount)
+            {
+                break;
+            }
         }
 
         await Assert.That(consumed.Count).IsEqualTo(messageCount);
@@ -366,7 +374,9 @@ public sealed class BackpressureIntegrationTests(KafkaTestContainer kafka) : Kaf
         var payload = new string('x', 200);
         var produceTasks = new List<Task<RecordMetadata>>(messageCount);
         for (var i = 0; i < messageCount; i++)
+        {
             produceTasks.Add(producer.ProduceAsync(topic, $"key-{i}", payload).AsTask());
+        }
 
         // Batches linger for 100 ms, so the arenas of the batches just opened are still charged.
         await Assert.That(accumulator.ArenaChargedBytes).IsGreaterThan(0);

@@ -68,7 +68,9 @@ public sealed partial class InMemoryConsumer<TKey, TValue>
                 // that was not enumerated has no checkpoint, so its records are redelivered.
                 ClearUnprovenBatch(batch);
                 if (batch.TryGetNextOffset(out var checkpoint))
+                {
                     CompleteBatch(selection, checkpoint.Offset);
+                }
             }
             finally
             {
@@ -98,7 +100,9 @@ public sealed partial class InMemoryConsumer<TKey, TValue>
                 yield return batch;
                 ClearUnprovenBatch(batch);
                 if (batch.TryGetNextOffset(out var checkpoint))
+                {
                     CompleteBatch(selection, checkpoint.Offset);
+                }
             }
             finally
             {
@@ -118,25 +122,33 @@ public sealed partial class InMemoryConsumer<TKey, TValue>
             // Observe the wake signal before checking, so a change after the check is not missed.
             var recordsChanged = _cluster.ObserveRecordsChanged();
             if (_rebalanceListener is { } listener)
+            {
                 await DeliverRebalanceEventsAsync(listener, cancellationToken).ConfigureAwait(false);
+            }
 
             if (TrySelectBatch(out var selection, out var rebalancePending))
             {
                 if (!HasPotentialConsumerFault())
+                {
                     return selection;
+                }
 
                 await ApplyBatchFaultAsync(KafkaFaultOperation.Fetch, selection.Partition, cancellationToken)
                     .ConfigureAwait(false);
                 await ApplyBatchFaultAsync(KafkaFaultOperation.Consume, selection.Partition, cancellationToken)
                     .ConfigureAwait(false);
                 if (IsBatchSelectionCurrent(selection))
+                {
                     return selection;
+                }
 
                 continue;
             }
 
             if (rebalancePending)
+            {
                 continue;
+            }
 
             await recordsChanged.WaitAsync(cancellationToken).ConfigureAwait(false);
         }
@@ -149,7 +161,9 @@ public sealed partial class InMemoryConsumer<TKey, TValue>
     {
         var scope = new KafkaFaultScope(operation, partition.Topic, partition.Partition, _groupId);
         if (!HasMatchingFault(scope))
+        {
             return;
+        }
 
         await _cluster.FaultPlan.ApplyAsync(scope, cancellationToken).ConfigureAwait(false);
         ThrowIfDisposed();
@@ -186,7 +200,9 @@ public sealed partial class InMemoryConsumer<TKey, TValue>
         }
 
         lock (_gate)
+        {
             _lastBatchPartition = partition;
+        }
 
         var records = new List<InMemoryRecord> { first };
         _cluster.ReadRecordsFrom(partition, first.Offset + 1, _options.IsolationLevel, _borrowStoredRecords, records);
@@ -240,7 +256,9 @@ public sealed partial class InMemoryConsumer<TKey, TValue>
             lock (_gate)
             {
                 if (_disposed || !_readingDepartingCheckpoint && !IsBatchSelectionCurrentUnderLock(selection))
+                {
                     return BatchIterationStatus.Stopped;
+                }
 
                 return _paused.Contains(partition)
                     ? BatchIterationStatus.Paused
@@ -251,14 +269,18 @@ public sealed partial class InMemoryConsumer<TKey, TValue>
     private Action<TopicPartition, long, int>? CreateBatchOffsetStore()
     {
         if (!_options.EnableAutoOffsetStore || _options.OffsetStoreTiming != OffsetStoreTiming.OnDelivery)
+        {
             return null;
+        }
 
         return (partition, nextOffset, _) =>
         {
             lock (_gate)
             {
                 if (!_disposed && GetCurrentAssignmentUnderLock().Contains(partition))
+                {
                     StoreOffsetUnderLock(partition, nextOffset);
+                }
             }
         };
     }
@@ -290,14 +312,18 @@ public sealed partial class InMemoryConsumer<TKey, TValue>
 
         _positions[selection.Partition] = nextOffset;
         if (storeOffset && _options.EnableAutoOffsetStore)
+        {
             StoreOffsetUnderLock(selection.Partition, nextOffset);
+        }
         return true;
     }
 
     private void SetUnprovenBatch(BatchSelection selection, object batch)
     {
         lock (_gate)
+        {
             _unprovenBatch = new UnprovenBatch(selection, batch, NextOffset: -1, CommittedOffset: -1);
+        }
     }
 
     private void ClearUnprovenBatch(object batch)
@@ -305,7 +331,9 @@ public sealed partial class InMemoryConsumer<TKey, TValue>
         lock (_gate)
         {
             if (ReferenceEquals(_unprovenBatch?.Batch, batch))
+            {
                 _unprovenBatch = null;
+            }
         }
     }
 
@@ -317,12 +345,16 @@ public sealed partial class InMemoryConsumer<TKey, TValue>
     private void RetainUnprovenBatch(object? batch)
     {
         if (batch is null)
+        {
             return;
+        }
 
         lock (_gate)
         {
             if (_unprovenBatch is not { } unproven || !ReferenceEquals(unproven.Batch, batch))
+            {
                 return;
+            }
 
             _unprovenBatch = null;
             // Read the checkpoint first: advancing the position stops the batch.
@@ -332,7 +364,9 @@ public sealed partial class InMemoryConsumer<TKey, TValue>
             {
                 // The commit already stored this offset, and OnDelivery may have stored a later one.
                 if (!AdvanceBatchUnderLock(selection, unproven.CommittedOffset, storeOffset: false))
+                {
                     return;
+                }
 
                 selection = selection with { Position = unproven.CommittedOffset };
             }
@@ -356,7 +390,9 @@ public sealed partial class InMemoryConsumer<TKey, TValue>
     private void StageUnprovenBatchUnderLock()
     {
         if (_unprovenBatch is not { } unproven)
+        {
             return;
+        }
 
         if (unproven.Batch is { } active)
         {

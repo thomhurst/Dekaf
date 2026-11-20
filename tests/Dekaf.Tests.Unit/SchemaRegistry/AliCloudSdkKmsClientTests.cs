@@ -93,9 +93,18 @@ public sealed class AliCloudSdkKmsClientTests
         private readonly TcpListener _listener = new(IPAddress.Loopback, 0);
         private readonly CancellationTokenSource _stopping = new(TimeSpan.FromSeconds(15));
         private readonly Task _server;
-        public TaskCompletionSource<string> Request { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        public TaskCompletionSource ReleaseResponse { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        public AliCloudSdkKmsClient Client { get; }
+        public TaskCompletionSource<string> Request
+        {
+            get;
+        } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource ReleaseResponse
+        {
+            get;
+        } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public AliCloudSdkKmsClient Client
+        {
+            get;
+        }
 
         public KmsEndpoint(string response, bool holdResponse = false, int status = 200)
         {
@@ -103,12 +112,18 @@ public sealed class AliCloudSdkKmsClientTests
             var port = ((IPEndPoint)_listener.LocalEndpoint).Port;
             Client = new AliCloudSdkKmsClient(new Client(new Config
             {
-                AccessKeyId = "offline-test-id", AccessKeySecret = "offline-test-secret",
-                Endpoint = $"127.0.0.1:{port}", Protocol = "http", RegionId = "cn-chengdu",
-                ReadTimeout = 5000, ConnectTimeout = 5000
+                AccessKeyId = "offline-test-id",
+                AccessKeySecret = "offline-test-secret",
+                Endpoint = $"127.0.0.1:{port}",
+                Protocol = "http",
+                RegionId = "cn-chengdu",
+                ReadTimeout = 5000,
+                ConnectTimeout = 5000
             }));
             if (!holdResponse)
+            {
                 ReleaseResponse.SetResult();
+            }
             _server = ServeAsync(response, status);
         }
 
@@ -124,15 +139,23 @@ public sealed class AliCloudSdkKmsClientTests
             {
                 captured.AppendLine(line);
                 if (line.StartsWith("Content-Length:", StringComparison.OrdinalIgnoreCase))
+                {
                     contentLength = int.Parse(line[15..], System.Globalization.CultureInfo.InvariantCulture);
+                }
                 if (line.Equals("Expect: 100-continue", StringComparison.OrdinalIgnoreCase))
+                {
                     expectContinue = true;
+                }
             }
             if (expectContinue)
+            {
                 await stream.WriteAsync("HTTP/1.1 100 Continue\r\n\r\n"u8.ToArray(), _stopping.Token);
+            }
             var body = new char[contentLength];
             if (contentLength > 0)
+            {
                 await reader.ReadBlockAsync(body.AsMemory(), _stopping.Token);
+            }
             captured.Append(body);
             Request.TrySetResult(captured.ToString());
             await ReleaseResponse.Task.WaitAsync(_stopping.Token);
@@ -145,13 +168,19 @@ public sealed class AliCloudSdkKmsClientTests
         public async ValueTask DisposeAsync()
         {
             ReleaseResponse.TrySetResult();
-            try { await _server.WaitAsync(TimeSpan.FromSeconds(5)); }
+            try
+            {
+                await _server.WaitAsync(TimeSpan.FromSeconds(5));
+            }
             catch (TimeoutException) { /* Force shutdown below without masking the test failure. */ }
             finally
             {
                 await _stopping.CancelAsync();
                 _listener.Stop();
-                try { await _server; }
+                try
+                {
+                    await _server;
+                }
                 catch (OperationCanceledException) when (_stopping.IsCancellationRequested) { }
                 finally { _stopping.Dispose(); }
             }

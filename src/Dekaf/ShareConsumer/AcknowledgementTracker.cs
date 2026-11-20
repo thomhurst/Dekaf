@@ -43,7 +43,9 @@ internal sealed class AcknowledgementTracker
     {
         var pool = _pollBatchPool;
         if (pool is not { InUse: true } || !ReferenceEquals(batches, pool.Batches))
+        {
             return;
+        }
         foreach (var list in batches!.Values)
         {
             list.Clear();
@@ -118,8 +120,12 @@ internal sealed class AcknowledgementTracker
     internal bool HasPendingOutsideAssignment(TopicPartitionSet assignment)
     {
         foreach (var partition in _pendingAcks)
+        {
             if (!assignment.Contains(partition.Key))
+            {
                 return true;
+            }
+        }
         return false;
     }
 
@@ -143,7 +149,9 @@ internal sealed class AcknowledgementTracker
             _freePartitions = null;
             _peakPendingPartitions = count;
             if (_pollBatchPool is not { InUse: true })
+            {
                 _pollBatchPool = null;
+            }
         }
         else if (count > _peakPendingPartitions)
         {
@@ -157,7 +165,9 @@ internal sealed class AcknowledgementTracker
             {
                 var batches = partitionAcks.BuildBatches(releaseImplicit ? AcknowledgeType.Release : AcknowledgeType.Accept);
                 if (batches.Count > 0)
+                {
                     result[tp] = batches;
+                }
 
                 partitionAcks.Reset();
                 partitionAcks.Next = _freePartitions;
@@ -170,7 +180,9 @@ internal sealed class AcknowledgementTracker
             // Flush is synchronous and single-threaded. Detach even when materialization
             // throws, preserving the previous swap's consumption of the pending state.
             if (reusePending)
+            {
                 pending.Clear();
+            }
         }
     }
 
@@ -187,7 +199,9 @@ internal sealed class AcknowledgementTracker
             _freePartitions = null;
             _peakPendingPartitions = count;
             if (_pollBatchPool is not { InUse: true })
+            {
                 _pollBatchPool = null;
+            }
         }
         else if (count > _peakPendingPartitions)
         {
@@ -215,7 +229,9 @@ internal sealed class AcknowledgementTracker
                 }
                 var batches = partitionAcks.BuildBatches(releaseImplicit ? AcknowledgeType.Release : AcknowledgeType.Accept, scratch);
                 if (batches.Count > 0)
+                {
                     result[tp] = batches;
+                }
 
                 partitionAcks.Reset();
                 partitionAcks.Next = _freePartitions;
@@ -226,7 +242,9 @@ internal sealed class AcknowledgementTracker
         catch
         {
             if (reuseForPoll)
+            {
                 ReturnPollBatches(_pollBatchPool?.Batches);
+            }
             throw;
         }
         finally
@@ -234,7 +252,9 @@ internal sealed class AcknowledgementTracker
             // Flush is synchronous and single-threaded. Detach even when materialization
             // throws, preserving the previous swap's consumption of the pending state.
             if (reusePending)
+            {
                 pending.Clear();
+            }
         }
     }
 
@@ -302,7 +322,9 @@ internal sealed class AcknowledgementTracker
                     }
 
                     if (runStart is not null)
+                    {
                         partitionAcks.TrackRange(runStart.Value, runEnd, runType);
+                    }
 
                     runStart = offset;
                     runEnd = offset;
@@ -310,7 +332,9 @@ internal sealed class AcknowledgementTracker
                 }
 
                 if (runStart is not null)
+                {
                     partitionAcks.TrackRange(runStart.Value, runEnd, runType);
+                }
             }
         }
     }
@@ -322,7 +346,9 @@ internal sealed class AcknowledgementTracker
         return partitionAcks ??= RentPartition();
 #else
         if (_pendingAcks.TryGetValue(tp, out var partitionAcks))
+        {
             return partitionAcks;
+        }
 
         partitionAcks = RentPartition();
         _pendingAcks[tp] = partitionAcks;
@@ -334,7 +360,9 @@ internal sealed class AcknowledgementTracker
     {
         var partition = _freePartitions;
         if (partition is null)
+        {
             return new PartitionAcknowledgements();
+        }
         _freePartitions = partition.Next;
         partition.Next = null;
         return partition;
@@ -363,7 +391,9 @@ internal sealed class AcknowledgementTracker
         internal void TrackRange(long firstOffset, long lastOffset, AcknowledgeType type)
         {
             if (lastOffset < firstOffset)
+            {
                 return;
+            }
 
             var incoming = new AckRange(firstOffset, lastOffset, type);
             if (type == AcknowledgeType.Gap)
@@ -407,13 +437,21 @@ internal sealed class AcknowledgementTracker
             foreach (var gap in _gaps)
             {
                 if (gap.LastOffset < next)
+                {
                     continue;
+                }
                 if (gap.FirstOffset > lastOffset)
+                {
                     break;
+                }
                 if (gap.FirstOffset > next)
+                {
                     TrackRange(next, gap.FirstOffset - 1, type);
+                }
                 if (gap.LastOffset >= lastOffset)
+                {
                     return;
+                }
                 next = gap.LastOffset + 1;
             }
 
@@ -425,16 +463,22 @@ internal sealed class AcknowledgementTracker
             // Deliveries lie below the parser's gaps. Only a release recorded before the
             // gap can cover it; the gap outcome wins there.
             if (_ranges.Count != 0 && _ranges[^1].LastOffset >= incoming.FirstOffset)
+            {
                 RemoveFromRanges(incoming);
+            }
 
             var gaps = _gaps ??= [];
             // The parser walks offsets upwards, so gaps normally append.
             if (gaps.Count == 0 || incoming.FirstOffset > gaps[^1].LastOffset)
             {
                 if (gaps.Count != 0 && gaps[^1].LastOffset + 1 == incoming.FirstOffset)
+                {
                     gaps[^1] = Merge(gaps[^1], incoming);
+                }
                 else
+                {
                     gaps.Add(incoming);
+                }
                 return;
             }
 
@@ -442,7 +486,9 @@ internal sealed class AcknowledgementTracker
             // range they touch.
             var index = 0;
             while (index < gaps.Count && EndsBeforeWithGap(gaps[index].LastOffset, incoming.FirstOffset))
+            {
                 index++;
+            }
             while (index < gaps.Count && TouchesOrOverlaps(gaps[index], incoming))
             {
                 incoming = Merge(gaps[index], incoming);
@@ -461,16 +507,22 @@ internal sealed class AcknowledgementTracker
                 if (!Overlaps(current, removed))
                 {
                     if (current.FirstOffset > removed.LastOffset)
+                    {
                         return;
+                    }
                     index++;
                     continue;
                 }
 
                 _ranges.RemoveAt(index);
                 if (current.FirstOffset < removed.FirstOffset)
+                {
                     _ranges.Insert(index++, current with { LastOffset = removed.FirstOffset - 1 });
+                }
                 if (current.LastOffset > removed.LastOffset)
+                {
                     _ranges.Insert(index++, current with { FirstOffset = removed.LastOffset + 1 });
+                }
             }
         }
 
@@ -511,14 +563,18 @@ internal sealed class AcknowledgementTracker
                 }
 
                 if (incoming.LastOffset < current.FirstOffset)
+                {
                     break;
+                }
 
                 index++;
             }
 
             index = 0;
             while (index < _ranges.Count && _ranges[index].FirstOffset < incoming.FirstOffset)
+            {
                 index++;
+            }
 
             _ranges.Insert(index, incoming);
         }
@@ -551,7 +607,9 @@ internal sealed class AcknowledgementTracker
         internal bool ContainsOffset(long offset)
         {
             if (_explicitAcks is not null && _explicitAcks.ContainsKey(offset))
+            {
                 return true;
+            }
 
             return IndexOf(_ranges, offset) >= 0 || (_gaps is not null && IndexOf(_gaps, offset) >= 0);
         }
@@ -566,11 +624,17 @@ internal sealed class AcknowledgementTracker
                 var mid = low + ((high - low) >> 1);
                 var range = ranges[mid];
                 if (offset < range.FirstOffset)
+                {
                     high = mid - 1;
+                }
                 else if (offset > range.LastOffset)
+                {
                     low = mid + 1;
+                }
                 else
+                {
                     return mid;
+                }
             }
 
             return -1;
@@ -600,7 +664,9 @@ internal sealed class AcknowledgementTracker
             }
 
             foreach (var range in _ranges)
+            {
                 batches.Add(BuildRangeBatch(range, implicitDisposition, explicitAcks, applied));
+            }
             // A gap range can span a large compacted hole, so it stays single-type unless an
             // explicit outcome falls inside it.
             if (_gaps is not null)
@@ -614,10 +680,14 @@ internal sealed class AcknowledgementTracker
             }
 
             if (explicitAcks is not null)
+            {
                 AddStandaloneExplicitBatches(batches, explicitAcks, applied!);
+            }
 
             if (batches.Count <= 1)
+            {
                 return batches;
+            }
 
             batches.Sort(static (left, right) => left.FirstOffset.CompareTo(right.FirstOffset));
             return MergeConsecutiveBatches(batches);
@@ -633,7 +703,9 @@ internal sealed class AcknowledgementTracker
             // Kafka accepts one disposition for a whole range. Undisclosed acquisitions
             // need no per-offset storage; explicit outcomes still use the mixed path.
             if (range.AcknowledgeType == AcknowledgeType.Release && explicitAcks is null)
+            {
                 return new(range.FirstOffset, range.LastOffset, AcknowledgementBatchData.ReleaseTypes);
+            }
             var acknowledgeTypes = new byte[length];
             Array.Fill(acknowledgeTypes, (byte)(range.AcknowledgeType == ImplicitDelivery
                 ? implicitDisposition
@@ -665,7 +737,9 @@ internal sealed class AcknowledgementTracker
             for (var index = 0; index < explicitAcks.Length; index++)
             {
                 if (applied[index])
+                {
                     continue;
+                }
 
                 var (offset, type) = explicitAcks[index];
                 if (runTypes is not null && offset == previousOffset + 1)
@@ -675,7 +749,9 @@ internal sealed class AcknowledgementTracker
                 else
                 {
                     if (runTypes is not null)
+                    {
                         batches.Add(new AcknowledgementBatchData(runStart, previousOffset, runTypes.ToArray()));
+                    }
                     runStart = offset;
                     runTypes = [(byte)type];
                 }
@@ -684,7 +760,9 @@ internal sealed class AcknowledgementTracker
             }
 
             if (runTypes is not null)
+            {
                 batches.Add(new AcknowledgementBatchData(runStart, previousOffset, runTypes.ToArray()));
+            }
         }
 
         private static bool HasExplicitAckIn(KeyValuePair<long, AcknowledgeType>[] explicitAcks, AckRange range)
@@ -702,9 +780,13 @@ internal sealed class AcknowledgementTracker
             {
                 var mid = low + ((high - low) >> 1);
                 if (explicitAcks[mid].Key < offset)
+                {
                     low = mid + 1;
+                }
                 else
+                {
                     high = mid;
+                }
             }
 
             return low;
@@ -800,8 +882,12 @@ internal readonly record struct AcknowledgementBatchData(long FirstOffset, long 
     internal void CopyTypesTo(Span<byte> destination)
     {
         if (AcknowledgeTypes.Length == 1)
+        {
             destination.Fill(AcknowledgeTypes[0]);
+        }
         else
+        {
             AcknowledgeTypes.AsSpan().CopyTo(destination);
+        }
     }
 }

@@ -43,10 +43,16 @@ public class TransactionalProduceAllocationBenchmarks
     private ActivityListener? _activityListener;
 
     [Params(false, true)]
-    public bool UsePreparedSerializer { get; set; }
+    public bool UsePreparedSerializer
+    {
+        get; set;
+    }
 
     [Params(false, true)]
-    public bool TracingEnabled { get; set; }
+    public bool TracingEnabled
+    {
+        get; set;
+    }
 
     [GlobalSetup]
     public async Task Setup()
@@ -129,7 +135,9 @@ public class TransactionalProduceAllocationBenchmarks
     {
         var seal = _accumulator.ExpireLingerAsync(CancellationToken.None);
         if (seal.IsCompletedSuccessfully)
+        {
             seal.GetAwaiter().GetResult();
+        }
 
         if (_accumulator.TryDrainBatch(_topicPartition, out var batch))
         {

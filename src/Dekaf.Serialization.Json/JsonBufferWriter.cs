@@ -27,7 +27,9 @@ internal sealed class JsonBufferWriter : IBufferWriter<byte>
     public void Advance(int count)
     {
         if ((uint)count > (uint)(_buffer.Length - _written))
+        {
             throw new ArgumentOutOfRangeException(nameof(count));
+        }
 
         _written += count;
     }
@@ -49,7 +51,9 @@ internal sealed class JsonBufferWriter : IBufferWriter<byte>
         ArgumentOutOfRangeException.ThrowIfNegative(sizeHint);
         sizeHint = Math.Max(sizeHint, 1);
         if (sizeHint <= _buffer.Length - _written)
+        {
             return;
+        }
 
         var required = checked(_written + sizeHint);
         var doubled = Math.Min((long)_buffer.Length * 2, Array.MaxLength);
@@ -57,7 +61,9 @@ internal sealed class JsonBufferWriter : IBufferWriter<byte>
         var newBuffer = ArrayPool<byte>.Shared.Rent(newSize);
         _buffer.AsSpan(0, _written).CopyTo(newBuffer);
         if (_buffer.Length != 0)
+        {
             ArrayPool<byte>.Shared.Return(_buffer);
+        }
 
         _buffer = newBuffer;
     }

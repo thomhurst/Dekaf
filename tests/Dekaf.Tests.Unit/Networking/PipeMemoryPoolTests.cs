@@ -20,7 +20,9 @@ public class PipeMemoryPoolTests
     public async Task Create_BoundsSharedConfigurationCache()
     {
         for (var i = 1; i <= 32; i++)
+        {
             _ = PipeMemoryPool.Create(maxArrayLength: 1024 * 1024, maxArraysPerBucket: i);
+        }
 
         await Assert.That(PipeMemoryPool.SharedPoolCount).IsEqualTo(16);
     }

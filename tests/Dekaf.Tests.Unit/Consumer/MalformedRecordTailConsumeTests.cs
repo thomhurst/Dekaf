@@ -87,7 +87,9 @@ public sealed class MalformedRecordTailConsumeTests
                 await foreach (var batch in consumer.ConsumeBatchAsync(cts.Token))
                 {
                     foreach (var result in batch)
+                    {
                         delivered.Add(result.Offset);
+                    }
                     break;
                 }
                 break;
@@ -95,7 +97,9 @@ public sealed class MalformedRecordTailConsumeTests
                 await foreach (var batch in consumer.ConsumeRawBatchAsync(cts.Token))
                 {
                     foreach (var result in batch)
+                    {
                         delivered.Add(result.Offset);
+                    }
                     break;
                 }
                 break;
@@ -106,13 +110,13 @@ public sealed class MalformedRecordTailConsumeTests
     {
         var buffer = new System.Buffers.ArrayBufferWriter<byte>();
         using (var source = new RecordBatch
-               {
-                   Records =
-                   [
-                       new Record { OffsetDelta = 0, Value = "value-0"u8.ToArray() },
+        {
+            Records =
+            [
+                new Record { OffsetDelta = 0, Value = "value-0"u8.ToArray() },
                        new Record { OffsetDelta = 1, Value = "value-1"u8.ToArray() }
-                   ]
-               })
+            ]
+        })
         {
             source.Write(buffer);
         }

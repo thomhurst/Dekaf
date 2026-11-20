@@ -7,13 +7,22 @@ namespace Dekaf.Outbox.EntityFrameworkCore;
 public sealed class OutboxLease
 {
     /// <summary>The bucket this lease covers.</summary>
-    public int Bucket { get; set; }
+    public int Bucket
+    {
+        get; set;
+    }
 
     /// <summary>The relay currently holding the lease, or null when unowned.</summary>
-    public string? Owner { get; set; }
+    public string? Owner
+    {
+        get; set;
+    }
 
     /// <summary>When the lease expires; an expired lease can be claimed by any relay.</summary>
-    public DateTimeOffset ExpiresAtUtc { get; set; }
+    public DateTimeOffset ExpiresAtUtc
+    {
+        get; set;
+    }
 }
 
 /// <summary>
@@ -26,14 +35,23 @@ public sealed class OutboxLease
 public sealed class OutboxRelayInstance
 {
     /// <summary>The relay instance id.</summary>
-    public string RelayId { get; set; } = string.Empty;
+    public string RelayId
+    {
+        get; set;
+    } = string.Empty;
 
     /// <summary>Last heartbeat time.</summary>
-    public DateTimeOffset LastSeenUtc { get; set; }
+    public DateTimeOffset LastSeenUtc
+    {
+        get; set;
+    }
 
     /// <summary>
     /// When the relay released its buckets on a graceful stop; null while it runs. Peers do
     /// not count a stopped relay, and a later heartbeat under the same relay id clears it.
     /// </summary>
-    public DateTimeOffset? StoppedAtUtc { get; set; }
+    public DateTimeOffset? StoppedAtUtc
+    {
+        get; set;
+    }
 }

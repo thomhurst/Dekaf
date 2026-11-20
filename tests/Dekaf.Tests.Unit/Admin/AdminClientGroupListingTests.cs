@@ -26,7 +26,9 @@ public class AdminClientGroupListingTests
             Group("future", "Future", "consumer")
         };
         foreach (var connection in connections.Values)
+        {
             Respond(connection, groups);
+        }
 
         var result = await admin.ListConsumerGroupsAsync();
 
@@ -36,7 +38,10 @@ public class AdminClientGroupListingTests
 
     private static ListGroupsResponseGroup Group(string id, string? type, string? protocol, string state = "Stable") => new()
     {
-        GroupId = id, GroupType = type, ProtocolType = protocol, GroupState = state
+        GroupId = id,
+        GroupType = type,
+        ProtocolType = protocol,
+        GroupState = state
     };
 
     [Test]
@@ -58,7 +63,9 @@ public class AdminClientGroupListingTests
         ]);
         var result = await admin.ListGroupsAsync(new ListGroupsOptions
         {
-            States = ["stable"], Types = ["classic", "futurev2"], ProtocolTypes = ["connect", "custom"]
+            States = ["stable"],
+            Types = ["classic", "futurev2"],
+            ProtocolTypes = ["connect", "custom"]
         });
         await Assert.That(result.Select(static group => group.GroupId)).IsEquivalentTo(["future", "moving"]);
         await Assert.That(result.Single(static group => group.GroupId == "future").GroupType).IsEqualTo("FutureV2");
@@ -79,7 +86,9 @@ public class AdminClientGroupListingTests
             : new ListGroupsOptions { States = ["Stable"] };
         await Assert.That(async () => await admin.ListGroupsAsync(options)).Throws<KafkaException>();
         foreach (var connection in connections.Values)
+        {
             await connection.DidNotReceiveWithAnyArgs().SendAsync<ListGroupsRequest, ListGroupsResponse>(default!, default, default);
+        }
     }
 
     [Test]
@@ -248,7 +257,9 @@ public class AdminClientGroupListingTests
         };
         await Assert.That(async () => await admin.ListGroupsAsync(options)).Throws<ArgumentException>();
         foreach (var connection in connections.Values)
+        {
             await connection.DidNotReceiveWithAnyArgs().SendAsync<ListGroupsRequest, ListGroupsResponse>(default!, default, default);
+        }
     }
 
     [Test]
@@ -261,7 +272,8 @@ public class AdminClientGroupListingTests
                 Arg.Any<short>(), Arg.Any<CancellationToken>())
             .Returns(new ValueTask<ListGroupsResponse>(new ListGroupsResponse
             {
-                Groups = [], ErrorCode = ErrorCode.ClusterAuthorizationFailed
+                Groups = [],
+                ErrorCode = ErrorCode.ClusterAuthorizationFailed
             }));
         var error = await Assert.That(async () => await admin.ListGroupsAsync()).Throws<KafkaException>();
         await Assert.That(error!.ErrorCode).IsEqualTo(ErrorCode.ClusterAuthorizationFailed);
@@ -325,7 +337,9 @@ public class AdminClientGroupListingTests
                 new BrokerMetadata { NodeId = 1, Host = "localhost", Port = 9092 },
                 new BrokerMetadata { NodeId = 2, Host = "localhost", Port = 9093 }
             ],
-            ClusterId = "listing-test", ControllerId = 1, Topics = []
+            ClusterId = "listing-test",
+            ControllerId = 1,
+            Topics = []
         });
         metadata.SetApiVersion(ApiKey.ListGroups, version, version);
         return (new AdminClient(new AdminClientOptions { BootstrapServers = ["localhost:9092"] }, pool, metadata), connections);
@@ -337,9 +351,13 @@ public class AdminClientGroupListingTests
         public string Host => inner.Host;
         public int Port => inner.Port;
         public bool IsConnected => true;
-        public KafkaConnectionCapabilities Capabilities { get; } = KafkaConnectionCapabilities.Create(new ApiVersionsResponse
+        public KafkaConnectionCapabilities Capabilities
         {
-            ErrorCode = ErrorCode.None, ApiKeys = [new ApiVersion(ApiKey.ListGroups, 3, version)]
+            get;
+        } = KafkaConnectionCapabilities.Create(new ApiVersionsResponse
+        {
+            ErrorCode = ErrorCode.None,
+            ApiKeys = [new ApiVersion(ApiKey.ListGroups, 3, version)]
         });
         public ValueTask<TResponse> SendAsync<TRequest, TResponse>(TRequest request, short apiVersion, CancellationToken cancellationToken = default)
             where TRequest : IKafkaRequest<TResponse> where TResponse : IKafkaResponse =>

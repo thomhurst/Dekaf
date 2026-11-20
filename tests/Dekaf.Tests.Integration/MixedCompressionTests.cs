@@ -110,7 +110,10 @@ public sealed class MixedCompressionTests(KafkaTestContainer kafka) : KafkaInteg
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))
         {
             messages.Add(msg);
-            if (messages.Count >= 10) break;
+            if (messages.Count >= 10)
+            {
+                break;
+            }
         }
 
         await Assert.That(messages).Count().IsEqualTo(10);
@@ -189,7 +192,10 @@ public sealed class MixedCompressionTests(KafkaTestContainer kafka) : KafkaInteg
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))
         {
             messages.Add(msg);
-            if (messages.Count >= 10) break;
+            if (messages.Count >= 10)
+            {
+                break;
+            }
         }
 
         await Assert.That(messages).Count().IsEqualTo(10);
@@ -274,7 +280,10 @@ public sealed class MixedCompressionTests(KafkaTestContainer kafka) : KafkaInteg
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))
         {
             messages.Add(msg);
-            if (messages.Count >= 3) break;
+            if (messages.Count >= 3)
+            {
+                break;
+            }
         }
 
         await Assert.That(messages).Count().IsEqualTo(3);
@@ -331,7 +340,10 @@ public sealed class MixedCompressionTests(KafkaTestContainer kafka) : KafkaInteg
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))
         {
             messages.Add(msg);
-            if (messages.Count >= messageCount) break;
+            if (messages.Count >= messageCount)
+            {
+                break;
+            }
         }
 
         await Assert.That(messages).Count().IsEqualTo(messageCount);

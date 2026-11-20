@@ -22,17 +22,23 @@ internal sealed class OutboxRemoteNotifications(int bucketCount)
     public void Notify(IReadOnlySet<int> buckets)
     {
         if (buckets.Count == 0)
+        {
             return;
+        }
         // EF supplies a HashSet; retain its struct enumerator on the commit path.
         if (buckets is HashSet<int> set)
         {
             foreach (var bucket in set)
+            {
                 _hints.Add(bucket);
+            }
         }
         else if (buckets is ImmutableHashSet<int> immutable)
         {
             foreach (var bucket in immutable)
+            {
                 _hints.Add(bucket);
+            }
         }
         else if (buckets is SortedSet<int> sorted && sorted.Count <= 2)
         {
@@ -41,7 +47,9 @@ internal sealed class OutboxRemoteNotifications(int bucketCount)
             var last = sorted.Max;
             _hints.Add(first);
             if (sorted.Count > 1)
+            {
                 _hints.Add(last);
+            }
         }
         else
         {
@@ -60,7 +68,9 @@ internal sealed class OutboxRemoteNotifications(int bucketCount)
         await _ready.Reader.ReadAsync(cancellationToken).ConfigureAwait(false);
         var count = _hints.Drain(destination.Span, out var unknown);
         if (!unknown)
+        {
             return count;
+        }
         destination.Span[0] = -1;
         return 1;
     }

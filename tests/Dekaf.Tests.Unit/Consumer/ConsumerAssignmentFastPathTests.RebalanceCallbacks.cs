@@ -26,7 +26,9 @@ public sealed partial class ConsumerAssignmentFastPathTests
         listener.OnAssignedConsumer = static (consumer, partitions) =>
         {
             if (partitions.Contains(Partition1))
+            {
                 consumer.Pause(Partition1);
+            }
         };
 
         await harness.HeartbeatAsync(); // revokes partition 1
@@ -49,7 +51,9 @@ public sealed partial class ConsumerAssignmentFastPathTests
         listener.OnAssigned = partitions =>
         {
             if (partitions.Contains(Partition1))
+            {
                 harness.Consumer.Pause(Partition1);
+            }
         };
 
         await harness.HeartbeatAsync();
@@ -74,7 +78,9 @@ public sealed partial class ConsumerAssignmentFastPathTests
         listener.OnAssigned = partitions =>
         {
             if (partitions.Contains(Partition1))
+            {
                 harness.Consumer.Pause(Partition1);
+            }
         };
 
         // Fenced on the rejoin's first heartbeat: the partitions are lost, then assigned again.
@@ -116,7 +122,9 @@ public sealed partial class ConsumerAssignmentFastPathTests
         listener.OnAssigned = partitions =>
         {
             if (!partitions.Contains(Partition1))
+            {
                 return;
+            }
 
             harness.Consumer.Pause(Partition1);
             harness.Consumer.Resume(Partition1);
@@ -147,11 +155,15 @@ public sealed partial class ConsumerAssignmentFastPathTests
         {
             // Only the first reassignment pauses; the ownership it paused ends before the sync.
             if (partitions.Contains(Partition1) && ++assignedCalls == 1)
+            {
                 harness.Consumer.Pause(Partition1);
+            }
         };
 
         for (var i = 0; i < 4; i++)
+        {
             await harness.HeartbeatAsync();
+        }
         await harness.Consumer.EnsureAssignmentAsync(CancellationToken.None);
 
         await Assert.That(assignedCalls).IsEqualTo(2);
@@ -173,7 +185,9 @@ public sealed partial class ConsumerAssignmentFastPathTests
         listener.OnAssigned = partitions =>
         {
             if (partitions.Contains(Partition1))
+            {
                 Seek(harness.Consumer, kind);
+            }
         };
 
         await harness.HeartbeatAsync();
@@ -197,7 +211,9 @@ public sealed partial class ConsumerAssignmentFastPathTests
         listener.OnAssigned = partitions =>
         {
             if (partitions.Contains(Partition1))
+            {
                 harness.Consumer.Seek(new TopicPartitionOffset(Partition1.Topic, Partition1.Partition, 42));
+            }
         };
 
         await harness.HeartbeatAsync();
@@ -224,11 +240,15 @@ public sealed partial class ConsumerAssignmentFastPathTests
         listener.OnAssigned = partitions =>
         {
             if (partitions.Contains(Partition1) && ++assignedCalls == 1)
+            {
                 harness.Consumer.Seek(new TopicPartitionOffset(Partition1.Topic, Partition1.Partition, 42));
+            }
         };
 
         for (var i = 0; i < 4; i++)
+        {
             await harness.HeartbeatAsync();
+        }
         await harness.Consumer.EnsureAssignmentAsync(CancellationToken.None);
 
         await Assert.That(assignedCalls).IsEqualTo(2);
@@ -274,7 +294,9 @@ public sealed partial class ConsumerAssignmentFastPathTests
         listener.OnAssigned = partitions =>
         {
             if (!partitions.Contains(Partition1))
+            {
                 return;
+            }
 
             beforeSeek = harness.Consumer.GetPosition(Partition1);
             harness.Consumer.Seek(new TopicPartitionOffset(Partition1.Topic, Partition1.Partition, 42));
@@ -355,12 +377,16 @@ public sealed partial class ConsumerAssignmentFastPathTests
         listener.OnAssigned = partitions =>
         {
             if (partitions.Contains(Partition1))
+            {
                 harness.Consumer.Seek(seek);
+            }
         };
         listener.OnAssignedConsumer = (consumer, partitions) =>
         {
             if (partitions.Contains(Partition1))
+            {
                 consumer.Seek(seek);
+            }
         };
 
         // Partition 1 is announced and its callback seeks, but the consumer never synchronizes it.
@@ -402,12 +428,16 @@ public sealed partial class ConsumerAssignmentFastPathTests
         listener.OnAssigned = partitions =>
         {
             if (partitions.Contains(Partition1))
+            {
                 harness.Consumer.Pause(Partition1);
+            }
         };
         listener.OnAssignedConsumer = static (consumer, partitions) =>
         {
             if (partitions.Contains(Partition1))
+            {
                 consumer.Pause(Partition1);
+            }
         };
 
         await harness.HeartbeatAsync();
@@ -428,7 +458,9 @@ public sealed partial class ConsumerAssignmentFastPathTests
         listener.OnAssigned = partitions =>
         {
             if (partitions.Contains(Partition1))
+            {
                 harness.Consumer.Pause(Partition1);
+            }
         };
 
         await harness.HeartbeatAsync();
@@ -455,7 +487,9 @@ public sealed partial class ConsumerAssignmentFastPathTests
         listener.OnAssigned = partitions =>
         {
             if (partitions.Contains(Partition1))
+            {
                 harness.Consumer.Pause(Partition1);
+            }
         };
 
         await harness.HeartbeatAsync();
@@ -467,12 +501,17 @@ public sealed partial class ConsumerAssignmentFastPathTests
         KafkaConsumer<string, string>.AfterPartitionPauseClearedForTest = (consumer, partition) =>
         {
             if (!ReferenceEquals(consumer, harness.Consumer) || partition != Partition1 || resume is not null)
+            {
                 return;
+            }
 
             resume = Task.Run(() => harness.Consumer.Resume(Partition1), testTimeout);
             // Bounded: a resume serialized with the restoration cannot finish until sync releases
             // it, and either order must end resumed.
-            try { resume.Wait(TimeSpan.FromMilliseconds(500), testTimeout); }
+            try
+            {
+                resume.Wait(TimeSpan.FromMilliseconds(500), testTimeout);
+            }
             catch (OperationCanceledException) { }
         };
         try
@@ -504,16 +543,23 @@ public sealed partial class ConsumerAssignmentFastPathTests
         listener.OnAssigned = partitions =>
         {
             if (!partitions.Contains(Partition1))
+            {
                 return;
+            }
 
             // Another thread resumes between the callback's pause and its record of that pause.
             KafkaConsumer<string, string>.AfterPartitionPausedForTest = (consumer, partition) =>
             {
                 if (!ReferenceEquals(consumer, harness.Consumer) || partition != Partition1 || resume is not null)
+                {
                     return;
+                }
 
                 resume = Task.Run(() => harness.Consumer.Resume(Partition1), testTimeout);
-                try { resume.Wait(TimeSpan.FromMilliseconds(500), testTimeout); }
+                try
+                {
+                    resume.Wait(TimeSpan.FromMilliseconds(500), testTimeout);
+                }
                 catch (OperationCanceledException) { }
             };
             try
@@ -548,7 +594,9 @@ public sealed partial class ConsumerAssignmentFastPathTests
         listener.OnAssigned = partitions =>
         {
             if (partitions.Contains(Partition1))
+            {
                 harness.Consumer.Pause(Partition1);
+            }
         };
 
         await harness.HeartbeatAsync();
@@ -592,7 +640,9 @@ public sealed partial class ConsumerAssignmentFastPathTests
         listener.OnAssigned = partitions =>
         {
             if (!partitions.Contains(Partition1))
+            {
                 return;
+            }
 
             harness.Consumer.Seek(new TopicPartitionOffset(Partition1.Topic, Partition1.Partition, 42));
             harness.Consumer.Pause(Partition1);
@@ -612,7 +662,9 @@ public sealed partial class ConsumerAssignmentFastPathTests
             .Returns(_ =>
             {
                 if (Interlocked.Increment(ref calls) == 1)
+                {
                     coordinator.BumpAssignmentVersionForTest();
+                }
                 return ValueTask.FromResult(CreateSuccessfulOffsetFetchResponse());
             });
 
@@ -792,7 +844,9 @@ public sealed partial class ConsumerAssignmentFastPathTests
             additionalRebalanceListeners: additionalListener is null ? null : [additionalListener]);
         consumer.Subscribe("test-topic");
         if (initialSync)
+        {
             await consumer.EnsureAssignmentAsync(CancellationToken.None);
+        }
         return new CallbackHarness(consumer, metadataManager, connection);
     }
 
@@ -801,11 +855,20 @@ public sealed partial class ConsumerAssignmentFastPathTests
         Dekaf.Metadata.MetadataManager metadataManager,
         IKafkaConnection connection) : IAsyncDisposable
     {
-        public KafkaConsumer<string, string> Consumer { get; } = consumer;
+        public KafkaConsumer<string, string> Consumer
+        {
+            get;
+        } = consumer;
 
-        public IKafkaConnection Connection { get; } = connection;
+        public IKafkaConnection Connection
+        {
+            get;
+        } = connection;
 
-        public Dekaf.Metadata.MetadataManager MetadataManager { get; } = metadataManager;
+        public Dekaf.Metadata.MetadataManager MetadataManager
+        {
+            get;
+        } = metadataManager;
 
         /// <summary>Runs one heartbeat round trip and delivers its rebalance callbacks.</summary>
         public async Task HeartbeatAsync()
@@ -824,20 +887,34 @@ public sealed partial class ConsumerAssignmentFastPathTests
 
     private sealed class CallbackListener : IRebalanceListener, IConsumerAwareRebalanceListener
     {
-        public Action<IReadOnlyCollection<TopicPartition>>? OnAssigned { get; set; }
+        public Action<IReadOnlyCollection<TopicPartition>>? OnAssigned
+        {
+            get; set;
+        }
 
-        public Action<IRebalanceConsumer, IReadOnlyCollection<TopicPartition>>? OnAssignedConsumer { get; set; }
+        public Action<IRebalanceConsumer, IReadOnlyCollection<TopicPartition>>? OnAssignedConsumer
+        {
+            get; set;
+        }
 
-        public Action<IReadOnlyCollection<TopicPartition>>? OnLost { get; set; }
+        public Action<IReadOnlyCollection<TopicPartition>>? OnLost
+        {
+            get; set;
+        }
 
-        public Func<IReadOnlyCollection<TopicPartition>, Task>? OnAssignedAsync { get; set; }
+        public Func<IReadOnlyCollection<TopicPartition>, Task>? OnAssignedAsync
+        {
+            get; set;
+        }
 
         public async ValueTask OnPartitionsAssignedAsync(IEnumerable<TopicPartition> partitions, CancellationToken cancellationToken)
         {
             var list = partitions.ToList();
             OnAssigned?.Invoke(list);
             if (OnAssignedAsync is { } onAssignedAsync)
+            {
                 await onAssignedAsync(list);
+            }
         }
 
         public ValueTask OnPartitionsRevokedAsync(IEnumerable<TopicPartition> partitions, CancellationToken cancellationToken) =>

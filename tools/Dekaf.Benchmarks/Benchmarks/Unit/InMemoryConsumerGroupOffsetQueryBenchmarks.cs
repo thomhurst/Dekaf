@@ -8,7 +8,10 @@ namespace Dekaf.Benchmarks.Benchmarks.Unit;
 public class InMemoryConsumerGroupOffsetQueryBenchmarks
 {
     [Params(1, 32)]
-    public int Partitions { get; set; }
+    public int Partitions
+    {
+        get; set;
+    }
 
     private InMemoryAdminClient _admin = null!;
     private InMemoryProducer<string, string> _producer = null!;
@@ -27,7 +30,9 @@ public class InMemoryConsumerGroupOffsetQueryBenchmarks
         _producer.InitTransactionsAsync().GetAwaiter().GetResult();
         _offsets = new TopicPartitionOffset[Partitions];
         for (var i = 0; i < _offsets.Length; i++)
+        {
             _offsets[i] = new("orders", i, 42, 3) { Metadata = "checkpoint" };
+        }
         _admin.AlterConsumerGroupOffsetsAsync("group", _offsets).GetAwaiter().GetResult();
         _streams = new() { ["group"] = new() };
         _rich = new() { ["group"] = new() };

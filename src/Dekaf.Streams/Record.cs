@@ -33,16 +33,28 @@ public readonly struct Record<TKey, TValue>
     private readonly bool _valueIsNull;
 
     /// <summary>Gets the record key. For a record read with a null key this is <see langword="default"/>.</summary>
-    public TKey Key { get; }
+    public TKey Key
+    {
+        get;
+    }
 
     /// <summary>Gets the record value. For a record read with a null value this is <see langword="default"/>.</summary>
-    public TValue Value { get; }
+    public TValue Value
+    {
+        get;
+    }
 
     /// <summary>Gets the event timestamp in Unix milliseconds.</summary>
-    public long Timestamp { get; }
+    public long Timestamp
+    {
+        get;
+    }
 
     /// <summary>Gets the record headers, or <see langword="null"/> when there are none.</summary>
-    public Headers? Headers { get; }
+    public Headers? Headers
+    {
+        get;
+    }
 
     /// <summary>
     /// Gets whether the key is null. This is also true for a value-type key that was read from a record

@@ -41,7 +41,9 @@ internal static class ProduceRequestSizeCalculator
     {
         var available = maxRequestSize - GetConservativeSingleBatchFixedSize(transactionalId, topic);
         if (available <= 1)
+        {
             return 0;
+        }
 
         // Compact-length jumps leave some budgets without an exact fit.
         // Find the largest batch whose encoded size stays within the available bytes.
@@ -52,9 +54,13 @@ internal static class ProduceRequestSizeCalculator
             var candidate = lowerBound + (upperBound - lowerBound + 1) / 2;
             var encodedSizeWithLength = candidate + CompactBytesLengthSize(candidate);
             if (encodedSizeWithLength <= available)
+            {
                 lowerBound = candidate;
+            }
             else
+            {
                 upperBound = candidate - 1;
+            }
         }
 
         return lowerBound;
@@ -79,7 +85,9 @@ internal static class ProduceRequestSizeCalculator
     internal static int CompactStringSize(string? value)
     {
         if (value is null)
+        {
             return 1;
+        }
 
         var byteCount = Encoding.UTF8.GetByteCount(value);
         return checked(CompactBytesLengthSize(byteCount) + byteCount);
@@ -88,7 +96,9 @@ internal static class ProduceRequestSizeCalculator
     internal static int StringSize(string? value, bool flexible)
     {
         if (flexible)
+        {
             return CompactStringSize(value);
+        }
 
         return checked(sizeof(short) + (value is null ? 0 : Encoding.UTF8.GetByteCount(value)));
     }

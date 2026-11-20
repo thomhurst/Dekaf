@@ -51,13 +51,18 @@ internal sealed class OutboxDynamoDbCluster : IAsyncDisposable
         _publishLatency = publishLatency;
         _client.ExceptionEvent += OnException;
         if (!ReferenceEquals(_storeClient, _client))
+        {
             _storeClient.ExceptionEvent += OnException;
+        }
     }
 
     /// <summary>Rows per publish: the most that one failed delete can publish a second time.</summary>
     public const int RelayBatchSize = 25;
 
-    public DynamoDbOutboxOptions Options { get; }
+    public DynamoDbOutboxOptions Options
+    {
+        get;
+    }
 
     /// <summary>Conditional writes DynamoDB refused, counted where telemetry would see them.</summary>
     public int RefusedWrites => Volatile.Read(ref _refusedWrites);
@@ -85,7 +90,9 @@ internal sealed class OutboxDynamoDbCluster : IAsyncDisposable
     {
         var pod = new Pod(this, name);
         if (!_pods.TryAdd(name, pod))
+        {
             throw new InvalidOperationException($"Pod {name} is already running.");
+        }
         await pod.Relay.StartAsync(CancellationToken.None);
         return pod;
     }
@@ -196,7 +203,9 @@ internal sealed class OutboxDynamoDbCluster : IAsyncDisposable
         {
             var pending = await store.GetBucketsWithPendingAsync(buckets);
             if (pending.Count == 0 && MissingMessages().Count == 0)
+            {
                 return;
+            }
             if (TimeProvider.System.GetElapsedTime(started) > timeout)
             {
                 Assert.Fail($"Not drained after {timeout}: buckets {string.Join(',', pending)} still hold messages and "
@@ -222,13 +231,17 @@ internal sealed class OutboxDynamoDbCluster : IAsyncDisposable
 
         Publication[] ledger;
         lock (_ledger)
+        {
             ledger = [.. _ledger];
+        }
         var lastSequence = new Dictionary<string, int>(StringComparer.Ordinal);
         var seen = new HashSet<Guid>();
         foreach (var publication in ledger)
         {
             if (!seen.Add(publication.MessageId))
+            {
                 continue;
+            }
             if (lastSequence.TryGetValue(publication.Key, out var last) && publication.Sequence <= last)
             {
                 Assert.Fail($"Key {publication.Key}: sequence {publication.Sequence} was first published by "
@@ -244,13 +257,17 @@ internal sealed class OutboxDynamoDbCluster : IAsyncDisposable
     public int DuplicatePublications()
     {
         lock (_ledger)
+        {
             return _ledger.Count - _ledger.Select(publication => publication.MessageId).Distinct().Count();
+        }
     }
 
     public async ValueTask DisposeAsync()
     {
         foreach (var pod in _pods.Values.ToArray())
+        {
             await pod.KillAsync();
+        }
         _client.ExceptionEvent -= OnException;
         _storeClient.ExceptionEvent -= OnException;
         _client.Dispose();
@@ -261,14 +278,18 @@ internal sealed class OutboxDynamoDbCluster : IAsyncDisposable
     {
         HashSet<Guid> published;
         lock (_ledger)
+        {
             published = [.. _ledger.Select(publication => publication.MessageId)];
+        }
         return [.. _enqueued.Select(message => message.MessageId).Where(id => !published.Contains(id))];
     }
 
     private void OnException(object sender, ExceptionEventArgs args)
     {
         if (args is WebServiceExceptionEventArgs { Exception: ConditionalCheckFailedException })
+        {
             Interlocked.Increment(ref _refusedWrites);
+        }
     }
 
     private sealed record Enqueued(Guid MessageId, string Key, int Sequence);
@@ -306,9 +327,15 @@ internal sealed class OutboxDynamoDbCluster : IAsyncDisposable
                 NullLogger<OutboxRelayService>.Instance);
         }
 
-        public string Name { get; }
+        public string Name
+        {
+            get;
+        }
 
-        public OutboxRelayService Relay { get; }
+        public OutboxRelayService Relay
+        {
+            get;
+        }
 
         /// <summary>A rolling update or a scale-in: the relay stops and hands its buckets back.</summary>
         public async Task StopGracefullyAsync()
@@ -355,9 +382,13 @@ internal sealed class OutboxDynamoDbCluster : IAsyncDisposable
         private async ValueTask EnterAsync()
         {
             if (_frozen is { } frozen)
+            {
                 await frozen.Task;
+            }
             if (_killed)
+            {
                 throw new PodKilledException();
+            }
         }
 
         private sealed class ChaosStore(Pod pod, DynamoDbOutboxStore inner)

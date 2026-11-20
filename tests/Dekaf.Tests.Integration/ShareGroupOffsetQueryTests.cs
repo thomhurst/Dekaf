@@ -50,8 +50,10 @@ public class ShareGroupOffsetQueryTests(KafkaTestContainer kafka) : KafkaIntegra
         var partition = new TopicPartition(topic, 0);
         var result = await admin.ListShareGroupOffsetsAsync(new Dictionary<string, ListShareGroupOffsetsSpec>
         {
-            [firstGroup] = new(), [secondGroup] = new() { TopicPartitions = [partition] },
-            ["empty-selection"] = new() { TopicPartitions = [] }, [$"missing-{Guid.NewGuid():N}"] = new()
+            [firstGroup] = new(),
+            [secondGroup] = new() { TopicPartitions = [partition] },
+            ["empty-selection"] = new() { TopicPartitions = [] },
+            [$"missing-{Guid.NewGuid():N}"] = new()
         }, cancellationToken: deadline.Token);
         foreach (var groupId in new[] { firstGroup, secondGroup })
         {

@@ -63,7 +63,9 @@ public class DnsReresolutionTests(DnsReresolutionKafkaContainer kafka)
         await kafka.StopPrimaryRelayAsync();
 
         for (var i = 1; i < 10; i++)
+        {
             await producer.ProduceAsync(topic, $"key-{i}", $"value-{i}");
+        }
 
         using (var remainingTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(30)))
         {
@@ -71,7 +73,9 @@ public class DnsReresolutionTests(DnsReresolutionKafkaContainer kafka)
             {
                 values.Add(message.Value!);
                 if (values.Count == 10)
+                {
                     break;
+                }
             }
         }
 
@@ -133,7 +137,9 @@ public class DnsReresolutionTests(DnsReresolutionKafkaContainer kafka)
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory());
 
         if (rebootstrapImmediately)
+        {
             builder = builder.WithMetadataRecoveryRebootstrapTrigger(TimeSpan.Zero);
+        }
 
         return await builder.BuildAsync();
     }

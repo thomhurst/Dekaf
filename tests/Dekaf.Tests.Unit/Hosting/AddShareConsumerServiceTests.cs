@@ -48,7 +48,10 @@ public class AddShareConsumerServiceTests
         }
         await using var provider = services.BuildServiceProvider();
         var workers = provider.GetServices<IHostedService>().OfType<Worker>().ToArray();
-        foreach (var worker in workers) await worker.StartAsync(default);
+        foreach (var worker in workers)
+        {
+            await worker.StartAsync(default);
+        }
         await Task.WhenAll(workers.Select(x => x.ExecuteTask!)).WaitAsync(TimeSpan.FromSeconds(10));
         await Assert.That(workers.Length).IsEqualTo(2);
         await Assert.That(workers.All(x => x.Processed == 1)).IsTrue();
@@ -117,16 +120,38 @@ public class AddShareConsumerServiceTests
         services.AddDekaf(builder =>
         {
             registration = builder;
-            if (keyed) builder.AddShareConsumerService<Worker, string, string>("worker", Configure);
-            else builder.AddShareConsumerService<Worker, string, string>(Configure);
+            if (keyed)
+            {
+                builder.AddShareConsumerService<Worker, string, string>("worker", Configure);
+            }
+            else
+            {
+                builder.AddShareConsumerService<Worker, string, string>(Configure);
+            }
         });
         var descriptors = services.ToArray();
         var called = false;
+
         void Duplicate()
         {
-            if (keyed) registration!.AddShareConsumerService<Worker, string, string>("worker", c => { called = true; Configure(c); });
-            else registration!.AddShareConsumerService<Worker, string, string>(c => { called = true; Configure(c); });
+            if (keyed)
+            {
+                registration!.AddShareConsumerService<Worker, string, string>("worker", c =>
+                {
+                    called = true;
+                    Configure(c);
+                });
+            }
+            else
+            {
+                registration!.AddShareConsumerService<Worker, string, string>(c =>
+                {
+                    called = true;
+                    Configure(c);
+                });
+            }
         }
+
         await Assert.That(Duplicate).Throws<InvalidOperationException>();
         await Assert.That(services.SequenceEqual(descriptors)).IsTrue();
         await Assert.That(called).IsFalse();
@@ -174,7 +199,9 @@ public class AddShareConsumerServiceTests
         var services = new ServiceCollection();
         var configuration = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
         {
-            ["BootstrapServers:0"] = "localhost:9092", ["GroupId"] = "configured", ["AcknowledgementMode"] = "Explicit"
+            ["BootstrapServers:0"] = "localhost:9092",
+            ["GroupId"] = "configured",
+            ["AcknowledgementMode"] = "Explicit"
         }).Build();
         services.AddDekaf(builder => builder
             .AddShareConsumerService<Worker, string, string>("typed", new ShareConsumerOptions
@@ -182,7 +209,9 @@ public class AddShareConsumerServiceTests
             .AddShareConsumerService<Worker, string, string>("config", configuration, consumer => consumer.WithMaxPollRecords(1)));
         await using var provider = services.BuildServiceProvider();
         foreach (var worker in provider.GetServices<IHostedService>().OfType<Worker>())
+        {
             await Assert.That(((IShareConsumerConfiguration)worker.Consumer).AcknowledgementMode).IsEqualTo(ShareAcknowledgementMode.Explicit);
+        }
     }
 
     [Test]
@@ -212,22 +241,35 @@ public class AddShareConsumerServiceTests
 
     private static void Configure(ShareConsumerBuilder<string, string> consumer)
         => consumer.WithBootstrapServers("localhost:9092").WithGroupId("shared-group");
+
     private sealed record Settings(string Servers, string Group);
 
     private sealed class Worker : KafkaShareConsumerService<string, string>
     {
         public Worker(IKafkaShareConsumer<string, string> consumer, DeadLetterOptions? deadLetterOptions = null)
             : base(consumer, NullLogger.Instance, deadLetterOptions) => Consumer = consumer;
-        public IKafkaShareConsumer<string, string> Consumer { get; }
-        public int Processed { get; private set; }
+        public IKafkaShareConsumer<string, string> Consumer
+        {
+            get;
+        }
+        public int Processed
+        {
+            get; private set;
+        }
         protected override IEnumerable<string> Topics => ["orders"];
         protected override ValueTask ProcessAsync(ShareConsumeResult<string, string> record, CancellationToken cancellationToken)
-        { Processed++; return ValueTask.CompletedTask; }
+        {
+            Processed++;
+            return ValueTask.CompletedTask;
+        }
     }
 
     private sealed class OtherWorker(IKafkaShareConsumer<string, string> consumer) : KafkaShareConsumerService<string, string>(consumer, NullLogger.Instance)
     {
-        public IKafkaShareConsumer<string, string> Consumer { get; } = consumer;
+        public IKafkaShareConsumer<string, string> Consumer
+        {
+            get;
+        } = consumer;
         protected override IEnumerable<string> Topics => ["orders"];
         protected override ValueTask ProcessAsync(ShareConsumeResult<string, string> record, CancellationToken cancellationToken) => ValueTask.CompletedTask;
     }

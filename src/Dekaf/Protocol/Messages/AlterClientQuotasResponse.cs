@@ -16,12 +16,18 @@ public sealed class AlterClientQuotasResponse : IKafkaResponse
     /// <summary>
     /// The duration in milliseconds for which the request was throttled due to quota violation.
     /// </summary>
-    public int ThrottleTimeMs { get; init; }
+    public int ThrottleTimeMs
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Results for each entity alteration.
     /// </summary>
-    public required IReadOnlyList<AlterClientQuotasResponseEntry> Entries { get; init; }
+    public required IReadOnlyList<AlterClientQuotasResponseEntry> Entries
+    {
+        get; init;
+    }
 
     public static IKafkaResponse Read(ref KafkaProtocolReader reader, short version)
     {
@@ -60,17 +66,26 @@ public sealed class AlterClientQuotasResponseEntry
     /// <summary>
     /// Error code for this entity alteration.
     /// </summary>
-    public ErrorCode ErrorCode { get; init; }
+    public ErrorCode ErrorCode
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Error message for this entity alteration.
     /// </summary>
-    public string? ErrorMessage { get; init; }
+    public string? ErrorMessage
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Entity components for this result.
     /// </summary>
-    public required IReadOnlyList<AlterClientQuotasEntityData> Entity { get; init; }
+    public required IReadOnlyList<AlterClientQuotasEntityData> Entity
+    {
+        get; init;
+    }
 
     public static AlterClientQuotasResponseEntry Read(ref KafkaProtocolReader reader, short version)
     {

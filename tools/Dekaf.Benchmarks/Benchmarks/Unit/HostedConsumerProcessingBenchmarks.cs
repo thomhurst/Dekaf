@@ -35,10 +35,16 @@ public class HostedConsumerProcessingBenchmarks
     private bool _hasInDoubtFailedRecord;
 
     [Params(false, true)]
-    public bool HandlerSuspends { get; set; }
+    public bool HandlerSuspends
+    {
+        get; set;
+    }
 
     [Params(false, true)]
-    public bool RetryTopics { get; set; }
+    public bool RetryTopics
+    {
+        get; set;
+    }
 
     [GlobalSetup]
     public void Setup()
@@ -60,7 +66,9 @@ public class HostedConsumerProcessingBenchmarks
     public async ValueTask<bool> Before_AdditionalAsyncWrapper()
     {
         for (var index = 0; index < Operations; index++)
+        {
             await ProcessTrackingInDoubtAsync(_result).ConfigureAwait(false);
+        }
 
         return _hasInDoubtFailedRecord;
     }
@@ -152,14 +160,18 @@ public class HostedConsumerDiscardBenchmarks
     public async ValueTask Before_DiscardWithoutExplicitStore()
     {
         for (var index = 0; index < Operations; index++)
+        {
             await _before.ProcessWithRetriesAsync(_result, CancellationToken.None).ConfigureAwait(false);
+        }
     }
 
     [Benchmark(OperationsPerInvoke = Operations)]
     public async ValueTask After_StrictManualDiscardWithStore()
     {
         for (var index = 0; index < Operations; index++)
+        {
             await _after.ProcessWithRetriesAsync(_result, CancellationToken.None).ConfigureAwait(false);
+        }
     }
 
     private static DiscardingConsumerService CreateService(bool enableAutoOffsetStore)

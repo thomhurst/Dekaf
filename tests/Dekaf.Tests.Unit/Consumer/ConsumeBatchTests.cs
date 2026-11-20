@@ -30,7 +30,9 @@ public class ConsumeBatchTests
             var batch = new ConsumeBatch<TKey, ReadOnlyMemory<byte>>(pending, keyDeserializer, Serializers.RawBytes);
             using var records = batch.GetEnumerator();
             if (!records.MoveNext())
+            {
                 throw new InvalidOperationException("The fixture must deliver its record.");
+            }
             return records.Current.IsKeyNull;
         }
     }
@@ -48,11 +50,13 @@ public class ConsumeBatchTests
         var status = BatchIterationStatus.Continue;
         var calls = 0;
         var stored = 0;
+
         void Stop()
         {
             status = stoppedStatus;
             epoch.Invalidate();
         }
+
         var batch = new ConsumeBatch<string, string>(pending, Serializers.String,
             duringDeserialization ? new CallbackDeserializer(Stop) : Serializers.String,
             new BatchIterationGuard(epoch, epoch.Version, _ => status),
@@ -110,7 +114,9 @@ public class ConsumeBatchTests
     {
         using var pending = PendingFetchData.Create("empty", 0, Array.Empty<RecordBatch>());
         if (eagerParse)
+        {
             pending.EagerParseAll();
+        }
         var batch = new ConsumeBatch<string, string>(pending, Serializers.String, Serializers.String);
         await Assert.That(batch.MaximumRecordCount).IsEqualTo(1);
         await Assert.That(batch.GetEnumerator().MoveNext()).IsFalse();
@@ -124,7 +130,9 @@ public class ConsumeBatchTests
         var batches = new CountingBatchList(128);
         using var pending = PendingFetchData.Create("test-topic", 0, batches);
         if (eagerParse)
+        {
             pending.EagerParseAll();
+        }
         var accesses = batches.Accesses;
 
         for (var limit = 1; limit <= 128; limit++)
@@ -132,7 +140,9 @@ public class ConsumeBatchTests
             var batch = new ConsumeBatch<string, string>(pending, Serializers.String, Serializers.String,
                 maxRecords: limit);
             if (batch.MaximumRecordCount != limit)
+            {
                 throw new InvalidOperationException("Cached bound did not respect the poll limit.");
+            }
         }
 
         await Assert.That(batches.Accesses).IsEqualTo(accesses);
@@ -188,7 +198,9 @@ public class ConsumeBatchTests
         var batch = new ConsumeBatch<string, string>(pending, Serializers.String, Serializers.String);
 
         // Enumerate to populate the count
-        foreach (var _ in batch) { }
+        foreach (var _ in batch)
+        {
+        }
 
         await Assert.That(batch.Count).IsEqualTo(3);
     }
@@ -469,7 +481,10 @@ public class ConsumeBatchTests
     private sealed class CountingBatchList : IReadOnlyList<RecordBatch>
     {
         private readonly RecordBatch[] _batches;
-        public int Accesses { get; private set; }
+        public int Accesses
+        {
+            get; private set;
+        }
         public int Count => _batches.Length;
         public RecordBatch this[int index]
         {
@@ -484,7 +499,9 @@ public class ConsumeBatchTests
         {
             _batches = new RecordBatch[count];
             for (var index = 0; index < count; index++)
+            {
                 _batches[index] = new RecordBatch { BaseOffset = index, Records = [new Record()] };
+            }
         }
 
         public IEnumerator<RecordBatch> GetEnumerator() => ((IEnumerable<RecordBatch>)_batches).GetEnumerator();

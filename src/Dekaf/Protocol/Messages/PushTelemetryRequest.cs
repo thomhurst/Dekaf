@@ -13,27 +13,42 @@ public sealed class PushTelemetryRequest : IKafkaRequest<PushTelemetryResponse>
     /// <summary>
     /// The client instance ID assigned by GetTelemetrySubscriptions.
     /// </summary>
-    public Guid ClientInstanceId { get; init; }
+    public Guid ClientInstanceId
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The subscription ID assigned by GetTelemetrySubscriptions.
     /// </summary>
-    public int SubscriptionId { get; init; }
+    public int SubscriptionId
+    {
+        get; init;
+    }
 
     /// <summary>
     /// True when this is the final telemetry push for the client lifecycle.
     /// </summary>
-    public bool Terminating { get; init; }
+    public bool Terminating
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Compression type ID used for the metrics payload.
     /// </summary>
-    public sbyte CompressionType { get; init; }
+    public sbyte CompressionType
+    {
+        get; init;
+    }
 
     /// <summary>
     /// OpenTelemetry MetricsData payload bytes.
     /// </summary>
-    public ReadOnlyMemory<byte> Metrics { get; init; } = ReadOnlyMemory<byte>.Empty;
+    public ReadOnlyMemory<byte> Metrics
+    {
+        get; init;
+    } = ReadOnlyMemory<byte>.Empty;
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {

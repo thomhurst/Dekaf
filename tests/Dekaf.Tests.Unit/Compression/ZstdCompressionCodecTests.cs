@@ -190,12 +190,17 @@ public class ZstdCompressionCodecTests
 
     private sealed class BoundedBufferWriter : IBufferWriter<byte>
     {
-        public ArrayBufferWriter<byte> Buffer { get; } = new();
+        public ArrayBufferWriter<byte> Buffer
+        {
+            get;
+        } = new();
         public void Advance(int count) => Buffer.Advance(count);
         public Memory<byte> GetMemory(int sizeHint = 0)
         {
             if (sizeHint > 256 * 1024)
+            {
                 throw new InvalidOperationException($"Unbounded output request: {sizeHint}");
+            }
             var memory = Buffer.GetMemory(sizeHint);
             return memory[..Math.Min(256 * 1024, memory.Length)];
         }

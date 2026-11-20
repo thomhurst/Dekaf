@@ -71,7 +71,11 @@ internal static class ProducerWorkload
         TimeProvider? ingressTimeProvider = null) =>
         MeasureAsync(options, throughput, latency, duration, client, scenario,
             (ingress, delivery) => ProduceConfluentAsync(producer, options, throughput, latency, awaitDelivery, ingress, delivery),
-            (timeout, _) => { ConfluentStressTestHelpers.FlushWithTimeout(producer, throughput, timeout); return Task.CompletedTask; },
+            (timeout, _) =>
+            {
+                ConfluentStressTestHelpers.FlushWithTimeout(producer, throughput, timeout);
+                return Task.CompletedTask;
+            },
             !awaitDelivery, drainTimeout ?? StressTestHelpers.OperationTimeout, cancellationToken,
             ingressTimeProvider: ingressTimeProvider);
 
@@ -88,7 +92,8 @@ internal static class ProducerWorkload
             {
                 var message = new ConfluentKafka.Message<string, string>
                 {
-                    Key = StressTestHelpers.GetKey(index), Value = value
+                    Key = StressTestHelpers.GetKey(index),
+                    Value = value
                 };
                 if (awaitDelivery)
                 {
@@ -170,7 +175,9 @@ internal static class ProducerWorkload
                 await FlushRemainingAsync().ConfigureAwait(false);
                 await producing.WaitAsync(delivery.Token).ConfigureAwait(false);
                 if (flushAfterAdmission)
+                {
                     await FlushRemainingAsync().ConfigureAwait(false);
+                }
                 await latency.WaitForDeliverySamplesAsync().WaitAsync(delivery.Token).ConfigureAwait(false);
                 delivery.Token.ThrowIfCancellationRequested();
             }
@@ -184,7 +191,10 @@ internal static class ProducerWorkload
             Task FlushRemainingAsync()
             {
                 var remaining = drainTimeout - Stopwatch.GetElapsedTime(drainStarted);
-                if (remaining <= TimeSpan.Zero) delivery.Cancel();
+                if (remaining <= TimeSpan.Zero)
+                {
+                    delivery.Cancel();
+                }
                 delivery.Token.ThrowIfCancellationRequested();
                 return drain(remaining, delivery.Token);
             }
@@ -196,8 +206,10 @@ internal static class ProducerWorkload
             // A producer ignoring cancellation may finish after a failed drain. Observe
             // that failure without holding up the bounded phase or retaining a task list.
             if (!producing.IsCompletedSuccessfully)
+            {
                 _ = producing.ContinueWith(static task => _ = task.Exception, CancellationToken.None,
                     TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+            }
             sampling.Cancel();
             await stopIngress.ConfigureAwait(false);
             await Task.WhenAll(sampler, resources, reporting).ConfigureAwait(false);
@@ -217,7 +229,10 @@ internal static class ProducerWorkload
             while (!ingress.IsCancellationRequested)
             {
                 var remaining = duration - timeProvider.GetElapsedTime(started);
-                if (remaining <= TimeSpan.Zero) break;
+                if (remaining <= TimeSpan.Zero)
+                {
+                    break;
+                }
                 var delay = remaining < TimeSpan.FromMilliseconds(1) ? TimeSpan.FromMilliseconds(1) : remaining;
                 await Task.Delay(delay, timeProvider, ingress.Token).ConfigureAwait(false);
             }

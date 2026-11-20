@@ -26,18 +26,30 @@ public sealed class InMemoryClassicGroupDescriptionTests
         // snapshot copy, after the operation's preceding cancellation check.
         snapshots["group"] = new ClassicGroupDescription
         {
-            GroupId = "group", State = "Empty", Members = new CancelOnCountMembers(() =>
+            GroupId = "group",
+            State = "Empty",
+            Members = new CancelOnCountMembers(() =>
             {
-                if (timeout) timeoutSource!.Cancel();
-                else cancellation.Cancel();
+                if (timeout)
+                {
+                    timeoutSource!.Cancel();
+                }
+                else
+                {
+                    cancellation.Cancel();
+                }
             })
         };
 
         var operation = admin.DescribeClassicGroupsAsync(["group"], cancellationToken: cancellation.Token);
         if (timeout)
+        {
             await Assert.That(async () => await operation).Throws<KafkaTimeoutException>();
+        }
         else
+        {
             await Assert.That(async () => await operation).Throws<OperationCanceledException>();
+        }
     }
 
     private sealed class CancelOnCountMembers(Action cancel) : IReadOnlyList<ClassicGroupMemberDescription>
@@ -69,7 +81,10 @@ public sealed class InMemoryClassicGroupDescriptionTests
         cluster.RegisterShareGroupMember("zzz", "share");
         cluster.SetClassicGroupDescription(new()
         {
-            GroupId = "overlap", ProtocolType = "connect", State = "Empty", Members = []
+            GroupId = "overlap",
+            ProtocolType = "connect",
+            State = "Empty",
+            Members = []
         });
 
         var inventory = await admin.ListGroupsAsync();
@@ -95,8 +110,13 @@ public sealed class InMemoryClassicGroupDescriptionTests
         };
         cluster.SetClassicGroupDescription(new()
         {
-            GroupId = "fixture", ProtocolType = protocol, ProtocolData = "selected", State = "Stable",
-            CoordinatorId = 12, AuthorizedOperations = 123, Members = members
+            GroupId = "fixture",
+            ProtocolType = protocol,
+            ProtocolData = "selected",
+            State = "Stable",
+            CoordinatorId = 12,
+            AuthorizedOperations = 123,
+            Members = members
         });
         bytes[0] = 99;
         members[0] = new() { MemberId = "changed" };
@@ -136,7 +156,10 @@ public sealed class InMemoryClassicGroupDescriptionTests
         await using var admin = new InMemoryAdminClient(cluster);
         cluster.SetClassicGroupDescription(new()
         {
-            GroupId = "seeded", State = "Stable", ProtocolType = "consumer", Members = [new() { MemberId = "member" }]
+            GroupId = "seeded",
+            State = "Stable",
+            ProtocolType = "consumer",
+            Members = [new() { MemberId = "member" }]
         });
         var exception = await Assert.ThrowsAsync<GroupException>(() => admin.DeleteConsumerGroupsAsync(["seeded"]).AsTask());
         await Assert.That(exception!.ErrorCode).IsEqualTo(ErrorCode.NonEmptyGroup);
@@ -168,7 +191,9 @@ public sealed class InMemoryClassicGroupDescriptionTests
         var operation = admin.DescribeClassicGroupsAsync(["group"], new() { TimeoutMs = timeout ? 100 : 30000 }, cancellation.Token).AsTask();
         await barrier.WaitUntilEnteredAsync();
         if (timeout)
+        {
             await Assert.That(async () => await operation).Throws<KafkaTimeoutException>();
+        }
         else
         {
             cancellation.Cancel();
@@ -206,8 +231,14 @@ public sealed class InMemoryClassicGroupDescriptionTests
         cluster.FaultPlan.FaultConsumed += _ =>
         {
             observed++;
-            if (timeout) timeoutSource!.Cancel();
-            else cancellation.Cancel();
+            if (timeout)
+            {
+                timeoutSource!.Cancel();
+            }
+            else
+            {
+                cancellation.Cancel();
+            }
         };
         cluster.FaultPlan.Fail(new KafkaFaultScope(KafkaFaultOperation.Admin, groupId: "fault"),
             new GroupException(code, "scoped failure"));
@@ -216,9 +247,13 @@ public sealed class InMemoryClassicGroupDescriptionTests
         // its KafkaException is returned. The last group must not suppress cancellation.
         var operation = admin.DescribeClassicGroupsAsync(["first", "fault"], cancellationToken: cancellation.Token);
         if (timeout)
+        {
             await Assert.That(async () => await operation).Throws<KafkaTimeoutException>();
+        }
         else
+        {
             await Assert.That(async () => await operation).Throws<OperationCanceledException>();
+        }
         await Assert.That(observed).IsEqualTo(1);
     }
 

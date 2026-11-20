@@ -117,8 +117,20 @@ internal sealed class ResourceTrendMonitor(
 
 internal sealed class ResourceTrendSnapshot
 {
-    public required double SampleIntervalSeconds { get; init; }
-    public required double WarmupMinutes { get; init; }
-    public required List<ResourceSample> Samples { get; init; }
-    public required ResourceTrendAnalysis Analysis { get; init; }
+    public required double SampleIntervalSeconds
+    {
+        get; init;
+    }
+    public required double WarmupMinutes
+    {
+        get; init;
+    }
+    public required List<ResourceSample> Samples
+    {
+        get; init;
+    }
+    public required ResourceTrendAnalysis Analysis
+    {
+        get; init;
+    }
 }

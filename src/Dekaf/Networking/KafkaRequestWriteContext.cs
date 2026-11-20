@@ -14,9 +14,18 @@ internal sealed class KafkaRequestWriteContext
         WriteStartedCallback = MarkWriteStarted;
     }
 
-    internal CancellationToken ResponseCancellationToken { get; }
-    internal Action WriteStartedCallback { get; }
-    internal bool WriteStarted { get; private set; }
+    internal CancellationToken ResponseCancellationToken
+    {
+        get;
+    }
+    internal Action WriteStartedCallback
+    {
+        get;
+    }
+    internal bool WriteStarted
+    {
+        get; private set;
+    }
     internal void Reset() => WriteStarted = false;
     internal void MarkWriteStarted() => WriteStarted = true;
 }

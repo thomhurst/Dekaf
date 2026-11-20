@@ -25,7 +25,9 @@ public sealed class HostedRedeliveryTests(KafkaTestContainer kafka) : KafkaInteg
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers).BuildAsync(cancellationToken);
         for (var index = 0; index < 3; index++)
+        {
             await producer.ProduceAsync(topic, "key", $"value-{index}", cancellationToken);
+        }
 
         var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
@@ -72,7 +74,9 @@ public sealed class HostedRedeliveryTests(KafkaTestContainer kafka) : KafkaInteg
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers).BuildAsync(cancellationToken);
         for (var index = 0; index < 3; index++)
+        {
             await producer.ProduceAsync(topic, "key", $"value-{index}", cancellationToken);
+        }
 
         var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
@@ -117,7 +121,9 @@ public sealed class HostedRedeliveryTests(KafkaTestContainer kafka) : KafkaInteg
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers).BuildAsync(cancellationToken);
         for (var index = 0; index < 3; index++)
+        {
             await producer.ProduceAsync(topic, "key", $"value-{index}", cancellationToken);
+        }
         await using var admin = Kafka.CreateAdminClient()
             .WithBootstrapServers(KafkaContainer.BootstrapServers).Build();
 
@@ -144,7 +150,9 @@ public sealed class HostedRedeliveryTests(KafkaTestContainer kafka) : KafkaInteg
             for (var consumed = 0; consumed < 3;)
             {
                 if (await newOwner.ConsumeOneAsync(TimeSpan.FromSeconds(30), cancellationToken) is not null)
+                {
                     consumed++;
+                }
             }
 
             await newOwner.CommitAsync(cancellationToken);
@@ -202,13 +210,19 @@ public sealed class HostedRedeliveryTests(KafkaTestContainer kafka) : KafkaInteg
             _ => null
         };
         if (routingTarget is not null)
+        {
             await KafkaContainer.CreateTopicAsync(routingTarget, partitions: 1);
+        }
         if (failureHandling == "retryTopic")
+        {
             await KafkaContainer.CreateTopicAsync(sideTopic + "-retry-5m", partitions: 1);
+        }
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers).BuildAsync(cancellationToken);
         for (var index = 0; index < 3; index++)
+        {
             await producer.ProduceAsync(topic, "key", $"value-{index}", cancellationToken);
+        }
         await using var admin = Kafka.CreateAdminClient()
             .WithBootstrapServers(KafkaContainer.BootstrapServers).Build();
 
@@ -250,7 +264,9 @@ public sealed class HostedRedeliveryTests(KafkaTestContainer kafka) : KafkaInteg
             while (newOwnerValues.Count < 3)
             {
                 if (await newOwner.ConsumeOneAsync(TimeSpan.FromSeconds(30), cancellationToken) is { } record)
+                {
                     newOwnerValues.Add(record.Value);
+                }
             }
 
             await newOwner.CommitAsync(cancellationToken);
@@ -306,7 +322,9 @@ public sealed class HostedRedeliveryTests(KafkaTestContainer kafka) : KafkaInteg
     private static async Task WaitUntilAsync(Func<Task<bool>> condition, CancellationToken cancellationToken)
     {
         while (!await condition())
+        {
             await Task.Delay(50, cancellationToken);
+        }
     }
 
     [Test]
@@ -328,7 +346,9 @@ public sealed class HostedRedeliveryTests(KafkaTestContainer kafka) : KafkaInteg
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers).BuildAsync(cancellationToken);
         for (var index = 0; index < 3; index++)
+        {
             await producer.ProduceAsync(topic, "key", $"value-{index}", cancellationToken);
+        }
 
         var consumer = Kafka.CreateShareConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers).WithGroupId(group)
@@ -361,10 +381,22 @@ public sealed class HostedRedeliveryTests(KafkaTestContainer kafka) : KafkaInteg
                 MaxPollRetryBackoff = pollRetryBackoff ?? TimeSpan.FromSeconds(30)
             })
     {
-        public ConcurrentDictionary<string, int> Attempts { get; } = new();
-        public TaskCompletionSource FirstFailure { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        public ConcurrentQueue<string> Successes { get; } = new();
-        public TaskCompletionSource Completed { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public ConcurrentDictionary<string, int> Attempts
+        {
+            get;
+        } = new();
+        public TaskCompletionSource FirstFailure
+        {
+            get;
+        } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public ConcurrentQueue<string> Successes
+        {
+            get;
+        } = new();
+        public TaskCompletionSource Completed
+        {
+            get;
+        } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         protected override IEnumerable<string> Topics => [topic];
 
         protected override ValueTask ProcessAsync(ConsumeResult<string, string> result, CancellationToken cancellationToken)
@@ -377,7 +409,9 @@ public sealed class HostedRedeliveryTests(KafkaTestContainer kafka) : KafkaInteg
             }
             Successes.Enqueue(result.Value!);
             if (Successes.Count == expected)
+            {
                 Completed.TrySetResult();
+            }
             return ValueTask.CompletedTask;
         }
     }
@@ -398,9 +432,18 @@ public sealed class HostedRedeliveryTests(KafkaTestContainer kafka) : KafkaInteg
             })
     {
         private int _failedAttempts;
-        public TaskCompletionSource Processing { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        public TaskCompletionSource Release { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        public TaskCompletionSource SentinelProcessed { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource Processing
+        {
+            get;
+        } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource Release
+        {
+            get;
+        } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource SentinelProcessed
+        {
+            get;
+        } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public int FailedAttempts => Volatile.Read(ref _failedAttempts);
         protected override IEnumerable<string> Topics => [topic, sideTopic];
 
@@ -413,7 +456,9 @@ public sealed class HostedRedeliveryTests(KafkaTestContainer kafka) : KafkaInteg
             }
 
             if (result.Topic != topic || result.Offset != 0)
+            {
                 return;
+            }
 
             if (Interlocked.Increment(ref _failedAttempts) == 1)
             {
@@ -441,15 +486,26 @@ public sealed class HostedRedeliveryTests(KafkaTestContainer kafka) : KafkaInteg
             })
     {
         private int _processed;
-        public TaskCompletionSource Processing { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        public TaskCompletionSource Release { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        public TaskCompletionSource FailureResolved { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource Processing
+        {
+            get;
+        } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource Release
+        {
+            get;
+        } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource FailureResolved
+        {
+            get;
+        } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         protected override IEnumerable<string> Topics => [topic];
 
         protected override async ValueTask ProcessAsync(ConsumeResult<string, string> result, CancellationToken cancellationToken)
         {
             if (Interlocked.Increment(ref _processed) != 1)
+            {
                 return;
+            }
 
             Processing.TrySetResult();
             await Release.Task.WaitAsync(cancellationToken);
@@ -470,17 +526,27 @@ public sealed class HostedRedeliveryTests(KafkaTestContainer kafka) : KafkaInteg
         : KafkaShareConsumerService<string, string>(consumer, NullLogger.Instance,
             serviceOptions: new KafkaShareConsumerServiceOptions { DrainOnShutdown = false })
     {
-        public ConcurrentDictionary<string, int> Successes { get; } = new();
-        public TaskCompletionSource Completed { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public ConcurrentDictionary<string, int> Successes
+        {
+            get;
+        } = new();
+        public TaskCompletionSource Completed
+        {
+            get;
+        } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         protected override IEnumerable<string> Topics => [topic];
 
         protected override ValueTask ProcessAsync(ShareConsumeResult<string, string> result, CancellationToken cancellationToken)
         {
             if (result.Value == "value-1" && result.DeliveryCount == 1)
+            {
                 throw new InvalidOperationException("Transient handler failure.");
+            }
             Successes.TryAdd(result.Value!, result.DeliveryCount);
             if (Successes.Count == expected)
+            {
                 Completed.TrySetResult();
+            }
             return ValueTask.CompletedTask;
         }
     }

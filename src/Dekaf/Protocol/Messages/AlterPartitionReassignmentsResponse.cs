@@ -16,27 +16,42 @@ public sealed class AlterPartitionReassignmentsResponse : IKafkaResponse
     /// <summary>
     /// Throttle time in milliseconds.
     /// </summary>
-    public int ThrottleTimeMs { get; init; }
+    public int ThrottleTimeMs
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Whether replication-factor change was allowed (v1+).
     /// </summary>
-    public bool AllowReplicationFactorChange { get; init; } = true;
+    public bool AllowReplicationFactorChange
+    {
+        get; init;
+    } = true;
 
     /// <summary>
     /// Top-level error code.
     /// </summary>
-    public ErrorCode ErrorCode { get; init; }
+    public ErrorCode ErrorCode
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Top-level error message.
     /// </summary>
-    public string? ErrorMessage { get; init; }
+    public string? ErrorMessage
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Per-topic results.
     /// </summary>
-    public required IReadOnlyList<AlterPartitionReassignmentsResponseTopic> Responses { get; init; }
+    public required IReadOnlyList<AlterPartitionReassignmentsResponseTopic> Responses
+    {
+        get; init;
+    }
 
     public static IKafkaResponse Read(ref KafkaProtocolReader reader, short version)
     {
@@ -71,12 +86,18 @@ public sealed class AlterPartitionReassignmentsResponseTopic
     /// <summary>
     /// Topic name.
     /// </summary>
-    public required string Name { get; init; }
+    public required string Name
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Per-partition results.
     /// </summary>
-    public required IReadOnlyList<AlterPartitionReassignmentsResponsePartition> Partitions { get; init; }
+    public required IReadOnlyList<AlterPartitionReassignmentsResponsePartition> Partitions
+    {
+        get; init;
+    }
 
     public static AlterPartitionReassignmentsResponseTopic Read(ref KafkaProtocolReader reader, short version)
     {
@@ -105,17 +126,26 @@ public sealed class AlterPartitionReassignmentsResponsePartition
     /// <summary>
     /// Partition index.
     /// </summary>
-    public int PartitionIndex { get; init; }
+    public int PartitionIndex
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Partition error code.
     /// </summary>
-    public ErrorCode ErrorCode { get; init; }
+    public ErrorCode ErrorCode
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Partition error message.
     /// </summary>
-    public string? ErrorMessage { get; init; }
+    public string? ErrorMessage
+    {
+        get; init;
+    }
 
     public static AlterPartitionReassignmentsResponsePartition Read(ref KafkaProtocolReader reader, short version)
     {

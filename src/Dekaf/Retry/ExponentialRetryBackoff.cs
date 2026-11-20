@@ -35,7 +35,9 @@ internal static class ExponentialRetryBackoff
         double randomValue)
     {
         if (initialDelayMs <= 0 || maximumDelayMs <= 0)
+        {
             return 0;
+        }
 
         var effectiveMaximumDelayMs = Math.Max(initialDelayMs, maximumDelayMs);
         var exponent = Math.Min(Math.Max(failureCount - 1, 0), MaximumExponent);
@@ -53,7 +55,9 @@ internal static class ExponentialRetryBackoff
         double randomValue)
     {
         if (initialDelayMs <= 0 || maximumDelayMs <= 0)
+        {
             return 0;
+        }
 
         var effectiveMaximumDelayMs = Math.Max(initialDelayMs, maximumDelayMs);
         var maximumExponent = Math.Min(

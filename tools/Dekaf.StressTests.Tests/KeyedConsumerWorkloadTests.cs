@@ -13,12 +13,20 @@ public class KeyedConsumerWorkloadTests
         var tracker = new ThroughputTracker();
         var pass = new KeyedConsumerPass(2, 64, tracker, stop);
         for (var key = 31; key >= 0; key--)
+        {
             for (var offset = key; offset < 64; offset += 32)
+            {
                 for (var partition = 1; partition >= 0; partition--)
+                {
                     pass.Complete(pass.Enter(partition, key, offset, Payload(offset)), 8);
+                }
+            }
+        }
         pass.ValidateComplete();
         if (!stop.IsCancellationRequested || tracker.MessageCount != 128)
+        {
             throw new InvalidOperationException("Full replay must stop ingress and count every completion.");
+        }
     }
 
     [Test]
@@ -72,7 +80,10 @@ public class KeyedConsumerWorkloadTests
         for (var key = 0; key < 32; key++)
         {
             var index = pass.Enter(0, key, key, Payload(key));
-            if (key != 31) pass.Complete(index, 8);
+            if (key != 31)
+            {
+                pass.Complete(index, 8);
+            }
         }
         await Assert.That(stop.IsCancellationRequested).IsFalse();
         await Assert.ThrowsAsync<InvalidOperationException>(() =>
@@ -116,7 +127,9 @@ public class KeyedConsumerWorkloadTests
         var first = KeyedConsumerWorkload.CreateBinaryKey("large-colliding", 0);
         var other = KeyedConsumerWorkload.CreateBinaryKey("large-colliding", 31);
         foreach (var start in new[] { 0, first.Length / 3, first.Length * 2 / 3, first.Length - 16 })
+        {
             await Assert.That(first.AsSpan(start, 16).SequenceEqual(other.AsSpan(start, 16))).IsTrue();
+        }
         await Assert.That(first.AsSpan().SequenceEqual(other)).IsFalse();
     }
 

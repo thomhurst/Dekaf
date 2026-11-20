@@ -12,12 +12,18 @@ public sealed class OffsetCommitResponse : IKafkaResponse
     /// <summary>
     /// Throttle time in milliseconds.
     /// </summary>
-    public int ThrottleTimeMs { get; init; }
+    public int ThrottleTimeMs
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Topics with commit results.
     /// </summary>
-    public required IReadOnlyList<OffsetCommitResponseTopic> Topics { get; init; }
+    public required IReadOnlyList<OffsetCommitResponseTopic> Topics
+    {
+        get; init;
+    }
 
     public static IKafkaResponse Read(ref KafkaProtocolReader reader, short version)
     {
@@ -43,9 +49,18 @@ public sealed class OffsetCommitResponse : IKafkaResponse
 /// </summary>
 public sealed class OffsetCommitResponseTopic
 {
-    public string Name { get; init; } = string.Empty;
-    public Guid TopicId { get; init; }
-    public required IReadOnlyList<OffsetCommitResponsePartition> Partitions { get; init; }
+    public string Name
+    {
+        get; init;
+    } = string.Empty;
+    public Guid TopicId
+    {
+        get; init;
+    }
+    public required IReadOnlyList<OffsetCommitResponsePartition> Partitions
+    {
+        get; init;
+    }
 
     public static OffsetCommitResponseTopic Read(ref KafkaProtocolReader reader, short version)
     {
@@ -75,8 +90,14 @@ public sealed class OffsetCommitResponseTopic
 /// </summary>
 public sealed class OffsetCommitResponsePartition
 {
-    public required int PartitionIndex { get; init; }
-    public required ErrorCode ErrorCode { get; init; }
+    public required int PartitionIndex
+    {
+        get; init;
+    }
+    public required ErrorCode ErrorCode
+    {
+        get; init;
+    }
 
     public static OffsetCommitResponsePartition Read(ref KafkaProtocolReader reader, short version)
     {

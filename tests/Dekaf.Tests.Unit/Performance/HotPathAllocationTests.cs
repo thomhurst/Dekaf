@@ -100,7 +100,11 @@ public class HotPathAllocationTests
         await StopProducerBackgroundLoopsAsync(producer);
         SeedProducerMetadata(producer);
         SetInstanceField(producer, "_initialized", true);
-        Action<RecordMetadata, Exception?>? handler = withDeliveryHandler ? static (_, _) => { } : null;
+        Action<RecordMetadata, Exception?>? handler = withDeliveryHandler
+            ? static (_, _) =>
+            {
+            }
+        : null;
         var headers = Headers.Create("h", "v");
 
         var measurement = WarmAndMeasure(
@@ -230,11 +234,15 @@ public class HotPathAllocationTests
     {
         var checksum = 0;
         for (var i = 0; i < warmupIterations; i++)
+        {
             checksum += operation();
+        }
 
         var before = GC.GetAllocatedBytesForCurrentThread();
         for (var i = 0; i < measuredIterations; i++)
+        {
             checksum += operation();
+        }
         var allocatedBytes = GC.GetAllocatedBytesForCurrentThread() - before;
 
         GC.KeepAlive(operation);
@@ -365,9 +373,15 @@ public class HotPathAllocationTests
         ConsumeBatch<Ignore, ReadOnlyMemory<byte>> batch,
         int valueLength) : IDisposable
     {
-        public ConsumeBatch<Ignore, ReadOnlyMemory<byte>> Batch { get; } = batch;
+        public ConsumeBatch<Ignore, ReadOnlyMemory<byte>> Batch
+        {
+            get;
+        } = batch;
 
-        public int ValueLength { get; } = valueLength;
+        public int ValueLength
+        {
+            get;
+        } = valueLength;
 
         public void Dispose() => pending.Dispose();
     }

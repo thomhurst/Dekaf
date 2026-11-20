@@ -21,7 +21,7 @@ public sealed partial class InMemoryAdminClient : IDetailedConfigMutationAdminCl
     {
         cancellationToken.ThrowIfCancellationRequested();
         var items = AdminClient.SnapshotDetailedConfigs(configs, static change => new ConfigAlter
-            { Name = change.Name, Value = change.Value, Operation = change.Operation });
+        { Name = change.Name, Value = change.Value, Operation = change.Operation });
         return ExecuteInMemoryConfigMutationsAsync(items, options?.TimeoutMs ?? 30000, replace: false, options?.ValidateOnly ?? false, cancellationToken);
     }
 

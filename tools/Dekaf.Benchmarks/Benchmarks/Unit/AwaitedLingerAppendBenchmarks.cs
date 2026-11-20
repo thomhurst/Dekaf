@@ -56,7 +56,9 @@ public class AwaitedLingerAppendBenchmarks
         var msgsPerBatch = options.BatchSize / (MessageSize + 20);
         var ts = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
         for (var p = 0; p < PartitionCount; p++)
+        {
             FillAndDrain(p, batchCount: p == 0 ? 4 : 1, msgsPerBatch, ts);
+        }
 
         _drainerCts = new CancellationTokenSource();
         _drainerTask = Task.Run(() => DrainLoop(_drainerCts.Token));
@@ -87,7 +89,9 @@ public class AwaitedLingerAppendBenchmarks
         var allocatedBefore = GC.GetAllocatedBytesForCurrentThread();
         var ts = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
         for (var i = 0; i < 100; i++)
+        {
             Append(partition: 0, ts);
+        }
         RecordAppendThreadAllocation(allocatedBefore, 100);
     }
 
@@ -106,7 +110,9 @@ public class AwaitedLingerAppendBenchmarks
         var allocatedBefore = GC.GetAllocatedBytesForCurrentThread();
         var ts = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
         for (var i = 0; i < 100; i++)
+        {
             Append(i % PartitionCount, ts);
+        }
         RecordAppendThreadAllocation(allocatedBefore, 100);
     }
 
@@ -133,7 +139,9 @@ public class AwaitedLingerAppendBenchmarks
         {
             Append(partition, ts);
             if (i % msgsPerBatch == msgsPerBatch - 1)
+            {
                 DrainAll();
+            }
         }
 
         DrainAll();
@@ -142,7 +150,9 @@ public class AwaitedLingerAppendBenchmarks
     private void DrainAll()
     {
         while (_accumulator.TryDrainBatch(out var batch))
+        {
             Retire(batch);
+        }
     }
 
     /// <summary>

@@ -12,9 +12,18 @@ public sealed partial class KafkaConsumer<TKey, TValue>
     // Allocated only for assignment/reset/seek work, never for positioned fetches or records.
     private sealed class OffsetResolution(long timestamp)
     {
-        public long Timestamp { get; set; } = timestamp;
-        public long? Offset { get; set; }
-        public Exception? Error { get; set; }
+        public long Timestamp
+        {
+            get; set;
+        } = timestamp;
+        public long? Offset
+        {
+            get; set;
+        }
+        public Exception? Error
+        {
+            get; set;
+        }
         public bool IsPending => Offset is null && Error is null;
     }
 
@@ -23,7 +32,9 @@ public sealed partial class KafkaConsumer<TKey, TValue>
         CancellationToken cancellationToken)
     {
         if (resolutions.Count == 0)
+        {
             return;
+        }
 
         try
         {
@@ -41,7 +52,9 @@ public sealed partial class KafkaConsumer<TKey, TValue>
                     foreach (var (partition, resolution) in resolutions)
                     {
                         if (!resolution.IsPending)
+                        {
                             continue;
+                        }
 
                         var leader = _metadataManager.TryGetCachedPartitionLeader(partition.Topic, partition.Partition);
                         if (leader is null)
@@ -51,7 +64,9 @@ public sealed partial class KafkaConsumer<TKey, TValue>
                         }
 
                         if (!byBroker.TryGetValue(leader.NodeId, out var brokerPartitions))
+                        {
                             byBroker.Add(leader.NodeId, brokerPartitions = []);
+                        }
                         brokerPartitions.Add(partition, resolution);
                     }
 
@@ -65,15 +80,23 @@ public sealed partial class KafkaConsumer<TKey, TValue>
                     // Observe every broker before retrying or returning, including cancellation.
                     var failures = await Task.WhenAll(tasks).ConfigureAwait(false);
                     foreach (var failure in failures)
+                    {
                         retryFailure ??= failure;
+                    }
                     if (retryFailure is not null)
+                    {
                         ExceptionDispatchInfo.Capture(retryFailure).Throw();
+                    }
 
                     var hasPending = false;
                     foreach (var resolution in resolutions.Values)
+                    {
                         hasPending |= resolution.IsPending;
+                    }
                     if (!hasPending)
+                    {
                         return;
+                    }
                 }
             }, _metadataManager, cancellationToken, _options.RetryBackoffMs, _options.RetryBackoffMaxMs,
                 deadline: OffsetLookupDeadline("ListOffsets", TimeSpan.FromMilliseconds(_options.RequestTimeoutMs)))
@@ -86,7 +109,9 @@ public sealed partial class KafkaConsumer<TKey, TValue>
             foreach (var resolution in resolutions.Values)
             {
                 if (resolution.IsPending)
+                {
                     resolution.Error = ex;
+                }
             }
         }
     }
@@ -100,10 +125,14 @@ public sealed partial class KafkaConsumer<TKey, TValue>
         {
             if (resolution.IsPending
                 && _metadataManager.TryGetCachedPartitionLeader(partition.Topic, partition.Partition) is null)
+            {
                 (missingTopics ??= new HashSet<string>(StringComparer.Ordinal)).Add(partition.Topic);
+            }
         }
         if (missingTopics is null)
+        {
             return;
+        }
 
         try
         {
@@ -117,8 +146,7 @@ public sealed partial class KafkaConsumer<TKey, TValue>
             cancellationToken.ThrowIfCancellationRequested();
             // Match RetryHelper's best-effort refresh: resolve available leaders before retrying.
         }
-        catch (Exception ex) when (
-            RetryHelper.IsRetriableRequestFailure(ex) && !cancellationToken.IsCancellationRequested)
+        catch (Exception ex) when (RetryHelper.IsRetriableRequestFailure(ex) && !cancellationToken.IsCancellationRequested)
         {
             // Missing leaders below retain their contextual error; other brokers can succeed.
         }
@@ -143,7 +171,9 @@ public sealed partial class KafkaConsumer<TKey, TValue>
             foreach (var (partition, resolution) in resolutions)
             {
                 if (!byTopic.TryGetValue(partition.Topic, out var topicPartitions))
+                {
                     byTopic.Add(partition.Topic, topicPartitions = []);
+                }
                 topicPartitions.Add(new ListOffsetsRequestPartition
                 {
                     PartitionIndex = partition.Partition,
@@ -154,7 +184,9 @@ public sealed partial class KafkaConsumer<TKey, TValue>
 
             var topics = new List<ListOffsetsRequestTopic>(byTopic.Count);
             foreach (var (topic, partitions) in byTopic)
+            {
                 topics.Add(new ListOffsetsRequestTopic { Name = topic, Partitions = partitions });
+            }
             var response = await connection.SendWithClientTelemetryAsync<ListOffsetsRequest, ListOffsetsResponse>(
                 new ListOffsetsRequest
                 {
@@ -168,7 +200,9 @@ public sealed partial class KafkaConsumer<TKey, TValue>
             foreach (var topic in response.Topics)
             {
                 foreach (var partition in topic.Partitions)
+                {
                     responses[new TopicPartition(topic.Name, partition.PartitionIndex)] = partition;
+                }
             }
 
             Exception? retryFailure = null;
@@ -176,18 +210,26 @@ public sealed partial class KafkaConsumer<TKey, TValue>
             {
                 KafkaException? error = null;
                 if (!responses.TryGetValue(partition, out var result))
+                {
                     error = new KafkaException(ErrorCode.UnknownTopicOrPartition,
                         $"ListOffsets response did not contain {partition}.");
+                }
                 else if (result.ErrorCode != ErrorCode.None)
+                {
                     error = new ConsumeException(result.ErrorCode,
                         $"ListOffsets failed for {partition}: {result.ErrorCode}");
+                }
 
                 if (error is not null)
                 {
                     if (error.IsRetriable)
+                    {
                         retryFailure ??= error;
+                    }
                     else
+                    {
                         resolution.Error = error;
+                    }
                 }
                 else if (resolution.Timestamp >= 0 && result!.Offset == TopicPartitionTimestamp.Latest)
                 {
@@ -208,12 +250,16 @@ public sealed partial class KafkaConsumer<TKey, TValue>
                 : ex;
             if (TransportFailureClassifier.IsRetriable(failure, TransportRetryPolicy.Request,
                     ownerDisposed: Volatile.Read(ref _consumerDisposed) != 0))
+            {
                 return failure;
+            }
 
             foreach (var resolution in resolutions.Values)
             {
                 if (resolution.IsPending)
+                {
                     resolution.Error = failure;
+                }
             }
             return null;
         }

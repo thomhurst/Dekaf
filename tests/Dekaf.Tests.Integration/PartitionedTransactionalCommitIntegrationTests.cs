@@ -87,7 +87,9 @@ public sealed class PartitionedTransactionalCommitIntegrationTests(KafkaTestCont
                 async (_, message, handlerCancellation) =>
                 {
                     if (message.Value == failAt)
+                    {
                         throw new InvalidOperationException("handler failed");
+                    }
 
                     await producer.ProduceAsync(output, message.Key, message.Value, handlerCancellation).ConfigureAwait(false);
                 },

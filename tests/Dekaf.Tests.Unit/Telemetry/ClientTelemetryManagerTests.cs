@@ -6,9 +6,9 @@ using Dekaf.Metadata;
 using Dekaf.Networking;
 using Dekaf.Protocol;
 using Dekaf.Protocol.Messages;
-using Dekaf.Telemetry;
-using Dekaf.ShareConsumer;
 using Dekaf.Serialization;
+using Dekaf.ShareConsumer;
+using Dekaf.Telemetry;
 
 namespace Dekaf.Tests.Unit.Telemetry;
 
@@ -47,7 +47,9 @@ public sealed partial class ClientTelemetryManagerTests
                 await ClientTelemetryManager.WaitForPushIntervalAsync(started, pushIntervalMs, CancellationToken.None);
                 var elapsed = TimeSpan.FromSeconds((Stopwatch.GetTimestamp() - started) / (double)Stopwatch.Frequency);
                 if (elapsed < shortest)
+                {
                     shortest = elapsed;
+                }
             }
 
             return shortest;
@@ -290,7 +292,9 @@ public sealed partial class ClientTelemetryManagerTests
             await Assert.That(context.Connection.BlockedRequestToken.IsCancellationRequested).IsTrue();
             await Assert.That(context.Manager.IsStarted).IsFalse();
             if (observeCancellation)
+            {
                 await startTask.WaitAsync(TimeSpan.FromSeconds(2));
+            }
             else
             {
                 await Assert.That(startTask.IsCompleted).IsFalse();
@@ -327,7 +331,9 @@ public sealed partial class ClientTelemetryManagerTests
             await context.Manager.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(2));
             await Assert.That(context.Connection.BlockedRequestToken.IsCancellationRequested).IsTrue();
             if (!observeCancellation)
+            {
                 await Assert.That(context.Connection.LeaseCount).IsEqualTo(1);
+            }
         }
         finally
         {
@@ -379,7 +385,9 @@ public sealed partial class ClientTelemetryManagerTests
         {
             using var cancellationSource = new CancellationTokenSource();
             if (cancelBeforeWait)
+            {
                 cancellationSource.Cancel();
+            }
 
             var stopTask = context.Manager.StopAsync(TimeSpan.FromSeconds(2), cancellationSource.Token).AsTask();
             cancellationSource.Cancel();
@@ -718,14 +726,22 @@ public sealed partial class ClientTelemetryManagerTests
             }
         }
 
-        public KafkaShareConsumer<string, string>? ShareConsumer { get; }
-        public ClientTelemetryManager Manager { get; }
+        public KafkaShareConsumer<string, string>? ShareConsumer
+        {
+            get;
+        }
+        public ClientTelemetryManager Manager
+        {
+            get;
+        }
         public TestKafkaConnection Connection => _pool.Connection;
 
         public async ValueTask DisposeAsync()
         {
             if (ShareConsumer is not null)
+            {
                 await ShareConsumer.DisposeAsync();
+            }
             await Manager.DisposeAsync().ConfigureAwait(false);
             await _metadataManager.DisposeAsync().ConfigureAwait(false);
             await _pool.DisposeAsync().ConfigureAwait(false);
@@ -754,7 +770,10 @@ public sealed partial class ClientTelemetryManagerTests
 
     private sealed class TestConnectionPool : IConnectionPool
     {
-        public TestKafkaConnection Connection { get; } = new();
+        public TestKafkaConnection Connection
+        {
+            get;
+        } = new();
 
         public ValueTask<IKafkaConnection> GetConnectionAsync(int brokerId, CancellationToken cancellationToken = default) =>
             ValueTask.FromResult<IKafkaConnection>(Connection);
@@ -795,7 +814,10 @@ public sealed partial class ClientTelemetryManagerTests
         private bool _observeBlockedRequestCancellation;
         private int _leaseCount;
 
-        public CancellationToken BlockedRequestToken { get; private set; }
+        public CancellationToken BlockedRequestToken
+        {
+            get; private set;
+        }
         public int LeaseCount => Volatile.Read(ref _leaseCount);
         public int ActiveOperationCount => 0;
 
@@ -808,10 +830,16 @@ public sealed partial class ClientTelemetryManagerTests
         public void ReleaseLease()
         {
             if (Interlocked.Decrement(ref _leaseCount) == 0)
+            {
                 _leasesDrained?.TrySetResult();
+            }
         }
-        public void BeginRetirement() { }
-        public void CompleteRetirement() { }
+        public void BeginRetirement()
+        {
+        }
+        public void CompleteRetirement()
+        {
+        }
 
         public Task WaitForLeasesDrainedAsync(TimeSpan timeout) => _leasesDrained!.Task.WaitAsync(timeout);
 

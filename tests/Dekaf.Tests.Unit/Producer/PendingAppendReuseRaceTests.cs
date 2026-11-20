@@ -67,7 +67,9 @@ public class PendingAppendReuseRaceTests
         accumulator.AfterPendingAppendDrainReservationForTest = () =>
         {
             if (++hookRuns != 1)
+            {
                 return;
+            }
 
             // The drain reserved firstSize for the first rental and has not claimed it yet.
             // Cancel it and observe the result on this thread: GetResult returns the instance to
@@ -84,7 +86,9 @@ public class PendingAppendReuseRaceTests
 
             // Refill the buffer so the second append also takes the slow path.
             if (!accumulator.TryReserveMemoryForTest(BufferMemory - firstSize))
+            {
                 throw new InvalidOperationException("Could not refill BufferMemory.");
+            }
 
             secondAppend = AccumulatorTestHelpers.AppendNullRecordAsync(
                 accumulator, Topic, partition: 1, partitionCount: 2);

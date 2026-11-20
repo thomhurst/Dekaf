@@ -10,7 +10,10 @@ public sealed class LatencyTrackerTests
     public async Task Reset_ClearsWarmupHistogramAndOutliersWithoutAllocatingAnotherHistogram()
     {
         var tracker = new LatencyTracker();
-        for (var index = 0; index < 257; index++) tracker.Record(6000);
+        for (var index = 0; index < 257; index++)
+        {
+            tracker.Record(6000);
+        }
         tracker.Record(10);
         await tracker.WaitForDeliverySamplesAsync();
 

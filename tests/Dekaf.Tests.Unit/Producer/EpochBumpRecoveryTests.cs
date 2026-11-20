@@ -783,6 +783,7 @@ public sealed class EpochBumpRecoveryTests
 
         await accumulator.DisposeAsync();
     }
+
     #endregion
 
     #region PartitionInflightTracker.IsHeadOfLine Tests

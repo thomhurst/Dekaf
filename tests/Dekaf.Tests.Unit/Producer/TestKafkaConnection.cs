@@ -39,10 +39,22 @@ internal sealed class TestKafkaConnection :
     private int _leaseCount;
     private int _retirementState;
 
-    public int BrokerId { get; init; } = 1;
-    public string Host { get; init; } = "localhost";
-    public int Port { get; init; } = 9092;
-    public bool IsConnected { get; set; } = true;
+    public int BrokerId
+    {
+        get; init;
+    } = 1;
+    public string Host
+    {
+        get; init;
+    } = "localhost";
+    public int Port
+    {
+        get; init;
+    } = 9092;
+    public bool IsConnected
+    {
+        get; set;
+    } = true;
 
     public int SendPipelinedCalls;
     public int SendPipelinedWithCallerTimeoutCalls;
@@ -53,24 +65,36 @@ internal sealed class TestKafkaConnection :
     public int CompleteRetirementCalls;
     public int LeaseCountDuringRequest;
 
-    public TaskCompletionSource LeaseCountObserved { get; } = new(
+    public TaskCompletionSource LeaseCountObserved
+    {
+        get;
+    } = new(
         TaskCreationOptions.RunContinuationsAsynchronously);
 
-    public TaskCompletionSource DisposeStarted { get; } = new(
+    public TaskCompletionSource DisposeStarted
+    {
+        get;
+    } = new(
         TaskCreationOptions.RunContinuationsAsynchronously);
 
     /// <summary>
     /// Opt-in switch for <see cref="CapturedProduceRequests"/>. Off by default so the many
     /// suites sharing this double don't pay per-send capture cost for diagnostics they never read.
     /// </summary>
-    public bool CaptureProduceRequests { get; set; }
+    public bool CaptureProduceRequests
+    {
+        get; set;
+    }
 
     /// <summary>
     /// Snapshot of every pipelined produce request's record batches, captured at write time
     /// (the sender's scratch request structures are cleared after each send, so the request
     /// object itself cannot be inspected later). Lock the list to read it.
     /// </summary>
-    public List<CapturedProduceRequest> CapturedProduceRequests { get; } = [];
+    public List<CapturedProduceRequest> CapturedProduceRequests
+    {
+        get;
+    } = [];
 
     /// <summary>
     /// Thread-safe count of <see cref="CapturedProduceRequests"/>. The send counters are
@@ -82,29 +106,52 @@ internal sealed class TestKafkaConnection :
         get
         {
             lock (CapturedProduceRequests)
+            {
                 return CapturedProduceRequests.Count;
+            }
         }
     }
 
-    public Func<ValueTask<Task<ProduceResponse>>>? SendProducePipelinedAfterWrite { get; set; }
+    public Func<ValueTask<Task<ProduceResponse>>>? SendProducePipelinedAfterWrite
+    {
+        get; set;
+    }
 
     /// <summary>
     /// Request-aware variant of <see cref="SendProducePipelinedAfterWrite"/>: receives the request
     /// as it was written (captured whether or not <see cref="CaptureProduceRequests"/> is set), so
     /// a broker double can answer each batch according to its stamp. Takes precedence when set.
     /// </summary>
-    public Func<CapturedProduceRequest, ValueTask<Task<ProduceResponse>>>? SendProducePipelinedAfterWriteForRequest { get; set; }
-    public IPipelinedResponseSource<ProduceResponse>? PipelinedResponseSource { get; set; }
+    public Func<CapturedProduceRequest, ValueTask<Task<ProduceResponse>>>? SendProducePipelinedAfterWriteForRequest
+    {
+        get; set;
+    }
+    public IPipelinedResponseSource<ProduceResponse>? PipelinedResponseSource
+    {
+        get; set;
+    }
 
     /// <summary>
     /// Per-request variant of <see cref="PipelinedResponseSource"/>: receives the 1-based index of
     /// the pipelined send and returns the source that answers it, or null to fall through to the
     /// other response hooks. Takes precedence over <see cref="PipelinedResponseSource"/>.
     /// </summary>
-    public Func<int, IPipelinedResponseSource<ProduceResponse>?>? PipelinedResponseSourceForSend { get; set; }
-    public Func<ValueTask>? SendProduceFireAndForgetWithCallerTimeout { get; set; }
-    public Func<Type, object>? SendResponse { get; set; }
-    public Func<int>? ActiveOperationCountProvider { get; set; }
+    public Func<int, IPipelinedResponseSource<ProduceResponse>?>? PipelinedResponseSourceForSend
+    {
+        get; set;
+    }
+    public Func<ValueTask>? SendProduceFireAndForgetWithCallerTimeout
+    {
+        get; set;
+    }
+    public Func<Type, object>? SendResponse
+    {
+        get; set;
+    }
+    public Func<int>? ActiveOperationCountProvider
+    {
+        get; set;
+    }
 
     public ValueTask<TResponse> SendAsync<TRequest, TResponse>(
         TRequest request,
@@ -114,7 +161,9 @@ internal sealed class TestKafkaConnection :
         where TResponse : IKafkaResponse
     {
         if (SendResponse is null)
+        {
             throw new NotSupportedException();
+        }
 
         LeaseCountDuringRequest = Volatile.Read(ref _leaseCount);
         return ValueTask.FromResult((TResponse)SendResponse(typeof(TRequest)));
@@ -184,11 +233,15 @@ internal sealed class TestKafkaConnection :
     bool IRetirableKafkaConnection.TryAcquireLease()
     {
         if (Volatile.Read(ref _retirementState) != 0)
+        {
             return false;
+        }
 
         Interlocked.Increment(ref _leaseCount);
         if (Volatile.Read(ref _retirementState) == 0)
+        {
             return true;
+        }
 
         ((IRetirableKafkaConnection)this).ReleaseLease();
         return false;
@@ -222,12 +275,16 @@ internal sealed class TestKafkaConnection :
             if (CaptureProduceRequests)
             {
                 lock (CapturedProduceRequests)
+                {
                     CapturedProduceRequests.Add(captured);
+                }
             }
         }
 
         if (PipelinedResponseSourceForSend?.Invoke(sendIndex) is { } sendSource)
+        {
             return new PipelinedResponse<TResponse>((IPipelinedResponseSource<TResponse>)(object)sendSource, token: 0);
+        }
 
         if (PipelinedResponseSource is not null)
         {
@@ -242,7 +299,9 @@ internal sealed class TestKafkaConnection :
         }
 
         if (SendProducePipelinedAfterWrite is null)
+        {
             throw new NotSupportedException();
+        }
 
         var responseTask = await SendProducePipelinedAfterWrite().ConfigureAwait(false);
         return new PipelinedResponse<TResponse>(CastResponseTask<TResponse>(responseTask));

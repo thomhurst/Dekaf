@@ -13,23 +13,35 @@ public sealed class SaslAuthenticateResponse : IKafkaResponse
     /// <summary>
     /// The error code, or 0 if there was no error.
     /// </summary>
-    public required ErrorCode ErrorCode { get; init; }
+    public required ErrorCode ErrorCode
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The error message, or null if there was no error.
     /// </summary>
-    public string? ErrorMessage { get; init; }
+    public string? ErrorMessage
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The SASL authentication bytes from the server.
     /// </summary>
-    public required byte[] AuthBytes { get; init; }
+    public required byte[] AuthBytes
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The session lifetime in milliseconds (v1+).
     /// A value of 0 or greater indicates the session will not expire.
     /// </summary>
-    public long SessionLifetimeMs { get; init; }
+    public long SessionLifetimeMs
+    {
+        get; init;
+    }
 
     public static IKafkaResponse Read(ref KafkaProtocolReader reader, short version)
     {

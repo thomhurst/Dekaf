@@ -1,8 +1,8 @@
 using System.Buffers;
 using System.Buffers.Binary;
+using System.Linq.Expressions;
 using System.Net;
 using System.Net.Sockets;
-using System.Linq.Expressions;
 using System.Reflection;
 using BenchmarkDotNet.Attributes;
 using BenchmarkDotNet.Engines;
@@ -31,13 +31,16 @@ public class PipelinedResponseAllocationBenchmarks
     private Func<ApiVersionsRequest, short, CancellationToken, ValueTask<ApiVersionsResponse>> _sendObserved = null!;
     private Func<ApiVersionsRequest, short, CancellationToken, ValueTask<ApiVersionsResponse>> _sendObservedAfterWrite = null!;
 
-    private static readonly Action WriteStarted = static () => { };
+    private static readonly Action WriteStarted = static () =>
+    {
+    };
     private ClientTelemetryMetricCollector _telemetryCollector = null!;
     private TelemetrySender _sendTelemetry = null!;
     private PipelinedTelemetrySender _sendPipelinedTelemetry = null!;
 
     private delegate ValueTask<ApiVersionsResponse> TelemetrySender(ApiVersionsRequest request,
         short version, ClientTelemetryMetricCollector collector, Action callback, CancellationToken cancellationToken);
+
     private delegate ValueTask<PipelinedResponse<ApiVersionsResponse>> PipelinedTelemetrySender(ApiVersionsRequest request,
         short version, ClientTelemetryMetricCollector collector, Action callback, CancellationToken cancellationToken);
 
@@ -71,7 +74,9 @@ public class PipelinedResponseAllocationBenchmarks
         var capability = assembly.GetType("Dekaf.Networking.IKafkaRequestCancellationConnection");
         var contextType = assembly.GetType("Dekaf.Networking.KafkaRequestWriteContext");
         if (capability is null || contextType is null)
+        {
             return _connection.SendAsync<ApiVersionsRequest, ApiVersionsResponse>;
+        }
         var context = Activator.CreateInstance(contextType, BindingFlags.Instance | BindingFlags.NonPublic,
             binder: null, args: [_serverCancellation.Token], culture: null)!;
         var method = capability.GetMethod("SendWithResponseCancellationAsync")!
@@ -93,7 +98,9 @@ public class PipelinedResponseAllocationBenchmarks
         var method = typeof(KafkaConnection).GetMethod("SendWithResponseCancellationAfterWriteAsync",
             BindingFlags.Instance | BindingFlags.NonPublic);
         if (method is null || contextType is null)
+        {
             return _sendObserved;
+        }
         var context = Activator.CreateInstance(contextType, BindingFlags.Instance | BindingFlags.NonPublic,
             binder: null, args: [_serverCancellation.Token], culture: null)!;
         var request = Expression.Parameter(typeof(ApiVersionsRequest));
@@ -113,9 +120,11 @@ public class PipelinedResponseAllocationBenchmarks
         var method = typeof(KafkaConnection).GetMethods(BindingFlags.Instance | BindingFlags.NonPublic)
             .SingleOrDefault(candidate => candidate.Name == "SendWithTelemetryAsync" && candidate.GetParameters().Length == 5);
         if (method is null)
+        {
             return (request, version, _, callback, token) =>
                 ((IKafkaRequestWriteObserverConnection)_connection).SendWithWriteObservationAsync<ApiVersionsRequest, ApiVersionsResponse>(
                     request, version, callback, token);
+        }
         return method.MakeGenericMethod(typeof(ApiVersionsRequest), typeof(ApiVersionsResponse))
             .CreateDelegate<TelemetrySender>(_connection);
     }
@@ -125,9 +134,11 @@ public class PipelinedResponseAllocationBenchmarks
         var method = typeof(KafkaConnection).GetMethod("SendPipelinedWithTelemetryAfterWriteAsync",
             BindingFlags.Instance | BindingFlags.NonPublic);
         if (method is null)
+        {
             return (request, version, _, callback, token) =>
                 ((IKafkaRequestWriteObserverConnection)_connection).SendPipelinedWithWriteObservationAfterWriteAsync<ApiVersionsRequest, ApiVersionsResponse>(
                     request, version, callback, token);
+        }
         return method.MakeGenericMethod(typeof(ApiVersionsRequest), typeof(ApiVersionsResponse))
             .CreateDelegate<PipelinedTelemetrySender>(_connection);
     }

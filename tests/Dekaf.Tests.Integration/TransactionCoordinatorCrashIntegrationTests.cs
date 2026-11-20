@@ -86,7 +86,9 @@ public sealed class TransactionCoordinatorCrashIntegrationTests(RackAwareKafkaCo
         finally
         {
             if (crashedBrokerId is { } brokerId)
+            {
                 await kafka.StartBrokerAsync(brokerId, CancellationToken.None).ConfigureAwait(false);
+            }
         }
     }
 
@@ -150,7 +152,9 @@ public sealed class TransactionCoordinatorCrashIntegrationTests(RackAwareKafkaCo
         finally
         {
             if (crashedBrokerId is { } brokerId)
+            {
                 await kafka.StartBrokerAsync(brokerId, CancellationToken.None).ConfigureAwait(false);
+            }
         }
     }
 
@@ -196,7 +200,9 @@ public sealed class TransactionCoordinatorCrashIntegrationTests(RackAwareKafkaCo
         finally
         {
             if (crashedBrokerId is { } brokerId)
+            {
                 await kafka.StartBrokerAsync(brokerId, CancellationToken.None).ConfigureAwait(false);
+            }
         }
     }
 
@@ -279,7 +285,9 @@ public sealed class TransactionCoordinatorCrashIntegrationTests(RackAwareKafkaCo
         finally
         {
             if (crashedBrokerId is { } brokerId)
+            {
                 await kafka.StartBrokerAsync(brokerId, CancellationToken.None).ConfigureAwait(false);
+            }
         }
     }
 
@@ -308,7 +316,9 @@ public sealed class TransactionCoordinatorCrashIntegrationTests(RackAwareKafkaCo
                 var coordinatorId = await kafka.FindGroupCoordinatorIdAsync(groupId, cancellationToken)
                     .ConfigureAwait(false);
                 if (coordinatorId != excludedBrokerId)
+                {
                     return (groupId, coordinatorId);
+                }
             }
 
             var descriptions = await admin.DescribeTopicsAsync([OffsetsTopic], cancellationToken)
@@ -390,7 +400,9 @@ public sealed class TransactionCoordinatorCrashIntegrationTests(RackAwareKafkaCo
             {
                 values.Add(record.Value!);
                 if (values.Count == expectedCount)
+                {
                     break;
+                }
             }
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)

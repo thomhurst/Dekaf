@@ -37,8 +37,10 @@ public sealed class ShareConsumerDeadLetterQueueTests
     {
         await using var combined = new Fixture(new ShareConsumerOptions
         {
-            BootstrapServers = ["localhost:9092"], GroupId = "offset-reset",
-            AutoOffsetReset = AutoOffsetReset.Earliest, DeadLetterQueueTopic = "dlq.orders"
+            BootstrapServers = ["localhost:9092"],
+            GroupId = "offset-reset",
+            AutoOffsetReset = AutoOffsetReset.Earliest,
+            DeadLetterQueueTopic = "dlq.orders"
         });
         await combined.Consumer.InitializeAsync();
 
@@ -144,14 +146,26 @@ public sealed class ShareConsumerDeadLetterQueueTests
             ["BootstrapServers:0"] = "localhost:9092",
             ["GroupId"] = "dlq"
         };
-        if (topic is not null) values["DeadLetterQueueTopic"] = topic;
-        if (copyRecord is not null) values["DeadLetterQueueCopyRecord"] = copyRecord;
+        if (topic is not null)
+        {
+            values["DeadLetterQueueTopic"] = topic;
+        }
+        if (copyRecord is not null)
+        {
+            values["DeadLetterQueueCopyRecord"] = copyRecord;
+        }
         var configuration = new ConfigurationBuilder().AddInMemoryCollection(values).Build();
         var services = new ServiceCollection();
         services.AddDekaf(builder =>
         {
-            if (keyed) builder.AddShareConsumer<string, string>("configured", configuration);
-            else builder.AddShareConsumer<string, string>(configuration);
+            if (keyed)
+            {
+                builder.AddShareConsumer<string, string>("configured", configuration);
+            }
+            else
+            {
+                builder.AddShareConsumer<string, string>(configuration);
+            }
         });
         await using var provider = services.BuildServiceProvider();
         var consumer = keyed
@@ -182,7 +196,9 @@ public sealed class ShareConsumerDeadLetterQueueTests
 
     private static ShareConsumerOptions Options(string? topic, bool? copyRecord = null) => new()
     {
-        BootstrapServers = ["localhost:9092"], GroupId = "offset-reset",
-        DeadLetterQueueTopic = topic, DeadLetterQueueCopyRecord = copyRecord
+        BootstrapServers = ["localhost:9092"],
+        GroupId = "offset-reset",
+        DeadLetterQueueTopic = topic,
+        DeadLetterQueueCopyRecord = copyRecord
     };
 }

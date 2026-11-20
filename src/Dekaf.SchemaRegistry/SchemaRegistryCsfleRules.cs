@@ -71,7 +71,9 @@ public sealed class SchemaRegistryCsfleRuleHandler : ISchemaRegistryRuleTransfor
         ArgumentNullException.ThrowIfNull(schemaRegistryClient);
         ArgumentNullException.ThrowIfNull(kmsProviders);
         if (string.IsNullOrWhiteSpace(type))
+        {
             throw new ArgumentException("Rule handler type cannot be null or whitespace.", nameof(type));
+        }
 
         _schemaRegistryClient = schemaRegistryClient;
         _kmsProviders = kmsProviders;
@@ -92,7 +94,10 @@ public sealed class SchemaRegistryCsfleRuleHandler : ISchemaRegistryRuleTransfor
     }
 
     /// <inheritdoc />
-    public string Type { get; }
+    public string Type
+    {
+        get;
+    }
 
     /// <inheritdoc />
     public ReadOnlyMemory<byte> TransformSerializedPayload(
@@ -134,7 +139,9 @@ public sealed class SchemaRegistryCsfleRuleHandler : ISchemaRegistryRuleTransfor
         bool encrypt)
     {
         if (context.Rule.Tags is not { Count: > 0 })
+        {
             return null;
+        }
 
         if (context.PayloadContext.PayloadFormat == SchemaRegistryPayloadFormat.Avro)
         {
@@ -263,7 +270,9 @@ public sealed class SchemaRegistryCsfleRuleHandler : ISchemaRegistryRuleTransfor
             var transformsValue = plan.IsTarget(valueNode, context.Rule);
             matchedTarget |= transformsValue;
             if (!transformsValue || reader.TokenType == JsonTokenType.Null)
+            {
                 continue;
+            }
 
             if (reader.TokenType != JsonTokenType.String)
             {
@@ -343,7 +352,9 @@ public sealed class SchemaRegistryCsfleRuleHandler : ISchemaRegistryRuleTransfor
         CsfleWorkspace workspace)
     {
         if (depth == 0)
+        {
             return workspace.JsonNodes[0];
+        }
 
         if (pendingProperty)
         {
@@ -385,7 +396,9 @@ public sealed class SchemaRegistryCsfleRuleHandler : ISchemaRegistryRuleTransfor
                 out _,
                 out var written);
             if (encodeStatus != OperationStatus.Done)
+            {
                 throw new SchemaRegistryRuleException($"Schema Registry rule '{context.Rule.Name}' failed to encode an encrypted JSON field.");
+            }
             output.Advance(written);
             output.Append((byte)'"');
             return;
@@ -437,7 +450,9 @@ public sealed class SchemaRegistryCsfleRuleHandler : ISchemaRegistryRuleTransfor
                 _ => ""u8
             };
             if (escape.Length == 0 && value[i] >= 0x20)
+            {
                 continue;
+            }
 
             output.Append(value[copiedThrough..i]);
             if (value[i] < 0x20 && escape.IsEmpty)
@@ -485,7 +500,9 @@ public sealed class SchemaRegistryCsfleRuleHandler : ISchemaRegistryRuleTransfor
             }
 
             if (!applies && !mutableTags)
+            {
                 continue;
+            }
 
             var target = AddJsonPath(root, path, rule.Name);
             if (mutableTags)
@@ -516,7 +533,9 @@ public sealed class SchemaRegistryCsfleRuleHandler : ISchemaRegistryRuleTransfor
     private static JsonPathNode AddJsonPath(JsonPathNode root, string path, string ruleName)
     {
         if (path.Length == 0 || path[0] != '$')
+        {
             throw InvalidJsonPath(ruleName, path);
+        }
 
         var node = root;
         var offset = 1;
@@ -526,9 +545,13 @@ public sealed class SchemaRegistryCsfleRuleHandler : ISchemaRegistryRuleTransfor
             {
                 var start = ++offset;
                 while (offset < path.Length && path[offset] is not ('.' or '['))
+                {
                     offset++;
+                }
                 if (offset == start)
+                {
                     throw InvalidJsonPath(ruleName, path);
+                }
                 node = node.GetOrAddProperty(path[start..offset]);
                 continue;
             }
@@ -537,7 +560,9 @@ public sealed class SchemaRegistryCsfleRuleHandler : ISchemaRegistryRuleTransfor
             {
                 var start = ++offset;
                 while (offset < path.Length && char.IsAsciiDigit(path[offset]))
+                {
                     offset++;
+                }
                 if (offset == start || offset >= path.Length || path[offset] != ']' ||
                     !int.TryParse(path.AsSpan(start, offset - start), NumberStyles.None, CultureInfo.InvariantCulture, out var index))
                 {
@@ -585,7 +610,9 @@ public sealed class SchemaRegistryCsfleRuleHandler : ISchemaRegistryRuleTransfor
             foreach (var tag in hashSet)
             {
                 if (ruleTags.Contains(tag))
+                {
                     return true;
+                }
             }
 
             return false;
@@ -596,7 +623,9 @@ public sealed class SchemaRegistryCsfleRuleHandler : ISchemaRegistryRuleTransfor
             foreach (var tag in tags)
             {
                 if (ruleTags.Contains(tag))
+                {
                     return true;
+                }
             }
 
             return false;
@@ -605,7 +634,9 @@ public sealed class SchemaRegistryCsfleRuleHandler : ISchemaRegistryRuleTransfor
         foreach (var tag in ruleHashSet)
         {
             if (tags.Contains(tag))
+            {
                 return true;
+            }
         }
 
         return false;
@@ -639,7 +670,9 @@ public sealed class SchemaRegistryCsfleRuleHandler : ISchemaRegistryRuleTransfor
                 if (entry.TryGetValue(out var dek))
                 {
                     if (!IsExpired(settings, dek))
+                    {
                         return dek;
+                    }
                 }
             }
             catch
@@ -675,7 +708,9 @@ public sealed class SchemaRegistryCsfleRuleHandler : ISchemaRegistryRuleTransfor
             try
             {
                 if (entry.TryGetValue(out var dek))
+                {
                     return dek;
+                }
             }
             catch
             {
@@ -696,7 +731,9 @@ public sealed class SchemaRegistryCsfleRuleHandler : ISchemaRegistryRuleTransfor
         where TKey : notnull
     {
         if (!entry.TryTrack())
+        {
             return;
+        }
 
         lock (cacheLock)
         {
@@ -721,7 +758,9 @@ public sealed class SchemaRegistryCsfleRuleHandler : ISchemaRegistryRuleTransfor
                     settings.KekName, settings.Subject, -1, settings.Algorithm))
                 : WaitFor(_schemaRegistryClient.GetDekAsync(settings.KekName, settings.Subject, settings.Algorithm));
             if (!IsExpired(settings, existing))
+            {
                 return ResolveDekMaterial(existing, kek, settings.Subject, settings.RuleName, settings.Algorithm);
+            }
         }
         catch (SchemaRegistryException ex) when (IsNotFound(ex))
         {
@@ -757,7 +796,9 @@ public sealed class SchemaRegistryCsfleRuleHandler : ISchemaRegistryRuleTransfor
             // Another producer registered this DEK version first. Use its key material, as the
             // Confluent clients do, instead of failing the write.
             if (rawKey is not null)
+            {
                 CryptographicOperations.ZeroMemory(rawKey);
+            }
             var winner = version is { } dekVersion
                 ? WaitFor(_schemaRegistryClient.GetDekAsync(
                     settings.KekName,
@@ -906,10 +947,14 @@ public sealed class SchemaRegistryCsfleRuleHandler : ISchemaRegistryRuleTransfor
     private static string ResolveSubject(SchemaRegistryRuleHandlerContext context, SchemaRule rule)
     {
         if (TryGetParameter(rule, DekSubjectParameter, out var subject))
+        {
             return subject;
+        }
 
         if (!string.IsNullOrWhiteSpace(context.PayloadContext.Subject))
+        {
             return context.PayloadContext.Subject;
+        }
 
         if (string.IsNullOrWhiteSpace(context.PayloadContext.Topic))
         {
@@ -923,7 +968,9 @@ public sealed class SchemaRegistryCsfleRuleHandler : ISchemaRegistryRuleTransfor
     private static DekAlgorithm ResolveAlgorithm(SchemaRule rule)
     {
         if (TryGetParameter(rule, DekAlgorithmParameter, out var algorithm))
+        {
             return ParseDekAlgorithmParameter(algorithm, rule.Name);
+        }
 
         if (TryGetParameter(rule, DeterministicParameter, out var deterministic) &&
             bool.TryParse(deterministic, out var deterministicValue) &&
@@ -938,7 +985,9 @@ public sealed class SchemaRegistryCsfleRuleHandler : ISchemaRegistryRuleTransfor
     private static int ResolveDekExpiryDays(SchemaRule rule)
     {
         if (!TryGetParameter(rule, DekExpiryDaysParameter, out var expiryDays))
+        {
             return 0;
+        }
 
         if (!int.TryParse(expiryDays, NumberStyles.None, CultureInfo.InvariantCulture, out var value) || value < 0)
         {
@@ -952,13 +1001,17 @@ public sealed class SchemaRegistryCsfleRuleHandler : ISchemaRegistryRuleTransfor
     private static IReadOnlyDictionary<string, string>? ResolveKmsProps(SchemaRule rule)
     {
         if (rule.Parameters is null)
+        {
             return null;
+        }
 
         Dictionary<string, string>? props = null;
         foreach (var (key, value) in rule.Parameters)
         {
             if (!key.StartsWith(KmsPropsPrefix, StringComparison.Ordinal) || string.IsNullOrEmpty(value))
+            {
                 continue;
+            }
 
             props ??= new Dictionary<string, string>(StringComparer.Ordinal);
             props[key[KmsPropsPrefix.Length..]] = value;
@@ -984,24 +1037,22 @@ public sealed class SchemaRegistryCsfleRuleHandler : ISchemaRegistryRuleTransfor
     private static string? NullIfEmpty(string? value) =>
         string.IsNullOrWhiteSpace(value) ? null : value;
 
-    private static DekAlgorithm ParseDekAlgorithmParameter(string algorithm, string ruleName)
-        => algorithm.ToUpperInvariant() switch
-        {
-            "AES128_GCM" => DekAlgorithm.Aes128Gcm,
-            "AES256_GCM" => DekAlgorithm.Aes256Gcm,
-            "AES256_SIV" => DekAlgorithm.Aes256Siv,
-            _ => throw new SchemaRegistryRuleException(
-                $"Schema Registry rule '{ruleName}' has unsupported DEK algorithm '{algorithm}'.")
-        };
+    private static DekAlgorithm ParseDekAlgorithmParameter(string algorithm, string ruleName) => algorithm.ToUpperInvariant() switch
+    {
+        "AES128_GCM" => DekAlgorithm.Aes128Gcm,
+        "AES256_GCM" => DekAlgorithm.Aes256Gcm,
+        "AES256_SIV" => DekAlgorithm.Aes256Siv,
+        _ => throw new SchemaRegistryRuleException(
+            $"Schema Registry rule '{ruleName}' has unsupported DEK algorithm '{algorithm}'.")
+    };
 
-    private static int GetKeyLength(DekAlgorithm algorithm)
-        => algorithm switch
-        {
-            DekAlgorithm.Aes128Gcm => 16,
-            DekAlgorithm.Aes256Gcm => 32,
-            DekAlgorithm.Aes256Siv => 64,
-            _ => throw new SchemaRegistryRuleException("Unsupported DEK algorithm.")
-        };
+    private static int GetKeyLength(DekAlgorithm algorithm) => algorithm switch
+    {
+        DekAlgorithm.Aes128Gcm => 16,
+        DekAlgorithm.Aes256Gcm => 32,
+        DekAlgorithm.Aes256Siv => 64,
+        _ => throw new SchemaRegistryRuleException("Unsupported DEK algorithm.")
+    };
 
     private static void ValidateKeyMaterial(byte[] keyMaterial, DekAlgorithm algorithm, string ruleName)
     {
@@ -1017,7 +1068,9 @@ public sealed class SchemaRegistryCsfleRuleHandler : ISchemaRegistryRuleTransfor
     {
         var expectedLength = GetKeyLength(algorithm);
         if (rawKey.Length != expectedLength)
+        {
             throw new SchemaRegistryRuleException("Unsupported DEK algorithm.");
+        }
 
         var keyMaterial = new byte[2 + rawKey.Length];
         keyMaterial[0] = 0x12;
@@ -1030,10 +1083,14 @@ public sealed class SchemaRegistryCsfleRuleHandler : ISchemaRegistryRuleTransfor
     {
         var expectedLength = GetKeyLength(algorithm);
         if (keyMaterial.Length == expectedLength)
+        {
             return keyMaterial;
+        }
 
         if (TryReadTinkKeyValue(keyMaterial, expectedLength, out var rawKey))
+        {
             return rawKey;
+        }
 
         throw new SchemaRegistryRuleException(
             $"Schema Registry rule '{ruleName}' received invalid DEK material length for {algorithm}.");
@@ -1045,7 +1102,9 @@ public sealed class SchemaRegistryCsfleRuleHandler : ISchemaRegistryRuleTransfor
         while (offset < keyMaterial.Length)
         {
             if (!TryReadVarInt(keyMaterial, ref offset, out var tag))
+            {
                 break;
+            }
 
             var fieldNumber = (int)(tag >> 3);
             var wireType = (int)(tag & 0x07);
@@ -1063,7 +1122,9 @@ public sealed class SchemaRegistryCsfleRuleHandler : ISchemaRegistryRuleTransfor
             }
 
             if (!TrySkipProtobufValue(keyMaterial, ref offset, wireType))
+            {
                 break;
+            }
         }
 
         rawKey = [];
@@ -1081,7 +1142,9 @@ public sealed class SchemaRegistryCsfleRuleHandler : ISchemaRegistryRuleTransfor
                 return offset <= data.Length;
             case 2:
                 if (!TryReadVarInt(data, ref offset, out var length) || length > int.MaxValue)
+                {
                     return false;
+                }
                 offset += (int)length;
                 return offset <= data.Length;
             case 5:
@@ -1101,7 +1164,9 @@ public sealed class SchemaRegistryCsfleRuleHandler : ISchemaRegistryRuleTransfor
             var current = data[offset++];
             value |= (ulong)(current & 0x7F) << shift;
             if ((current & 0x80) == 0)
+            {
                 return true;
+            }
 
             shift += 7;
         }
@@ -1282,7 +1347,9 @@ public sealed class SchemaRegistryCsfleRuleHandler : ISchemaRegistryRuleTransfor
         cipher.Cipher.EncryptBlock(counter, expectedTag);
         XorInPlace(expectedTag, authentication);
         if (!CryptographicOperations.FixedTimeEquals(expectedTag, tag))
+        {
             throw new CryptographicException("The computed authentication tag did not match the input authentication tag.");
+        }
 
         AesGcmCtrCrypt(cipher.Cipher, counter, ciphertext, plaintext);
     }
@@ -1301,7 +1368,9 @@ public sealed class SchemaRegistryCsfleRuleHandler : ISchemaRegistryRuleTransfor
             cipher.EncryptBlock(counter, keyStream);
             var count = Math.Min(16, input.Length - offset);
             for (var i = 0; i < count; i++)
+            {
                 output[offset + i] = (byte)(input[offset + i] ^ keyStream[i]);
+            }
             offset += count;
         }
     }
@@ -1397,7 +1466,9 @@ public sealed class SchemaRegistryCsfleRuleHandler : ISchemaRegistryRuleTransfor
 
         FinishAesCmac(cipher, message, xorLast16, commonBlockCount, state, k1, k2, destination);
         if (!alternateDestination.IsEmpty)
+        {
             FinishAesCmac(cipher, message, alternateXorLast16, commonBlockCount, state, k1, k2, alternateDestination);
+        }
     }
 
     private static void FinishAesCmac(
@@ -1431,7 +1502,9 @@ public sealed class SchemaRegistryCsfleRuleHandler : ISchemaRegistryRuleTransfor
             XorSivTail(block[..remaining], lastOffset, message.Length, xorLast16);
         }
         if (remaining == 16)
+        {
             XorInPlace(block, k1);
+        }
         else
         {
             block[remaining] = 0x80;
@@ -1448,13 +1521,17 @@ public sealed class SchemaRegistryCsfleRuleHandler : ISchemaRegistryRuleTransfor
         ReadOnlySpan<byte> xorLast16)
     {
         if (xorLast16.IsEmpty)
+        {
             return;
+        }
 
         var xorStart = messageLength - AesSivLength;
         var start = Math.Max(blockOffset, xorStart);
         var end = Math.Min(blockOffset + block.Length, messageLength);
         for (var position = start; position < end; position++)
+        {
             block[position - blockOffset] ^= xorLast16[position - xorStart];
+        }
     }
 
     private static void AesCtrCrypt(
@@ -1476,7 +1553,9 @@ public sealed class SchemaRegistryCsfleRuleHandler : ISchemaRegistryRuleTransfor
             cipher.EncryptBlock(counter, keyStream);
             var count = Math.Min(16, input.Length - offset);
             for (var i = 0; i < count; i++)
+            {
                 output[offset + i] = (byte)(input[offset + i] ^ keyStream[i]);
+            }
 
             IncrementCounter(counter);
             offset += count;
@@ -1489,7 +1568,9 @@ public sealed class SchemaRegistryCsfleRuleHandler : ISchemaRegistryRuleTransfor
         {
             counter[i]++;
             if (counter[i] != 0)
+            {
                 break;
+            }
         }
     }
 
@@ -1504,13 +1585,17 @@ public sealed class SchemaRegistryCsfleRuleHandler : ISchemaRegistryRuleTransfor
         }
 
         if (carry != 0)
+        {
             block[^1] ^= 0x87;
+        }
     }
 
     private static void XorInPlace(Span<byte> target, ReadOnlySpan<byte> value)
     {
         for (var i = 0; i < target.Length; i++)
+        {
             target[i] ^= value[i];
+        }
     }
 
     private static bool IsExpired(EncryptionSettings settings, Dek dek)
@@ -1522,7 +1607,9 @@ public sealed class SchemaRegistryCsfleRuleHandler : ISchemaRegistryRuleTransfor
     private static bool IsExpired(EncryptionSettings settings, long? timestamp)
     {
         if (settings.DekExpiryDays <= 0 || timestamp is null)
+        {
             return false;
+        }
 
         var ageMillis = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - timestamp.Value;
         return ageMillis >= 0 && ageMillis / MillisInDay >= settings.DekExpiryDays;
@@ -1582,13 +1669,25 @@ public sealed class SchemaRegistryCsfleRuleHandler : ISchemaRegistryRuleTransfor
         byte[] keyMaterial,
         long? timestamp)
     {
-        public DekAlgorithm Algorithm { get; } = algorithm;
+        public DekAlgorithm Algorithm
+        {
+            get;
+        } = algorithm;
 
-        public int Version { get; } = version;
+        public int Version
+        {
+            get;
+        } = version;
 
-        public byte[] KeyMaterial { get; } = keyMaterial;
+        public byte[] KeyMaterial
+        {
+            get;
+        } = keyMaterial;
 
-        public long? Timestamp { get; } = timestamp;
+        public long? Timestamp
+        {
+            get;
+        } = timestamp;
 
         ~ResolvedDek() => CryptographicOperations.ZeroMemory(KeyMaterial);
     }
@@ -1626,9 +1725,15 @@ public sealed class SchemaRegistryCsfleRuleHandler : ISchemaRegistryRuleTransfor
 
     private readonly ref struct VersionedPayload(int dekVersion, ReadOnlySpan<byte> ciphertext)
     {
-        public int DekVersion { get; } = dekVersion;
+        public int DekVersion
+        {
+            get;
+        } = dekVersion;
 
-        public ReadOnlySpan<byte> Ciphertext { get; } = ciphertext;
+        public ReadOnlySpan<byte> Ciphertext
+        {
+            get;
+        } = ciphertext;
     }
 
     private sealed class TaggedJsonPlan(
@@ -1636,7 +1741,10 @@ public sealed class SchemaRegistryCsfleRuleHandler : ISchemaRegistryRuleTransfor
         JsonPathNode[]? mutableTargets,
         IReadOnlyDictionary<string, IReadOnlySet<string>>? mutableMetadata)
     {
-        public JsonPathNode Root { get; } = root;
+        public JsonPathNode Root
+        {
+            get;
+        } = root;
 
         public bool IsTarget(JsonPathNode? node, SchemaRule rule) =>
             node is not null
@@ -1647,12 +1755,16 @@ public sealed class SchemaRegistryCsfleRuleHandler : ISchemaRegistryRuleTransfor
         public bool HasTarget(SchemaRule rule)
         {
             if (mutableTargets is null)
+            {
                 return true;
+            }
 
             for (var i = 0; i < mutableTargets.Length; i++)
             {
                 if (mutableTargets[i].RefreshMutableTarget(rule, mutableMetadata!))
+                {
                     return true;
+                }
             }
 
             return false;
@@ -1747,7 +1859,9 @@ public sealed class SchemaRegistryCsfleRuleHandler : ISchemaRegistryRuleTransfor
             string? expected)
         {
             if (!parameters.TryGetValue(name, out var current))
+            {
                 return expected is null;
+            }
 
             return ReferenceEquals(current, expected);
         }
@@ -1800,7 +1914,9 @@ public sealed class SchemaRegistryCsfleRuleHandler : ISchemaRegistryRuleTransfor
         public TaggedJsonPlan Get()
         {
             if (IsCurrent())
+            {
                 return _plan;
+            }
 
             lock (_gate)
             {
@@ -1818,7 +1934,9 @@ public sealed class SchemaRegistryCsfleRuleHandler : ISchemaRegistryRuleTransfor
         {
             var tags = _metadata.Tags!;
             if (tags.Count != _metadataCount)
+            {
                 return false;
+            }
 
             return _metadataKind switch
             {
@@ -1848,7 +1966,9 @@ public sealed class SchemaRegistryCsfleRuleHandler : ISchemaRegistryRuleTransfor
                     _metadataKind = MetadataTagsKind.SortedDictionary;
                     _sortedMetadataVersion = sortedDictionary.GetEnumerator();
                     while (_sortedMetadataVersion.MoveNext())
+                    {
                         _ = _sortedMetadataVersion.Current;
+                    }
                     break;
                 case FrozenDictionary<string, IReadOnlySet<string>> or
                     IImmutableDictionary<string, IReadOnlySet<string>>:
@@ -1888,19 +2008,34 @@ public sealed class SchemaRegistryCsfleRuleHandler : ISchemaRegistryRuleTransfor
         private Dictionary<PathSegmentHash, JsonPathNode>? _properties;
         private Dictionary<int, JsonPathNode>? _indices;
 
-        public bool IsTarget { get; set; }
+        public bool IsTarget
+        {
+            get; set;
+        }
 
-        public string? MutablePath { get; set; }
+        public string? MutablePath
+        {
+            get; set;
+        }
 
-        public IReadOnlySet<string>? MutableTags { get; set; }
+        public IReadOnlySet<string>? MutableTags
+        {
+            get; set;
+        }
 
         public int MutableTagsVersion;
 
         public int MutableRuleTagsVersion;
 
-        public byte[]? PropertyName { get; private init; }
+        public byte[]? PropertyName
+        {
+            get; private init;
+        }
 
-        public JsonPathNode? HashCollision { get; private set; }
+        public JsonPathNode? HashCollision
+        {
+            get; private set;
+        }
 
         public bool RefreshMutableTarget(
             SchemaRule rule,
@@ -1914,7 +2049,9 @@ public sealed class SchemaRegistryCsfleRuleHandler : ISchemaRegistryRuleTransfor
 
             var tagsChanged = !ReferenceEquals(tags, MutableTags);
             if (tagsChanged)
+            {
                 MutableTags = tags;
+            }
 
             var tagsVersion = GetSetVersion(tags);
             var ruleTagsVersion = GetSetVersion(rule.Tags!);
@@ -1972,7 +2109,9 @@ public sealed class SchemaRegistryCsfleRuleHandler : ISchemaRegistryRuleTransfor
         public JsonPathNode? FindProperty(ref Utf8JsonReader reader, CsfleWorkspace workspace)
         {
             if (_properties is null)
+            {
                 return null;
+            }
 
             ReadOnlySpan<byte> propertyName;
             if (reader.ValueIsEscaped)
@@ -1986,13 +2125,17 @@ public sealed class SchemaRegistryCsfleRuleHandler : ISchemaRegistryRuleTransfor
             }
 
             if (!_properties.TryGetValue(PathSegmentHash.Create(propertyName), out var node))
+            {
                 return null;
+            }
 
             while (!propertyName.SequenceEqual(node.PropertyName))
             {
                 node = node.HashCollision;
                 if (node is null)
+                {
                     return null;
+                }
             }
 
             return node;
@@ -2042,11 +2185,16 @@ public sealed class SchemaRegistryCsfleRuleHandler : ISchemaRegistryRuleTransfor
                 var shift = (NibbleCount - 1 - position) * 4;
                 var tableOffset = position * NibbleValues;
                 for (var value = 1; value < NibbleValues; value++)
+                {
                     _multiplicationTable[tableOffset + value] = MultiplySlow((UInt128)value << shift, hash);
+                }
             }
         }
 
-        public BlockCipher Cipher { get; }
+        public BlockCipher Cipher
+        {
+            get;
+        }
 
         ~GcmCipher() => Dispose();
 
@@ -2066,7 +2214,9 @@ public sealed class SchemaRegistryCsfleRuleHandler : ISchemaRegistryRuleTransfor
         public void Dispose()
         {
             if (Interlocked.Exchange(ref _disposed, 1) == 0)
+            {
                 Cipher.Dispose();
+            }
             GC.SuppressFinalize(this);
         }
 
@@ -2078,7 +2228,9 @@ public sealed class SchemaRegistryCsfleRuleHandler : ISchemaRegistryRuleTransfor
             for (var bit = 127; bit >= 0; bit--)
             {
                 if (((value >> bit) & 1) != 0)
+                {
                     result ^= current;
+                }
                 current = (current & 1) == 0 ? current >> 1 : (current >> 1) ^ reduction;
             }
 
@@ -2146,7 +2298,9 @@ public sealed class SchemaRegistryCsfleRuleHandler : ISchemaRegistryRuleTransfor
                 var slot = (_nextOutput + attempt) % OutputBufferCount;
                 var buffer = _outputs[slot];
                 if (buffer is not null && input.Overlaps(buffer))
+                {
                     continue;
+                }
 
                 EnsureOutputCapacity(slot, capacity, written: 0);
                 _nextOutput = (slot + 1) % OutputBufferCount;
@@ -2163,7 +2317,9 @@ public sealed class SchemaRegistryCsfleRuleHandler : ISchemaRegistryRuleTransfor
             {
                 var replacement = ArrayPool<byte>.Shared.Rent(Math.Max(1, length));
                 if (buffer is not null)
+                {
                     ArrayPool<byte>.Shared.Return(buffer, clearArray: true);
+                }
                 _temporaries[slot] = replacement;
                 buffer = replacement;
             }
@@ -2174,7 +2330,9 @@ public sealed class SchemaRegistryCsfleRuleHandler : ISchemaRegistryRuleTransfor
         public GcmCipher GetGcmCipher(byte[] key)
         {
             if (_gcmCiphers.TryGetValue(key, out var cipher))
+            {
                 return cipher;
+            }
 
             if (_gcmCiphers.Count < CryptoFastCacheCapacity)
             {
@@ -2237,7 +2395,9 @@ public sealed class SchemaRegistryCsfleRuleHandler : ISchemaRegistryRuleTransfor
         public void ReleaseOversizedOutputs()
         {
             if (_oversizedOutputMask != 0)
+            {
                 ReleaseOversizedOutputsSlow();
+            }
         }
 
         [MethodImpl(MethodImplOptions.NoInlining)]
@@ -2246,7 +2406,9 @@ public sealed class SchemaRegistryCsfleRuleHandler : ISchemaRegistryRuleTransfor
             for (var slot = 0; slot < _outputs.Length; slot++)
             {
                 if ((_oversizedOutputMask & (1 << slot)) == 0)
+                {
                     continue;
+                }
 
                 var buffer = _outputs[slot]!;
                 _outputs[slot] = null;
@@ -2266,7 +2428,9 @@ public sealed class SchemaRegistryCsfleRuleHandler : ISchemaRegistryRuleTransfor
         {
             var buffer = _outputs[slot];
             if (buffer is not null && buffer.Length >= capacity)
+            {
                 return;
+            }
 
             var replacement = ArrayPool<byte>.Shared.Rent(Math.Max(1, capacity));
             if (buffer is not null)
@@ -2282,7 +2446,9 @@ public sealed class SchemaRegistryCsfleRuleHandler : ISchemaRegistryRuleTransfor
         {
             var buffer = _temporaries[slot];
             if (buffer is null || buffer.Length <= MaxRetainedBufferSize)
+            {
                 return;
+            }
 
             _temporaries[slot] = null;
             ArrayPool<byte>.Shared.Return(buffer, clearArray: true);
@@ -2339,13 +2505,25 @@ public sealed class SchemaRegistryCsfleRuleHandler : ISchemaRegistryRuleTransfor
             XorInPlace(InitialState, LegacyInitialState);
         }
 
-        public BlockCipher Mac { get; }
+        public BlockCipher Mac
+        {
+            get;
+        }
 
-        public BlockCipher Encryption { get; }
+        public BlockCipher Encryption
+        {
+            get;
+        }
 
-        public byte[] InitialState { get; } = new byte[16];
+        public byte[] InitialState
+        {
+            get;
+        } = new byte[16];
 
-        public byte[] LegacyInitialState { get; } = new byte[16];
+        public byte[] LegacyInitialState
+        {
+            get;
+        } = new byte[16];
 
         ~SivCiphers() => Dispose();
 

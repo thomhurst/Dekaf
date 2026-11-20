@@ -33,7 +33,10 @@ public ref struct KafkaProtocolReader
 
     // ShareFetch exposes opaque record slices; ownership can wait until parsing
     // confirms that at least one slice borrows the response frame.
-    internal bool HasBorrowedMemory { get; private set; }
+    internal bool HasBorrowedMemory
+    {
+        get; private set;
+    }
 
     internal void MarkBorrowedMemoryUsed() => HasBorrowedMemory = true;
 
@@ -126,7 +129,9 @@ public ref struct KafkaProtocolReader
         if (_isContiguous)
         {
             if (_position >= _span.Length)
+            {
                 ThrowInsufficientData();
+            }
             return (sbyte)_span[_position++];
         }
         return ReadInt8Slow();
@@ -136,7 +141,9 @@ public ref struct KafkaProtocolReader
     private sbyte ReadInt8Slow()
     {
         if (!_reader.TryRead(out var value))
+        {
             ThrowInsufficientData();
+        }
         return (sbyte)value;
     }
 
@@ -146,7 +153,9 @@ public ref struct KafkaProtocolReader
         if (_isContiguous)
         {
             if (_position >= _span.Length)
+            {
                 ThrowInsufficientData();
+            }
             return _span[_position++];
         }
         return ReadUInt8Slow();
@@ -156,7 +165,9 @@ public ref struct KafkaProtocolReader
     private byte ReadUInt8Slow()
     {
         if (!_reader.TryRead(out var value))
+        {
             ThrowInsufficientData();
+        }
         return value;
     }
 
@@ -166,7 +177,9 @@ public ref struct KafkaProtocolReader
         if (_isContiguous)
         {
             if (_position + 2 > _span.Length)
+            {
                 ThrowInsufficientData();
+            }
             var result = BinaryPrimitives.ReadInt16BigEndian(_span.Slice(_position));
             _position += 2;
             return result;
@@ -185,7 +198,9 @@ public ref struct KafkaProtocolReader
         }
         Span<byte> buffer = stackalloc byte[2];
         if (!_reader.TryCopyTo(buffer))
+        {
             ThrowInsufficientData();
+        }
         _reader.Advance(2);
         return BinaryPrimitives.ReadInt16BigEndian(buffer);
     }
@@ -196,7 +211,9 @@ public ref struct KafkaProtocolReader
         if (_isContiguous)
         {
             if (_position + 4 > _span.Length)
+            {
                 ThrowInsufficientData();
+            }
             var result = BinaryPrimitives.ReadInt32BigEndian(_span.Slice(_position));
             _position += 4;
             return result;
@@ -215,7 +232,9 @@ public ref struct KafkaProtocolReader
         }
         Span<byte> buffer = stackalloc byte[4];
         if (!_reader.TryCopyTo(buffer))
+        {
             ThrowInsufficientData();
+        }
         _reader.Advance(4);
         return BinaryPrimitives.ReadInt32BigEndian(buffer);
     }
@@ -226,7 +245,9 @@ public ref struct KafkaProtocolReader
         if (_isContiguous)
         {
             if (_position + 8 > _span.Length)
+            {
                 ThrowInsufficientData();
+            }
             var result = BinaryPrimitives.ReadInt64BigEndian(_span.Slice(_position));
             _position += 8;
             return result;
@@ -245,7 +266,9 @@ public ref struct KafkaProtocolReader
         }
         Span<byte> buffer = stackalloc byte[8];
         if (!_reader.TryCopyTo(buffer))
+        {
             ThrowInsufficientData();
+        }
         _reader.Advance(8);
         return BinaryPrimitives.ReadInt64BigEndian(buffer);
     }
@@ -256,7 +279,9 @@ public ref struct KafkaProtocolReader
         if (_isContiguous)
         {
             if (_position + 2 > _span.Length)
+            {
                 ThrowInsufficientData();
+            }
             var result = BinaryPrimitives.ReadUInt16BigEndian(_span.Slice(_position));
             _position += 2;
             return result;
@@ -275,7 +300,9 @@ public ref struct KafkaProtocolReader
         }
         Span<byte> buffer = stackalloc byte[2];
         if (!_reader.TryCopyTo(buffer))
+        {
             ThrowInsufficientData();
+        }
         _reader.Advance(2);
         return BinaryPrimitives.ReadUInt16BigEndian(buffer);
     }
@@ -286,7 +313,9 @@ public ref struct KafkaProtocolReader
         if (_isContiguous)
         {
             if (_position + 4 > _span.Length)
+            {
                 ThrowInsufficientData();
+            }
             var result = BinaryPrimitives.ReadUInt32BigEndian(_span.Slice(_position));
             _position += 4;
             return result;
@@ -305,7 +334,9 @@ public ref struct KafkaProtocolReader
         }
         Span<byte> buffer = stackalloc byte[4];
         if (!_reader.TryCopyTo(buffer))
+        {
             ThrowInsufficientData();
+        }
         _reader.Advance(4);
         return BinaryPrimitives.ReadUInt32BigEndian(buffer);
     }
@@ -316,7 +347,9 @@ public ref struct KafkaProtocolReader
         if (_isContiguous)
         {
             if (_position + 16 > _span.Length)
+            {
                 ThrowInsufficientData();
+            }
             var result = Dekaf.KafkaGuid.ReadBigEndian(_span.Slice(_position, 16));
             _position += 16;
             return result;
@@ -335,7 +368,9 @@ public ref struct KafkaProtocolReader
         }
         Span<byte> buffer = stackalloc byte[16];
         if (!_reader.TryCopyTo(buffer))
+        {
             ThrowInsufficientData();
+        }
         _reader.Advance(16);
         return Dekaf.KafkaGuid.ReadBigEndian(buffer);
     }
@@ -346,7 +381,9 @@ public ref struct KafkaProtocolReader
         if (_isContiguous)
         {
             if (_position + 8 > _span.Length)
+            {
                 ThrowInsufficientData();
+            }
             var result = BinaryPrimitives.ReadDoubleBigEndian(_span.Slice(_position));
             _position += 8;
             return result;
@@ -365,7 +402,9 @@ public ref struct KafkaProtocolReader
         }
         Span<byte> buffer = stackalloc byte[8];
         if (!_reader.TryCopyTo(buffer))
+        {
             ThrowInsufficientData();
+        }
         _reader.Advance(8);
         return BinaryPrimitives.ReadDoubleBigEndian(buffer);
     }
@@ -398,7 +437,9 @@ public ref struct KafkaProtocolReader
     {
         var value = ReadVarUInt();
         if (value > int.MaxValue)
+        {
             ThrowInvalidProtocolData();
+        }
         return (int)value;
     }
 
@@ -416,7 +457,9 @@ public ref struct KafkaProtocolReader
     private uint ReadVarUIntFast()
     {
         if (_position >= _span.Length)
+        {
             ThrowInsufficientData();
+        }
 
         // Fast path: single byte (0-127) - most common case
         var b0 = _span[_position];
@@ -428,7 +471,9 @@ public ref struct KafkaProtocolReader
 
         // Two-byte path (128-16383) - second most common
         if (_position + 1 >= _span.Length)
+        {
             ThrowInsufficientData();
+        }
 
         var b1 = _span[_position + 1];
         if ((b1 & 0x80) == 0)
@@ -448,7 +493,9 @@ public ref struct KafkaProtocolReader
         while (shift < 35)
         {
             if (_position >= _span.Length)
+            {
                 ThrowInsufficientData();
+            }
             var b = _span[_position++];
             result |= (uint)(b & 0x7F) << shift;
             if ((b & 0x80) == 0)
@@ -471,7 +518,9 @@ public ref struct KafkaProtocolReader
         while (shift < 35)
         {
             if (!_reader.TryRead(out var b))
+            {
                 ThrowInsufficientData();
+            }
 
             result |= (uint)(b & 0x7F) << shift;
 
@@ -502,7 +551,9 @@ public ref struct KafkaProtocolReader
     private ulong ReadVarULongFast()
     {
         if (_position >= _span.Length)
+        {
             ThrowInsufficientData();
+        }
 
         // Fast path: single byte (0-127) - most common for small timestamp deltas
         var b0 = _span[_position];
@@ -514,7 +565,9 @@ public ref struct KafkaProtocolReader
 
         // Two-byte path (128-16383) - second most common
         if (_position + 1 >= _span.Length)
+        {
             ThrowInsufficientData();
+        }
 
         var b1 = _span[_position + 1];
         if ((b1 & 0x80) == 0)
@@ -534,7 +587,9 @@ public ref struct KafkaProtocolReader
         while (shift < 70)
         {
             if (_position >= _span.Length)
+            {
                 ThrowInsufficientData();
+            }
 
             var b = _span[_position++];
             result |= (ulong)(b & 0x7F) << shift;
@@ -561,7 +616,9 @@ public ref struct KafkaProtocolReader
         while (shift < 70)
         {
             if (!_reader.TryRead(out var b))
+            {
                 ThrowInsufficientData();
+            }
 
             result |= (ulong)(b & 0x7F) << shift;
 
@@ -600,9 +657,13 @@ public ref struct KafkaProtocolReader
     {
         var length = ReadInt16();
         if (length < 0)
+        {
             return null;
+        }
         if (length == 0)
+        {
             return string.Empty;
+        }
 
         return ReadStringContent(length);
     }
@@ -621,9 +682,13 @@ public ref struct KafkaProtocolReader
     {
         var length = ReadUnsignedVarInt() - 1;
         if (length < 0)
+        {
             return null;
+        }
         if (length == 0)
+        {
             return string.Empty;
+        }
 
         return ReadStringContent(length);
     }
@@ -644,7 +709,9 @@ public ref struct KafkaProtocolReader
     {
         var length = ReadUnsignedVarInt() - 1;
         if (length < 0)
+        {
             return null;
+        }
 
         return ReadMemorySlice(length);
     }
@@ -658,7 +725,9 @@ public ref struct KafkaProtocolReader
     private string ReadInternedStringContent(Utf8StringInternCache cache, int length)
     {
         if (length == 0)
+        {
             return string.Empty;
+        }
 
         ValidateReadableLength(length);
         if (_isContiguous)
@@ -685,7 +754,9 @@ public ref struct KafkaProtocolReader
         try
         {
             if (!_reader.TryCopyTo(buffer.AsSpan(0, length)))
+            {
                 ThrowInsufficientData();
+            }
             _reader.Advance(length);
             return cache.Intern(buffer.AsSpan(0, length));
         }
@@ -701,7 +772,9 @@ public ref struct KafkaProtocolReader
     public string ReadStringContent(int length)
     {
         if (length == 0)
+        {
             return string.Empty;
+        }
 
         ValidateReadableLength(length);
 
@@ -730,7 +803,9 @@ public ref struct KafkaProtocolReader
         try
         {
             if (!_reader.TryCopyTo(buffer.AsSpan(0, length)))
+            {
                 ThrowInsufficientData();
+            }
             _reader.Advance(length);
             return Encoding.UTF8.GetString(buffer.AsSpan(0, length));
         }
@@ -747,9 +822,13 @@ public ref struct KafkaProtocolReader
     {
         var length = ReadInt32();
         if (length < 0)
+        {
             return null;
+        }
         if (length == 0)
+        {
             return [];
+        }
 
         return ReadBytesContent(length);
     }
@@ -761,9 +840,13 @@ public ref struct KafkaProtocolReader
     {
         var length = ReadUnsignedVarInt() - 1;
         if (length < 0)
+        {
             return null;
+        }
         if (length == 0)
+        {
             return [];
+        }
 
         return ReadBytesContent(length);
     }
@@ -781,7 +864,9 @@ public ref struct KafkaProtocolReader
         }
 
         if (!_reader.TryCopyTo(result))
+        {
             ThrowInsufficientData();
+        }
         _reader.Advance(length);
         return result;
     }
@@ -794,14 +879,18 @@ public ref struct KafkaProtocolReader
         if (_isContiguous)
         {
             if (_position > _span.Length - destination.Length)
+            {
                 ThrowInsufficientData();
+            }
             _span.Slice(_position, destination.Length).CopyTo(destination);
             _position += destination.Length;
             return;
         }
 
         if (!_reader.TryCopyTo(destination))
+        {
             ThrowInsufficientData();
+        }
         _reader.Advance(destination.Length);
     }
 
@@ -811,7 +900,9 @@ public ref struct KafkaProtocolReader
     public byte[] ReadRawBytes(int count)
     {
         if (count == 0)
+        {
             return [];
+        }
 
         ValidateReadableLength(count);
 
@@ -828,7 +919,9 @@ public ref struct KafkaProtocolReader
     public ReadOnlyMemory<byte> ReadMemorySlice(int count)
     {
         if (count == 0)
+        {
             return ReadOnlyMemory<byte>.Empty;
+        }
 
         ValidateReadableLength(count);
 
@@ -862,7 +955,9 @@ public ref struct KafkaProtocolReader
         // Slow path: data spans multiple segments, need to copy
         var buffer = new byte[count];
         if (!_reader.TryCopyTo(buffer))
+        {
             ThrowInsufficientData();
+        }
         _reader.Advance(count);
         return buffer;
     }
@@ -873,9 +968,13 @@ public ref struct KafkaProtocolReader
     internal ReadOnlyMemory<byte> ReadContiguousMemorySlice(int count)
     {
         if (!_isContiguous || !_hasMemory)
+        {
             return ReadMemorySliceFallback(count);
+        }
         if (count == 0)
+        {
             return ReadOnlyMemory<byte>.Empty;
+        }
 
         ValidateReadableLength(count);
         var result = _memory.Slice(_position, count);
@@ -897,7 +996,9 @@ public ref struct KafkaProtocolReader
     internal ReadOnlyMemory<byte> ReadMemorySlice(int count, long limit)
     {
         if (count > limit - Consumed)
+        {
             ThrowInsufficientData();
+        }
         return ReadMemorySlice(count);
     }
 
@@ -908,7 +1009,9 @@ public ref struct KafkaProtocolReader
     {
         var length = ReadInt32();
         if (length <= 0)
+        {
             return [];
+        }
 
         ValidateReadableLength(length);
 
@@ -928,7 +1031,9 @@ public ref struct KafkaProtocolReader
     {
         var length = ReadInt32();
         if (length <= 0)
+        {
             return [];
+        }
 
         ValidateReadableLength(length, minElementSize, maxCount);
 
@@ -947,10 +1052,14 @@ public ref struct KafkaProtocolReader
     {
         var length = ReadInt32();
         if (length < 0)
+        {
             return null;
+        }
 
         if (length == 0)
+        {
             return [];
+        }
 
         ValidateReadableLength(length);
 
@@ -969,7 +1078,9 @@ public ref struct KafkaProtocolReader
     {
         var length = ReadUnsignedVarInt() - 1;
         if (length <= 0)
+        {
             return [];
+        }
 
         ValidateReadableLength(length);
 
@@ -990,7 +1101,9 @@ public ref struct KafkaProtocolReader
     {
         var length = ReadUnsignedVarInt() - 1;
         if (length <= 0)
+        {
             return [];
+        }
 
         ValidateReadableLength(length, minElementSize, maxCount);
 
@@ -1009,10 +1122,14 @@ public ref struct KafkaProtocolReader
     {
         var length = ReadUnsignedVarInt() - 1;
         if (length < 0)
+        {
             return null;
+        }
 
         if (length == 0)
+        {
             return [];
+        }
 
         ValidateReadableLength(length);
 
@@ -1032,10 +1149,14 @@ public ref struct KafkaProtocolReader
     {
         var length = ReadUnsignedVarInt() - 1;
         if (length < 0)
+        {
             return null;
+        }
 
         if (length == 0)
+        {
             return [];
+        }
 
         ValidateReadableLength(length, minElementSize, maxCount);
 
@@ -1067,18 +1188,24 @@ public ref struct KafkaProtocolReader
     public void Skip(int count)
     {
         if (count <= 0)
+        {
             return;
+        }
 
         if (_isContiguous)
         {
             if (_position > _span.Length - count)
+            {
                 ThrowInsufficientData();
+            }
             _position += count;
             return;
         }
 
         if (_reader.Remaining < count)
+        {
             ThrowInsufficientData();
+        }
         _reader.Advance(count);
     }
 
@@ -1110,7 +1237,9 @@ public ref struct KafkaProtocolReader
     {
         var length = ReadInt32();
         if (length <= 0)
+        {
             return [];
+        }
 
         ValidateReadableLength(length);
 
@@ -1134,7 +1263,9 @@ public ref struct KafkaProtocolReader
     {
         var length = ReadInt32();
         if (length <= 0)
+        {
             return [];
+        }
 
         ValidateReadableLength(length, minElementSize, maxCount);
 
@@ -1153,10 +1284,14 @@ public ref struct KafkaProtocolReader
     {
         var length = ReadInt32();
         if (length < 0)
+        {
             return null;
+        }
 
         if (length == 0)
+        {
             return [];
+        }
 
         ValidateReadableLength(length);
 
@@ -1181,10 +1316,14 @@ public ref struct KafkaProtocolReader
     {
         var length = ReadInt32();
         if (length < 0)
+        {
             return null;
+        }
 
         if (length == 0)
+        {
             return [];
+        }
 
         ValidateReadableLength(length, minElementSize, maxCount);
 
@@ -1204,7 +1343,9 @@ public ref struct KafkaProtocolReader
     {
         var length = ReadUnsignedVarInt() - 1;
         if (length <= 0)
+        {
             return [];
+        }
 
         ValidateReadableLength(length);
 
@@ -1225,7 +1366,9 @@ public ref struct KafkaProtocolReader
     {
         var length = ReadUnsignedVarInt() - 1;
         if (length <= 0)
+        {
             return [];
+        }
 
         ValidateReadableLength(length, minElementSize, maxCount);
 
@@ -1245,10 +1388,14 @@ public ref struct KafkaProtocolReader
     {
         var length = ReadUnsignedVarInt() - 1;
         if (length < 0)
+        {
             return null;
+        }
 
         if (length == 0)
+        {
             return [];
+        }
 
         ValidateReadableLength(length);
 
@@ -1273,10 +1420,14 @@ public ref struct KafkaProtocolReader
     {
         var length = ReadUnsignedVarInt() - 1;
         if (length < 0)
+        {
             return null;
+        }
 
         if (length == 0)
+        {
             return [];
+        }
 
         ValidateReadableLength(length, minElementSize, maxCount);
 
@@ -1297,7 +1448,9 @@ public ref struct KafkaProtocolReader
         destination.Clear();
         var length = ReadInt32();
         if (length <= 0)
+        {
             return 0;
+        }
 
         ValidateReadableLength(length);
 
@@ -1317,7 +1470,9 @@ public ref struct KafkaProtocolReader
         destination.Clear();
         var length = ReadUnsignedVarInt() - 1;
         if (length <= 0)
+        {
             return 0;
+        }
 
         ValidateReadableLength(length);
 
@@ -1387,14 +1542,18 @@ public ref struct KafkaProtocolReader
     private static void ThrowIfVarUIntOverflows(byte terminalByte, int shift)
     {
         if (shift == 28 && terminalByte > 0x0F)
+        {
             ThrowMalformedVarInt();
+        }
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private static void ThrowIfVarULongOverflows(byte terminalByte, int shift)
     {
         if (shift == 63 && terminalByte > 0x01)
+        {
             ThrowMalformedVarInt();
+        }
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]

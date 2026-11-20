@@ -26,7 +26,9 @@ internal static class AvroSchemaFieldCache
         [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicFields)] Type type)
     {
         if (s_schemaFieldCache.TryGetValue(type, out var cached))
+        {
             return cached;
+        }
 
         var field = type.GetField("_SCHEMA", BindingFlags.Public | BindingFlags.Static);
         return s_schemaFieldCache.GetOrAdd(type, field);

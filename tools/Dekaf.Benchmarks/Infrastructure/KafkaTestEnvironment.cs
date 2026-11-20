@@ -26,7 +26,10 @@ public sealed class KafkaTestEnvironment : IAsyncDisposable
     private bool _disposed;
     private bool _externalKafka;
 
-    public string BootstrapServers { get; private set; } = string.Empty;
+    public string BootstrapServers
+    {
+        get; private set;
+    } = string.Empty;
 
     public static async Task<KafkaTestEnvironment> CreateAsync()
     {
@@ -132,7 +135,9 @@ public sealed class KafkaTestEnvironment : IAsyncDisposable
     public async ValueTask DisposeAsync()
     {
         if (_disposed)
+        {
             return;
+        }
 
         _disposed = true;
 

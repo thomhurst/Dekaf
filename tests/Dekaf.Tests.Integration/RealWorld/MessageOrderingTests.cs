@@ -78,7 +78,10 @@ public sealed class MessageOrderingTests(KafkaTestContainer kafka) : KafkaIntegr
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))
         {
             messages.Add(msg);
-            if (messages.Count >= messageCount) break;
+            if (messages.Count >= messageCount)
+            {
+                break;
+            }
         }
 
         await Assert.That(messages).Count().IsEqualTo(messageCount);
@@ -134,7 +137,10 @@ public sealed class MessageOrderingTests(KafkaTestContainer kafka) : KafkaIntegr
         consumer.Subscribe(topic);
 
         var messagesByKey = new Dictionary<string, List<string>>();
-        foreach (var key in keys) messagesByKey[key] = [];
+        foreach (var key in keys)
+        {
+            messagesByKey[key] = [];
+        }
 
         var totalExpected = keys.Length * messagesPerKey;
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
@@ -143,7 +149,10 @@ public sealed class MessageOrderingTests(KafkaTestContainer kafka) : KafkaIntegr
         {
             messagesByKey[msg.Key!].Add(msg.Value);
             var total = messagesByKey.Values.Sum(l => l.Count);
-            if (total >= totalExpected) break;
+            if (total >= totalExpected)
+            {
+                break;
+            }
         }
 
         // Verify per-key ordering is preserved
@@ -235,7 +244,10 @@ public sealed class MessageOrderingTests(KafkaTestContainer kafka) : KafkaIntegr
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))
         {
             messages.Add(msg);
-            if (messages.Count >= messageCount) break;
+            if (messages.Count >= messageCount)
+            {
+                break;
+            }
         }
 
         await Assert.That(messages).Count().IsEqualTo(messageCount);
@@ -313,7 +325,10 @@ public sealed class MessageOrderingTests(KafkaTestContainer kafka) : KafkaIntegr
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))
         {
             messages.Add(msg.Value);
-            if (messages.Count >= messageCount) break;
+            if (messages.Count >= messageCount)
+            {
+                break;
+            }
         }
 
         await Assert.That(messages).Count().IsEqualTo(messageCount);
@@ -383,7 +398,10 @@ public sealed class MessageOrderingTests(KafkaTestContainer kafka) : KafkaIntegr
         consumer.Assign(new TopicPartition(topic, 0));
 
         var messagesByTask = new Dictionary<int, List<string>>();
-        for (var t = 0; t < tasksCount; t++) messagesByTask[t] = [];
+        for (var t = 0; t < tasksCount; t++)
+        {
+            messagesByTask[t] = [];
+        }
 
         var totalExpected = tasksCount * messagesPerTask;
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
@@ -397,7 +415,10 @@ public sealed class MessageOrderingTests(KafkaTestContainer kafka) : KafkaIntegr
             }
 
             var total = messagesByTask.Values.Sum(l => l.Count);
-            if (total >= totalExpected) break;
+            if (total >= totalExpected)
+            {
+                break;
+            }
         }
 
         // Per-task messages must be in sequential order
@@ -460,7 +481,10 @@ public sealed class MessageOrderingTests(KafkaTestContainer kafka) : KafkaIntegr
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))
         {
             messages.Add(msg.Value);
-            if (messages.Count >= totalExpected) break;
+            if (messages.Count >= totalExpected)
+            {
+                break;
+            }
         }
 
         await Assert.That(messages).Count().IsEqualTo(totalExpected);
@@ -526,7 +550,10 @@ public sealed class MessageOrderingTests(KafkaTestContainer kafka) : KafkaIntegr
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))
         {
             messages.Add(msg.Value);
-            if (messages.Count >= messageCount) break;
+            if (messages.Count >= messageCount)
+            {
+                break;
+            }
         }
 
         await Assert.That(messages).Count().IsEqualTo(messageCount);
@@ -580,7 +607,10 @@ public sealed class MessageOrderingTests(KafkaTestContainer kafka) : KafkaIntegr
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))
         {
             messages.Add(msg.Value);
-            if (messages.Count >= messageCount) break;
+            if (messages.Count >= messageCount)
+            {
+                break;
+            }
         }
 
         await Assert.That(messages).Count().IsEqualTo(messageCount);
@@ -635,7 +665,9 @@ public sealed class MessageOrderingTests(KafkaTestContainer kafka) : KafkaIntegr
 
         var messagesByKey = new Dictionary<string, List<string>>();
         for (var k = 0; k < keysCount; k++)
+        {
             messagesByKey[$"ordering-key-{k}"] = [];
+        }
 
         var totalExpected = keysCount * messagesPerKey;
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
@@ -648,7 +680,10 @@ public sealed class MessageOrderingTests(KafkaTestContainer kafka) : KafkaIntegr
             }
 
             var total = messagesByKey.Values.Sum(l => l.Count);
-            if (total >= totalExpected) break;
+            if (total >= totalExpected)
+            {
+                break;
+            }
         }
 
         // Per-key ordering must be preserved

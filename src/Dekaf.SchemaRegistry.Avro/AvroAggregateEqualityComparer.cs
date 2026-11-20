@@ -60,7 +60,10 @@ internal sealed class AvroAggregateEqualityComparerFactory
 
     private sealed class SchemaGroup(AvroSchema schema)
     {
-        internal AvroSchema Schema { get; } = schema;
+        internal AvroSchema Schema
+        {
+            get;
+        } = schema;
     }
 }
 
@@ -96,7 +99,9 @@ internal sealed class AvroAggregateEqualityComparer(
     {
         if (rightComparer is not AvroAggregateEqualityComparer avroRight ||
             !_compatibleSchemas.Contains(avroRight._schema))
+        {
             return false;
+        }
 
         var leftReader = new AvroValidationReader(left);
         var rightReader = new AvroValidationReader(right);
@@ -132,14 +137,18 @@ internal sealed class AvroAggregateEqualityComparer(
         {
             var branch = left.ReadLong();
             if ((ulong)branch >= (ulong)leftUnion.Count)
+            {
                 return false;
+            }
             leftSchema = AvroValueRulePlan.Unwrap(leftUnion[(int)branch]);
         }
         if (rightSchema is global::Avro.UnionSchema rightUnion)
         {
             var branch = right.ReadLong();
             if ((ulong)branch >= (ulong)rightUnion.Count)
+            {
                 return false;
+            }
             rightSchema = AvroValueRulePlan.Unwrap(rightUnion[(int)branch]);
         }
         if (IsNumber(leftSchema.Tag) && IsNumber(rightSchema.Tag))
@@ -154,7 +163,9 @@ internal sealed class AvroAggregateEqualityComparer(
                 ReadBytes(rightSchema, ref right).Span);
         }
         if (IsString(leftSchema.Tag) && IsString(rightSchema.Tag))
+        {
             return StringValuesAreEqual(leftSchema, rightSchema, ref left, ref right);
+        }
         if (leftSchema.Tag != rightSchema.Tag &&
             !(leftSchema.Tag is AvroSchema.Type.Record or AvroSchema.Type.Error &&
               rightSchema.Tag is AvroSchema.Type.Record or AvroSchema.Type.Error))
@@ -205,19 +216,25 @@ internal sealed class AvroAggregateEqualityComparer(
         {
             var branch = left.ReadLong();
             if ((ulong)branch >= (ulong)leftUnion.Count)
+            {
                 return false;
+            }
             leftSchema = AvroValueRulePlan.Unwrap(leftUnion[(int)branch]);
         }
         if (rightSchema is global::Avro.UnionSchema rightUnion)
         {
             var branch = right.ReadLong();
             if ((ulong)branch >= (ulong)rightUnion.Count)
+            {
                 return false;
+            }
             rightSchema = AvroValueRulePlan.Unwrap(rightUnion[(int)branch]);
         }
 
         if (!IsAggregate(leftSchema.Tag) || !IsAggregate(rightSchema.Tag))
+        {
             return AreEqual(leftSchema, rightSchema, ref left, ref right);
+        }
         if (leftSchema.Tag != rightSchema.Tag &&
             !(leftSchema.Tag is AvroSchema.Type.Record or AvroSchema.Type.Error &&
               rightSchema.Tag is AvroSchema.Type.Record or AvroSchema.Type.Error))
@@ -269,7 +286,9 @@ internal sealed class AvroAggregateEqualityComparer(
         {
             var fieldSchema = schema.Fields[index].Schema;
             if (!AreEqual(fieldSchema, fieldSchema, ref left, ref right))
+            {
                 return false;
+            }
         }
         return true;
     }
@@ -297,7 +316,9 @@ internal sealed class AvroAggregateEqualityComparer(
             {
                 var leftField = leftSchema.Fields[index];
                 if (!rightSchema.TryGetField(leftField.Name, out var rightField))
+                {
                     return false;
+                }
                 var payload = rightFields[rightField.Pos];
                 var rightFieldReader = new AvroValidationReader(
                     right.Source.Slice(payload.Start, payload.Length));
@@ -316,7 +337,9 @@ internal sealed class AvroAggregateEqualityComparer(
         finally
         {
             if (rented is not null)
+            {
                 ArrayPool<RecordFieldPayload>.Shared.Return(rented);
+            }
         }
     }
 
@@ -377,7 +400,9 @@ internal sealed class AvroAggregateEqualityComparer(
             {
                 var leftField = leftSchema.Fields[index];
                 if (!rightSchema.TryGetField(leftField.Name, out var rightField))
+                {
                     return false;
+                }
                 var payload = rightFields[rightField.Pos];
                 var rightFieldReader = new AvroValidationReader(
                     right.Source.Slice(payload.Start, payload.Length));
@@ -397,7 +422,9 @@ internal sealed class AvroAggregateEqualityComparer(
         finally
         {
             if (rented is not null)
+            {
                 ArrayPool<RecordFieldPayload>.Shared.Return(rented);
+            }
         }
     }
 
@@ -408,15 +435,15 @@ internal sealed class AvroAggregateEqualityComparer(
     private static ValidationCelValue ReadNumber(
         AvroSchema.Type type,
         ref AvroValidationReader reader) => type switch
-    {
-        AvroSchema.Type.Int or AvroSchema.Type.Long =>
-            ValidationCelValue.FromNumber(reader.ReadLong()),
-        AvroSchema.Type.Float => ValidationCelValue.FromFloating(
-            BinaryPrimitives.ReadSingleLittleEndian(reader.Read(sizeof(float)).Span)),
-        AvroSchema.Type.Double => ValidationCelValue.FromFloating(
-            BinaryPrimitives.ReadDoubleLittleEndian(reader.Read(sizeof(double)).Span)),
-        _ => throw new InvalidOperationException("Numeric Avro schema expected.")
-    };
+        {
+            AvroSchema.Type.Int or AvroSchema.Type.Long =>
+                ValidationCelValue.FromNumber(reader.ReadLong()),
+            AvroSchema.Type.Float => ValidationCelValue.FromFloating(
+                BinaryPrimitives.ReadSingleLittleEndian(reader.Read(sizeof(float)).Span)),
+            AvroSchema.Type.Double => ValidationCelValue.FromFloating(
+                BinaryPrimitives.ReadDoubleLittleEndian(reader.Read(sizeof(double)).Span)),
+            _ => throw new InvalidOperationException("Numeric Avro schema expected.")
+        };
 
     private static bool IsBytes(AvroSchema.Type type) =>
         type is AvroSchema.Type.Bytes or AvroSchema.Type.Fixed;
@@ -440,7 +467,9 @@ internal sealed class AvroAggregateEqualityComparer(
         {
             var leftSymbol = left.ReadLong();
             if ((ulong)leftSymbol >= (ulong)leftEnumeration.Symbols.Count)
+            {
                 return false;
+            }
             if (rightSchema is global::Avro.EnumSchema rightEnumeration)
             {
                 var rightSymbol = right.ReadLong();
@@ -457,7 +486,9 @@ internal sealed class AvroAggregateEqualityComparer(
 
         var leftValue = left.ReadLengthPrefixed();
         if (rightSchema is not global::Avro.EnumSchema enumeration)
+        {
             return leftValue.Span.SequenceEqual(right.ReadLengthPrefixed().Span);
+        }
         var symbol = right.ReadLong();
         return (ulong)symbol < (ulong)enumeration.Symbols.Count &&
             Utf8Equals(enumeration.Symbols[(int)symbol], leftValue.Span);
@@ -467,7 +498,9 @@ internal sealed class AvroAggregateEqualityComparer(
     {
         var byteCount = Encoding.UTF8.GetByteCount(text);
         if (byteCount != value.Length)
+        {
             return false;
+        }
 
         byte[]? rented = null;
         Span<byte> encoded = byteCount <= 256
@@ -481,7 +514,9 @@ internal sealed class AvroAggregateEqualityComparer(
         finally
         {
             if (rented is not null)
+            {
                 ArrayPool<byte>.Shared.Return(rented);
+            }
         }
     }
 
@@ -491,9 +526,13 @@ internal sealed class AvroAggregateEqualityComparer(
     {
         schema = AvroValueRulePlan.Unwrap(schema);
         if (schema.Tag is AvroSchema.Type.Float or AvroSchema.Type.Double)
+        {
             return true;
+        }
         if (!visited.Add(schema))
+        {
             return false;
+        }
 
         return schema switch
         {
@@ -512,7 +551,9 @@ internal sealed class AvroAggregateEqualityComparer(
         for (var index = 0; index < record.Fields.Count; index++)
         {
             if (ContainsFloating(record.Fields[index].Schema, visited))
+            {
                 return true;
+            }
         }
         return false;
     }
@@ -524,7 +565,9 @@ internal sealed class AvroAggregateEqualityComparer(
         for (var index = 0; index < union.Count; index++)
         {
             if (ContainsFloating(union[index], visited))
+            {
                 return true;
+            }
         }
         return false;
     }
@@ -544,9 +587,13 @@ internal sealed class AvroAggregateEqualityComparer(
     {
         schema = AvroValueRulePlan.Unwrap(schema);
         if (active.Contains(schema))
+        {
             return true;
+        }
         if (!visited.Add(schema))
+        {
             return false;
+        }
 
         active.Add(schema);
         var recursive = schema switch
@@ -569,7 +616,9 @@ internal sealed class AvroAggregateEqualityComparer(
         for (var index = 0; index < record.Fields.Count; index++)
         {
             if (ContainsRecursion(record.Fields[index].Schema, active, visited))
+            {
                 return true;
+            }
         }
         return false;
     }
@@ -582,7 +631,9 @@ internal sealed class AvroAggregateEqualityComparer(
         for (var index = 0; index < union.Count; index++)
         {
             if (ContainsRecursion(union[index], active, visited))
+            {
                 return true;
+            }
         }
         return false;
     }
@@ -598,13 +649,21 @@ internal sealed class AvroAggregateEqualityComparer(
         while (true)
         {
             if (leftRemaining == 0)
+            {
                 leftRemaining = left.ReadCollectionCount();
+            }
             if (rightRemaining == 0)
+            {
                 rightRemaining = right.ReadCollectionCount();
+            }
             if (leftRemaining == 0 || rightRemaining == 0)
+            {
                 return leftRemaining == rightRemaining;
+            }
             if (!AreEqual(leftItemSchema, rightItemSchema, ref left, ref right))
+            {
                 return false;
+            }
             leftRemaining--;
             rightRemaining--;
         }
@@ -622,11 +681,17 @@ internal sealed class AvroAggregateEqualityComparer(
         while (true)
         {
             if (leftRemaining == 0)
+            {
                 leftRemaining = left.ReadCollectionCount();
+            }
             if (rightRemaining == 0)
+            {
                 rightRemaining = right.ReadCollectionCount();
+            }
             if (leftRemaining == 0 || rightRemaining == 0)
+            {
                 return leftRemaining == rightRemaining;
+            }
             if (!AreEqualGuarded(
                     leftItemSchema,
                     rightItemSchema,
@@ -652,7 +717,9 @@ internal sealed class AvroAggregateEqualityComparer(
         var leftCount = CountMapEntries(leftValueSchema, leftPayload);
         var rightCount = CountMapEntries(rightValueSchema, rightPayload);
         if (leftCount != rightCount)
+        {
             return false;
+        }
 
         MapEntry[]? rentedEntries = null;
         int[]? rentedBuckets = null;
@@ -679,9 +746,13 @@ internal sealed class AvroAggregateEqualityComparer(
         finally
         {
             if (rentedEntries is not null)
+            {
                 ArrayPool<MapEntry>.Shared.Return(rentedEntries);
+            }
             if (rentedBuckets is not null)
+            {
                 ArrayPool<int>.Shared.Return(rentedBuckets);
+            }
         }
     }
 
@@ -697,7 +768,9 @@ internal sealed class AvroAggregateEqualityComparer(
         var leftCount = CountMapEntriesGuarded(leftValueSchema, leftPayload, remainingDepth);
         var rightCount = CountMapEntriesGuarded(rightValueSchema, rightPayload, remainingDepth);
         if (leftCount != rightCount)
+        {
             return false;
+        }
 
         MapEntry[]? rentedEntries = null;
         int[]? rentedBuckets = null;
@@ -730,9 +803,13 @@ internal sealed class AvroAggregateEqualityComparer(
         finally
         {
             if (rentedEntries is not null)
+            {
                 ArrayPool<MapEntry>.Shared.Return(rentedEntries);
+            }
             if (rentedBuckets is not null)
+            {
                 ArrayPool<int>.Shared.Return(rentedBuckets);
+            }
         }
     }
 
@@ -746,7 +823,9 @@ internal sealed class AvroAggregateEqualityComparer(
         {
             var branch = reader.ReadLong();
             if ((ulong)branch >= (ulong)union.Count)
+            {
                 throw InvalidPayload($"invalid union index {branch}");
+            }
             SkipGuarded(union[(int)branch], ref reader, remainingDepth);
             return;
         }
@@ -775,7 +854,9 @@ internal sealed class AvroAggregateEqualityComparer(
             case AvroSchema.Type.Enumeration:
                 var symbolIndex = reader.ReadLong();
                 if ((ulong)symbolIndex >= (ulong)((global::Avro.EnumSchema)schema).Symbols.Count)
+                {
                     throw InvalidPayload($"invalid enum index {symbolIndex}");
+                }
                 return;
             case AvroSchema.Type.Float:
                 _ = reader.Read(sizeof(float));
@@ -794,7 +875,9 @@ internal sealed class AvroAggregateEqualityComparer(
             case AvroSchema.Type.Error:
                 var record = (global::Avro.RecordSchema)schema;
                 for (var index = 0; index < record.Fields.Count; index++)
+                {
                     SkipGuarded(record.Fields[index].Schema, ref reader, remainingDepth);
+                }
                 return;
             case AvroSchema.Type.Array:
                 SkipCollectionGuarded(
@@ -825,11 +908,15 @@ internal sealed class AvroAggregateEqualityComparer(
         {
             var count = reader.ReadCollectionCount();
             if (count == 0)
+            {
                 return;
+            }
             for (long index = 0; index < count; index++)
             {
                 if (isMap)
+                {
                     _ = reader.ReadLengthPrefixed();
+                }
                 SkipGuarded(valueSchema, ref reader, remainingDepth);
             }
         }
@@ -846,7 +933,9 @@ internal sealed class AvroAggregateEqualityComparer(
         {
             var count = reader.ReadCollectionCount();
             if (count == 0)
+            {
                 return checked((int)total);
+            }
             total = checked(total + count);
             if (total > MaximumMapEntryCount)
             {
@@ -869,7 +958,9 @@ internal sealed class AvroAggregateEqualityComparer(
         {
             var count = reader.ReadCollectionCount();
             if (count == 0)
+            {
                 return checked((int)total);
+            }
             total = checked(total + count);
             if (total > MaximumMapEntryCount)
             {
@@ -895,7 +986,9 @@ internal sealed class AvroAggregateEqualityComparer(
         {
             var count = reader.ReadCollectionCount();
             if (count == 0)
+            {
                 return;
+            }
             for (long index = 0; index < count; index++)
             {
                 var key = reader.ReadLengthPrefixed();
@@ -927,7 +1020,9 @@ internal sealed class AvroAggregateEqualityComparer(
         {
             var count = reader.ReadCollectionCount();
             if (count == 0)
+            {
                 return;
+            }
             for (long index = 0; index < count; index++)
             {
                 var key = reader.ReadLengthPrefixed();
@@ -961,7 +1056,9 @@ internal sealed class AvroAggregateEqualityComparer(
         {
             var count = reader.ReadCollectionCount();
             if (count == 0)
+            {
                 return matched == entryCount;
+            }
             for (long index = 0; index < count; index++)
             {
                 var key = reader.ReadLengthPrefixed();
@@ -995,7 +1092,9 @@ internal sealed class AvroAggregateEqualityComparer(
                     entryIndex = entry.Next;
                 }
                 if (entryIndex < 0)
+                {
                     return false;
+                }
             }
         }
     }
@@ -1015,7 +1114,9 @@ internal sealed class AvroAggregateEqualityComparer(
         {
             var count = reader.ReadCollectionCount();
             if (count == 0)
+            {
                 return matched == entryCount;
+            }
             for (long index = 0; index < count; index++)
             {
                 var key = reader.ReadLengthPrefixed();
@@ -1050,7 +1151,9 @@ internal sealed class AvroAggregateEqualityComparer(
                     entryIndex = entry.Next;
                 }
                 if (entryIndex < 0)
+                {
                     return false;
+                }
             }
         }
     }
@@ -1059,7 +1162,9 @@ internal sealed class AvroAggregateEqualityComparer(
     {
         var hash = 2166136261u;
         for (var index = 0; index < value.Length; index++)
+        {
             hash = (hash ^ value[index]) * 16777619u;
+        }
         return hash;
     }
 
@@ -1073,12 +1178,30 @@ internal sealed class AvroAggregateEqualityComparer(
         int valueLength,
         int next)
     {
-        internal int KeyStart { get; } = keyStart;
-        internal int KeyLength { get; } = keyLength;
-        internal int ValueStart { get; } = valueStart;
-        internal int ValueLength { get; } = valueLength;
-        internal int Next { get; } = next;
-        internal bool Matched { get; set; }
+        internal int KeyStart
+        {
+            get;
+        } = keyStart;
+        internal int KeyLength
+        {
+            get;
+        } = keyLength;
+        internal int ValueStart
+        {
+            get;
+        } = valueStart;
+        internal int ValueLength
+        {
+            get;
+        } = valueLength;
+        internal int Next
+        {
+            get;
+        } = next;
+        internal bool Matched
+        {
+            get; set;
+        }
     }
 
     private readonly record struct RecordFieldPayload(int Start, int Length);
@@ -1092,7 +1215,9 @@ internal static class AvroValueSchemaComparer
     internal static bool AreCelCompatible(AvroSchema left, AvroSchema right)
     {
         if (ReferenceEquals(left, right))
+        {
             return true;
+        }
         var pairs = t_pairs ??= new HashSet<AvroSchemaPair>(AvroSchemaPairReferenceComparer.Instance);
         pairs.Clear();
         try
@@ -1108,7 +1233,9 @@ internal static class AvroValueSchemaComparer
     internal static bool HaveSameEncoding(AvroSchema left, AvroSchema right)
     {
         if (ReferenceEquals(left, right))
+        {
             return true;
+        }
         var pairs = t_pairs ??= new HashSet<AvroSchemaPair>(AvroSchemaPairReferenceComparer.Instance);
         pairs.Clear();
         try
@@ -1129,7 +1256,9 @@ internal static class AvroValueSchemaComparer
         left = AvroValueRulePlan.Unwrap(left);
         right = AvroValueRulePlan.Unwrap(right);
         if (ReferenceEquals(left, right))
+        {
             return true;
+        }
         if (left.Tag is AvroSchema.Type.Int or AvroSchema.Type.Long &&
             right.Tag is AvroSchema.Type.Int or AvroSchema.Type.Long)
         {
@@ -1144,7 +1273,9 @@ internal static class AvroValueSchemaComparer
 
         var pair = new AvroSchemaPair(left, right);
         if (!pairs.Add(pair))
+        {
             return true;
+        }
 
         try
         {
@@ -1186,7 +1317,9 @@ internal static class AvroValueSchemaComparer
         HashSet<AvroSchemaPair> pairs)
     {
         if (left.Fields.Count != right.Fields.Count)
+        {
             return false;
+        }
         for (var index = 0; index < left.Fields.Count; index++)
         {
             if (!string.Equals(
@@ -1194,7 +1327,9 @@ internal static class AvroValueSchemaComparer
                     right.Fields[index].Name,
                     StringComparison.Ordinal) ||
                 !HaveSameEncoding(left.Fields[index].Schema, right.Fields[index].Schema, pairs))
+            {
                 return false;
+            }
         }
         return true;
     }
@@ -1205,11 +1340,15 @@ internal static class AvroValueSchemaComparer
         HashSet<AvroSchemaPair> pairs)
     {
         if (left.Count != right.Count)
+        {
             return false;
+        }
         for (var index = 0; index < left.Count; index++)
         {
             if (!HaveSameEncoding(left[index], right[index], pairs))
+            {
                 return false;
+            }
         }
         return true;
     }
@@ -1222,11 +1361,17 @@ internal static class AvroValueSchemaComparer
         left = AvroValueRulePlan.Unwrap(left);
         right = AvroValueRulePlan.Unwrap(right);
         if (ReferenceEquals(left, right))
+        {
             return true;
+        }
         if (left is global::Avro.UnionSchema leftUnion)
+        {
             return AnyBranchIsCompatible(leftUnion, right, pairs);
+        }
         if (right is global::Avro.UnionSchema rightUnion)
+        {
             return AnyBranchIsCompatible(rightUnion, left, pairs);
+        }
         if (IsNumber(left.Tag) && IsNumber(right.Tag) ||
             IsBytes(left.Tag) && IsBytes(right.Tag) ||
             IsString(left.Tag) && IsString(right.Tag))
@@ -1242,7 +1387,9 @@ internal static class AvroValueSchemaComparer
 
         var pair = new AvroSchemaPair(left, right);
         if (!pairs.Add(pair))
+        {
             return true;
+        }
 
         try
         {
@@ -1279,7 +1426,9 @@ internal static class AvroValueSchemaComparer
         for (var index = 0; index < union.Count; index++)
         {
             if (AreCelCompatible(union[index], other, pairs))
+            {
                 return true;
+            }
         }
         return false;
     }
@@ -1300,7 +1449,9 @@ internal static class AvroValueSchemaComparer
         HashSet<AvroSchemaPair> pairs)
     {
         if (left.Fields.Count != right.Fields.Count)
+        {
             return false;
+        }
         for (var index = 0; index < left.Fields.Count; index++)
         {
             var leftField = left.Fields[index];
@@ -1318,11 +1469,15 @@ internal static class AvroValueSchemaComparer
         global::Avro.EnumSchema right)
     {
         if (left.Symbols.Count != right.Symbols.Count)
+        {
             return false;
+        }
         for (var index = 0; index < left.Symbols.Count; index++)
         {
             if (!string.Equals(left.Symbols[index], right.Symbols[index], StringComparison.Ordinal))
+            {
                 return false;
+            }
         }
         return true;
     }

@@ -96,16 +96,25 @@ public sealed class OutboxLeaseRequest
     /// <summary>
     /// Unique identifier of the requesting relay instance.
     /// </summary>
-    public required string RelayId { get; init; }
+    public required string RelayId
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Total bucket count. Must be identical across every relay and every enqueuing writer
     /// sharing the outbox table.
     /// </summary>
-    public required int BucketCount { get; init; }
+    public required int BucketCount
+    {
+        get; init;
+    }
 
     /// <summary>
     /// How long acquired leases remain valid without renewal.
     /// </summary>
-    public required TimeSpan LeaseDuration { get; init; }
+    public required TimeSpan LeaseDuration
+    {
+        get; init;
+    }
 }

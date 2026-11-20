@@ -48,9 +48,13 @@ public sealed class IdempotentInitializationIntegrationTests(RackAwareKafkaConta
             // Numeric addresses bypass DNS. Override only the stopped broker's endpoint
             // to exercise real connection-layer wrapping of resolver errors/empty results.
             if (dnsFailureMode != 0)
+            {
                 pool.RegisterBroker(firstBroker.NodeId, "offline-broker.invalid", firstBroker.Port);
+            }
             if (previousLeader == firstBroker.NodeId)
+            {
                 await kafka.WaitForPartitionLeaderChangeAsync(topic, previousLeader, cancellationToken);
+            }
 
             await using (var producer = new KafkaProducer<string, string>(
                 new ProducerOptions

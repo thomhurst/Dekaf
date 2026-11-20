@@ -80,7 +80,9 @@ public sealed partial class ClientTelemetryManagerTests
         await Assert.That(excludedCalls).IsEqualTo(0);
         await Assert.That(metrics.Length).IsEqualTo(emptySubscription ? 0 : 1);
         if (!emptySubscription)
+        {
             await Assert.That(metrics[0].Name).IsEqualTo("com.example.share.depth");
+        }
     }
 
     [Test]
@@ -117,7 +119,9 @@ public sealed partial class ClientTelemetryManagerTests
         var optionsMetrics = new List<ApplicationTelemetryMetric> { metric };
         await using var first = new TelemetryTestContext(shareConsumerOptions: new ShareConsumerOptions
         {
-            BootstrapServers = ["localhost:9092"], GroupId = "first", ApplicationMetrics = optionsMetrics
+            BootstrapServers = ["localhost:9092"],
+            GroupId = "first",
+            ApplicationMetrics = optionsMetrics
         });
         attributes["team"] = "changed";
         optionsMetrics[0] = new ApplicationTelemetryMetric(name, ApplicationTelemetryMetricKind.Gauge, () => 99);
@@ -166,14 +170,18 @@ public sealed partial class ClientTelemetryManagerTests
         context.Connection.Enqueue(Subscription(Guid.NewGuid(), 7, 60000,
             telemetryMaxBytes: brokerRejects ? 1024 : 1, requestedMetrics: ["com.example.share."]));
         if (brokerRejects)
+        {
             context.Connection.Enqueue(new PushTelemetryResponse { ErrorCode = ErrorCode.TelemetryTooLarge });
+        }
         await context.Manager.StartAsync();
         await PushShareMetricsAsync(context);
         var pushes = context.Connection.RequestsOfType<PushTelemetryRequest>();
         await Assert.That(pushes.Count).IsEqualTo(brokerRejects ? 2 : 1);
         await Assert.That(pushes[^1].Metrics.IsEmpty).IsTrue();
         if (brokerRejects)
+        {
             await Assert.That(DecodeShareMetrics(pushes[0])).HasSingleItem();
+        }
     }
 
     [Test]
@@ -220,7 +228,9 @@ public sealed partial class ClientTelemetryManagerTests
 
     private static ShareConsumerOptions ShareOptions(params ApplicationTelemetryMetric[] metrics) => new()
     {
-        BootstrapServers = ["localhost:9092"], GroupId = "share-telemetry", ApplicationMetrics = metrics
+        BootstrapServers = ["localhost:9092"],
+        GroupId = "share-telemetry",
+        ApplicationMetrics = metrics
     };
 
     private static async Task PushShareMetricsAsync(TelemetryTestContext context)

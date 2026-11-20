@@ -53,7 +53,10 @@ public sealed class OffsetManagementEdgeCaseTests(KafkaTestContainer kafka) : Ka
             await foreach (var msg in consumer1.ConsumeAsync(cts.Token))
             {
                 consumed.Add(msg);
-                if (consumed.Count >= 10) break;
+                if (consumed.Count >= 10)
+                {
+                    break;
+                }
             }
 
             // Commit offset 7 first
@@ -234,7 +237,10 @@ public sealed class OffsetManagementEdgeCaseTests(KafkaTestContainer kafka) : Ka
             await foreach (var msg in consumer1.ConsumeAsync(cts.Token))
             {
                 await Assert.That(msg.Offset).IsEqualTo(consumed);
-                if (++consumed >= 4) break;
+                if (++consumed >= 4)
+                {
+                    break;
+                }
             }
 
             await consumer1.CommitAsync([new TopicPartitionOffset(topic, 0, 4)]);
@@ -366,7 +372,10 @@ public sealed class OffsetManagementEdgeCaseTests(KafkaTestContainer kafka) : Ka
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))
         {
             consumed.Add(msg);
-            if (consumed.Count >= 3) break;
+            if (consumed.Count >= 3)
+            {
+                break;
+            }
         }
 
         // Act - commit specific offset
@@ -472,16 +481,23 @@ public sealed class OffsetManagementEdgeCaseTests(KafkaTestContainer kafka) : Ka
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
         await foreach (var _ in consumer.ConsumeAsync(cts.Token))
         {
-            if (++consumedCount >= 5) break;
+            if (++consumedCount >= 5)
+            {
+                break;
+            }
         }
 
         await Assert.That(consumer.GetPosition(tp)).IsEqualTo(5);
 
         // Act
         if (seekToEnd)
+        {
             consumer.SeekToEnd(tp);
+        }
         else
+        {
             consumer.SeekToBeginning(tp);
+        }
 
         // Assert - before a fetch resolves the seek the position is unknown (null); a background
         // prefetch may already have resolved it, but the -1/-2 sentinel is never returned
@@ -543,7 +559,10 @@ public sealed class OffsetManagementEdgeCaseTests(KafkaTestContainer kafka) : Ka
         await foreach (var _ in consumer.ConsumeAsync(cts.Token))
         {
             count++;
-            if (count >= 3) break;
+            if (count >= 3)
+            {
+                break;
+            }
         }
 
         var position = consumer.GetPosition(new TopicPartition(topic, 0));
@@ -590,7 +609,10 @@ public sealed class OffsetManagementEdgeCaseTests(KafkaTestContainer kafka) : Ka
         await foreach (var msg in consumer.ConsumeAsync(cts1.Token))
         {
             firstPass.Add(msg);
-            if (firstPass.Count >= 5) break;
+            if (firstPass.Count >= 5)
+            {
+                break;
+            }
         }
 
         await Assert.That(firstPass.Count).IsEqualTo(5);
@@ -605,7 +627,10 @@ public sealed class OffsetManagementEdgeCaseTests(KafkaTestContainer kafka) : Ka
         await foreach (var msg in consumer.ConsumeAsync(cts2.Token))
         {
             secondPass.Add(msg);
-            if (secondPass.Count >= 5) break;
+            if (secondPass.Count >= 5)
+            {
+                break;
+            }
         }
 
         // Assert - should replay all messages from offset 0

@@ -12,16 +12,24 @@ public sealed class ShareAcknowledgedOffsetsTests
         var expanded = new byte[65];
         var expected = new List<long>();
         for (var index = 0; index < expanded.Length; index++)
+        {
             expanded[index] = index % 2 == 0 ? (byte)255 : (byte)0;
+        }
         var compact = new AcknowledgementBatchData(100, 132, [2]);
         var sparse = new AcknowledgementBatchData(200, 264, expanded);
         List<AcknowledgementBatchData> batches = compactFirst ? [compact, sparse] : [sparse, compact];
         batches.Insert(1, new AcknowledgementBatchData(300, 331, [0]));
         batches.Add(new AcknowledgementBatchData(400, 400, [3]));
         foreach (var batch in batches)
+        {
             for (var offset = batch.FirstOffset; offset <= batch.LastOffset; offset++)
+            {
                 if (batch.AcknowledgeTypes[batch.AcknowledgeTypes.Length == 1 ? 0 : (int)(offset - batch.FirstOffset)] != 0)
+                {
                     expected.Add(offset);
+                }
+            }
+        }
 
         var indexed = new long[expected.Count];
         var copied = new long[expected.Count];
@@ -31,10 +39,14 @@ public sealed class ShareAcknowledgedOffsetsTests
         var retainedCopy = offsets;
         var enumerator = offsets.GetEnumerator();
         for (var index = expected.Count - 1; index >= 0; index--)
+        {
             indexed[index] = retainedCopy[index];
+        }
         var count = 0;
         while (enumerator.MoveNext())
+        {
             enumerated[count++] = enumerator.Current;
+        }
         var remainsExhausted = !enumerator.MoveNext();
         offsets.CopyTo(copied);
         var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
@@ -126,7 +138,9 @@ public sealed class ShareAcknowledgedOffsetsTests
         {
             types[index] = sparse && index % 2 != 0 ? (byte)0 : (byte)1;
             if (types[index] != 0)
+            {
                 expectedSum += 10 + index;
+            }
         }
         List<AcknowledgementBatchData> batches = [new(10, 73, types)];
         var destination = new long[64];
@@ -136,9 +150,13 @@ public sealed class ShareAcknowledgedOffsetsTests
         var offsets = new ShareAcknowledgedOffsets(batches);
         long sum = 0;
         for (var index = 0; index < offsets.Length; index++)
+        {
             sum += offsets[index];
+        }
         foreach (var offset in offsets)
+        {
             sum += offset;
+        }
         offsets.CopyTo(destination);
         var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
 
@@ -169,13 +187,17 @@ public sealed class ShareAcknowledgedOffsetsTests
             for (var index = 0; index < length; index++)
             {
                 if (sparse && index % 3 == 0)
+                {
                     continue;
+                }
                 types[index] = dispositions[index % dispositions.Length];
                 expected.Add(firstOffset + index);
             }
             batches.Add(new AcknowledgementBatchData(firstOffset, firstOffset + length - 1, types));
             if (sparse)
+            {
                 batches.Add(new AcknowledgementBatchData(firstOffset + length, firstOffset + length + 32, new byte[33]));
+            }
         }
 
         var expectedOffsets = expected.ToArray();
@@ -195,7 +217,9 @@ public sealed class ShareAcknowledgedOffsetsTests
             // Reverse indexing through a copied view must not move the forward enumerator.
             indexed[index] = retainedCopy[index];
             if (enumerator.MoveNext())
+            {
                 enumerated[enumeratedCount++] = enumerator.Current;
+            }
         }
         var exhausted = !enumerator.MoveNext();
         retainedCopy.CopyTo(copied);
@@ -256,7 +280,9 @@ public sealed class ShareAcknowledgedOffsetsTests
                         ? (byte)0
                         : dispositions[random.Next(dispositions.Length)];
                     if (types[index] != 0)
+                    {
                         expected.Add(firstOffset + index);
+                    }
                 }
                 batches.Add(new AcknowledgementBatchData(firstOffset, firstOffset + length - 1, types));
                 // Empty and gap-only batches must not change logical indices in subsequent batches.
@@ -292,7 +318,9 @@ public sealed class ShareAcknowledgedOffsetsTests
             await Assert.That(copied[^1]).IsEqualTo(-1);
             var enumerated = new List<long>();
             foreach (var offset in result.Offsets)
+            {
                 enumerated.Add(offset);
+            }
             await Assert.That(enumerated.SequenceEqual(expected)).IsTrue();
             await Assert.That(() => offsets[-1]).Throws<ArgumentOutOfRangeException>();
             await Assert.That(() => offsets[expected.Count]).Throws<ArgumentOutOfRangeException>();
@@ -318,7 +346,9 @@ public sealed class ShareAcknowledgedOffsetsTests
         await Assert.That(copy).IsEquivalentTo(new long[] { 11, 13, 30 });
         var enumerated = new List<long>();
         foreach (var offset in offsets)
+        {
             enumerated.Add(offset);
+        }
         await Assert.That(enumerated).IsEquivalentTo(copy);
     }
 
@@ -342,7 +372,9 @@ public sealed class ShareAcknowledgedOffsetsTests
 
         var enumerated = new List<long>();
         foreach (var offset in offsets)
+        {
             enumerated.Add(offset);
+        }
 
         await Assert.That(enumerated).IsEquivalentTo(copied);
     }

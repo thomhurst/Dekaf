@@ -330,7 +330,9 @@ public sealed class InMemoryAsyncSerdeTests
         {
             values.Add(record.Value);
             if (values.Count == 2)
+            {
                 await cts.CancelAsync();
+            }
         }
 
         await Assert.That(values).IsEquivalentTo(["one", "two"]);
@@ -414,13 +416,17 @@ public sealed class InMemoryAsyncSerdeTests
 
         var firstConsume = firstConsumer.ConsumeOneAsync(TimeSpan.FromSeconds(10));
         if (firstConsume.IsCompleted)
+        {
             throw new InvalidOperationException("The first key deserializer did not suspend.");
+        }
 
         try
         {
             var secondConsume = secondConsumer.ConsumeOneAsync(TimeSpan.FromSeconds(1));
             if (!secondConsume.IsCompletedSuccessfully)
+            {
                 throw new InvalidOperationException("The second consume unexpectedly suspended.");
+            }
             _ = secondConsume.Result;
         }
         finally
@@ -702,7 +708,10 @@ public sealed class InMemoryAsyncSerdeTests
 
     private sealed class CapturingStringDeserializer : IDeserializer<string>
     {
-        public SerializationContext Context { get; private set; }
+        public SerializationContext Context
+        {
+            get; private set;
+        }
 
         public string Deserialize(ReadOnlyMemory<byte> data, SerializationContext context)
         {
@@ -739,7 +748,10 @@ public sealed class InMemoryAsyncSerdeTests
     {
         public bool ConsumesRecordHeaders => true;
 
-        public Headers? Headers { get; private set; }
+        public Headers? Headers
+        {
+            get; private set;
+        }
 
         public ValueTask<string> DeserializeAsync(
             ReadOnlyMemory<byte> data,
@@ -766,7 +778,10 @@ public sealed class InMemoryAsyncSerdeTests
     {
         public bool ConsumesRecordHeaders => true;
 
-        public string? HeaderValue { get; private set; }
+        public string? HeaderValue
+        {
+            get; private set;
+        }
 
         public string Deserialize(ReadOnlyMemory<byte> data, SerializationContext context)
         {
@@ -785,14 +800,32 @@ public sealed class InMemoryAsyncSerdeTests
 
         public AsyncPrefixSerde(string prefix) => _prefix = prefix;
 
-        public int SerializeCalls { get; private set; }
-        public int DeserializeCalls { get; private set; }
-        public int LastDeserializedLength { get; private set; }
-        public SerializationContext LastSerializeContext { get; private set; }
-        public SerializationContext LastDeserializeContext { get; private set; }
+        public int SerializeCalls
+        {
+            get; private set;
+        }
+        public int DeserializeCalls
+        {
+            get; private set;
+        }
+        public int LastDeserializedLength
+        {
+            get; private set;
+        }
+        public SerializationContext LastSerializeContext
+        {
+            get; private set;
+        }
+        public SerializationContext LastDeserializeContext
+        {
+            get; private set;
+        }
 
         /// <summary>1-based deserialize call that should throw, or 0 to never throw.</summary>
-        public int FailDeserializeOnCall { get; init; }
+        public int FailDeserializeOnCall
+        {
+            get; init;
+        }
 
         public async ValueTask SerializeAsync(
             string value,
@@ -821,7 +854,9 @@ public sealed class InMemoryAsyncSerdeTests
             LastDeserializedLength = data.Length;
 
             if (FailDeserializeOnCall == DeserializeCalls)
+            {
                 throw new InvalidOperationException("Deserialization failed.");
+            }
 
             var text = Encoding.UTF8.GetString(data.Span);
             return text.StartsWith(_prefix, StringComparison.Ordinal) ? text[_prefix.Length..] : text;

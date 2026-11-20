@@ -119,7 +119,9 @@ public sealed class ProtobufInlineRuleValidatorTests
         validator.Validate(payload.WrittenMemory, schemaId: 18, failFast: false);
         var before = GC.GetAllocatedBytesForCurrentThread();
         for (var index = 0; index < 100; index++)
+        {
             validator.Validate(payload.WrittenMemory, schemaId: 18, failFast: false);
+        }
         var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
 
         await Assert.That(allocated).IsEqualTo(0);
@@ -138,7 +140,9 @@ public sealed class ProtobufInlineRuleValidatorTests
         validator.Validate(payload.WrittenMemory, schemaId: 18, failFast: false);
         var before = GC.GetAllocatedBytesForCurrentThread();
         for (var index = 0; index < 100; index++)
+        {
             validator.Validate(payload.WrittenMemory, schemaId: 18, failFast: false);
+        }
         var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
 
         await Assert.That(allocated).IsEqualTo(0);
@@ -167,7 +171,9 @@ public sealed class ProtobufInlineRuleValidatorTests
         validator.Validate(payload.WrittenMemory, schemaId: 18, failFast: false);
         var before = GC.GetAllocatedBytesForCurrentThread();
         for (var index = 0; index < 100; index++)
+        {
             validator.Validate(payload.WrittenMemory, schemaId: 18, failFast: false);
+        }
         var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
 
         rightPacked.Clear();
@@ -201,7 +207,9 @@ public sealed class ProtobufInlineRuleValidatorTests
         validator.Validate(payload.WrittenMemory, schemaId: 18, failFast: false);
         var before = GC.GetAllocatedBytesForCurrentThread();
         for (var index = 0; index < 100; index++)
+        {
             validator.Validate(payload.WrittenMemory, schemaId: 18, failFast: false);
+        }
         var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
 
         await Assert.That(allocated).IsEqualTo(0);
@@ -218,7 +226,9 @@ public sealed class ProtobufInlineRuleValidatorTests
         validator.Validate(payload.WrittenMemory, schemaId: 17, failFast: false);
         var before = GC.GetAllocatedBytesForCurrentThread();
         for (var index = 0; index < 100; index++)
+        {
             validator.Validate(payload.WrittenMemory, schemaId: 17, failFast: false);
+        }
         var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
 
         var nonDefault = new ArrayBufferWriter<byte>();
@@ -319,7 +329,9 @@ public sealed class ProtobufInlineRuleValidatorTests
         validator.Validate(valid, schemaId: 17, failFast: false);
         var before = GC.GetAllocatedBytesForCurrentThread();
         for (var index = 0; index < 100; index++)
+        {
             validator.Validate(valid, schemaId: 17, failFast: false);
+        }
         var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
 
         var exception = (await Assert.That(() =>
@@ -349,7 +361,9 @@ public sealed class ProtobufInlineRuleValidatorTests
         validator.Validate(payload.WrittenMemory, schemaId: 17, failFast: false);
         var before = GC.GetAllocatedBytesForCurrentThread();
         for (var index = 0; index < 100; index++)
+        {
             validator.Validate(payload.WrittenMemory, schemaId: 17, failFast: false);
+        }
         var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
 
         await Assert.That(allocated).IsEqualTo(0);
@@ -466,7 +480,9 @@ public sealed class ProtobufInlineRuleValidatorTests
         validator.Validate(payload.WrittenMemory, schemaId: 17, failFast: false);
         var before = GC.GetAllocatedBytesForCurrentThread();
         for (var index = 0; index < 100; index++)
+        {
             validator.Validate(payload.WrittenMemory, schemaId: 17, failFast: false);
+        }
         var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
 
         await Assert.That(parsed.CreatedAt.Seconds).IsEqualTo(1_700_000_000);
@@ -567,7 +583,9 @@ public sealed class ProtobufInlineRuleValidatorTests
         validator.Validate(payload.WrittenMemory, schemaId: 17, failFast: false);
         var before = GC.GetAllocatedBytesForCurrentThread();
         for (var index = 0; index < 100; index++)
+        {
             validator.Validate(payload.WrittenMemory, schemaId: 17, failFast: false);
+        }
         var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
 
         await Assert.That(payload.WrittenCount).IsGreaterThan(0);
@@ -609,7 +627,9 @@ public sealed class ProtobufInlineRuleValidatorTests
         validator.Validate(payload, schemaId: 17, failFast: false);
         var before = GC.GetAllocatedBytesForCurrentThread();
         for (var index = 0; index < 100; index++)
+        {
             validator.Validate(payload, schemaId: 17, failFast: false);
+        }
         var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
 
         var unequalPayload = CreateUnknownFieldEqualityPayload(reverseRepeatedValues: true);
@@ -638,7 +658,9 @@ public sealed class ProtobufInlineRuleValidatorTests
         validator.Validate(payload.WrittenMemory, schemaId: 17, failFast: false);
         var before = GC.GetAllocatedBytesForCurrentThread();
         for (var index = 0; index < 100; index++)
+        {
             validator.Validate(payload.WrittenMemory, schemaId: 17, failFast: false);
+        }
         var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
 
         var unequalRight = new ArrayBufferWriter<byte>();
@@ -663,7 +685,9 @@ public sealed class ProtobufInlineRuleValidatorTests
         validator.Validate(payload, schemaId: 17, failFast: false);
         var before = GC.GetAllocatedBytesForCurrentThread();
         for (var index = 0; index < 100; index++)
+        {
             validator.Validate(payload, schemaId: 17, failFast: false);
+        }
         var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
         var reorderedTags = Assert.Throws<ValidationRulesFailedException>(() =>
             validator.Validate(
@@ -708,7 +732,9 @@ public sealed class ProtobufInlineRuleValidatorTests
         validator.Validate(payload, schemaId: 17, failFast: false);
         var before = GC.GetAllocatedBytesForCurrentThread();
         for (var index = 0; index < 100; index++)
+        {
             validator.Validate(payload, schemaId: 17, failFast: false);
+        }
         var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
 
         await Assert.That(allocated).IsEqualTo(0);
@@ -728,7 +754,9 @@ public sealed class ProtobufInlineRuleValidatorTests
         validator.Validate(payload, schemaId: 17, failFast: false);
         var before = GC.GetAllocatedBytesForCurrentThread();
         for (var index = 0; index < 100; index++)
+        {
             validator.Validate(payload, schemaId: 17, failFast: false);
+        }
         var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
 
         await Assert.That(allocated).IsEqualTo(0);
@@ -787,9 +815,13 @@ public sealed class ProtobufInlineRuleValidatorTests
     {
         var payload = new ArrayBufferWriter<byte>();
         for (var depth = 0; depth <= ProtobufInlineRuleValidator.MaximumValidationDepth; depth++)
+        {
             WriteVarint(payload, 99u << 3 | 3u);
+        }
         for (var depth = 0; depth <= ProtobufInlineRuleValidator.MaximumValidationDepth; depth++)
+        {
             WriteVarint(payload, 99u << 3 | 4u);
+        }
         var validator = new ProtobufInlineRuleValidator(Proto2ValidationMessage.Descriptor);
 
         var exception = Assert.Throws<SchemaRegistryRuleException>(() =>
@@ -834,7 +866,9 @@ public sealed class ProtobufInlineRuleValidatorTests
         validator.Validate(payload.WrittenMemory, schemaId: 17, failFast: false);
         var before = GC.GetAllocatedBytesForCurrentThread();
         for (var index = 0; index < 100; index++)
+        {
             validator.Validate(payload.WrittenMemory, schemaId: 17, failFast: false);
+        }
         var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
 
         await Assert.That(payload.WrittenCount).IsGreaterThan(0);
@@ -875,7 +909,9 @@ public sealed class ProtobufInlineRuleValidatorTests
         validator.Validate(payload.WrittenMemory, schemaId: 18, failFast: false);
         var before = GC.GetAllocatedBytesForCurrentThread();
         for (var index = 0; index < 100; index++)
+        {
             validator.Validate(payload.WrittenMemory, schemaId: 18, failFast: false);
+        }
         var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
 
         await Assert.That(allocated).IsEqualTo(0);
@@ -903,7 +939,9 @@ public sealed class ProtobufInlineRuleValidatorTests
         validator.Validate(payload.WrittenMemory, schemaId: 18, failFast: false);
         var before = GC.GetAllocatedBytesForCurrentThread();
         for (var index = 0; index < 100; index++)
+        {
             validator.Validate(payload.WrittenMemory, schemaId: 18, failFast: false);
+        }
         var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
 
         await Assert.That(allocated).IsEqualTo(0);
@@ -921,7 +959,9 @@ public sealed class ProtobufInlineRuleValidatorTests
         validator.Validate(payload.WrittenMemory, schemaId: 18, failFast: false);
         var before = GC.GetAllocatedBytesForCurrentThread();
         for (var index = 0; index < 100; index++)
+        {
             validator.Validate(payload.WrittenMemory, schemaId: 18, failFast: false);
+        }
         var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
 
         await Assert.That(parsed.Left.Count).IsEqualTo(1);
@@ -950,7 +990,9 @@ public sealed class ProtobufInlineRuleValidatorTests
         validator.Validate(payload.WrittenMemory, schemaId: 18, failFast: false);
         var before = GC.GetAllocatedBytesForCurrentThread();
         for (var index = 0; index < 100; index++)
+        {
             validator.Validate(payload.WrittenMemory, schemaId: 18, failFast: false);
+        }
         var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
 
         await Assert.That(parsed.Left).IsEqualTo(parsed.Right);
@@ -969,7 +1011,9 @@ public sealed class ProtobufInlineRuleValidatorTests
         validator.Validate(payload.WrittenMemory, schemaId: 17, failFast: false);
         var before = GC.GetAllocatedBytesForCurrentThread();
         for (var index = 0; index < 100; index++)
+        {
             validator.Validate(payload.WrittenMemory, schemaId: 17, failFast: false);
+        }
         var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
 
         await Assert.That(parsed.Value).IsEqualTo(0);
@@ -1169,7 +1213,9 @@ public sealed class ProtobufInlineRuleValidatorTests
 
         var before = GC.GetAllocatedBytesForCurrentThread();
         for (var index = 0; index < 100; index++)
+        {
             validator.Validate(payload, schemaId: 17, failFast: false);
+        }
         var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
 
         await Assert.That(allocated).IsEqualTo(0);
@@ -1193,7 +1239,9 @@ public sealed class ProtobufInlineRuleValidatorTests
 
         var before = GC.GetAllocatedBytesForCurrentThread();
         for (var index = 0; index < 100; index++)
+        {
             validator.Validate(payload, schemaId: 19, subject: null, schema, failFast: false);
+        }
         var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
 
         await Assert.That(allocated).IsEqualTo(0);
@@ -1215,7 +1263,9 @@ public sealed class ProtobufInlineRuleValidatorTests
 
         var before = GC.GetAllocatedBytesForCurrentThread();
         for (var index = 0; index < 100; index++)
+        {
             executor.Validate(payload, schemaId: index % 2 == 0 ? 19 : 20, schema, failFast: false);
+        }
         var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
 
         await Assert.That(allocated).IsEqualTo(0);
@@ -1779,7 +1829,9 @@ public sealed class ProtobufInlineRuleValidatorTests
         var entry = new ArrayBufferWriter<byte>();
         WriteLengthDelimited(entry, fieldNumber: 1, Encoding.UTF8.GetBytes(key));
         for (var index = 0; index < values.Length; index++)
+        {
             WriteLengthDelimited(entry, fieldNumber: 2, values[index].Span);
+        }
         return entry.WrittenSpan.ToArray();
     }
 
@@ -1916,9 +1968,18 @@ public sealed class ProtobufInlineRuleValidatorTests
     {
         private readonly byte[] _buffer = new byte[capacity];
 
-        internal int GetMemoryCallCount { get; private set; }
-        internal int GetSpanCallCount { get; private set; }
-        internal int WrittenCount { get; private set; }
+        internal int GetMemoryCallCount
+        {
+            get; private set;
+        }
+        internal int GetSpanCallCount
+        {
+            get; private set;
+        }
+        internal int WrittenCount
+        {
+            get; private set;
+        }
 
         public void Advance(int count) => WrittenCount += count;
 
@@ -1937,7 +1998,10 @@ public sealed class ProtobufInlineRuleValidatorTests
 
     private sealed class TransientSchemaRegistryClient(Schema schema) : ISchemaRegistryClient
     {
-        internal int GetSchemaCalls { get; private set; }
+        internal int GetSchemaCalls
+        {
+            get; private set;
+        }
 
         public Task<Schema> GetSchemaAsync(int id, CancellationToken cancellationToken = default)
         {
@@ -1980,6 +2044,8 @@ public sealed class ProtobufInlineRuleValidatorTests
             bool permanent = false,
             CancellationToken cancellationToken = default) => throw new NotSupportedException();
 
-        public void Dispose() { }
+        public void Dispose()
+        {
+        }
     }
 }

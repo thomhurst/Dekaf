@@ -127,7 +127,12 @@ public sealed class MultiMemberConsumerGroupTests(KafkaTestContainer kafka) : Ka
         using var cts1 = new CancellationTokenSource(TimeSpan.FromSeconds(60));
         var c1Task = Task.Run(async () =>
         {
-            try { await foreach (var _ in consumer1.ConsumeAsync(cts1.Token)) { } }
+            try
+            {
+                await foreach (var _ in consumer1.ConsumeAsync(cts1.Token))
+                {
+                }
+            }
             catch (OperationCanceledException) { }
         });
 
@@ -150,7 +155,12 @@ public sealed class MultiMemberConsumerGroupTests(KafkaTestContainer kafka) : Ka
         using var cts2 = new CancellationTokenSource(TimeSpan.FromSeconds(60));
         var c2Task = Task.Run(async () =>
         {
-            try { await foreach (var _ in consumer2.ConsumeAsync(cts2.Token)) { } }
+            try
+            {
+                await foreach (var _ in consumer2.ConsumeAsync(cts2.Token))
+                {
+                }
+            }
             catch (OperationCanceledException) { }
         });
 
@@ -163,7 +173,11 @@ public sealed class MultiMemberConsumerGroupTests(KafkaTestContainer kafka) : Ka
         // Clean up background tasks
         await cts1.CancelAsync();
         await cts2.CancelAsync();
-        try { await Task.WhenAll(c1Task, c2Task); } catch (OperationCanceledException) { }
+        try
+        {
+            await Task.WhenAll(c1Task, c2Task);
+        }
+        catch (OperationCanceledException) { }
 
         // No overlap
         var allPartitions = consumer1.Assignment.ToArray().Where(tp => tp.Topic == topic).Select(tp => tp.Partition)
@@ -212,7 +226,12 @@ public sealed class MultiMemberConsumerGroupTests(KafkaTestContainer kafka) : Ka
         using var cts1 = new CancellationTokenSource(TimeSpan.FromSeconds(60));
         var c1Task = Task.Run(async () =>
         {
-            try { await foreach (var _ in consumer1.ConsumeAsync(cts1.Token)) { } }
+            try
+            {
+                await foreach (var _ in consumer1.ConsumeAsync(cts1.Token))
+                {
+                }
+            }
             catch (OperationCanceledException) { }
         });
 
@@ -229,7 +248,12 @@ public sealed class MultiMemberConsumerGroupTests(KafkaTestContainer kafka) : Ka
         using var cts2 = new CancellationTokenSource(TimeSpan.FromSeconds(60));
         var c2Task = Task.Run(async () =>
         {
-            try { await foreach (var _ in consumer2.ConsumeAsync(cts2.Token)) { } }
+            try
+            {
+                await foreach (var _ in consumer2.ConsumeAsync(cts2.Token))
+                {
+                }
+            }
             catch (OperationCanceledException) { }
         });
 
@@ -241,7 +265,11 @@ public sealed class MultiMemberConsumerGroupTests(KafkaTestContainer kafka) : Ka
 
         // Act - consumer2 leaves
         await cts2.CancelAsync();
-        try { await c2Task; } catch (OperationCanceledException) { }
+        try
+        {
+            await c2Task;
+        }
+        catch (OperationCanceledException) { }
         await consumer2.DisposeAsync().ConfigureAwait(false);
 
         // Wait for consumer1 to pick up all 4 partitions after rebalance
@@ -249,7 +277,11 @@ public sealed class MultiMemberConsumerGroupTests(KafkaTestContainer kafka) : Ka
             .Eventually(x => x.IsEqualTo(4), TimeSpan.FromSeconds(30));
 
         await cts1.CancelAsync();
-        try { await c1Task; } catch (OperationCanceledException) { }
+        try
+        {
+            await c1Task;
+        }
+        catch (OperationCanceledException) { }
     }
 
     [Test]
@@ -348,7 +380,12 @@ public sealed class MultiMemberConsumerGroupTests(KafkaTestContainer kafka) : Ka
         using var cts1 = new CancellationTokenSource(TimeSpan.FromSeconds(60));
         var c1Task = Task.Run(async () =>
         {
-            try { await foreach (var _ in consumer1.ConsumeAsync(cts1.Token)) { } }
+            try
+            {
+                await foreach (var _ in consumer1.ConsumeAsync(cts1.Token))
+                {
+                }
+            }
             catch (OperationCanceledException) { }
         });
 
@@ -371,7 +408,12 @@ public sealed class MultiMemberConsumerGroupTests(KafkaTestContainer kafka) : Ka
         using var cts2 = new CancellationTokenSource(TimeSpan.FromSeconds(60));
         var c2Task = Task.Run(async () =>
         {
-            try { await foreach (var _ in consumer2.ConsumeAsync(cts2.Token)) { } }
+            try
+            {
+                await foreach (var _ in consumer2.ConsumeAsync(cts2.Token))
+                {
+                }
+            }
             catch (OperationCanceledException) { }
         });
 
@@ -382,7 +424,11 @@ public sealed class MultiMemberConsumerGroupTests(KafkaTestContainer kafka) : Ka
         // Clean up background tasks
         await cts1.CancelAsync();
         await cts2.CancelAsync();
-        try { await Task.WhenAll(c1Task, c2Task); } catch (OperationCanceledException) { }
+        try
+        {
+            await Task.WhenAll(c1Task, c2Task);
+        }
+        catch (OperationCanceledException) { }
     }
 
     [Test]
@@ -426,7 +472,10 @@ public sealed class MultiMemberConsumerGroupTests(KafkaTestContainer kafka) : Ka
             await foreach (var msg in consumer1.ConsumeAsync(cts.Token))
             {
                 consumed.Add(msg);
-                if (consumed.Count >= 5) break;
+                if (consumed.Count >= 5)
+                {
+                    break;
+                }
             }
 
             await consumer1.CommitAsync([new TopicPartitionOffset(topic, 0, 5)]);
@@ -522,7 +571,10 @@ public sealed class MultiMemberConsumerGroupTests(KafkaTestContainer kafka) : Ka
             await consumer2.DisposeAsync().ConfigureAwait(false);
 
             // Observe any exceptions from the consume tasks to prevent unobserved task exceptions
-            try { await Task.WhenAll(task1, task2); }
+            try
+            {
+                await Task.WhenAll(task1, task2);
+            }
             catch { /* Already handled within ConsumeUntilCountReached */ }
         }
 
@@ -544,7 +596,10 @@ public sealed class MultiMemberConsumerGroupTests(KafkaTestContainer kafka) : Ka
             await foreach (var msg in consumer.ConsumeAsync(cancellationToken).ConfigureAwait(false))
             {
                 results.Add(msg);
-                if (results.Count >= targetCount) break;
+                if (results.Count >= targetCount)
+                {
+                    break;
+                }
             }
         }
         catch (OperationCanceledException)
@@ -559,9 +614,18 @@ public sealed class MultiMemberConsumerGroupTests(KafkaTestContainer kafka) : Ka
 
     private sealed class TrackingRebalanceListener : IRebalanceListener
     {
-        public ConcurrentBag<List<TopicPartition>> AssignedPartitions { get; } = [];
-        public ConcurrentBag<List<TopicPartition>> RevokedPartitions { get; } = [];
-        public ConcurrentBag<List<TopicPartition>> LostPartitions { get; } = [];
+        public ConcurrentBag<List<TopicPartition>> AssignedPartitions
+        {
+            get;
+        } = [];
+        public ConcurrentBag<List<TopicPartition>> RevokedPartitions
+        {
+            get;
+        } = [];
+        public ConcurrentBag<List<TopicPartition>> LostPartitions
+        {
+            get;
+        } = [];
 
         public ValueTask OnPartitionsAssignedAsync(IEnumerable<TopicPartition> partitions, CancellationToken cancellationToken)
         {

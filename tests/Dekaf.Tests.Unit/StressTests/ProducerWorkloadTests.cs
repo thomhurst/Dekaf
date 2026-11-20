@@ -72,14 +72,23 @@ public sealed class ProducerWorkloadTests
                 await Assert.That(run.IsCompleted).IsFalse();
                 // An expired final flush faults with the timeout its bounded wait reports.
                 // The real drain deadline is covered by DrainTimeout_ReturnsSerializableFailureWithRuntimeSamples.
-                if (drainExpires) finalDelivery.TrySetException(new TimeoutException("Controlled final flush timeout"));
-                else finalDelivery.TrySetResult();
+                if (drainExpires)
+                {
+                    finalDelivery.TrySetException(new TimeoutException("Controlled final flush timeout"));
+                }
+                else
+                {
+                    finalDelivery.TrySetResult();
+                }
                 var result = await run;
                 await Assert.That(flushes).IsEqualTo(2);
                 // The flush timeout and shared drain cancellation can expire in either order.
                 await Assert.That(result.Throughput.ErrorSamples.Any(sample =>
                     sample.ExceptionType is "DeliveryDrainTimeout" or "FlushTimeout")).IsEqualTo(drainExpires);
-                if (!drainExpires) await Assert.That(result.Throughput.TotalErrors).IsEqualTo(0);
+                if (!drainExpires)
+                {
+                    await Assert.That(result.Throughput.TotalErrors).IsEqualTo(0);
+                }
                 await Assert.That(result.WorkloadSeconds).IsLessThan(result.Throughput.ElapsedSeconds);
             }
             finally
@@ -230,9 +239,13 @@ public sealed class ProducerWorkloadTests
             await Assert.That(result.Throughput.TotalErrors).IsGreaterThan(0);
             await Assert.That(result.Throughput.ErrorSamples.Any(sample => sample.ExceptionType == "DeliveryDrainTimeout")).IsTrue();
             if (drainTimeoutMs == 0)
+            {
                 await Assert.That(flushed).IsFalse();
+            }
             if (confluent)
+            {
                 await Assert.That(result.Throughput.ErrorSamples.Any(sample => sample.ExceptionType == "FlushTimeout")).IsEqualTo(flushed);
+            }
             var json = JsonSerializer.Serialize(result.Throughput, JsonSerializerOptions.Web);
             using var document = JsonDocument.Parse(json);
             await Assert.That(document.RootElement.GetProperty("runtimeEnd").ValueKind).IsEqualTo(JsonValueKind.Object);
@@ -306,7 +319,9 @@ public sealed class ProducerWorkloadTests
             {
                 cancellation.Cancel();
                 if (run is not null)
+                {
                     await Assert.That(async () => await run).Throws<OperationCanceledException>();
+                }
             }
         }
         finally
@@ -368,7 +383,11 @@ public sealed class ProducerWorkloadTests
                         new ConfluentKafka.Error(ConfluentKafka.ErrorCode.Local_QueueFull),
                         new ConfluentKafka.DeliveryResult<string, string>());
                 });
-                producer.Flush(Arg.Any<TimeSpan>()).Returns(_ => { flushStarted.TrySetResult(); return 0; });
+                producer.Flush(Arg.Any<TimeSpan>()).Returns(_ =>
+                {
+                    flushStarted.TrySetResult();
+                    return 0;
+                });
                 completeDelivery = () => Interlocked.Exchange(ref deliveryHandler, null)?.Invoke(
                     new ConfluentKafka.DeliveryReport<string, string>
                     {
@@ -465,12 +484,22 @@ public sealed class ProducerWorkloadTests
                         time.Advance(duration);
                         return delivery.Task;
                     });
-                producer.Flush(Arg.Any<TimeSpan>()).Returns(_ => { flushStarted.TrySetResult(); return 0; });
+                producer.Flush(Arg.Any<TimeSpan>()).Returns(_ =>
+                {
+                    flushStarted.TrySetResult();
+                    return 0;
+                });
                 completeDelivery = () =>
                 {
-                    if (fails) delivery.TrySetException(new ConfluentKafka.KafkaException(
+                    if (fails)
+                    {
+                        delivery.TrySetException(new ConfluentKafka.KafkaException(
                         new ConfluentKafka.Error(ConfluentKafka.ErrorCode.Local_MsgTimedOut)));
-                    else delivery.TrySetResult(new ConfluentKafka.DeliveryResult<string, string>());
+                    }
+                    else
+                    {
+                        delivery.TrySetResult(new ConfluentKafka.DeliveryResult<string, string>());
+                    }
                 };
                 run = ProducerWorkload.RunAsync(producer, options, client, "producer-async-idempotent", throughput, latency,
                     duration, awaitDelivery: true, CancellationToken.None, drainTimeout: NoDrainDeadline, ingressTimeProvider: time);
@@ -492,8 +521,14 @@ public sealed class ProducerWorkloadTests
                 });
                 completeDelivery = () =>
                 {
-                    if (fails) delivery.TrySetException(new Dekaf.Errors.KafkaException("delivery failed"));
-                    else delivery.TrySetResult(default);
+                    if (fails)
+                    {
+                        delivery.TrySetException(new Dekaf.Errors.KafkaException("delivery failed"));
+                    }
+                    else
+                    {
+                        delivery.TrySetResult(default);
+                    }
                 };
                 run = ProducerWorkload.RunAsync(producer, options, client, "producer-async-idempotent", throughput, latency,
                     duration, awaitDelivery: true, CancellationToken.None, drainTimeout: NoDrainDeadline, ingressTimeProvider: time);

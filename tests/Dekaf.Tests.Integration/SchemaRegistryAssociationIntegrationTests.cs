@@ -80,7 +80,9 @@ public sealed class SchemaRegistryAssociationIntegrationTests(KafkaWithAssociati
 
             await using var serializer = new SchemaRegistrySerializer<int>(
                 client,
-                static (_, _) => { },
+                static (_, _) =>
+                {
+                },
                 static () => new Schema
                 {
                     SchemaType = SchemaType.Json,
@@ -215,7 +217,9 @@ public sealed class SchemaRegistryAssociationIntegrationTests(KafkaWithAssociati
         {
             var cleanup = new Task[associatedTopics.Count];
             for (var i = 0; i < associatedTopics.Count; i++)
+            {
                 cleanup[i] = DeleteAssociationAsync(client, associatedTopics[i], CancellationToken.None);
+            }
             await Task.WhenAll(cleanup);
         }
     }
@@ -283,12 +287,18 @@ public sealed class SchemaRegistryAssociationIntegrationTests(KafkaWithAssociati
 
     private sealed class AssociatedJsonRecord
     {
-        public int Id { get; init; }
+        public int Id
+        {
+            get; init;
+        }
     }
 
     private sealed class CapturingRuleExecutor : ISchemaRegistryRuleExecutor
     {
-        internal string? Subject { get; private set; }
+        internal string? Subject
+        {
+            get; private set;
+        }
 
         public ReadOnlyMemory<byte> TransformSerializedPayload(
             ReadOnlyMemory<byte> payload,

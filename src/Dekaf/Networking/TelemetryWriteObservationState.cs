@@ -6,8 +6,14 @@ namespace Dekaf.Networking;
 internal sealed class TelemetryWriteObservationState
 {
     private static readonly Reservoir.ObjectPool<TelemetryWriteObservationState, PoolPolicy> Pool = new(256);
-    internal ClientTelemetryMetricCollector? Collector { get; private set; }
-    internal Action? Callback { get; private set; }
+    internal ClientTelemetryMetricCollector? Collector
+    {
+        get; private set;
+    }
+    internal Action? Callback
+    {
+        get; private set;
+    }
 
     internal static TelemetryWriteObservationState Rent(ClientTelemetryMetricCollector collector, Action callback)
     {
@@ -27,7 +33,9 @@ internal sealed class TelemetryWriteObservationState
     private readonly struct PoolPolicy : Reservoir.IPooledObjectPolicy<TelemetryWriteObservationState>, Reservoir.INonThrowingResetPolicy
     {
         public TelemetryWriteObservationState Create() => new();
-        public void Destroy(TelemetryWriteObservationState state) { }
+        public void Destroy(TelemetryWriteObservationState state)
+        {
+        }
         public bool TryReset(TelemetryWriteObservationState state) => true;
     }
 }

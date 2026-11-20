@@ -26,17 +26,19 @@ public sealed partial class ShareConsumerRenewalTests
         {
             ShareFetchResponse = new ShareFetchResponse
             {
-                ErrorCode = ErrorCode.None, NodeEndpoints = [],
+                ErrorCode = ErrorCode.None,
+                NodeEndpoints = [],
                 Responses = [new ShareFetchResponseTopic
                 {
                     TopicId = TopicId,
                     Partitions = [new ShareFetchResponsePartition
                     {
-                        PartitionIndex = 0, CurrentLeader = new ShareFetchLeaderIdAndEpoch(),
+                        PartitionIndex = 0,
+                        CurrentLeader = new ShareFetchLeaderIdAndEpoch(),
                         RecordBytes = bytes.WrittenMemory,
                         AcquiredRecords = reverseBatches
-                            ? [..later.AcquiredRecords, ..first.AcquiredRecords]
-                            : [..first.AcquiredRecords, ..later.AcquiredRecords]
+                            ? [.. later.AcquiredRecords, .. first.AcquiredRecords]
+                            : [.. first.AcquiredRecords, .. later.AcquiredRecords]
                     }, CreateFetchResponse(1, 300, 2).Responses[0].Partitions[0]]
                 }]
             },
@@ -50,7 +52,9 @@ public sealed partial class ShareConsumerRenewalTests
         if (settleFirst)
         {
             foreach (var record in poll.Current)
+            {
                 poll.Current.Acknowledge(record);
+            }
             await fixture.Consumer.CommitAsync();
         }
 
@@ -63,12 +67,18 @@ public sealed partial class ShareConsumerRenewalTests
         await Assert.That(request.ShareSessionEpoch).IsEqualTo(ShareSessionManager.CloseEpoch);
         var released = new List<long>();
         foreach (var topic in request.Topics)
-        foreach (var partition in topic.Partitions)
-        foreach (var batch in partition.AcknowledgementBatches!)
         {
-            await Assert.That(batch.AcknowledgeTypes.All(static type => type == (byte)AcknowledgeType.Release)).IsTrue();
-            for (var offset = batch.FirstOffset; offset <= batch.LastOffset; offset++)
-                released.Add(offset);
+            foreach (var partition in topic.Partitions)
+            {
+                foreach (var batch in partition.AcknowledgementBatches!)
+                {
+                    await Assert.That(batch.AcknowledgeTypes.All(static type => type == (byte)AcknowledgeType.Release)).IsTrue();
+                    for (var offset = batch.FirstOffset; offset <= batch.LastOffset; offset++)
+                    {
+                        released.Add(offset);
+                    }
+                }
+            }
         }
         long[] expected = settleFirst ? [] : [100, 101, 102];
         await Assert.That(released).IsEquivalentTo(expected);
@@ -157,7 +167,9 @@ public sealed partial class ShareConsumerRenewalTests
         await using var poll = fixture.Consumer.PollBatchesAsync().GetAsyncEnumerator();
         await Assert.That(await poll.MoveNextAsync()).IsTrue();
         foreach (var record in poll.Current)
+        {
             poll.Current.Acknowledge(record, AcknowledgeType.Renew);
+        }
         await Assert.That(await poll.MoveNextAsync()).IsTrue();
         var firstReplay = poll.Current.GetEnumerator();
         await Assert.That(firstReplay.MoveNext()).IsTrue();
@@ -249,11 +261,15 @@ public sealed partial class ShareConsumerRenewalTests
             BaseOffset = 100,
             Records = [new Record
             {
-                Key = "key"u8.ToArray(), Value = value,
-                Headers = [new Header("identity", "header-value"u8.ToArray())], HeaderCount = 1
+                Key = "key"u8.ToArray(),
+                Value = value,
+                Headers = [new Header("identity", "header-value"u8.ToArray())],
+                HeaderCount = 1
             }]
         })
+        {
             source.Write(encoded);
+        }
         var owner = new PoisonedBatchFrame(encoded.WrittenSpan.ToArray());
         var response = new ShareFetchResponse
         {
@@ -263,15 +279,19 @@ public sealed partial class ShareConsumerRenewalTests
                 TopicId = TopicId,
                 Partitions = [new ShareFetchResponsePartition
                 {
-                    PartitionIndex = 0, CurrentLeader = new ShareFetchLeaderIdAndEpoch(),
+                    PartitionIndex = 0,
+                    CurrentLeader = new ShareFetchLeaderIdAndEpoch(),
                     RecordBytes = owner.Memory,
                     AcquiredRecords = [new ShareFetchAcquiredRecords
                     {
-                        FirstOffset = 100, LastOffset = 100, DeliveryCount = 1
+                        FirstOffset = 100,
+                        LastOffset = 100,
+                        DeliveryCount = 1
                     }]
                 }]
             }],
-            NodeEndpoints = [], PooledMemoryOwner = owner
+            NodeEndpoints = [],
+            PooledMemoryOwner = owner
         };
         var connection = new CapturingConnection(ApiKey.ShareFetch, 2, includeShareAcknowledge: true)
         {
@@ -310,7 +330,10 @@ public sealed partial class ShareConsumerRenewalTests
     private sealed class PoisonedBatchFrame(byte[] bytes) : IPooledMemory
     {
         public ReadOnlyMemory<byte> Memory => bytes;
-        public int Disposals { get; private set; }
+        public int Disposals
+        {
+            get; private set;
+        }
         public void Dispose()
         {
             Disposals++;
@@ -369,7 +392,9 @@ public sealed partial class ShareConsumerRenewalTests
         {
             await Assert.That(await poll.MoveNextAsync()).IsTrue();
             foreach (var record in poll.Current)
+            {
                 offsets.Add(record.Offset);
+            }
         }
         await Assert.That(offsets).IsEquivalentTo(new long[] { 100, 200 });
         await Assert.That(GetSessionEpoch(fixture.Consumer, 1)).IsEqualTo(1);
@@ -385,7 +410,9 @@ public sealed partial class ShareConsumerRenewalTests
     {
         var responses = new Queue<ShareFetchResponse>();
         for (var index = 0; index < 16; index++)
+        {
             responses.Enqueue(CreateFetchResponse(0, 100 + index));
+        }
         var connection = new CapturingConnection(ApiKey.ShareFetch, 2, includeShareAcknowledge: true)
         {
             ShareFetchResponses = responses
@@ -434,11 +461,14 @@ public sealed partial class ShareConsumerRenewalTests
                 TopicId = TopicId,
                 Partitions = [new ShareFetchResponsePartition
                 {
-                    PartitionIndex = 0, CurrentLeader = new ShareFetchLeaderIdAndEpoch(),
+                    PartitionIndex = 0,
+                    CurrentLeader = new ShareFetchLeaderIdAndEpoch(),
                     RecordBytes = bytes,
                     AcquiredRecords = [new ShareFetchAcquiredRecords
                     {
-                        FirstOffset = 100, LastOffset = 105, DeliveryCount = 1
+                        FirstOffset = 100,
+                        LastOffset = 105,
+                        DeliveryCount = 1
                     }]
                 }]
             }],
@@ -458,7 +488,9 @@ public sealed partial class ShareConsumerRenewalTests
         var records = first.GetEnumerator();
         await Assert.That(records.MoveNext()).IsTrue();
         if (mode == ShareAcknowledgementMode.Explicit)
+        {
             first.Acknowledge(records.Current);
+        }
         var tracker = first.Storage.Tracker!;
         await Assert.That(await poll.MoveNextAsync()).IsTrue();
         // Advancing prunes the first lease's unread records without scanning the response.
@@ -526,7 +558,9 @@ public sealed partial class ShareConsumerRenewalTests
                 // Stop after the first request that carries an acknowledgement.
                 if (request.Topics.Any(static topic => topic.Partitions.Any(
                         static partition => partition.AcknowledgementBatches is { Count: > 0 })))
+                {
                     cancellation.Cancel();
+                }
                 return ValueTask.FromResult(++fetches == 1
                     ? CreateFetchResponse(0, 100, 2)
                     : new ShareFetchResponse { ErrorCode = ErrorCode.None, Responses = [], NodeEndpoints = [] });
@@ -653,7 +687,9 @@ public sealed partial class ShareConsumerRenewalTests
         await Assert.That(await poll.MoveNextAsync()).IsTrue();
         var batch = poll.Current;
         foreach (var record in batch)
+        {
             batch.Acknowledge(record, (AcknowledgeType)(record.Offset - 99));
+        }
         await fixture.Consumer.CommitAsync();
         var sent = connection.ShareAcknowledgeRequest!.Topics[0].Partitions[0].AcknowledgementBatches!;
         await Assert.That(sent).HasSingleItem();

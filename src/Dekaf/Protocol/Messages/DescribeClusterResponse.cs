@@ -11,14 +11,38 @@ public sealed class DescribeClusterResponse : IKafkaResponse
     public static short LowestSupportedVersion => 0;
     public static short HighestSupportedVersion => 2;
 
-    public int ThrottleTimeMs { get; init; }
-    public ErrorCode ErrorCode { get; init; }
-    public string? ErrorMessage { get; init; }
-    public DescribeClusterEndpointType EndpointType { get; init; } = DescribeClusterEndpointType.Broker;
-    public required string ClusterId { get; init; }
-    public int ControllerId { get; init; } = -1;
-    public required IReadOnlyList<DescribeClusterNode> Nodes { get; init; }
-    public int ClusterAuthorizedOperations { get; init; } = int.MinValue;
+    public int ThrottleTimeMs
+    {
+        get; init;
+    }
+    public ErrorCode ErrorCode
+    {
+        get; init;
+    }
+    public string? ErrorMessage
+    {
+        get; init;
+    }
+    public DescribeClusterEndpointType EndpointType
+    {
+        get; init;
+    } = DescribeClusterEndpointType.Broker;
+    public required string ClusterId
+    {
+        get; init;
+    }
+    public int ControllerId
+    {
+        get; init;
+    } = -1;
+    public required IReadOnlyList<DescribeClusterNode> Nodes
+    {
+        get; init;
+    }
+    public int ClusterAuthorizedOperations
+    {
+        get; init;
+    } = int.MinValue;
 
     public static IKafkaResponse Read(ref KafkaProtocolReader reader, short version)
     {
@@ -54,11 +78,26 @@ public sealed class DescribeClusterResponse : IKafkaResponse
 
 public sealed class DescribeClusterNode
 {
-    public int NodeId { get; init; }
-    public required string Host { get; init; }
-    public int Port { get; init; }
-    public string? Rack { get; init; }
-    public bool IsFenced { get; init; }
+    public int NodeId
+    {
+        get; init;
+    }
+    public required string Host
+    {
+        get; init;
+    }
+    public int Port
+    {
+        get; init;
+    }
+    public string? Rack
+    {
+        get; init;
+    }
+    public bool IsFenced
+    {
+        get; init;
+    }
 
     public static DescribeClusterNode Read(ref KafkaProtocolReader reader, short version)
     {

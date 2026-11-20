@@ -16,7 +16,10 @@ internal sealed class FollowerRecoveryPool : IConnectionPool
     private readonly string _topic;
     private readonly ConditionalWeakTable<IKafkaConnection, FaultingConnection> _connections = new();
     private readonly ConditionalWeakTable<IKafkaConnection, FaultingConnection>.CreateValueCallback _createConnection;
-    public FollowerRecoveryOracle? Oracle { get; set; }
+    public FollowerRecoveryOracle? Oracle
+    {
+        get; set;
+    }
 
     public FollowerRecoveryPool(ConnectionPool inner, string topic)
     {
@@ -68,7 +71,9 @@ internal sealed class FollowerRecoveryPool : IConnectionPool
         where TRequest : IKafkaRequest<TResponse> where TResponse : IKafkaResponse
     {
         if (oracle is null || request is not FetchRequest fetch || response is not FetchResponse fetched)
+        {
             return response;
+        }
         try
         {
             ObserveResponse(connection.BrokerId, fetch, fetched, oracle, epoch);
@@ -77,7 +82,9 @@ internal sealed class FollowerRecoveryPool : IConnectionPool
         {
             // No caller owns a response rejected by the experiment's oracle.
             for (var t = 0; t < fetched.Responses.Count; t++)
+            {
                 fetched.Responses[t].ReturnToPoolAfterFailedParse();
+            }
             fetched.PooledMemoryOwner?.Dispose();
             fetched.ReturnToPool();
             throw;
@@ -88,7 +95,9 @@ internal sealed class FollowerRecoveryPool : IConnectionPool
     private void ObserveResponse(int brokerId, FetchRequest request, FetchResponse response, FollowerRecoveryOracle oracle, int epoch)
     {
         if (brokerId is not (1 or 2))
+        {
             throw new InvalidOperationException($"Unexpected fetch destination {brokerId} in the fixed replica assignment.");
+        }
         for (var t = 0; t < response.Responses.Count; t++)
         {
             var responseTopic = response.Responses[t];
@@ -97,7 +106,9 @@ internal sealed class FollowerRecoveryPool : IConnectionPool
             {
                 var partition = responseTopic.Partitions[p];
                 if (partition.ErrorCode != ErrorCode.None)
+                {
                     continue;
+                }
                 var offset = FindRequestedOffset(requestTopic, partition.PartitionIndex);
                 if (brokerId == 1)
                 {
@@ -105,16 +116,24 @@ internal sealed class FollowerRecoveryPool : IConnectionPool
                     continue;
                 }
                 if (partition.Records is not { Count: > 0 } records)
+                {
                     continue;
+                }
                 if (!oracle.ObserveFollowerData(partition.PartitionIndex, offset, epoch))
+                {
                     continue;
+                }
 
                 // These records never reach PendingFetchData. The response retains its
                 // network memory owner until the consumer handles the injected error.
                 for (var b = 0; b < records.Count; b++)
+                {
                     records[b].DisposeAndReturnUnownedConsumerBatch();
+                }
                 if (records is List<Dekaf.Protocol.Records.RecordBatch> list)
+                {
                     FetchResponsePartition.ReturnRecordBatchList(list);
+                }
                 partition.Records = null;
                 partition.ErrorCode = ErrorCode.OffsetOutOfRange;
                 partition.PreferredReadReplica = -1;
@@ -128,7 +147,9 @@ internal sealed class FollowerRecoveryPool : IConnectionPool
         {
             var topic = request.Topics[t];
             if (topic.Topic == _topic && topic.TopicId == response.TopicId)
+            {
                 return topic;
+            }
         }
         throw new InvalidOperationException("Fetch response did not match the recovery topic.");
     }
@@ -138,7 +159,9 @@ internal sealed class FollowerRecoveryPool : IConnectionPool
         for (var p = 0; p < request.Partitions.Count; p++)
         {
             if (request.Partitions[p].Partition == partition)
+            {
                 return request.Partitions[p].FetchOffset;
+            }
         }
         throw new InvalidOperationException("Fetch response partition was absent from the full request.");
     }

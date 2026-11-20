@@ -217,7 +217,9 @@ public sealed class AdminResponseArrayBoundsTests
                 writer.WriteInt16((short)ErrorCode.None);
                 writer.WriteCompactNullableString(null);
                 if (target is ArrayTarget.ClusterNodesV2)
+                {
                     writer.WriteInt8(0);
+                }
                 writer.WriteCompactString(string.Empty);
                 writer.WriteInt32(0);
                 break;
@@ -283,17 +285,25 @@ public sealed class AdminResponseArrayBoundsTests
         writer.WriteInt64(0);
         WriteString(ref writer, string.Empty, flexible);
         if (flexible)
+        {
             writer.WriteCompactBytes([]);
+        }
         else
+        {
             writer.WriteBytes([]);
+        }
     }
 
     private static void WriteString(ref KafkaProtocolWriter writer, string value, bool flexible)
     {
         if (flexible)
+        {
             writer.WriteCompactString(value);
+        }
         else
+        {
             writer.WriteString(value);
+        }
     }
 
     private static void WriteHostileArray(ref KafkaProtocolWriter writer, ArrayTarget target)
@@ -305,9 +315,13 @@ public sealed class AdminResponseArrayBoundsTests
                 : HostileElementCount;
 
         if (UsesLegacyEncoding(target))
+        {
             writer.WriteInt32(count);
+        }
         else
+        {
             writer.WriteUnsignedVarInt(count + 1);
+        }
 
         var payloadLength = target is ArrayTarget.TelemetryCompressionTypes
             or ArrayTarget.TelemetryRequestedMetrics

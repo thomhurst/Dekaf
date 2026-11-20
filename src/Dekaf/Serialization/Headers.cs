@@ -104,9 +104,13 @@ public sealed class Headers : IReadOnlyList<Header>
             var traceparentIndex = source?._deferredTraceparentIndex ?? _deferredTraceparentIndex;
             var tracestateIndex = source?._deferredTracestateIndex ?? _deferredTracestateIndex;
             if ((uint)traceparentIndex < (uint)headerCount)
+            {
                 count--;
+            }
             if ((uint)tracestateIndex < (uint)headerCount)
+            {
                 count--;
+            }
             return count;
         }
     }
@@ -123,14 +127,20 @@ public sealed class Headers : IReadOnlyList<Header>
         var headers = source?._headers ?? _headers;
         var stagedCount = _stagedHeaderCount;
         if (stagedCount == 0)
+        {
             return headers[index];
+        }
 
         var traceparentIndex = source?._deferredTraceparentIndex ?? _deferredTraceparentIndex;
         var insertionIndex = traceparentIndex >= 0 ? traceparentIndex : headers.Count;
         if (index < insertionIndex)
+        {
             return headers[index];
+        }
         if (index < insertionIndex + stagedCount)
+        {
             return GetStagedHeader(index - insertionIndex);
+        }
         return headers[index - stagedCount];
     }
 
@@ -143,20 +153,28 @@ public sealed class Headers : IReadOnlyList<Header>
         if (stagedCount == 0)
         {
             for (var i = 0; i < headers.Count; i++)
+            {
                 destination[i] = headers[i];
+            }
             return;
         }
 
         var traceparentIndex = source?._deferredTraceparentIndex ?? _deferredTraceparentIndex;
         var insertionIndex = traceparentIndex >= 0 ? traceparentIndex : headers.Count;
         for (var i = 0; i < insertionIndex; i++)
+        {
             destination[i] = headers[i];
+        }
 
         for (var i = 0; i < stagedCount; i++)
+        {
             destination[insertionIndex + i] = GetStagedHeader(i);
+        }
 
         for (var i = insertionIndex; i < headers.Count; i++)
+        {
             destination[stagedCount + i] = headers[i];
+        }
     }
 
     /// <summary>
@@ -197,7 +215,9 @@ public sealed class Headers : IReadOnlyList<Header>
         {
             var header = GetSerializationHeader(index);
             if (header.Key == key)
+            {
                 return header;
+            }
         }
         return null;
     }
@@ -215,7 +235,9 @@ public sealed class Headers : IReadOnlyList<Header>
         {
             var header = GetSerializationHeader(index);
             if (header.Key == key)
+            {
                 yield return header;
+            }
         }
     }
 
@@ -255,7 +277,9 @@ public sealed class Headers : IReadOnlyList<Header>
     {
 #if NETSTANDARD2_0
         if (predicate is null)
+        {
             throw new ArgumentNullException(nameof(predicate));
+        }
 #else
         ArgumentNullException.ThrowIfNull(predicate);
 #endif
@@ -271,7 +295,9 @@ public sealed class Headers : IReadOnlyList<Header>
         {
             var firstMatch = FindFirstSerializationMatch(ref matcher);
             if (firstMatch >= 0)
+            {
                 MaterializeWithout(ref matcher, firstMatch);
+            }
         }
         else
         {
@@ -288,9 +314,13 @@ public sealed class Headers : IReadOnlyList<Header>
         var count = _headers.Count;
         var first = 0;
         while (first < count && !matcher.IsMatch(_headers[first]))
+        {
             first++;
+        }
         if (first == count)
+        {
             return;
+        }
 
         var traceparentIndex = _deferredTraceparentIndex;
         var tracestateIndex = _deferredTracestateIndex;
@@ -299,22 +329,32 @@ public sealed class Headers : IReadOnlyList<Header>
         var newTraceparentIndex = traceparentIndex < first ? traceparentIndex : -1;
         var newTracestateIndex = tracestateIndex < first ? tracestateIndex : -1;
         if (keySchemaIdentityIndex >= first)
+        {
             _keySchemaIdentityIndex = -1;
+        }
         if (valueSchemaIdentityIndex >= first)
+        {
             _valueSchemaIdentityIndex = -1;
+        }
 
         var retained = first;
         for (var index = first + 1; index < count; index++)
         {
             var header = _headers[index];
             if (matcher.IsMatch(header))
+            {
                 continue;
+            }
 
             _headers[retained] = header;
             if (index == traceparentIndex)
+            {
                 newTraceparentIndex = retained;
+            }
             else if (index == tracestateIndex)
+            {
                 newTracestateIndex = retained;
+            }
             TrackSchemaIdentityCandidate(header.Key, retained);
             retained++;
         }
@@ -323,9 +363,13 @@ public sealed class Headers : IReadOnlyList<Header>
         _deferredTraceparentIndex = newTraceparentIndex;
         _deferredTracestateIndex = newTracestateIndex;
         if (keySchemaIdentityIndex >= first && _keySchemaIdentityIndex < 0)
+        {
             _keySchemaIdentityIndex = FindLastSchemaIdentityIndex(KeySchemaIdentityHeader, first);
+        }
         if (valueSchemaIdentityIndex >= first && _valueSchemaIdentityIndex < 0)
+        {
             _valueSchemaIdentityIndex = FindLastSchemaIdentityIndex(ValueSchemaIdentityHeader, first);
+        }
     }
 
     /// <summary>
@@ -350,7 +394,9 @@ public sealed class Headers : IReadOnlyList<Header>
     internal void ResetSerializationWorkspace()
     {
         if (_serializationSource is null && _headers.Count == 0 && !_stagingRecordHeaders)
+        {
             return;
+        }
 
         _serializationSource = null;
         Clear();
@@ -365,7 +411,9 @@ public sealed class Headers : IReadOnlyList<Header>
     {
         _serializationSource = source;
         if (_stagingRecordHeaders)
+        {
             PushStagedRecordHeaders();
+        }
         EndRecordHeaderStaging();
         _stagingRecordHeaders = true;
     }
@@ -389,10 +437,14 @@ public sealed class Headers : IReadOnlyList<Header>
         }
 
         if ((uint)checkpoint.Count > (uint)_headers.Count)
+        {
             throw new ArgumentOutOfRangeException(nameof(checkpoint));
+        }
 
         if (checkpoint.Count != _headers.Count)
+        {
             _headers.RemoveRange(checkpoint.Count, _headers.Count - checkpoint.Count);
+        }
 
         _deferredTraceparentIndex = -1;
         _deferredTracestateIndex = -1;
@@ -406,10 +458,14 @@ public sealed class Headers : IReadOnlyList<Header>
         RemoveDeferredTraceContext(checkpoint.DeferredTraceContextVersion);
         var countWithoutTraceContext = CountWithoutDeferredTraceContext;
         if ((uint)checkpoint.Count > (uint)countWithoutTraceContext)
+        {
             throw new ArgumentOutOfRangeException(nameof(checkpoint));
+        }
 
         if (checkpoint.Count != countWithoutTraceContext)
+        {
             RemoveNonTraceHeaders(checkpoint.Count, countWithoutTraceContext - checkpoint.Count);
+        }
 
         _keySchemaIdentityIndex = checkpoint.KeySchemaIdentityIndex;
         _valueSchemaIdentityIndex = checkpoint.ValueSchemaIdentityIndex;
@@ -427,10 +483,14 @@ public sealed class Headers : IReadOnlyList<Header>
     internal void Truncate(int count)
     {
         if ((uint)count > (uint)_headers.Count)
+        {
             throw new ArgumentOutOfRangeException(nameof(count));
+        }
 
         if (count == _headers.Count)
+        {
             return;
+        }
 
         _headers.RemoveRange(count, _headers.Count - count);
         _deferredTraceparentIndex = _deferredTraceparentIndex < count ? _deferredTraceparentIndex : -1;
@@ -457,12 +517,16 @@ public sealed class Headers : IReadOnlyList<Header>
         _deferredTraceparentIndex = _headers.Count;
         var version = unchecked(_nextDeferredTraceContextVersion + 1);
         if (version == 0)
+        {
             version = 1;
+        }
         _nextDeferredTraceContextVersion = version;
         _deferredTraceContextVersion = version;
         _headers.Add(Header.CreateDeferredTraceparent("traceparent", activity));
         if (string.IsNullOrEmpty(traceState))
+        {
             return;
+        }
 
         _deferredTracestateIndex = _headers.Count;
         _headers.Add(Header.CreateDeferredTracestate("tracestate", traceState!));
@@ -500,7 +564,9 @@ public sealed class Headers : IReadOnlyList<Header>
     private void RemoveDeferredTraceContext(int expectedVersion)
     {
         if (expectedVersion == _deferredTraceContextVersion)
+        {
             RemoveDeferredTraceContext();
+        }
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -510,17 +576,23 @@ public sealed class Headers : IReadOnlyList<Header>
         var tracestateIndex = _deferredTracestateIndex;
         _deferredTraceContextVersion = 0;
         if (traceparentIndex < 0 && tracestateIndex < 0)
+        {
             return;
+        }
 
         _deferredTraceparentIndex = -1;
         _deferredTracestateIndex = -1;
 
         if ((uint)tracestateIndex < (uint)_headers.Count)
+        {
             RemoveAt(tracestateIndex);
+        }
 
         if ((uint)traceparentIndex < (uint)_headers.Count
             && _headers[traceparentIndex].HasDeferredTraceparent)
+        {
             RemoveAt(traceparentIndex);
+        }
     }
 
     private void PushDeferredTraceContext()
@@ -564,7 +636,9 @@ public sealed class Headers : IReadOnlyList<Header>
     {
         var depth = _deferredTraceContextDepth;
         if (depth == 0)
+        {
             return;
+        }
 
         depth--;
         DeferredTraceContextCheckpoint checkpoint;
@@ -585,12 +659,16 @@ public sealed class Headers : IReadOnlyList<Header>
         _deferredTracestateIndex = -1;
         _deferredTraceContextVersion = checkpoint.Version;
         if (!checkpoint.Traceparent.HasDeferredTraceparent)
+        {
             return;
+        }
 
         _deferredTraceparentIndex = _headers.Count;
         _headers.Add(checkpoint.Traceparent);
         if (checkpoint.Tracestate.Key is null)
+        {
             return;
+        }
 
         _deferredTracestateIndex = _headers.Count;
         _headers.Add(checkpoint.Tracestate);
@@ -600,7 +678,9 @@ public sealed class Headers : IReadOnlyList<Header>
     {
         _previousDeferredTraceContext = default;
         if (_deferredTraceContextStack is not null)
+        {
             Array.Clear(_deferredTraceContextStack, 0, _deferredTraceContextStack.Length);
+        }
         _deferredTraceContextDepth = 0;
     }
 
@@ -626,7 +706,9 @@ public sealed class Headers : IReadOnlyList<Header>
         for (var index = 0; index < count; index++)
         {
             if (matcher.IsMatch(GetSerializationHeader(index)))
+            {
                 return index;
+            }
         }
         return -1;
     }
@@ -639,7 +721,9 @@ public sealed class Headers : IReadOnlyList<Header>
         var source = _serializationSource!;
         _headers.Clear();
         if (_headers.Capacity < count)
+        {
             _headers.Capacity = count;
+        }
         var traceparentIndex = -1;
         var tracestateIndex = -1;
         _keySchemaIdentityIndex = -1;
@@ -648,14 +732,20 @@ public sealed class Headers : IReadOnlyList<Header>
         {
             var header = GetSerializationHeader(index);
             if (index == firstMatch || (index > firstMatch && matcher.IsMatch(header)))
+            {
                 continue;
+            }
 
             var materializedIndex = _headers.Count;
             _headers.Add(header);
             if (header.HasDeferredTraceparent)
+            {
                 traceparentIndex = materializedIndex;
+            }
             else if (header.DeferredValue is string)
+            {
                 tracestateIndex = materializedIndex;
+            }
             TrackSchemaIdentityCandidate(header.Key, materializedIndex);
         }
 
@@ -676,16 +766,24 @@ public sealed class Headers : IReadOnlyList<Header>
         {
             var header = GetStagedHeader(index);
             if (!matcher.IsMatch(header))
+            {
                 SetStagedHeader(retained++, header);
+            }
         }
         if (retained == count)
+        {
             return;
+        }
 
         for (var index = retained; index < count; index++)
+        {
             SetStagedHeader(index, default);
+        }
         _stagedHeaderCount = retained;
         if (retained <= 2)
+        {
             ReturnStagedHeaderOverflow();
+        }
         RebuildStagedSchemaIdentityIndexes();
     }
 
@@ -716,7 +814,9 @@ public sealed class Headers : IReadOnlyList<Header>
         public bool IsMatch(Header header)
         {
             if (_failure is not null)
+            {
                 return false;
+            }
 
             try
             {
@@ -736,11 +836,17 @@ public sealed class Headers : IReadOnlyList<Header>
     private void SetStagedHeader(int index, Header header)
     {
         if (index == 0)
+        {
             _stagedHeader0 = header;
+        }
         else if (index == 1)
+        {
             _stagedHeader1 = header;
+        }
         else
+        {
             _stagedHeaderOverflow![index - 2] = header;
+        }
     }
 
     private void RebuildStagedSchemaIdentityIndexes()
@@ -751,9 +857,13 @@ public sealed class Headers : IReadOnlyList<Header>
         {
             var key = GetStagedHeader(index).Key;
             if (string.Equals(key, KeySchemaIdentityHeader, StringComparison.Ordinal))
+            {
                 _stagedKeySchemaIdentityIndex = index;
+            }
             else if (string.Equals(key, ValueSchemaIdentityHeader, StringComparison.Ordinal))
+            {
                 _stagedValueSchemaIdentityIndex = index;
+            }
         }
     }
 
@@ -836,27 +946,39 @@ public sealed class Headers : IReadOnlyList<Header>
     {
         var stagedIndex = _stagedHeaderCount;
         if (stagedIndex == 0)
+        {
             _stagedHeader0 = header;
+        }
         else if (stagedIndex == 1)
+        {
             _stagedHeader1 = header;
+        }
         else
+        {
             AddStagedOverflowHeader(header, stagedIndex - 2);
+        }
 
         _stagedHeaderCount = stagedIndex + 1;
         var key = header.Key;
         if (key.Length == KeySchemaIdentityHeader.Length
             && string.Equals(key, KeySchemaIdentityHeader, StringComparison.Ordinal))
+        {
             _stagedKeySchemaIdentityIndex = stagedIndex;
+        }
         else if (key.Length == ValueSchemaIdentityHeader.Length
                  && string.Equals(key, ValueSchemaIdentityHeader, StringComparison.Ordinal))
+        {
             _stagedValueSchemaIdentityIndex = stagedIndex;
+        }
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private void EndRecordHeaderStaging()
     {
         if (!_stagingRecordHeaders)
+        {
             return;
+        }
 
         _stagingRecordHeaders = false;
         _stagedHeaderCount = 0;
@@ -901,7 +1023,9 @@ public sealed class Headers : IReadOnlyList<Header>
     {
         var overflow = _stagedHeaderOverflow;
         if (overflow is null)
+        {
             return;
+        }
 
         _stagedHeaderOverflow = null;
         ArrayPool<Header>.Shared.Return(overflow, clearArray: true);
@@ -949,7 +1073,9 @@ public sealed class Headers : IReadOnlyList<Header>
     {
         var depth = _stagedRecordHeadersDepth;
         if (depth == 0)
+        {
             return;
+        }
 
         depth--;
         StagedRecordHeadersCheckpoint checkpoint;
@@ -982,7 +1108,9 @@ public sealed class Headers : IReadOnlyList<Header>
         if (_stagedRecordHeadersStack is not null)
         {
             for (var index = 0; index < _stagedRecordHeadersDepth - 1; index++)
+            {
                 ReturnStagedHeaderOverflow(_stagedRecordHeadersStack[index].Overflow);
+            }
             Array.Clear(_stagedRecordHeadersStack, 0, _stagedRecordHeadersStack.Length);
         }
         _stagedRecordHeadersDepth = 0;
@@ -991,14 +1119,18 @@ public sealed class Headers : IReadOnlyList<Header>
     private static void ReturnStagedHeaderOverflow(Header[]? overflow)
     {
         if (overflow is not null)
+        {
             ArrayPool<Header>.Shared.Return(overflow, clearArray: true);
+        }
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private void TrackSchemaIdentityCandidate(string? key, int index)
     {
         if (key is null)
+        {
             return;
+        }
 
         if (key.Length == KeySchemaIdentityHeader.Length
             && string.Equals(key, KeySchemaIdentityHeader, StringComparison.Ordinal))
@@ -1029,14 +1161,18 @@ public sealed class Headers : IReadOnlyList<Header>
             }
 
             if (_keySchemaIdentityIndex >= 0 && _valueSchemaIdentityIndex >= 0)
+            {
                 return;
+            }
         }
     }
 
     private int AdjustSchemaIdentityIndex(int trackedIndex, int removedIndex, string key)
     {
         if (trackedIndex != removedIndex)
+        {
             return trackedIndex > removedIndex ? trackedIndex - 1 : trackedIndex;
+        }
 
         return FindLastSchemaIdentityIndex(key, _headers.Count);
     }
@@ -1049,7 +1185,9 @@ public sealed class Headers : IReadOnlyList<Header>
         for (var index = count - 1; index >= 0; index--)
         {
             if (string.Equals(_headers[index].Key, key, StringComparison.Ordinal))
+            {
                 return index;
+            }
         }
 
         return -1;
@@ -1155,7 +1293,9 @@ public sealed class Headers : IReadOnlyList<Header>
     {
         var count = Count;
         for (var index = 0; index < count; index++)
+        {
             yield return GetSerializationHeader(index);
+        }
     }
     IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
 }
@@ -1216,7 +1356,10 @@ public readonly record struct Header
     /// <summary>
     /// The header key.
     /// </summary>
-    public string Key { get; init; }
+    public string Key
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The header value as bytes. Check IsValueNull before accessing.
@@ -1245,7 +1388,10 @@ public readonly record struct Header
     /// <summary>
     /// Returns true if the header value is null.
     /// </summary>
-    public bool IsValueNull { get; init; }
+    public bool IsValueNull
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Gets the value as a byte array. Prefer using Value property to avoid allocation.
@@ -1253,7 +1399,9 @@ public readonly record struct Header
     public byte[]? GetValueAsArray()
     {
         if (IsValueNull)
+        {
             return null;
+        }
 
         return _deferredValue switch
         {
@@ -1269,10 +1417,14 @@ public readonly record struct Header
     public string? GetValueAsString()
     {
         if (IsValueNull)
+        {
             return null;
+        }
 
         if (_deferredValue is string traceState)
+        {
             return traceState;
+        }
         if (_deferredValue is null)
         {
 #if NETSTANDARD2_0
@@ -1313,7 +1465,9 @@ public readonly record struct Header
     private static unsafe string GetUtf8String(ReadOnlySpan<byte> value)
     {
         if (value.IsEmpty)
+        {
             return string.Empty;
+        }
 
         fixed (byte* valuePointer = value)
         {

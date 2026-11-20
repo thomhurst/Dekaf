@@ -157,7 +157,9 @@ public class KafkaFaultPlanBenchmarks
     public void ConsumeShareOneShotPlan()
     {
         for (var index = 0; index < ShareFaultCount; index++)
+        {
             _shareOneShotPlan.ApplyAsync(_shareScope).GetAwaiter().GetResult();
+        }
     }
 
     private static KafkaFaultPlan CreateSharePlan(string topic)

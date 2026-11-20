@@ -60,7 +60,9 @@ public sealed class ConsumerNetworkFaultTests(TransactionFaultKafkaContainer kaf
             await Assert.That(stopwatch.Elapsed).IsLessThan(rebalanceTimeout + TimeSpan.FromSeconds(10));
             await Assert.That(duringFault).IsNull();
             if (failure is not null)
+            {
                 await Assert.That(failure).IsAssignableTo<KafkaException>();
+            }
         }
         finally
         {
@@ -88,11 +90,17 @@ public sealed class ConsumerNetworkFaultTests(TransactionFaultKafkaContainer kaf
         using var logs = new CapturingLoggerProvider(entry =>
         {
             if (Volatile.Read(ref subscriptionChanged) == 0)
+            {
                 return;
+            }
             if (entry.Message.StartsWith("Sending ConsumerGroupHeartbeat request", StringComparison.Ordinal))
+            {
                 Volatile.Write(ref heartbeatSentAfterChange, 1);
+            }
             else if (entry.Message == "Heartbeat failed")
+            {
                 heartbeatFailed.TrySetResult();
+            }
         });
         using var loggerFactory = LoggerFactory.Create(builder =>
         {
@@ -145,7 +153,9 @@ public sealed class ConsumerNetworkFaultTests(TransactionFaultKafkaContainer kaf
         {
             var remaining = TimeSpan.FromSeconds(60) - deadline.Elapsed;
             if (remaining <= TimeSpan.Zero)
+            {
                 throw new TimeoutException($"No record from {addedTopic} was consumed within 60 s.");
+            }
             added = await ConsumeNextAsync(consumer, remaining, cancellationToken);
         }
         while (added.Topic == firstTopic);
@@ -271,7 +281,9 @@ public sealed class ConsumerNetworkFaultTests(TransactionFaultKafkaContainer kaf
             {
                 var result = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(1), cancellationToken);
                 if (result is not null)
+                {
                     offsets.Add(result.Value.Offset);
+                }
             }
 
             await reconnected;
@@ -400,9 +412,13 @@ public sealed class ConsumerNetworkFaultTests(TransactionFaultKafkaContainer kaf
             async (_, message, handlerCancellation) =>
             {
                 if (message.Value == "first" && firstStarted.TrySetResult())
+                {
                     await releaseFirst.Task.WaitAsync(handlerCancellation);
+                }
                 if (message.Value == "second")
+                {
                     secondProcessed.TrySetResult();
+                }
             },
             new PartitionedProcessingOptions
             {
@@ -469,9 +485,13 @@ public sealed class ConsumerNetworkFaultTests(TransactionFaultKafkaContainer kaf
             await foreach (var record in consumer.ConsumeAsync(stopConsuming.Token))
             {
                 if (record.Value == "first")
+                {
                     firstReceived.TrySetResult();
+                }
                 else if (record.Value == "second")
+                {
                     secondReceived.TrySetResult();
+                }
             }
         }, CancellationToken.None);
 
@@ -590,9 +610,13 @@ public sealed class ConsumerNetworkFaultTests(TransactionFaultKafkaContainer kaf
             (_, message, _) =>
             {
                 if (message.Value == "first")
+                {
                     firstProcessed.TrySetResult();
+                }
                 else if (message.Value == "second")
+                {
                     secondProcessed.TrySetResult();
+                }
                 return ValueTask.CompletedTask;
             },
             new PartitionedProcessingOptions { CommitPolicy = commitPolicy },
@@ -626,7 +650,10 @@ public sealed class ConsumerNetworkFaultTests(TransactionFaultKafkaContainer kaf
 
     private sealed class LossRecordingListener : IRebalanceListener
     {
-        public TaskCompletionSource Lost { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource Lost
+        {
+            get;
+        } = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         public ValueTask OnPartitionsAssignedAsync(
             IEnumerable<TopicPartition> partitions,
@@ -652,7 +679,9 @@ public sealed class ConsumerNetworkFaultTests(TransactionFaultKafkaContainer kaf
     {
         var result = await consumer.ConsumeOneAsync(timeout, cancellationToken);
         if (result is null)
+        {
             throw new TimeoutException($"No record was consumed within {timeout}.");
+        }
 
         return result.Value;
     }
@@ -666,6 +695,8 @@ public sealed class ConsumerNetworkFaultTests(TransactionFaultKafkaContainer kaf
             .BuildAsync(cancellationToken);
 
         foreach (var value in values)
+        {
             _ = await producer.ProduceAsync(topic, "key", value, cancellationToken);
+        }
     }
 }

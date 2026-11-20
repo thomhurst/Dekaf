@@ -70,7 +70,9 @@ public sealed class TopologyResponseArrayBoundsTests
             case ArrayTarget.AlterReassignmentTopicsV1:
                 writer.WriteInt32(0);
                 if (target is ArrayTarget.AlterReassignmentTopicsV1)
+                {
                     writer.WriteBoolean(false);
+                }
                 writer.WriteInt16((short)ErrorCode.None);
                 writer.WriteCompactNullableString(null);
                 break;
@@ -100,7 +102,9 @@ public sealed class TopologyResponseArrayBoundsTests
             case ArrayTarget.DescribeLogDirsFlexibleV5:
                 writer.WriteInt32(0);
                 if (target is ArrayTarget.DescribeLogDirsFlexibleV4 or ArrayTarget.DescribeLogDirsFlexibleV5)
+                {
                     writer.WriteInt16((short)ErrorCode.None);
+                }
                 break;
             case ArrayTarget.AlterLogDirPartitionsLegacy:
             case ArrayTarget.DescribeLogDirPartitionsLegacy:
@@ -144,7 +148,9 @@ public sealed class TopologyResponseArrayBoundsTests
             case ArrayTarget.QuorumObserversV2:
                 WriteQuorumPartitionPreamble(ref writer, version: 2);
                 if (target is ArrayTarget.QuorumObserversV2)
+                {
                     writer.WriteUnsignedVarInt(1);
+                }
                 break;
             case ArrayTarget.QuorumListeners:
                 writer.WriteInt32(0);
@@ -185,7 +191,9 @@ public sealed class TopologyResponseArrayBoundsTests
         writer.WriteInt32(0);
         writer.WriteInt16((short)ErrorCode.None);
         if (version >= 2)
+        {
             writer.WriteCompactNullableString(null);
+        }
         writer.WriteInt32(0);
         writer.WriteInt32(0);
         writer.WriteInt64(0);
@@ -202,15 +210,21 @@ public sealed class TopologyResponseArrayBoundsTests
     private static void WriteEmptyCompactArrays(ref KafkaProtocolWriter writer, int count)
     {
         for (var index = 0; index < count; index++)
+        {
             writer.WriteUnsignedVarInt(1);
+        }
     }
 
     private static void WriteHostileArray(ref KafkaProtocolWriter writer, bool legacy)
     {
         if (legacy)
+        {
             writer.WriteInt32(HostileElementCount);
+        }
         else
+        {
             writer.WriteUnsignedVarInt(HostileElementCount + 1);
+        }
         writer.WriteRawBytes(new byte[HostilePayloadLength]);
     }
 

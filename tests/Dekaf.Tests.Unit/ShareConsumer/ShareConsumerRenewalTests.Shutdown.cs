@@ -45,7 +45,9 @@ public sealed partial class ShareConsumerRenewalTests
         ((IHostedShareConsumer)fixture.Consumer).ObserveAcknowledgements(results =>
         {
             foreach (ref readonly var result in results)
+            {
                 callbacks.Add((result.TopicPartition.Partition, CopyOffsets(result.Offsets), result.Exception));
+            }
         }, shutdown.Token);
         PrepareForPoll(fixture.Consumer, new TopicPartition("topic", 0), new TopicPartition("topic", 1));
         fixture.Consumer.Subscribe("topic");
@@ -65,10 +67,14 @@ public sealed partial class ShareConsumerRenewalTests
             release.TrySetResult();
         }
         if (commit)
+        {
             await Assert.That(async () => await request.WaitAsync(TimeSpan.FromSeconds(10)))
                 .Throws<OperationCanceledException>();
+        }
         else
+        {
             await Assert.That(await pendingPoll!.WaitAsync(TimeSpan.FromSeconds(10))).IsFalse();
+        }
         await Assert.That(callbacks.Count).IsEqualTo(1);
         await Assert.That(callbacks[0].Partition).IsEqualTo(1);
         await Assert.That(callbacks[0].Offsets).IsEquivalentTo(new long[] { 43 });
@@ -108,23 +114,31 @@ public sealed partial class ShareConsumerRenewalTests
         var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var callbacks = new List<Exception?>();
+
         async ValueTask WaitBeforeWrite(CancellationToken token)
         {
             entered.TrySetResult();
             await release.Task.WaitAsync(token);
         }
+
         var connection = new CapturingConnection(ApiKey.ShareAcknowledge, 2, supportShareFetch: true)
         {
             BeforeWrite = waitForLease ? null : WaitBeforeWrite
         };
         await using var fixture = CreateFixture(connection, leaseHandler: waitForLease
-            ? async token => { await WaitBeforeWrite(token); return connection; }
-            : null);
+            ? async token =>
+            {
+                await WaitBeforeWrite(token);
+                return connection;
+            }
+        : null);
         var metrics = EnableShareTelemetry(fixture.Consumer);
         ((IHostedShareConsumer)fixture.Consumer).ObserveAcknowledgements(results =>
         {
             foreach (ref readonly var result in results)
+            {
                 callbacks.Add(result.Exception);
+            }
         }, shutdownCancellation.Token);
         PrepareForPoll(fixture.Consumer);
         fixture.Consumer.Subscribe("topic");
@@ -137,10 +151,14 @@ public sealed partial class ShareConsumerRenewalTests
             await entered.Task.WaitAsync(TimeSpan.FromSeconds(10));
             await pollCancellation.CancelAsync();
             if (commit)
+            {
                 await Assert.That(async () => await request.WaitAsync(TimeSpan.FromSeconds(10)))
                     .Throws<OperationCanceledException>();
+            }
             else
+            {
                 await Assert.That(await pendingPoll!.WaitAsync(TimeSpan.FromSeconds(10))).IsFalse();
+            }
             await Assert.That(callbacks).IsEmpty();
             await Assert.That(connection.SendCount).IsEqualTo(0);
             await Assert.That(ShareMetricValue(metrics, "fetch.total")).IsEqualTo(0d);
@@ -185,7 +203,9 @@ public sealed partial class ShareConsumerRenewalTests
             }
         };
         await using var fixture = CreateFixture(connection);
-        ((IHostedShareConsumer)fixture.Consumer).ObserveAcknowledgements(static _ => { });
+        ((IHostedShareConsumer)fixture.Consumer).ObserveAcknowledgements(static _ =>
+        {
+        });
         PrepareForPoll(fixture.Consumer);
         fixture.Consumer.Subscribe("topic");
         fixture.Consumer.Acknowledge(CreateRecord(), AcknowledgeType.Accept);
@@ -201,7 +221,11 @@ public sealed partial class ShareConsumerRenewalTests
         finally
         {
             release.TrySetResult();
-            try { await request; } catch (OperationCanceledException) { }
+            try
+            {
+                await request;
+            }
+            catch (OperationCanceledException) { }
             FlushPendingAcknowledgements(fixture.Consumer);
         }
     }
@@ -233,7 +257,9 @@ public sealed partial class ShareConsumerRenewalTests
         ((IHostedShareConsumer)fixture.Consumer).ObserveAcknowledgements(results =>
         {
             foreach (ref readonly var result in results)
+            {
                 callbacks.Add(result.Exception);
+            }
         }, shutdownCancellation.Token);
         PrepareForPoll(fixture.Consumer);
         fixture.Consumer.Acknowledge(CreateRecord(), disposition);
@@ -244,7 +270,9 @@ public sealed partial class ShareConsumerRenewalTests
             await processingCancellation.CancelAsync();
             await Assert.That(commit.IsCompleted).IsFalse();
             if (shutdownDeadlineExpires)
+            {
                 await shutdownCancellation.CancelAsync();
+            }
         }
         finally
         {
@@ -252,10 +280,14 @@ public sealed partial class ShareConsumerRenewalTests
         }
 
         if (shutdownDeadlineExpires)
+        {
             await Assert.That(async () => await commit.WaitAsync(TimeSpan.FromSeconds(10)))
                 .Throws<OperationCanceledException>();
+        }
         else
+        {
             await commit.WaitAsync(TimeSpan.FromSeconds(10));
+        }
         await Assert.That(callbacks.Count).IsEqualTo(1);
         await Assert.That(callbacks[0] is OperationCanceledException).IsEqualTo(shutdownDeadlineExpires);
         await Assert.That(HasPendingAcknowledgements(fixture.Consumer)).IsEqualTo(shutdownDeadlineExpires);
@@ -276,7 +308,9 @@ public sealed partial class ShareConsumerRenewalTests
             ShareFetchHandler = async (request, token) =>
             {
                 if (request.ShareSessionEpoch == ShareSessionManager.CloseEpoch)
+                {
                     return new ShareFetchResponse { ErrorCode = ErrorCode.None, Responses = [], NodeEndpoints = [] };
+                }
                 sent.TrySetResult();
                 await Task.Delay(Timeout.InfiniteTimeSpan, token);
                 throw new InvalidOperationException("The request must end at the shutdown deadline.");
@@ -286,7 +320,9 @@ public sealed partial class ShareConsumerRenewalTests
         ((IHostedShareConsumer)fixture.Consumer).ObserveAcknowledgements(results =>
         {
             foreach (ref readonly var result in results)
+            {
                 callbacks.Add(result.Exception);
+            }
         }, shutdownCancellation.Token);
         PrepareForPoll(fixture.Consumer);
         fixture.Consumer.Subscribe("topic");
@@ -341,13 +377,19 @@ public sealed partial class ShareConsumerRenewalTests
             ShareFetchHandler = async (request, token) =>
             {
                 if (request.ShareSessionEpoch != brokerEpoch)
+                {
                     throw new InvalidOperationException("Unexpected broker session epoch.");
+                }
                 if (appliedBeforeStop)
+                {
                     brokerEpoch++;
+                }
                 sent.TrySetResult();
                 await completeResponse.Task.WaitAsync(token);
                 if (!appliedBeforeStop)
+                {
                     brokerEpoch++;
+                }
                 return CreateFetchResponse(partition: 0, offset: 100);
             }
         };
@@ -355,7 +397,9 @@ public sealed partial class ShareConsumerRenewalTests
         ((IHostedShareConsumer)fixture.Consumer).ObserveAcknowledgements(results =>
         {
             foreach (ref readonly var result in results)
+            {
                 callbacks.Add((CopyOffsets(result.Offsets), result.Exception));
+            }
         }, shutdownCancellation.Token);
         PrepareForPoll(fixture.Consumer);
         fixture.Consumer.Subscribe("topic");

@@ -43,7 +43,9 @@ public sealed partial class InMemoryAdminClient
             ValidateTopicPartition(partition);
             ArgumentOutOfRangeException.ThrowIfNegative(offset.Offset, nameof(offsets));
             if (!results.TryAdd(partition, Success(partition)))
+            {
                 throw new ArgumentException($"Partition '{partition.Topic}-{partition.Partition}' is duplicated.", nameof(offsets));
+            }
         }
 
         return await ExecuteWithTimeoutAsync(async operationToken =>
@@ -101,13 +103,17 @@ public sealed partial class InMemoryAdminClient
         {
             ValidateTopicPartition(partition);
             if (!results.TryAdd(partition, Success(partition)))
+            {
                 throw new ArgumentException($"Partition '{partition.Topic}-{partition.Partition}' is duplicated.", nameof(partitions));
+            }
         }
 
         return await ExecuteWithTimeoutAsync(async operationToken =>
         {
             if (partitionList.Length == 0)
+            {
                 await ApplyAdminFaultAsync(operationToken, groupId: groupId).ConfigureAwait(false);
+            }
             foreach (var partition in partitionList)
             {
                 await ApplyAdminFaultAsync(
@@ -152,10 +158,10 @@ public sealed partial class InMemoryAdminClient
         {
             ArgumentException.ThrowIfNullOrWhiteSpace(groupId);
             if (!results.TryAdd(groupId, new DeleteStreamsGroupResult
-                {
-                    GroupId = groupId,
-                    ErrorCode = ErrorCode.None
-                }))
+            {
+                GroupId = groupId,
+                ErrorCode = ErrorCode.None
+            }))
             {
                 throw new ArgumentException($"Streams group ID '{groupId}' is duplicated.", nameof(groupIds));
             }
@@ -164,7 +170,9 @@ public sealed partial class InMemoryAdminClient
         return await ExecuteWithTimeoutAsync(async operationToken =>
         {
             if (groupIdList.Length == 0)
+            {
                 await ApplyAdminFaultAsync(operationToken).ConfigureAwait(false);
+            }
             foreach (var groupId in groupIdList)
             {
                 await ApplyAdminFaultAsync(operationToken, groupId: groupId).ConfigureAwait(false);
@@ -209,8 +217,7 @@ public sealed partial class InMemoryAdminClient
         {
             return await operation(timeoutSource.Token).ConfigureAwait(false);
         }
-        catch (OperationCanceledException exception) when (
-            !cancellationToken.IsCancellationRequested &&
+        catch (OperationCanceledException exception) when (!cancellationToken.IsCancellationRequested &&
             timeoutSource.IsCancellationRequested)
         {
             var configuredTimeout = TimeSpan.FromMilliseconds(timeoutMs);

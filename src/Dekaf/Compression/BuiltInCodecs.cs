@@ -146,7 +146,9 @@ internal static class CompressionStreamCopy
             {
                 var bytesRead = Read(source, buffer, invalidDataMessage);
                 if (bytesRead == 0)
+                {
                     break;
+                }
 
                 buffer.AsSpan(0, bytesRead).CopyTo(destination.GetSpan(bytesRead));
                 destination.Advance(bytesRead);
@@ -162,7 +164,9 @@ internal static class CompressionStreamCopy
             var span = destination.GetSpan(BufferSize);
             var bytesRead = Read(source, span, invalidDataMessage);
             if (bytesRead == 0)
+            {
                 break;
+            }
 
             destination.Advance(bytesRead);
         }
@@ -218,7 +222,9 @@ internal sealed class BufferWriterStream : Stream
         set => throw new NotSupportedException();
     }
 
-    public override void Flush() { }
+    public override void Flush()
+    {
+    }
 
     public override int Read(byte[] buffer, int offset, int count)
         => throw new NotSupportedException();
@@ -270,13 +276,17 @@ internal sealed class ReadOnlySequenceStream : Stream
         set => throw new NotSupportedException();
     }
 
-    public override void Flush() { }
+    public override void Flush()
+    {
+    }
 
     public override int Read(byte[] buffer, int offset, int count)
     {
         var remaining = _sequence.Slice(_position);
         if (remaining.IsEmpty)
+        {
             return 0;
+        }
 
         var toRead = (int)Math.Min(count, remaining.Length);
         remaining.Slice(0, toRead).CopyTo(buffer.AsSpan(offset));

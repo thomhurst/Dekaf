@@ -32,14 +32,21 @@ public sealed partial class ShareConsumerRenewalTests
             PublishAssignment(coordinator, assigned: true);
             await Assert.That(await pending.WaitAsync(TimeSpan.FromSeconds(3))).IsTrue();
             if (batch)
+            {
                 await Assert.That(batches.Current.Count).IsEqualTo(1);
+            }
             else
+            {
                 await Assert.That(records.Current.Offset).IsEqualTo(42L);
+            }
         }
         finally
         {
             await cancellation.CancelAsync();
-            try { await pending; }
+            try
+            {
+                await pending;
+            }
             catch (OperationCanceledException) { }
         }
     }
@@ -68,7 +75,10 @@ public sealed partial class ShareConsumerRenewalTests
         finally
         {
             await cancellation.CancelAsync();
-            try { await pending; }
+            try
+            {
+                await pending;
+            }
             catch (OperationCanceledException) { }
         }
     }
@@ -110,7 +120,10 @@ public sealed partial class ShareConsumerRenewalTests
         finally
         {
             await cancellation.CancelAsync();
-            try { await next; }
+            try
+            {
+                await next;
+            }
             catch (OperationCanceledException) { }
         }
     }
@@ -135,16 +148,23 @@ public sealed partial class ShareConsumerRenewalTests
         {
             await Assert.That(pending.IsCompleted).IsFalse();
             if (dispose)
+            {
                 await fixture.Consumer.DisposeAsync();
+            }
             else
+            {
                 await fixture.Consumer.CloseAsync();
+            }
             await Assert.That(await pending.WaitAsync(TimeSpan.FromSeconds(3))).IsFalse();
             await Assert.That(connection.SendCount).IsEqualTo(0);
         }
         finally
         {
             await cancellation.CancelAsync();
-            try { await pending; }
+            try
+            {
+                await pending;
+            }
             catch (OperationCanceledException) { }
         }
     }
@@ -197,10 +217,16 @@ public sealed partial class ShareConsumerRenewalTests
             Brokers = [new BrokerMetadata { NodeId = 1, Host = "localhost", Port = 9092 }],
             Topics = [new TopicMetadata
             {
-                ErrorCode = ErrorCode.None, Name = "topic", TopicId = TopicId,
+                ErrorCode = ErrorCode.None,
+                Name = "topic",
+                TopicId = TopicId,
                 Partitions = [new PartitionMetadata
                 {
-                    ErrorCode = ErrorCode.None, PartitionIndex = 0, LeaderId = -1, ReplicaNodes = [1], IsrNodes = [1]
+                    ErrorCode = ErrorCode.None,
+                    PartitionIndex = 0,
+                    LeaderId = -1,
+                    ReplicaNodes = [1],
+                    IsrNodes = [1]
                 }]
             }]
         });
@@ -222,7 +248,10 @@ public sealed partial class ShareConsumerRenewalTests
         finally
         {
             await cancellation.CancelAsync();
-            try { await pending; }
+            try
+            {
+                await pending;
+            }
             catch (OperationCanceledException) { }
         }
     }
@@ -236,11 +265,16 @@ public sealed partial class ShareConsumerRenewalTests
             Brokers = [new BrokerMetadata { NodeId = 1, Host = "localhost", Port = 9092 }],
             Topics = [new TopicMetadata
             {
-                ErrorCode = ErrorCode.None, Name = "topic", TopicId = TopicId,
+                ErrorCode = ErrorCode.None,
+                Name = "topic",
+                TopicId = TopicId,
                 Partitions = [new PartitionMetadata
                 {
-                    ErrorCode = ErrorCode.None, PartitionIndex = 0, LeaderId = -1,
-                    ReplicaNodes = [1], IsrNodes = [1]
+                    ErrorCode = ErrorCode.None,
+                    PartitionIndex = 0,
+                    LeaderId = -1,
+                    ReplicaNodes = [1],
+                    IsrNodes = [1]
                 }]
             }]
         };
@@ -272,7 +306,10 @@ public sealed partial class ShareConsumerRenewalTests
         finally
         {
             await cancellation.CancelAsync();
-            try { await pending; }
+            try
+            {
+                await pending;
+            }
             catch (OperationCanceledException) { }
         }
     }

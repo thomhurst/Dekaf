@@ -49,7 +49,10 @@ public sealed class AutoCommitBehaviorTests(KafkaTestContainer kafka) : KafkaInt
             await foreach (var msg in consumer1.ConsumeAsync(cts.Token))
             {
                 count++;
-                if (count >= 5) break;
+                if (count >= 5)
+                {
+                    break;
+                }
             }
 
             // Wait for auto-commit to fire
@@ -117,7 +120,10 @@ public sealed class AutoCommitBehaviorTests(KafkaTestContainer kafka) : KafkaInt
             await foreach (var msg in consumer1.ConsumeAsync(cts.Token))
             {
                 count++;
-                if (count >= 10) break;
+                if (count >= 10)
+                {
+                    break;
+                }
             }
 
             // CloseAsync should trigger final commit even though interval hasn't elapsed
@@ -184,7 +190,10 @@ public sealed class AutoCommitBehaviorTests(KafkaTestContainer kafka) : KafkaInt
             await foreach (var msg in consumer1.ConsumeAsync(cts.Token))
             {
                 count++;
-                if (count >= 5) break;
+                if (count >= 5)
+                {
+                    break;
+                }
             }
 
             // Don't commit - just close
@@ -208,7 +217,10 @@ public sealed class AutoCommitBehaviorTests(KafkaTestContainer kafka) : KafkaInt
         await foreach (var msg in consumer2.ConsumeAsync(cts2.Token))
         {
             messages.Add(msg);
-            if (messages.Count >= 5) break;
+            if (messages.Count >= 5)
+            {
+                break;
+            }
         }
 
         await Assert.That(messages).Count().IsEqualTo(5);
@@ -253,7 +265,10 @@ public sealed class AutoCommitBehaviorTests(KafkaTestContainer kafka) : KafkaInt
             await foreach (var msg in consumer1.ConsumeAsync(cts.Token))
             {
                 count++;
-                if (count >= 8) break;
+                if (count >= 8)
+                {
+                    break;
+                }
             }
 
             await consumer1.CloseAsync();
@@ -276,7 +291,10 @@ public sealed class AutoCommitBehaviorTests(KafkaTestContainer kafka) : KafkaInt
         await foreach (var msg in consumer2.ConsumeAsync(cts2.Token))
         {
             messages.Add(msg);
-            if (messages.Count >= 12) break;
+            if (messages.Count >= 12)
+            {
+                break;
+            }
         }
 
         // Should get the remaining messages. At-least-once: the 8th record (offset 7)
@@ -329,7 +347,10 @@ public sealed class AutoCommitBehaviorTests(KafkaTestContainer kafka) : KafkaInt
             await foreach (var msg in consumer1.ConsumeAsync(cts.Token))
             {
                 count++;
-                if (count >= 15) break;
+                if (count >= 15)
+                {
+                    break;
+                }
             }
 
             await consumer1.CloseAsync();
@@ -397,7 +418,9 @@ public sealed class AutoCommitBehaviorTests(KafkaTestContainer kafka) : KafkaInt
                 await foreach (var msg in consumer1.ConsumeAsync(cts.Token))
                 {
                     if (msg.Offset == 2)
+                    {
                         throw new InvalidOperationException("processing failed");
+                    }
                 }
             }
             catch (InvalidOperationException)

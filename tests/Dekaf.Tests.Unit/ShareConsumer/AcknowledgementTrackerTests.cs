@@ -31,25 +31,42 @@ public class AcknowledgementTrackerTests
         var tracker = new AcknowledgementTracker();
         var partition = new TopicPartition("topic", 0);
         if (releaseFirst)
+        {
             tracker.ReleaseUndeliveredRecords(partition, 10, 19);
+        }
         tracker.TrackGapRecords(partition, 12, 13);
         tracker.TrackGapRecords(partition, 16, 16);
         tracker.TrackDeliveredRecords(partition, 20, 20);
         if (!releaseFirst)
+        {
             tracker.ReleaseUndeliveredRecords(partition, 10, 19);
+        }
 
         var batches = tracker.Flush(releaseImplicit: true)[partition];
 
         var types = new Dictionary<long, byte>();
         foreach (var batch in batches)
+        {
             for (var offset = batch.FirstOffset; offset <= batch.LastOffset; offset++)
+            {
                 types.Add(offset, batch.GetAcknowledgeType(checked((int)(offset - batch.FirstOffset))));
+            }
+        }
         var gap = (byte)AcknowledgeType.Gap;
         var release = (byte)AcknowledgeType.Release;
         await Assert.That(types).IsEquivalentTo(new Dictionary<long, byte>
         {
-            [10] = release, [11] = release, [12] = gap, [13] = gap, [14] = release, [15] = release,
-            [16] = gap, [17] = release, [18] = release, [19] = release, [20] = release
+            [10] = release,
+            [11] = release,
+            [12] = gap,
+            [13] = gap,
+            [14] = release,
+            [15] = release,
+            [16] = gap,
+            [17] = release,
+            [18] = release,
+            [19] = release,
+            [20] = release
         });
     }
 
@@ -119,10 +136,16 @@ public class AcknowledgementTrackerTests
         // markers are queued while parsing, before any record is delivered.
         const int Batches = 64;
         for (var batch = 0; batch < Batches; batch++)
+        {
             tracker.TrackGapRecords(partition, batch * 5 + 4, batch * 5 + 4);
+        }
         for (var batch = 0; batch < Batches; batch++)
+        {
             for (var record = 0; record < 4; record++)
+            {
                 tracker.TrackDeliveredRecords(partition, batch * 5 + record, batch * 5 + record);
+            }
+        }
 
         var batches = tracker.Flush()[partition];
 
@@ -150,15 +173,23 @@ public class AcknowledgementTrackerTests
         // outcomes land inside those ranges, inside a gap, and outside every range.
         const int Batches = 64;
         for (var batch = 0; batch < Batches; batch++)
+        {
             tracker.TrackGapRecords(partition, batch * 5 + 4, batch * 5 + 4);
+        }
         tracker.TrackGapRecords(partition, 1_000, 1_000_000);
         for (var batch = 0; batch < Batches; batch++)
+        {
             for (var record = 0; record < 4; record++)
+            {
                 tracker.TrackDeliveredRecords(partition, batch * 5 + record, batch * 5 + record);
+            }
+        }
         for (var offset = 0L; offset < Batches * 5; offset++)
         {
             if (offset % 5 != 4)
+            {
                 tracker.Acknowledge(partition, offset, offset % 3 == 0 ? AcknowledgeType.Reject : AcknowledgeType.Accept);
+            }
         }
         tracker.Acknowledge(partition, 500_000, AcknowledgeType.Release, requireTracked: false);
         tracker.Acknowledge(partition, 2_000_000, AcknowledgeType.Release, requireTracked: false);
@@ -173,9 +204,13 @@ public class AcknowledgementTrackerTests
             await Assert.That(batch.FirstOffset).IsGreaterThan(previousLast);
             previousLast = batch.LastOffset;
             if (batch.FirstOffset >= 1_000 && batch.LastOffset < 2_000_000)
+            {
                 continue;
+            }
             for (var offset = batch.FirstOffset; offset <= batch.LastOffset; offset++)
+            {
                 types.Add(offset, batch.GetAcknowledgeType(checked((int)(offset - batch.FirstOffset))));
+            }
         }
         for (var offset = 0L; offset < Batches * 5; offset++)
         {
@@ -244,9 +279,13 @@ public class AcknowledgementTrackerTests
         var offsets = new ShareAcknowledgedOffsets(retried);
         await Assert.That(offsets.Length).IsEqualTo(128);
         foreach (var batch in retried)
+        {
             for (var index = 0; index < batch.OffsetCount; index++)
+            {
                 await Assert.That(batch.GetAcknowledgeType(index)).IsEqualTo(
                     (byte)(batch.FirstOffset + index == 150 ? outcome : AcknowledgeType.Release));
+            }
+        }
         await Assert.That(release.AcknowledgeTypes).IsEquivalentTo(new byte[] { 2 });
     }
 
@@ -261,7 +300,9 @@ public class AcknowledgementTrackerTests
         tracker.TrackDeliveredRecords(first, 10, 12);
         tracker.Acknowledge(first, 11, AcknowledgeType.Reject);
         for (var index = 1; index < partitionCount; index++)
+        {
             tracker.TrackDeliveredRecords(new TopicPartition("first", index), 10, 12);
+        }
         var original = tracker.Flush();
 
         tracker.TrackDeliveredRecords(second, 40, 42);
@@ -292,7 +333,9 @@ public class AcknowledgementTrackerTests
         if (shrinkBeforeFailure)
         {
             for (var index = 0; index < 64; index++)
+            {
                 tracker.TrackDeliveredRecords(new TopicPartition("previous", index), 0, 0);
+            }
             tracker.Flush();
         }
         var valid = new TopicPartition("valid", 0);

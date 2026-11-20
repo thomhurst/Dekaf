@@ -13,12 +13,18 @@ public sealed class ListPartitionReassignmentsRequest : IKafkaRequest<ListPartit
     /// <summary>
     /// Timeout in milliseconds.
     /// </summary>
-    public int TimeoutMs { get; init; } = 60000;
+    public int TimeoutMs
+    {
+        get; init;
+    } = 60000;
 
     /// <summary>
     /// Topics and partitions to list, or null to list all reassignments.
     /// </summary>
-    public IReadOnlyList<ListPartitionReassignmentsRequestTopic>? Topics { get; init; }
+    public IReadOnlyList<ListPartitionReassignmentsRequestTopic>? Topics
+    {
+        get; init;
+    }
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {
@@ -39,12 +45,18 @@ public sealed class ListPartitionReassignmentsRequestTopic
     /// <summary>
     /// Topic name.
     /// </summary>
-    public required string Name { get; init; }
+    public required string Name
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Partition indexes to list.
     /// </summary>
-    public required IReadOnlyList<int> PartitionIndexes { get; init; }
+    public required IReadOnlyList<int> PartitionIndexes
+    {
+        get; init;
+    }
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {

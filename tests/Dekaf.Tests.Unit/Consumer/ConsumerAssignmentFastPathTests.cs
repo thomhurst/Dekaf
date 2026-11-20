@@ -75,7 +75,9 @@ public sealed partial class ConsumerAssignmentFastPathTests
         await foreach (var _ in consumer.ConsumeAsync())
         {
             if (++consumed == 33)
+            {
                 break;
+            }
         }
 
         await Assert.That(GetPollVersion(consumer)).IsGreaterThanOrEqualTo(initialPollVersion + 2);
@@ -383,7 +385,9 @@ public sealed partial class ConsumerAssignmentFastPathTests
         try
         {
             for (var i = 0; i < 1000; i++)
+            {
                 capture.Invoke(consumer, [held, 0]);
+            }
         }
         finally
         {
@@ -896,9 +900,13 @@ public sealed partial class ConsumerAssignmentFastPathTests
             try
             {
                 if (explicitOffsets)
+                {
                     await consumer!.CommitAsync([new TopicPartitionOffset("test-topic", 0, 5)], CancellationToken.None);
+                }
                 else
+                {
                     await consumer!.CommitAsync(CancellationToken.None);
+                }
                 callbackCommitted.TrySetResult();
             }
             catch (Exception ex)
@@ -938,7 +946,9 @@ public sealed partial class ConsumerAssignmentFastPathTests
             .Returns(call =>
             {
                 lock (commits)
+                {
                     commits.Add(call.ArgAt<OffsetCommitRequest>(0));
+                }
                 return ValueTask.FromResult(new OffsetCommitResponse { Topics = [] });
             });
         return (connectionPool, connection, commits);
@@ -1549,9 +1559,13 @@ public sealed partial class ConsumerAssignmentFastPathTests
         var fetched = await fetch;
 
         if (fetchedOffset < 0)
+        {
             await Assert.That(fetched).IsEmpty();
+        }
         else
+        {
             await Assert.That(fetched[partition].Offset).IsEqualTo(fetchedOffset);
+        }
         await Assert.That(await consumer.GetCommittedOffsetAsync(partition)).IsEqualTo(20);
 
         async ValueTask<OffsetFetchResponse> CaptureOffsetFetchAsync(CancellationToken cancellationToken)
@@ -1911,10 +1925,14 @@ public sealed partial class ConsumerAssignmentFastPathTests
         await using var consumer = CreateGroupConsumer(connectionPool, metadataManager,
             autoOffsetReset: AutoOffsetReset.Earliest);
         if (manualAssignment)
+        {
             consumer.Assign(new TopicPartition("test-topic", 0), new TopicPartition("test-topic", 1),
                 new TopicPartition("test-topic", 2), new TopicPartition("test-topic", 3));
+        }
         else
+        {
             consumer.Subscribe("test-topic");
+        }
 
         var initialization = consumer.EnsureAssignmentAsync(testTimeout).AsTask();
         try
@@ -1929,7 +1947,9 @@ public sealed partial class ConsumerAssignmentFastPathTests
                 await Assert.That(request.Topics.Count).IsEqualTo(1);
                 await Assert.That(request.Topics[0].Partitions.Count).IsEqualTo(2);
                 foreach (var partition in request.Topics[0].Partitions)
+                {
                     await Assert.That(partition.Timestamp).IsEqualTo(TopicPartitionTimestamp.Earliest);
+                }
             }
         }
         finally
@@ -1939,8 +1959,10 @@ public sealed partial class ConsumerAssignmentFastPathTests
         }
 
         for (var partition = 0; partition < 4; partition++)
+        {
             await Assert.That(GetFetchPositions(consumer)[new TopicPartition("test-topic", partition)])
                 .IsEqualTo(100L + partition);
+        }
 
         async ValueTask<ListOffsetsResponse> CompleteFirstAsync(
             ListOffsetsRequest request, CancellationToken cancellationToken)
@@ -2161,12 +2183,16 @@ public sealed partial class ConsumerAssignmentFastPathTests
 
         await Assert.That(canceledCount).IsEqualTo(2);
         foreach (var partition in partitions)
+        {
             await Assert.That(GetFetchPositions(consumer)[partition]).IsEqualTo(TopicPartitionTimestamp.Earliest);
+        }
 
         async ValueTask<ListOffsetsResponse> WaitForCancellationAsync(CancellationToken cancellationToken)
         {
             if (Interlocked.Increment(ref startedCount) == 2)
+            {
                 requestsStarted.TrySetResult();
+            }
             try
             {
                 await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
@@ -2526,7 +2552,9 @@ public sealed partial class ConsumerAssignmentFastPathTests
             using (pending)
             {
                 while (pending.MoveNext())
+                {
                     offsets.Add(pending.CurrentBaseOffset + pending.CurrentRecord.OffsetDelta);
+                }
                 flushPositions(pending);
             }
         }
@@ -2592,7 +2620,9 @@ public sealed partial class ConsumerAssignmentFastPathTests
         {
             var filler = CreateFetch(partition: 0, baseOffset: 0, value: "filler");
             if (prefetchBuffer.TryWrite(filler))
+            {
                 continue;
+            }
 
             filler.Dispose();
             break;
@@ -2624,7 +2654,9 @@ public sealed partial class ConsumerAssignmentFastPathTests
         {
             var filler = CreateFetch(partition: 0, baseOffset: 0, value: "filler");
             if (prefetchBuffer.TryWrite(filler))
+            {
                 continue;
+            }
 
             filler.Dispose();
             break;
@@ -2690,7 +2722,9 @@ public sealed partial class ConsumerAssignmentFastPathTests
             {
                 var partition = call.ArgAt<ListOffsetsRequest>(0).Topics[0].Partitions[0].PartitionIndex;
                 if (Interlocked.Increment(ref requestCount) != 1)
+                {
                     return ValueTask.FromResult(CreateListOffsetsResponse(partition, 100 + partition));
+                }
 
                 firstPartition = partition;
                 firstRequestStarted.TrySetResult();
@@ -2889,9 +2923,13 @@ public sealed partial class ConsumerAssignmentFastPathTests
         // The log start offset (40 here) is not 0 once retention or DeleteRecords removed the
         // first records: the seek must not land on offset 0.
         if (seekToBeginning)
+        {
             consumer.SeekToBeginning(partition);
+        }
         else
+        {
             consumer.SeekToEnd(partition);
+        }
 
         await InvokeResolveSpecialOffsetsAsync(consumer, [partition]);
 
@@ -3079,7 +3117,9 @@ public sealed partial class ConsumerAssignmentFastPathTests
             {
                 var requestedPartition = call.ArgAt<ListOffsetsRequest>(0).Topics[0].Partitions[0].PartitionIndex;
                 if (requestedPartition != partition.Partition)
+                {
                     return ValueTask.FromResult(CreateListOffsetsResponse(requestedPartition, 100));
+                }
 
                 resetStarted.TrySetResult();
                 return new ValueTask<ListOffsetsResponse>(releaseReset.Task);
@@ -3206,7 +3246,9 @@ public sealed partial class ConsumerAssignmentFastPathTests
             {
                 var partition = call.ArgAt<ListOffsetsRequest>(0).Topics[0].Partitions[0].PartitionIndex;
                 if (partition != 0)
+                {
                     return ValueTask.FromResult(CreateListOffsetsResponse(partition, 100 + partition));
+                }
 
                 resetStarted.TrySetResult();
                 return new ValueTask<ListOffsetsResponse>(releaseReset.Task);
@@ -3910,22 +3952,22 @@ public sealed partial class ConsumerAssignmentFastPathTests
     private static ListOffsetsResponse CreateOffsetResetResponse(
         ListOffsetsRequest request,
         Func<ListOffsetsRequestPartition, (long Offset, ErrorCode Error)> resolve) => new()
-    {
-        Topics = request.Topics.Select(topic => new ListOffsetsResponseTopic
         {
-            Name = topic.Name,
-            Partitions = topic.Partitions.Select(partition =>
+            Topics = request.Topics.Select(topic => new ListOffsetsResponseTopic
             {
-                var result = resolve(partition);
-                return new ListOffsetsResponsePartition
+                Name = topic.Name,
+                Partitions = topic.Partitions.Select(partition =>
                 {
-                    PartitionIndex = partition.PartitionIndex,
-                    Offset = result.Offset,
-                    ErrorCode = result.Error
-                };
+                    var result = resolve(partition);
+                    return new ListOffsetsResponsePartition
+                    {
+                        PartitionIndex = partition.PartitionIndex,
+                        Offset = result.Offset,
+                        ErrorCode = result.Error
+                    };
+                }).ToArray()
             }).ToArray()
-        }).ToArray()
-    };
+        };
 
     private static ListOffsetsResponse CreateListOffsetsResponse(int partition, long offset) => new()
     {
@@ -4187,7 +4229,9 @@ public sealed partial class ConsumerAssignmentFastPathTests
 
         var result = method.Invoke(consumer, [partitions, 0, partitions.Count, cancellationToken]);
         if (result is not ValueTask valueTask)
+        {
             throw new InvalidOperationException("ResolveSpecialOffsetsAsync returned unexpected type.");
+        }
 
         await valueTask;
     }
@@ -4206,7 +4250,9 @@ public sealed partial class ConsumerAssignmentFastPathTests
             consumer,
             [CancellationToken.None, rejectedTopic, rejectedTopicId]);
         if (result is not ValueTask valueTask)
+        {
             throw new InvalidOperationException("HandleTopicIdentityChangesAsync returned unexpected type.");
+        }
 
         await valueTask.ConfigureAwait(false);
     }
@@ -4225,7 +4271,9 @@ public sealed partial class ConsumerAssignmentFastPathTests
             consumer,
             [brokerId, partitions, fetchBufferEpoch, CancellationToken.None]);
         if (result is not ValueTask<List<PendingFetchData>?> valueTask)
+        {
             throw new InvalidOperationException("FetchFromBrokerAsync returned unexpected type.");
+        }
 
         return await valueTask.ConfigureAwait(false);
     }
@@ -4368,7 +4416,10 @@ public sealed partial class ConsumerAssignmentFastPathTests
     private sealed class TrackingPooledMemory : IPooledMemory
     {
         public ReadOnlyMemory<byte> Memory => ReadOnlyMemory<byte>.Empty;
-        public int DisposeCount { get; private set; }
+        public int DisposeCount
+        {
+            get; private set;
+        }
         public void Dispose() => DisposeCount++;
     }
 

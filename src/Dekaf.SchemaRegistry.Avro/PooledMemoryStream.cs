@@ -49,7 +49,9 @@ internal sealed class PooledMemoryStream : Stream
         ArgumentOutOfRangeException.ThrowIfNegative(offset);
         ArgumentOutOfRangeException.ThrowIfNegative(length);
         if (offset > buffer.Length || length > buffer.Length - offset)
+        {
             throw new ArgumentOutOfRangeException(nameof(length), "Offset and length must describe a valid range in the buffer.");
+        }
 
         ReleaseOwnedBuffer();
 
@@ -99,7 +101,9 @@ internal sealed class PooledMemoryStream : Stream
         set
         {
             if (value < 0 || value > Array.MaxLength)
+            {
                 throw new ArgumentOutOfRangeException(nameof(value), $"Position must be between 0 and {Array.MaxLength}.");
+            }
             _position = (int)value;
         }
     }
@@ -117,13 +121,17 @@ internal sealed class PooledMemoryStream : Stream
 
         var newPosition = (long)_position + count;
         if (newPosition > Array.MaxLength)
+        {
             throw new NotSupportedException($"PooledMemoryStream does not support streams larger than {Array.MaxLength} bytes.");
+        }
 
         EnsureCapacity((int)newPosition);
         Buffer.BlockCopy(buffer, offset, _buffer, _origin + _position, count);
         _position += count;
         if (_position > _length)
+        {
             _length = _position;
+        }
     }
 
     public override void Write(ReadOnlySpan<byte> buffer)
@@ -132,13 +140,17 @@ internal sealed class PooledMemoryStream : Stream
 
         var newPosition = (long)_position + buffer.Length;
         if (newPosition > Array.MaxLength)
+        {
             throw new NotSupportedException($"PooledMemoryStream does not support streams larger than {Array.MaxLength} bytes.");
+        }
 
         EnsureCapacity((int)newPosition);
         buffer.CopyTo(_buffer.AsSpan(_origin + _position));
         _position += buffer.Length;
         if (_position > _length)
+        {
             _length = _position;
+        }
     }
 
     public override void WriteByte(byte value)
@@ -146,12 +158,16 @@ internal sealed class PooledMemoryStream : Stream
         ObjectDisposedException.ThrowIf(_disposed, this);
 
         if (_position == Array.MaxLength)
+        {
             throw new NotSupportedException($"PooledMemoryStream does not support streams larger than {Array.MaxLength} bytes.");
+        }
 
         EnsureCapacity(_position + 1);
         _buffer[_origin + _position++] = value;
         if (_position > _length)
+        {
             _length = _position;
+        }
     }
 
     public override int Read(byte[] buffer, int offset, int count)
@@ -160,10 +176,14 @@ internal sealed class PooledMemoryStream : Stream
 
         var available = _length - _position;
         if (available <= 0)
+        {
             return 0;
+        }
 
         if (count > available)
+        {
             count = available;
+        }
 
         Buffer.BlockCopy(_buffer, _origin + _position, buffer, offset, count);
         _position += count;
@@ -176,7 +196,9 @@ internal sealed class PooledMemoryStream : Stream
 
         var available = _length - _position;
         if (available <= 0)
+        {
             return 0;
+        }
 
         var count = Math.Min(buffer.Length, available);
         _buffer.AsSpan(_origin + _position, count).CopyTo(buffer);
@@ -189,7 +211,9 @@ internal sealed class PooledMemoryStream : Stream
         ObjectDisposedException.ThrowIf(_disposed, this);
 
         if (_position >= _length)
+        {
             return -1;
+        }
 
         return _buffer[_origin + _position++];
     }
@@ -207,7 +231,9 @@ internal sealed class PooledMemoryStream : Stream
         };
 
         if (newPosition < 0 || newPosition > Array.MaxLength)
+        {
             throw new ArgumentOutOfRangeException(nameof(offset), $"Seek position must be between 0 and {Array.MaxLength}.");
+        }
 
         _position = (int)newPosition;
         return _position;
@@ -218,20 +244,28 @@ internal sealed class PooledMemoryStream : Stream
         ObjectDisposedException.ThrowIf(_disposed, this);
 
         if (value < 0 || value > Array.MaxLength)
+        {
             throw new ArgumentOutOfRangeException(nameof(value), $"Length must be between 0 and {Array.MaxLength}.");
+        }
 
         EnsureCapacity((int)value);
         _length = (int)value;
         if (_position > _length)
+        {
             _position = _length;
+        }
     }
 
-    public override void Flush() { }
+    public override void Flush()
+    {
+    }
 
     private void EnsureCapacity(int requiredCapacity)
     {
         if (_origin + requiredCapacity <= _buffer.Length)
+        {
             return;
+        }
 
         // Grow the buffer by at least doubling, but at least to the required capacity.
         // Widen to long to detect overflow and cap at Array.MaxLength.
@@ -239,7 +273,9 @@ internal sealed class PooledMemoryStream : Stream
         var newCapacity = (int)Math.Max(doubled, requiredCapacity);
 
         if (newCapacity <= Capacity)
+        {
             throw new InvalidOperationException("Cannot grow buffer: maximum size reached.");
+        }
 
         var newBuffer = ArrayPool<byte>.Shared.Rent(newCapacity);
 
@@ -260,7 +296,9 @@ internal sealed class PooledMemoryStream : Stream
     private void ReleaseOwnedBuffer()
     {
         if (!_ownsBuffer)
+        {
             return;
+        }
 
         // No need to clear - contains serialized Avro payloads, not sensitive data
         ArrayPool<byte>.Shared.Return(_buffer, clearArray: false);
@@ -270,7 +308,9 @@ internal sealed class PooledMemoryStream : Stream
     protected override void Dispose(bool disposing)
     {
         if (_disposed)
+        {
             return;
+        }
 
         if (disposing && _ownsBuffer)
         {

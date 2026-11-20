@@ -51,7 +51,10 @@ public sealed class FetchBehaviorTests(KafkaTestContainer kafka) : KafkaIntegrat
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))
         {
             count++;
-            if (count >= messageCount) break;
+            if (count >= messageCount)
+            {
+                break;
+            }
         }
 
         sw.Stop();
@@ -100,7 +103,10 @@ public sealed class FetchBehaviorTests(KafkaTestContainer kafka) : KafkaIntegrat
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))
         {
             messages.Add(msg);
-            if (messages.Count >= messageCount) break;
+            if (messages.Count >= messageCount)
+            {
+                break;
+            }
         }
 
         sw.Stop();
@@ -149,7 +155,10 @@ public sealed class FetchBehaviorTests(KafkaTestContainer kafka) : KafkaIntegrat
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))
         {
             messages.Add(msg);
-            if (messages.Count >= totalMessages) break;
+            if (messages.Count >= totalMessages)
+            {
+                break;
+            }
         }
 
         await Assert.That(messages).Count().IsEqualTo(totalMessages);
@@ -192,7 +201,10 @@ public sealed class FetchBehaviorTests(KafkaTestContainer kafka) : KafkaIntegrat
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))
         {
             messages.Add(msg);
-            if (messages.Count >= sizes.Length) break;
+            if (messages.Count >= sizes.Length)
+            {
+                break;
+            }
         }
 
         await Assert.That(messages).Count().IsEqualTo(sizes.Length);
@@ -263,7 +275,10 @@ public sealed class FetchBehaviorTests(KafkaTestContainer kafka) : KafkaIntegrat
         {
             partitionCounts[msg.Partition] = partitionCounts.GetValueOrDefault(msg.Partition) + 1;
             var total = partitionCounts.Values.Sum();
-            if (total >= 40) break;
+            if (total >= 40)
+            {
+                break;
+            }
         }
 
         // All 4 partitions should have been served
@@ -310,7 +325,10 @@ public sealed class FetchBehaviorTests(KafkaTestContainer kafka) : KafkaIntegrat
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))
         {
             messages.Add(msg);
-            if (messages.Count >= messageCount) break;
+            if (messages.Count >= messageCount)
+            {
+                break;
+            }
         }
 
         await Assert.That(messages).Count().IsEqualTo(messageCount);

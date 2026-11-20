@@ -38,20 +38,26 @@ internal sealed class OutboxDynamoDbStoreFaults(
     public ValueTask<OutboxDynamoDbFault> Decide(AmazonWebServiceRequest request)
     {
         if (_healed || request is not (UpdateItemRequest or PutItemRequest or BatchWriteItemRequest))
+        {
             return new(OutboxDynamoDbFault.None);
+        }
 
         lock (_gate)
         {
             // Throttling comes in bursts: a partition that is over its budget refuses
             // whatever reaches it until the budget refills.
             if (_throttleBurstRemaining == 0 && _random.NextDouble() < throttleBurstChance)
+            {
                 _throttleBurstRemaining = throttleBurstLength;
+            }
             if (_throttleBurstRemaining > 0)
             {
                 _throttleBurstRemaining--;
                 _throttled++;
                 if (request is BatchWriteItemRequest)
+                {
                     _throttledDeletes++;
+                }
                 return new(OutboxDynamoDbFault.Throttled);
             }
 

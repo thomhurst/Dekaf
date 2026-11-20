@@ -16,12 +16,21 @@ namespace Dekaf.Benchmarks.Benchmarks.Unit;
 public class HostedShareRequestBenchmarks
 {
     [Params(false, true)]
-    public bool Hosted { get; set; }
+    public bool Hosted
+    {
+        get; set;
+    }
 
     [Params(1, 16)]
-    public int PartitionCount { get; set; }
+    public int PartitionCount
+    {
+        get; set;
+    }
 
-    internal ShareRequestTelemetryMode TelemetryMode { get; set; }
+    internal ShareRequestTelemetryMode TelemetryMode
+    {
+        get; set;
+    }
 
     private KafkaShareConsumer<string, string> _consumer = null!;
     private MetadataManager _metadata = null!;
@@ -49,21 +58,32 @@ public class HostedShareRequestBenchmarks
             _partitions.Add(partition);
             _records.Add(new ShareConsumeResult<string, string>
             {
-                Topic = "topic", Partition = index, Offset = 42, Value = "value", DeliveryCount = 1
+                Topic = "topic",
+                Partition = index,
+                Offset = 42,
+                Value = "value",
+                DeliveryCount = 1
             });
             _acknowledgements.Add(partition,
                 [new AcknowledgementBatchData(42, 42, [(byte)AcknowledgeType.Accept])]);
             metadataPartitions[index] = new PartitionMetadata
             {
-                ErrorCode = ErrorCode.None, PartitionIndex = index, LeaderId = 1, ReplicaNodes = [1], IsrNodes = [1]
+                ErrorCode = ErrorCode.None,
+                PartitionIndex = index,
+                LeaderId = 1,
+                ReplicaNodes = [1],
+                IsrNodes = [1]
             };
             fetchPartitions[index] = new ShareFetchResponsePartition
             {
-                PartitionIndex = index, CurrentLeader = new(), AcquiredRecords = []
+                PartitionIndex = index,
+                CurrentLeader = new(),
+                AcquiredRecords = []
             };
             acknowledgePartitions[index] = new ShareAcknowledgeResponsePartition
             {
-                PartitionIndex = index, CurrentLeader = new()
+                PartitionIndex = index,
+                CurrentLeader = new()
             };
         }
         var metadata = new MetadataResponse
@@ -84,19 +104,27 @@ public class HostedShareRequestBenchmarks
             Serializers.String, Serializers.String, pool, _metadata);
         if (Hosted)
         {
-            ShareAcknowledgementCommitCallback observer = static _ => { };
+            ShareAcknowledgementCommitCallback observer = static _ =>
+            {
+            };
             var hostedOverload = typeof(IHostedShareConsumer).GetMethod("ObserveAcknowledgements",
                 [typeof(ShareAcknowledgementCommitCallback), typeof(CancellationToken)]);
             if (hostedOverload is null)
+            {
                 ((IHostedShareConsumer)_consumer).ObserveAcknowledgements(observer);
+            }
             else
+            {
                 hostedOverload.Invoke(_consumer, [observer, _shutdown.Token]);
+            }
         }
         const BindingFlags flags = BindingFlags.Instance | BindingFlags.NonPublic;
         var collector = (ClientTelemetryMetricCollector)typeof(KafkaShareConsumer<string, string>)
             .GetField("_telemetryMetricCollector", flags)!.GetValue(_consumer)!;
         if (TelemetryMode != ShareRequestTelemetryMode.Unsubscribed)
+        {
             collector.ShareConsumerMetrics!.Subscribe(["org.apache.kafka.consumer.share."]);
+        }
         typeof(KafkaShareConsumer<string, string>).GetField("_initialized", flags)!.SetValue(_consumer, true);
         var coordinator = typeof(KafkaShareConsumer<string, string>).GetField("_coordinator", flags)!.GetValue(_consumer)!;
         typeof(ShareConsumerCoordinator).GetField("_memberId", flags)!.SetValue(coordinator, "benchmark-member");
@@ -118,7 +146,9 @@ public class HostedShareRequestBenchmarks
         arguments[2] = retry;
         arguments[3] = cancellation;
         for (var index = 4; index < parameters.Length; index++)
+        {
             arguments[index] = Expression.Constant(parameters[index].DefaultValue, parameters[index].ParameterType);
+        }
         _acknowledge = Expression.Lambda<Func<int, Dictionary<TopicPartition, List<AcknowledgementBatchData>>, bool, CancellationToken, Task>>(
             Expression.Call(Expression.Constant(_consumer), acknowledge, arguments),
             broker, acknowledgements, retry, cancellation).Compile();
@@ -127,12 +157,18 @@ public class HostedShareRequestBenchmarks
         var sessions = (ShareSessionManager)typeof(KafkaShareConsumer<string, string>)
             .GetField("_sessionManager", flags)!.GetValue(_consumer)!;
         if (connection.RequestCount != 2 || sessions.GetSessionEpoch(1) != 1)
+        {
             throw new InvalidOperationException("Both request paths must complete successful broker bookkeeping.");
+        }
         await Commit();
         if (connection.RequestCount != 3 || sessions.GetSessionEpoch(1) != 2)
+        {
             throw new InvalidOperationException("Commit must submit its tracked acknowledgement outcomes.");
+        }
         if (TelemetryMode == ShareRequestTelemetryMode.Disabled)
+        {
             collector.ShareConsumerMetrics!.Disable();
+        }
     }
 
     // Costs are per request with PartitionCount acknowledgement batches. Cached replies exclude
@@ -149,7 +185,9 @@ public class HostedShareRequestBenchmarks
     public ValueTask Commit()
     {
         for (var index = 0; index < _records.Count; index++)
+        {
             _consumer.Acknowledge(_records[index], AcknowledgeType.Accept);
+        }
         return _consumer.CommitAsync();
     }
 
@@ -160,7 +198,9 @@ public class HostedShareRequestBenchmarks
         {
             var pending = Commit();
             if (pending.IsCompleted)
+            {
                 throw new InvalidOperationException("Commit must suspend until the broker reply is released.");
+            }
             _connection.CompleteAcknowledgement();
             return pending;
         }
@@ -182,8 +222,14 @@ public class HostedShareRequestBenchmarks
         : IKafkaConnection, IKafkaRequestWriteObserverConnection, IKafkaRequestCancellationConnection
     {
         private TaskCompletionSource<ShareAcknowledgeResponse>? _pendingAcknowledgement;
-        internal bool DeferAcknowledgement { get; set; }
-        internal int RequestCount { get; private set; }
+        internal bool DeferAcknowledgement
+        {
+            get; set;
+        }
+        internal int RequestCount
+        {
+            get; private set;
+        }
         public int BrokerId => 1;
         public string Host => "localhost";
         public int Port => 9092;
@@ -252,7 +298,9 @@ public class HostedShareRequestBenchmarks
         public ValueTask<IKafkaConnection> GetConnectionAsync(int brokerId, CancellationToken token = default) => ValueTask.FromResult<IKafkaConnection>(connection);
         public ValueTask<IKafkaConnection> GetConnectionAsync(string host, int port, CancellationToken token = default) => ValueTask.FromResult<IKafkaConnection>(connection);
         public ValueTask<IKafkaConnection> GetConnectionByIndexAsync(int brokerId, int index, CancellationToken token = default) => ValueTask.FromResult<IKafkaConnection>(connection);
-        public void RegisterBroker(int id, string host, int port) { }
+        public void RegisterBroker(int id, string host, int port)
+        {
+        }
         public ValueTask<int> ScaleConnectionGroupAsync(int id, int count, CancellationToken token = default) => ValueTask.FromResult(1);
         public ValueTask<IKafkaConnection?> ShrinkConnectionGroupAsync(int id, int count, CancellationToken token = default) => ValueTask.FromResult<IKafkaConnection?>(null);
         public ValueTask RemoveConnectionAsync(int id) => ValueTask.CompletedTask;

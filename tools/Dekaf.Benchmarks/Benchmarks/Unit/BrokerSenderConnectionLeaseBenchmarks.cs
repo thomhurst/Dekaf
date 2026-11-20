@@ -23,7 +23,10 @@ public class BrokerSenderConnectionLeaseBenchmarks
     private MetadataManager _metadata = null!;
 
     [Params(false, true)]
-    public bool Retirable { get; set; }
+    public bool Retirable
+    {
+        get; set;
+    }
 
     [GlobalSetup]
     public async Task Setup()
@@ -48,7 +51,9 @@ public class BrokerSenderConnectionLeaseBenchmarks
             new CompressionCodecRegistry(),
             new PartitionInflightTracker(),
             getProduceApiVersion: static () => 9,
-            setProduceApiVersion: static _ => { },
+            setProduceApiVersion: static _ =>
+            {
+            },
             isTransactional: static () => false,
             tryEnsurePartitionsInTransaction: null,
             bumpEpoch: null,
@@ -60,7 +65,9 @@ public class BrokerSenderConnectionLeaseBenchmarks
         // Pin the slot once so every measured call takes the steady-state path.
         using var lease = await _sender.GetConnectionLeaseAtIndexAsync(0, CancellationToken.None);
         if (!ReferenceEquals(lease.Connection, connection))
+        {
             throw new InvalidOperationException("The pool connection was not pinned.");
+        }
     }
 
     [Benchmark]
@@ -68,7 +75,9 @@ public class BrokerSenderConnectionLeaseBenchmarks
     {
         var pending = _sender.GetConnectionLeaseAtIndexAsync(0, CancellationToken.None);
         if (!pending.IsCompletedSuccessfully)
+        {
             throw new InvalidOperationException("The pinned lease must complete synchronously.");
+        }
 
         using var lease = pending.Result;
         return lease.Connection;
@@ -116,8 +125,12 @@ public class BrokerSenderConnectionLeaseBenchmarks
         }
 
         public void ReleaseLease() => Interlocked.Decrement(ref _leaseCount);
-        public void BeginRetirement() { }
-        public void CompleteRetirement() { }
+        public void BeginRetirement()
+        {
+        }
+        public void CompleteRetirement()
+        {
+        }
     }
 
     private sealed class Pool(IKafkaConnection connection) : IConnectionPool
@@ -125,7 +138,9 @@ public class BrokerSenderConnectionLeaseBenchmarks
         public ValueTask<IKafkaConnection> GetConnectionAsync(int brokerId, CancellationToken token = default) => ValueTask.FromResult(connection);
         public ValueTask<IKafkaConnection> GetConnectionAsync(string host, int port, CancellationToken token = default) => ValueTask.FromResult(connection);
         public ValueTask<IKafkaConnection> GetConnectionByIndexAsync(int brokerId, int index, CancellationToken token = default) => ValueTask.FromResult(connection);
-        public void RegisterBroker(int id, string host, int port) { }
+        public void RegisterBroker(int id, string host, int port)
+        {
+        }
         public ValueTask<int> ScaleConnectionGroupAsync(int id, int count, CancellationToken token = default) => ValueTask.FromResult(1);
         public ValueTask<IKafkaConnection?> ShrinkConnectionGroupAsync(int id, int count, CancellationToken token = default) => ValueTask.FromResult<IKafkaConnection?>(null);
         public ValueTask RemoveConnectionAsync(int id) => ValueTask.CompletedTask;

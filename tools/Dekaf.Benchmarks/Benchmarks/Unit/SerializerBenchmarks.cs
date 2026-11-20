@@ -240,7 +240,13 @@ public class SerializerBenchmarks
 
     public sealed class JsonPayload
     {
-        public int Id { get; init; }
-        public string Name { get; init; } = string.Empty;
+        public int Id
+        {
+            get; init;
+        }
+        public string Name
+        {
+            get; init;
+        } = string.Empty;
     }
 }

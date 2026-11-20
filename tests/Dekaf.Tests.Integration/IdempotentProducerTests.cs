@@ -20,7 +20,6 @@ public sealed class IdempotentProducerTests(KafkaTestContainer kafka) : KafkaInt
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-idempotent-basic")
             .WithAcks(Acks.All)
-
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
@@ -50,7 +49,6 @@ public sealed class IdempotentProducerTests(KafkaTestContainer kafka) : KafkaInt
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-idempotent-concurrent")
             .WithAcks(Acks.All)
-
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
@@ -103,7 +101,6 @@ public sealed class IdempotentProducerTests(KafkaTestContainer kafka) : KafkaInt
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-idempotent-ordering")
             .WithAcks(Acks.All)
-
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
@@ -344,7 +341,6 @@ public sealed class IdempotentProducerTests(KafkaTestContainer kafka) : KafkaInt
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-idempotent-volume")
             .WithAcks(Acks.All)
-
             .WithLinger(TimeSpan.FromMilliseconds(5))
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
@@ -382,7 +378,10 @@ public sealed class IdempotentProducerTests(KafkaTestContainer kafka) : KafkaInt
         await foreach (var msg in consumer.ConsumeAsync(cts.Token).ConfigureAwait(false))
         {
             consumed.Add(msg);
-            if (consumed.Count >= messageCount) break;
+            if (consumed.Count >= messageCount)
+            {
+                break;
+            }
         }
 
         // Assert - no data loss

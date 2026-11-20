@@ -216,9 +216,13 @@ public sealed partial class ShareConsumerRenewalTests
             ShareFetchHandler = (request, _) =>
             {
                 if (++fetches == 1)
+                {
                     return new(CreateFetchResponse(0, 100, 3));
+                }
                 if (fetches >= 3)
+                {
                     cancellation.Cancel();
+                }
                 return new(new ShareFetchResponse { ErrorCode = ErrorCode.None, Responses = [], NodeEndpoints = [] });
             },
             ShareAcknowledgeHandler = (request, _) =>
@@ -227,14 +231,18 @@ public sealed partial class ShareConsumerRenewalTests
                 {
                     return new(new ShareAcknowledgeResponse
                     {
-                        ErrorCode = ErrorCode.InvalidShareSessionEpoch, Responses = [], NodeEndpoints = []
+                        ErrorCode = ErrorCode.InvalidShareSessionEpoch,
+                        Responses = [],
+                        NodeEndpoints = []
                     });
                 }
                 if (sessionNotFound)
                 {
                     return new(new ShareAcknowledgeResponse
                     {
-                        ErrorCode = ErrorCode.ShareSessionNotFound, Responses = [], NodeEndpoints = []
+                        ErrorCode = ErrorCode.ShareSessionNotFound,
+                        Responses = [],
+                        NodeEndpoints = []
                     });
                 }
                 return ValueTask.FromException<ShareAcknowledgeResponse>(
@@ -249,10 +257,14 @@ public sealed partial class ShareConsumerRenewalTests
         PrepareForPoll(fixture.Consumer);
         fixture.Consumer.Subscribe("topic");
         await using (var first = fixture.Consumer.PollAsync(cancellation.Token).GetAsyncEnumerator(CancellationToken.None))
+        {
             await Assert.That(await first.MoveNextAsync()).IsTrue();
+        }
 
         await using (var failed = fixture.Consumer.PollAsync(cancellation.Token).GetAsyncEnumerator(CancellationToken.None))
+        {
             await Assert.That(async () => await failed.MoveNextAsync()).Throws<Dekaf.Errors.KafkaException>();
+        }
 
         await Assert.That(connection.ShareAcknowledgeRequests).HasSingleItem();
         await Assert.That(GetSessionEpoch(fixture.Consumer, 1)).IsEqualTo(0);
@@ -262,7 +274,9 @@ public sealed partial class ShareConsumerRenewalTests
             try
             {
                 while (await next.MoveNextAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(30), CancellationToken.None))
+                {
                     delivered.Add(next.Current.Offset);
+                }
             }
             catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
             {
@@ -308,7 +322,9 @@ public sealed partial class ShareConsumerRenewalTests
         List<(long[] Offsets, Exception? Error)> outcomes)
     {
         foreach (ref readonly var result in results)
+        {
             outcomes.Add((CopyOffsets(result.Offsets), result.Exception));
+        }
     }
 
     private static List<long> AcknowledgedOffsets(ShareFetchRequest request)
@@ -319,11 +335,15 @@ public sealed partial class ShareConsumerRenewalTests
             foreach (var partition in topic.Partitions)
             {
                 if (partition.AcknowledgementBatches is not { } batches)
+                {
                     continue;
+                }
                 foreach (var batch in batches)
                 {
                     for (var offset = batch.FirstOffset; offset <= batch.LastOffset; offset++)
+                    {
                         offsets.Add(offset);
+                    }
                 }
             }
         }
@@ -341,7 +361,9 @@ public sealed partial class ShareConsumerRenewalTests
             .GetValue(consumer)!;
         sessionManager.ResetSession(brokerId);
         for (var i = 0; i < epoch; i++)
+        {
             sessionManager.IncrementEpoch(brokerId);
+        }
     }
 
     /// <summary>
@@ -355,9 +377,15 @@ public sealed partial class ShareConsumerRenewalTests
         private int _epoch = epoch;
         private int _fetches;
 
-        public bool LoseNextResponse { get; set; }
+        public bool LoseNextResponse
+        {
+            get; set;
+        }
 
-        public List<ErrorCode> Rejections { get; } = [];
+        public List<ErrorCode> Rejections
+        {
+            get;
+        } = [];
 
         public ValueTask<ShareFetchResponse> Fetch(
             ShareFetchRequest request,
@@ -365,14 +393,18 @@ public sealed partial class ShareConsumerRenewalTests
             CancellationTokenSource cancellation)
         {
             if (++_fetches >= cancelAfter)
+            {
                 cancellation.Cancel();
+            }
 
             ErrorCode error;
             if (request.ShareSessionEpoch == 0)
             {
                 error = HasAcknowledgements(request) ? ErrorCode.InvalidRequest : ErrorCode.None;
                 if (error == ErrorCode.None)
+                {
                     _epoch = 1;
+                }
             }
             else
             {
@@ -435,9 +467,13 @@ public sealed partial class ShareConsumerRenewalTests
         private ErrorCode Advance(int requestEpoch)
         {
             if (_epoch < 0)
+            {
                 return ErrorCode.ShareSessionNotFound;
+            }
             if (requestEpoch != _epoch)
+            {
                 return ErrorCode.InvalidShareSessionEpoch;
+            }
             _epoch++;
             return ErrorCode.None;
         }
@@ -449,7 +485,9 @@ public sealed partial class ShareConsumerRenewalTests
                 foreach (var partition in topic.Partitions)
                 {
                     if (partition.AcknowledgementBatches is { Count: > 0 })
+                    {
                         return true;
+                    }
                 }
             }
 

@@ -11,10 +11,16 @@ public class ShareAcknowledgementAllocationBenchmarks
     private AcknowledgementTracker _pending = null!;
 
     [Params(64, 1024)]
-    public int RecordCount { get; set; }
+    public int RecordCount
+    {
+        get; set;
+    }
 
     [Params(ShareAcknowledgementMode.Implicit, ShareAcknowledgementMode.Explicit)]
-    public ShareAcknowledgementMode Mode { get; set; }
+    public ShareAcknowledgementMode Mode
+    {
+        get; set;
+    }
 
     [GlobalSetup]
     public void Validate()
@@ -22,15 +28,21 @@ public class ShareAcknowledgementAllocationBenchmarks
         var tracker = Accumulate();
         var wire = tracker.Flush();
         if (tracker.HasPending || wire.Count != 1 || wire[_partition].Count != 1)
+        {
             throw new InvalidOperationException("Acknowledgements did not form one bounded partition batch.");
+        }
         var batch = wire[_partition][0];
         if (batch.FirstOffset != 0 || batch.LastOffset != RecordCount - 1 || batch.AcknowledgeTypes.Length != RecordCount)
+        {
             throw new InvalidOperationException("Acknowledgements did not cover every delivered offset.");
+        }
         for (var index = 0; index < RecordCount; index++)
         {
             var expected = Mode == ShareAcknowledgementMode.Implicit ? AcknowledgeType.Accept : Disposition(index);
             if (batch.AcknowledgeTypes[index] != (byte)expected)
+            {
                 throw new InvalidOperationException("An acknowledgement disposition changed.");
+            }
         }
     }
 
@@ -53,9 +65,13 @@ public class ShareAcknowledgementAllocationBenchmarks
         for (var index = 0; index < RecordCount; index++)
         {
             if (Mode == ShareAcknowledgementMode.Implicit)
+            {
                 tracker.TrackDeliveredRecords(_partition, index, index);
+            }
             else
+            {
                 tracker.Acknowledge(_partition, index, Disposition(index), requireTracked: false);
+            }
         }
         return tracker;
     }

@@ -147,7 +147,9 @@ public class SchemaRegistrySubjectNameBenchmarks
     {
         var topics = new string[HighCardinalityTopicCount];
         for (var i = 0; i < topics.Length; i++)
+        {
             topics[i] = $"benchmark-topic-{i}";
+        }
 
         return topics;
     }

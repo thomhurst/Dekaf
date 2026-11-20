@@ -37,12 +37,16 @@ internal sealed class RetainedByteBudget
     public bool TryReserve(int bytes)
     {
         if (bytes == 0)
+        {
             return true;
+        }
 
         var total = Interlocked.Add(ref _retainedBytes, bytes);
         var limit = Volatile.Read(ref _limit);
         if (limit == 0 || total <= limit)
+        {
             return true;
+        }
 
         Interlocked.Add(ref _retainedBytes, -bytes);
         return false;
@@ -58,7 +62,9 @@ internal sealed class RetainedByteBudget
         where T : class
     {
         if (!TryReserve(bytes))
+        {
             return null;
+        }
 
         try
         {
@@ -75,6 +81,8 @@ internal sealed class RetainedByteBudget
     public void Release(int bytes)
     {
         if (bytes != 0)
+        {
             Interlocked.Add(ref _retainedBytes, -bytes);
+        }
     }
 }

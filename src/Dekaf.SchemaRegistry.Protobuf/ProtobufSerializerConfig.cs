@@ -10,21 +10,30 @@ public sealed class ProtobufSerializerConfig
     /// Default is <see cref="SubjectNameStrategy.TopicName"/>.
     /// This is ignored if <see cref="CustomSubjectNameStrategy"/> is set.
     /// </summary>
-    public SubjectNameStrategy SubjectNameStrategy { get; init; } = SubjectNameStrategy.TopicName;
+    public SubjectNameStrategy SubjectNameStrategy
+    {
+        get; init;
+    } = SubjectNameStrategy.TopicName;
 
     /// <summary>
     /// A custom subject name strategy implementation. When set, this takes precedence
     /// over the <see cref="SubjectNameStrategy"/> enum value.
     /// Default is null (uses enum-based strategy).
     /// </summary>
-    public ISubjectNameStrategy? CustomSubjectNameStrategy { get; init; }
+    public ISubjectNameStrategy? CustomSubjectNameStrategy
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Custom asynchronous subject-name strategy. Used when
     /// <see cref="CustomSubjectNameStrategy" /> is null and takes precedence over
     /// <see cref="SubjectNameStrategy" />.
     /// </summary>
-    public IAsyncSubjectNameStrategy? AsyncSubjectNameStrategy { get; init; }
+    public IAsyncSubjectNameStrategy? AsyncSubjectNameStrategy
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Whether <see cref="SubjectNameStrategy.RecordName"/> and
@@ -32,13 +41,19 @@ public sealed class ProtobufSerializerConfig
     /// -key/-value suffix. Enable this temporarily while migrating existing subjects.
     /// Default is false.
     /// </summary>
-    public bool UseLegacySubjectNames { get; init; }
+    public bool UseLegacySubjectNames
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Whether to auto-register schemas when producing messages.
     /// Default is true.
     /// </summary>
-    public bool AutoRegisterSchemas { get; init; } = true;
+    public bool AutoRegisterSchemas
+    {
+        get; init;
+    } = true;
 
     /// <summary>
     /// Whether to use the latest schema version from the registry instead of the schema
@@ -46,71 +61,107 @@ public sealed class ProtobufSerializerConfig
     /// from the registry rather than from code.
     /// Default is false.
     /// </summary>
-    public bool UseLatestVersion { get; init; }
+    public bool UseLatestVersion
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Global Schema Registry ID to use instead of registering, looking up, or selecting the latest schema.
     /// </summary>
-    public int? UseSchemaId { get; init; }
+    public int? UseSchemaId
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Strategy used to carry the selected schema identity. The default writes the Confluent payload prefix.
     /// </summary>
-    public SchemaIdSerializerStrategy SchemaIdStrategy { get; init; } = SchemaIdSerializerStrategy.Prefix;
+    public SchemaIdSerializerStrategy SchemaIdStrategy
+    {
+        get; init;
+    } = SchemaIdSerializerStrategy.Prefix;
 
     /// <summary>
     /// Whether schema registration and lookup requests should include normalize=true.
     /// Default is false.
     /// </summary>
-    public bool NormalizeSchemas { get; init; }
+    public bool NormalizeSchemas
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Whether to use the deprecated unsigned Protobuf message-index encoding.
     /// Default is false.
     /// </summary>
-    public bool UseDeprecatedFormat { get; init; }
+    public bool UseDeprecatedFormat
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Whether to skip known types when serializing.
     /// Default is true, matching Confluent Schema Registry's exact built-in dependency set.
     /// </summary>
-    public bool SkipKnownTypes { get; init; } = true;
+    public bool SkipKnownTypes
+    {
+        get; init;
+    } = true;
 
     /// <summary>
     /// Whether to include references to dependent schemas when registering.
     /// Default is true.
     /// </summary>
-    public bool UseSchemaReferences { get; init; } = true;
+    public bool UseSchemaReferences
+    {
+        get; init;
+    } = true;
 
     /// <summary>
     /// Reference subject name strategy for dependent schemas.
     /// Default is <see cref="ReferenceSubjectNameStrategy.ReferenceName"/>.
     /// </summary>
-    public ReferenceSubjectNameStrategy ReferenceSubjectNameStrategy { get; init; } = ReferenceSubjectNameStrategy.ReferenceName;
+    public ReferenceSubjectNameStrategy ReferenceSubjectNameStrategy
+    {
+        get; init;
+    } = ReferenceSubjectNameStrategy.ReferenceName;
 
     /// <summary>
     /// Optional custom strategy for dependent-schema subjects. When set, this takes precedence
     /// over <see cref="ReferenceSubjectNameStrategy"/>.
     /// </summary>
-    public IReferenceSubjectNameStrategy? CustomReferenceSubjectNameStrategy { get; init; }
+    public IReferenceSubjectNameStrategy? CustomReferenceSubjectNameStrategy
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Optional rule executor applied to Protobuf message bytes before the Schema Registry envelope is written.
     /// The Protobuf message-index prefix is not transformed.
     /// </summary>
-    public ISchemaRegistryRuleExecutor? RuleExecutor { get; init; }
+    public ISchemaRegistryRuleExecutor? RuleExecutor
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Selects when inline <c>confluent.Meta.rules</c> CHECK constraints run.
     /// Default is disabled. When <see cref="RuleExecutor"/> is also configured,
     /// it must be a <see cref="SchemaRegistryRuleExecutor"/> so rule boundaries are known.
     /// </summary>
-    public ValidationRulesExecution ValidationRulesExecution { get; init; }
+    public ValidationRulesExecution ValidationRulesExecution
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Stops Protobuf inline validation after its first violation when enabled.
     /// </summary>
-    public bool ValidationRulesFailFast { get; init; }
+    public bool ValidationRulesFailFast
+    {
+        get; init;
+    }
 }
 
 /// <summary>

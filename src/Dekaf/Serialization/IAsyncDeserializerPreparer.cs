@@ -63,7 +63,9 @@ internal static class DeserializerPreparation
         out T value)
     {
         if (deserializer is IAsyncDeserializerPreparer<T> preparer)
+        {
             return preparer.TryDeserialize(data, context, out value);
+        }
 
         value = RecordHeaderDeserializer.DeserializeCallerOwned(deserializer, data, context);
         return true;
@@ -78,9 +80,13 @@ internal static class DeserializerPreparation
         out T value)
     {
         if (deserializer is IRecordHeaderAsyncDeserializerPreparer<T> headerPreparer)
+        {
             return headerPreparer.TryDeserialize(data, context, in headers, out value);
+        }
         if (deserializer is IAsyncDeserializerPreparer<T> preparer)
+        {
             return preparer.TryDeserialize(data, context, out value);
+        }
 
         value = RecordHeaderDeserializer.DeserializeChild(deserializer, data, context, in headers);
         return true;
@@ -127,5 +133,8 @@ internal static class DeserializerPreparation
 public interface IAsyncDeserializerPreparationRequirement
 {
     /// <summary>Gets whether this instance requires the asynchronous preparation path.</summary>
-    bool RequiresPreparation { get; }
+    bool RequiresPreparation
+    {
+        get;
+    }
 }

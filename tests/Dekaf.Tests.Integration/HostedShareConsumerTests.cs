@@ -1,4 +1,3 @@
-using Microsoft.Extensions.Logging;
 using System.Collections.Concurrent;
 using Dekaf.Admin;
 using Dekaf.Consumer;
@@ -8,6 +7,7 @@ using Dekaf.Extensions.Hosting;
 using Dekaf.ShareConsumer;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
 namespace Dekaf.Tests.Integration;
@@ -43,7 +43,9 @@ public class HostedShareConsumerTests(KafkaTestContainer kafka) : KafkaIntegrati
         var workers = host.Services.GetServices<IHostedService>().OfType<Worker>().ToArray();
         await state.FirstWorkerEntered.Task.WaitAsync(timeout.Token);
         for (var index = 1; index < 20; index++)
+        {
             await producer.ProduceAsync(topic, $"key-{index}", $"value-{index}", timeout.Token);
+        }
         try
         {
             await state.Completed.Task.WaitAsync(timeout.Token);
@@ -99,7 +101,9 @@ public class HostedShareConsumerTests(KafkaTestContainer kafka) : KafkaIntegrati
             await interrupted.StartAsync(timeout.Token);
             await interrupted.Entered.Task.WaitAsync(timeout.Token);
             if (throwProcessingError)
+            {
                 await Assert.That(async () => await interrupted.ExecuteTask!.WaitAsync(timeout.Token)).Throws<ProcessingException>();
+            }
             await interrupted.StopAsync(timeout.Token);
         }
         await using var replacement = await Kafka.CreateShareConsumer<string, string>()
@@ -113,7 +117,10 @@ public class HostedShareConsumerTests(KafkaTestContainer kafka) : KafkaIntegrati
             values.Add(record.Value);
             redelivered |= record.DeliveryCount > 1;
             replacement.Acknowledge(record);
-            if (values.Count == 3) break;
+            if (values.Count == 3)
+            {
+                break;
+            }
         }
         await replacement.CommitAsync(timeout.Token);
         await Assert.That(values).IsEquivalentTo(["value-0", "value-1", "value-2"]);
@@ -138,7 +145,12 @@ public class HostedShareConsumerTests(KafkaTestContainer kafka) : KafkaIntegrati
             {
                 // No terminal acknowledgement exists yet: the first submitted offset is Renew.
                 foreach (ref readonly var result in results)
-                    if (result.Succeeded && result.Offsets.Length > 0) renewed.TrySetResult();
+                {
+                    if (result.Succeeded && result.Offsets.Length > 0)
+                    {
+                        renewed.TrySetResult();
+                    }
+                }
             }).Build();
         await using var service = new RenewedWorker(consumer, topic, renewed.Task);
         await service.StartAsync(timeout.Token);
@@ -164,7 +176,9 @@ public class HostedShareConsumerTests(KafkaTestContainer kafka) : KafkaIntegrati
             .WithBootstrapServers(KafkaContainer.BootstrapServers).BuildAsync();
         await producer.ProduceAsync(new Dekaf.Producer.ProducerMessage<string, string>
         {
-            Topic = topic, Key = "original-key", Value = "original-value",
+            Topic = topic,
+            Key = "original-key",
+            Value = "original-value",
             Headers = spoofRetryControls ? new Dekaf.Serialization.Headers()
                 .Add(RetryTopicHeaders.SourceTopicKey, "spoofed")
                 .Add(RetryTopicHeaders.FailureCountKey, "2147483647") : null
@@ -203,7 +217,10 @@ public class HostedShareConsumerTests(KafkaTestContainer kafka) : KafkaIntegrati
 
     private sealed class WorkerState(string topic, int count)
     {
-        public string Topic { get; } = topic;
+        public string Topic
+        {
+            get;
+        } = topic;
         public readonly ConcurrentDictionary<string, byte> Values = new();
         public readonly ConcurrentDictionary<TopicPartitionOffset, byte> Acknowledged = new();
         public readonly ConcurrentQueue<Exception> AcknowledgementFailures = new();
@@ -212,11 +229,17 @@ public class HostedShareConsumerTests(KafkaTestContainer kafka) : KafkaIntegrati
             foreach (ref readonly var result in results)
             {
                 if (result.Exception is { } failure)
+                {
                     AcknowledgementFailures.Enqueue(failure);
+                }
                 else
+                {
                     foreach (var offset in result.Offsets)
+                    {
                         Acknowledged.TryAdd(new TopicPartitionOffset(
                             result.TopicPartition.Topic, result.TopicPartition.Partition, offset), 0);
+                    }
+                }
             }
         }
         public readonly TaskCompletionSource FirstWorkerEntered = new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -224,27 +247,45 @@ public class HostedShareConsumerTests(KafkaTestContainer kafka) : KafkaIntegrati
         private int _enteredWorkers;
         public async ValueTask EnterWorkerAsync(CancellationToken token)
         {
-            if (Interlocked.Increment(ref _enteredWorkers) == 1) FirstWorkerEntered.TrySetResult();
-            else _bothWorkersEntered.TrySetResult();
+            if (Interlocked.Increment(ref _enteredWorkers) == 1)
+            {
+                FirstWorkerEntered.TrySetResult();
+            }
+            else
+            {
+                _bothWorkersEntered.TrySetResult();
+            }
             await _bothWorkersEntered.Task.WaitAsync(token);
         }
         public readonly TaskCompletionSource Completed = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public void Process(string value)
         {
             Values.TryAdd(value, 0);
-            if (Values.Count == count) Completed.TrySetResult();
+            if (Values.Count == count)
+            {
+                Completed.TrySetResult();
+            }
         }
     }
 
     private sealed class Worker(IKafkaShareConsumer<string, string> consumer, WorkerState state)
         : KafkaShareConsumerService<string, string>(consumer, GlobalTestSetup.GetLoggerFactory().CreateLogger("HostedShareConsumer"))
     {
-        public IKafkaShareConsumer<string, string> Consumer { get; } = consumer;
-        public int Processed { get; private set; }
+        public IKafkaShareConsumer<string, string> Consumer
+        {
+            get;
+        } = consumer;
+        public int Processed
+        {
+            get; private set;
+        }
         protected override IEnumerable<string> Topics => [state.Topic];
         protected override async ValueTask ProcessAsync(ShareConsumeResult<string, string> record, CancellationToken cancellationToken)
         {
-            if (++Processed == 1) await state.EnterWorkerAsync(cancellationToken);
+            if (++Processed == 1)
+            {
+                await state.EnterWorkerAsync(cancellationToken);
+            }
             state.Process(record.Value);
         }
     }
@@ -258,7 +299,10 @@ public class HostedShareConsumerTests(KafkaTestContainer kafka) : KafkaIntegrati
         protected override async ValueTask ProcessAsync(ShareConsumeResult<string, string> record, CancellationToken cancellationToken)
         {
             Entered.TrySetResult();
-            if (throwProcessingError) throw new ProcessingException();
+            if (throwProcessingError)
+            {
+                throw new ProcessingException();
+            }
             await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
         }
         protected override ValueTask<MessageFailureDisposition> GetFailureDispositionAsync(
@@ -271,7 +315,10 @@ public class HostedShareConsumerTests(KafkaTestContainer kafka) : KafkaIntegrati
             serviceOptions: new KafkaShareConsumerServiceOptions { RenewalInterval = TimeSpan.FromMilliseconds(100) })
     {
         public readonly TaskCompletionSource SentinelProcessed = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        public int SlowCalls { get; private set; }
+        public int SlowCalls
+        {
+            get; private set;
+        }
         protected override IEnumerable<string> Topics => [topic];
         protected override async ValueTask ProcessAsync(ShareConsumeResult<string, string> record, CancellationToken cancellationToken)
         {
@@ -280,7 +327,10 @@ public class HostedShareConsumerTests(KafkaTestContainer kafka) : KafkaIntegrati
                 SlowCalls++;
                 await renewed.WaitAsync(cancellationToken);
             }
-            else SentinelProcessed.TrySetResult();
+            else
+            {
+                SentinelProcessed.TrySetResult();
+            }
         }
     }
 

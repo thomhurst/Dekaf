@@ -105,12 +105,16 @@ public sealed partial class PartitionedConsumerRuntimeTests
 
                     var offsets = processed.GetOrAdd(context.TopicPartition, static _ => []);
                     lock (offsets)
+                    {
                         offsets.Add(message.Offset);
+                    }
 
                     context.MarkProcessed(message);
 
                     if (context.TopicPartition == secondPartition)
+                    {
                         secondPartitionProcessed.SetResult();
+                    }
                 }
             },
             new PartitionedProcessingOptions { MaxBufferedRecordsPerPartition = 4 },
@@ -154,7 +158,9 @@ public sealed partial class PartitionedConsumerRuntimeTests
                 largestReservation = Math.Max(largestReservation, message.ProcessingBatch!.Nodes!.Length);
                 context.MarkProcessed(message);
                 if (++processed == count)
+                {
                     completed.TrySetResult();
+                }
             }
         }, new PartitionedProcessingOptions
         {
@@ -263,7 +269,9 @@ public sealed partial class PartitionedConsumerRuntimeTests
             _ => Interlocked.Increment(ref callbacks));
 
         for (var offset = 0; offset < 3; offset++)
+        {
             await Assert.That(lane.TryEnqueueForTest(CreateResult(partition, offset))).IsTrue();
+        }
 
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
         await ReadLaneMessagesAsync(lane, count: 3, cts.Token).ConfigureAwait(false);
@@ -282,7 +290,9 @@ public sealed partial class PartitionedConsumerRuntimeTests
             _ => Interlocked.Increment(ref callbacks));
 
         for (var offset = 0; offset < 4; offset++)
+        {
             await Assert.That(lane.TryEnqueueForTest(CreateResult(partition, offset))).IsTrue();
+        }
 
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
         await ReadLaneMessagesAsync(lane, count: 4, cts.Token).ConfigureAwait(false);
@@ -453,7 +463,9 @@ public sealed partial class PartitionedConsumerRuntimeTests
             async (context, cancellationToken) =>
             {
                 if (Interlocked.Increment(ref starts) == 2)
+                {
                     secondLaneStarted.SetResult();
+                }
 
                 await foreach (var message in context.Messages.WithCancellation(cancellationToken))
                 {
@@ -803,7 +815,9 @@ public sealed partial class PartitionedConsumerRuntimeTests
             async (context, cancellationToken) =>
             {
                 if (Interlocked.Increment(ref attempts) == 1)
+                {
                     throw new InvalidOperationException("ignored failure");
+                }
 
                 await foreach (var message in context.Messages.WithCancellation(cancellationToken))
                 {
@@ -876,7 +890,9 @@ public sealed partial class PartitionedConsumerRuntimeTests
                     redelivered.Enqueue(message.Offset);
                     context.MarkProcessed(message);
                     if (message.Offset == 9)
+                    {
                         redeliveredAll.TrySetResult();
+                    }
                 }
             },
             new PartitionedProcessingOptions
@@ -931,7 +947,9 @@ public sealed partial class PartitionedConsumerRuntimeTests
                     if (firstAttempt)
                     {
                         if (message.Offset == failingOffset)
+                        {
                             throw new InvalidOperationException("ignored failure");
+                        }
 
                         context.MarkProcessed(message);
                         continue;
@@ -940,7 +958,9 @@ public sealed partial class PartitionedConsumerRuntimeTests
                     redelivered.Enqueue(message.Offset);
                     context.MarkProcessed(message);
                     if (message.Offset == recordCount - 1)
+                    {
                         redeliveredAll.TrySetResult();
+                    }
                 }
             },
             new PartitionedProcessingOptions
@@ -1296,14 +1316,20 @@ public sealed partial class PartitionedConsumerRuntimeTests
                 }
 
                 if (key == "a" && message.Offset == 1)
+                {
                     secondSameKeyStarted.SetResult();
+                }
 
                 var offsets = processed.GetOrAdd(key, static _ => []);
                 lock (offsets)
+                {
                     offsets.Add(message.Offset);
+                }
 
                 if (key == "b")
+                {
                     otherKeyProcessed.SetResult();
+                }
             },
             new PartitionedProcessingOptions
             {
@@ -1356,7 +1382,9 @@ public sealed partial class PartitionedConsumerRuntimeTests
                 }
 
                 if (message.Key == "b")
+                {
                     otherKeyProcessed.SetResult();
+                }
             },
             new PartitionedProcessingOptions
             {
@@ -1603,7 +1631,9 @@ public sealed partial class PartitionedConsumerRuntimeTests
                 }
 
                 if (first)
+                {
                     firstStopped.TrySetResult();
+                }
             },
             new PartitionedProcessingOptions
             {
@@ -1717,7 +1747,9 @@ public sealed partial class PartitionedConsumerRuntimeTests
             partition,
             capacity: 32,
             static (_, _) => ValueTask.CompletedTask,
-            static _ => { },
+            static _ =>
+            {
+            },
             static (_, exception) => throw exception);
         var context = new PartitionProcessorContext<string, string>(lane);
         var processedCount = 0;
@@ -1729,7 +1761,9 @@ public sealed partial class PartitionedConsumerRuntimeTests
             (records, _) =>
             {
                 for (var i = 0; i < records.Count; i++)
+                {
                     context.MarkProcessed(records[i]);
+                }
 
                 Interlocked.Add(ref processedCount, records.Count);
                 return ValueTask.CompletedTask;
@@ -1739,7 +1773,9 @@ public sealed partial class PartitionedConsumerRuntimeTests
         var runTask = dispatcher.RunAsync(cts.Token).AsTask();
 
         for (var i = 0; i < 20; i++)
+        {
             lane.TryEnqueueForTest(CreateResult(partition, i, key: $"key-{i}"));
+        }
 
         await Assert.That(() => Volatile.Read(ref processedCount))
             .Eventually(count => count.IsEqualTo(20), TimeSpan.FromSeconds(5));
@@ -1764,7 +1800,9 @@ public sealed partial class PartitionedConsumerRuntimeTests
             // Main's dispatcher lends the batch until the handler completes.
             retained.Add(messages.ToArray());
             if (retained.Count == 3)
+            {
                 completed.TrySetResult();
+            }
             return ValueTask.CompletedTask;
         }, new PartitionedProcessingOptions
         {
@@ -1784,7 +1822,9 @@ public sealed partial class PartitionedConsumerRuntimeTests
         }
         await Assert.That(retained.Count).IsEqualTo(3);
         for (var index = 0; index < retained.Count; index++)
+        {
             await Assert.That(retained[index][0].Offset).IsEqualTo((long)index);
+        }
         await Assert.That(ReferenceEquals(retained[0], retained[1])).IsFalse();
     }
 
@@ -2140,10 +2180,14 @@ public sealed partial class PartitionedConsumerRuntimeTests
         TopicPartition partition)
     {
         if (!processed.TryGetValue(partition, out var offsets))
+        {
             return [];
+        }
 
         lock (offsets)
+        {
             return offsets.ToArray();
+        }
     }
 
     private static long[] Snapshot(
@@ -2151,10 +2195,14 @@ public sealed partial class PartitionedConsumerRuntimeTests
         string key)
     {
         if (!processed.TryGetValue(key, out var offsets))
+        {
             return [];
+        }
 
         lock (offsets)
+        {
             return offsets.ToArray();
+        }
     }
 
     private static PartitionLane<string, string> CreateLane(
@@ -2242,7 +2290,9 @@ public sealed partial class PartitionedConsumerRuntimeTests
             {
                 Interlocked.Increment(ref _assignmentReads);
                 lock (_gate)
+                {
                     return _assignment.ToHashSet();
+                }
             }
         }
 
@@ -2252,20 +2302,28 @@ public sealed partial class PartitionedConsumerRuntimeTests
         /// Mirrors KafkaConsumer.ConsumeBatchAsync: a batch the caller resumes past without
         /// enumerating stays at the head of the queue and is yielded again immediately.
         /// </summary>
-        public bool RedeliverUnenumeratedBatches { get; init; }
+        public bool RedeliverUnenumeratedBatches
+        {
+            get; init;
+        }
 
         public IReadOnlySet<TopicPartition> Paused
         {
             get
             {
                 lock (_gate)
+                {
                     return _paused.ToHashSet();
+                }
             }
         }
 
         public string? MemberId => "member-a";
 
-        public bool IsLeavingGroup { get; set; }
+        public bool IsLeavingGroup
+        {
+            get; set;
+        }
 
         public ConsumerGroupMetadata? ConsumerGroupMetadata => new()
         {
@@ -2280,39 +2338,78 @@ public sealed partial class PartitionedConsumerRuntimeTests
 
         public IConsumerOffsets Offsets => this;
 
-        public List<TopicPartition[]> PauseCalls { get; } = [];
+        public List<TopicPartition[]> PauseCalls
+        {
+            get;
+        } = [];
 
-        public List<TopicPartition[]> ResumeCalls { get; } = [];
+        public List<TopicPartition[]> ResumeCalls
+        {
+            get;
+        } = [];
 
-        public List<TopicPartitionOffset[]> CommitCalls { get; } = [];
+        public List<TopicPartitionOffset[]> CommitCalls
+        {
+            get;
+        } = [];
 
         /// <summary>The offset <see cref="GetCommittedOffsetAsync"/> reports for every partition.</summary>
-        public long? CommittedOffset { get; set; }
+        public long? CommittedOffset
+        {
+            get; set;
+        }
 
         /// <summary>Failures thrown, one per call, by the next offset commits.</summary>
-        public ConcurrentQueue<Exception> CommitFailures { get; } = new();
+        public ConcurrentQueue<Exception> CommitFailures
+        {
+            get;
+        } = new();
 
         public int CommitAttempts => Volatile.Read(ref _commitAttempts);
 
-        public List<TopicPartitionOffset> StoredOffsets { get; } = [];
+        public List<TopicPartitionOffset> StoredOffsets
+        {
+            get;
+        } = [];
 
         public int ConsumeOneCalls => Volatile.Read(ref _consumeOneCalls);
 
         public int ConsumeBatchCalls => Volatile.Read(ref _consumeBatchCalls);
 
-        public TaskCompletionSource? CommitStarted { get; init; }
+        public TaskCompletionSource? CommitStarted
+        {
+            get; init;
+        }
 
-        public TaskCompletionSource? ReleaseCommit { get; init; }
+        public TaskCompletionSource? ReleaseCommit
+        {
+            get; init;
+        }
 
-        public Action? CommitStartedCallback { get; init; }
+        public Action? CommitStartedCallback
+        {
+            get; init;
+        }
 
-        public ILoggerFactory? LoggerFactory { get; init; }
+        public ILoggerFactory? LoggerFactory
+        {
+            get; init;
+        }
 
-        public OffsetCommitMode OffsetCommitMode { get; init; } = OffsetCommitMode.Manual;
+        public OffsetCommitMode OffsetCommitMode
+        {
+            get; init;
+        } = OffsetCommitMode.Manual;
 
-        public bool EnableAutoOffsetStore { get; init; } = true;
+        public bool EnableAutoOffsetStore
+        {
+            get; init;
+        } = true;
 
-        public bool HasConsumerGroup { get; init; } = true;
+        public bool HasConsumerGroup
+        {
+            get; init;
+        } = true;
 
 
         IReadOnlySet<TopicPartition> IConsumerPartitions.Assignment => Assignment;
@@ -2322,7 +2419,9 @@ public sealed partial class PartitionedConsumerRuntimeTests
         IDisposable IConsumerRebalanceEventSource.RegisterRuntimeRebalanceListener(IRebalanceListener listener)
         {
             lock (_gate)
+            {
                 _rebalanceListeners.Add(listener);
+            }
 
             return new RebalanceRegistration(this, listener);
         }
@@ -2349,7 +2448,9 @@ public sealed partial class PartitionedConsumerRuntimeTests
             {
                 var result = await ConsumeOneAsync(Timeout.InfiniteTimeSpan, cancellationToken).ConfigureAwait(false);
                 if (result.HasValue)
+                {
                     yield return result.Value;
+                }
             }
         }
 
@@ -2368,10 +2469,14 @@ public sealed partial class PartitionedConsumerRuntimeTests
                 cancellationToken.ThrowIfCancellationRequested();
 
                 if (TryDequeueAvailable(out var result))
+                {
                     return result;
+                }
 
                 if (timeout == TimeSpan.Zero)
+                {
                     return null;
+                }
 
                 if (timeout == Timeout.InfiniteTimeSpan)
                 {
@@ -2381,10 +2486,14 @@ public sealed partial class PartitionedConsumerRuntimeTests
 
                 var remaining = deadline - DateTimeOffset.UtcNow;
                 if (remaining <= TimeSpan.Zero)
+                {
                     return null;
+                }
 
                 if (!await _changed.WaitAsync(remaining, cancellationToken).ConfigureAwait(false))
+                {
                     return null;
+                }
             }
         }
 
@@ -2403,7 +2512,9 @@ public sealed partial class PartitionedConsumerRuntimeTests
 
                 int seeksBeforeBatch;
                 lock (_gate)
+                {
                     seeksBeforeBatch = SeekCalls.Count;
+                }
 
                 using var pending = CreatePendingFetchData(results);
                 yield return new ConsumeBatch<string, string>(
@@ -2419,7 +2530,9 @@ public sealed partial class PartitionedConsumerRuntimeTests
 
                 // Like KafkaConsumer, a seek drops the partition's stale fetched records.
                 if (RedeliverUnenumeratedBatches && !pending.IsExhausted && !WasSeekedSince(results, seeksBeforeBatch))
+                {
                     RequeueAtFront(results);
+                }
             }
         }
 
@@ -2456,7 +2569,9 @@ public sealed partial class PartitionedConsumerRuntimeTests
             cancellationToken.ThrowIfCancellationRequested();
             // Mirrors KafkaConsumer, which has no coordinator to commit through without a group.
             if (!HasConsumerGroup)
+            {
                 throw new InvalidOperationException("Offset commits require a consumer group");
+            }
 
             // Arm cancellation before telling the test it can cancel and release us.
             // WaitAsync on an already-completed release task would ignore cancellation.
@@ -2464,7 +2579,9 @@ public sealed partial class PartitionedConsumerRuntimeTests
             CommitStarted?.TrySetResult();
             CommitStartedCallback?.Invoke();
             if (releaseCommit is not null)
+            {
                 await releaseCommit.ConfigureAwait(false);
+            }
 
             // CommitStarted can let the test cancel and release before WaitAsync
             // registers. A completed task bypasses WaitAsync's cancellation check;
@@ -2473,10 +2590,14 @@ public sealed partial class PartitionedConsumerRuntimeTests
 
             Interlocked.Increment(ref _commitAttempts);
             if (CommitFailures.TryDequeue(out var failure))
+            {
                 throw failure;
+            }
 
             lock (_gate)
+            {
                 CommitCalls.Add(offsets.ToArray());
+            }
         }
 
         public void StoreOffset(ConsumeResult<string, string> result)
@@ -2486,7 +2607,9 @@ public sealed partial class PartitionedConsumerRuntimeTests
         public void StoreOffset(TopicPartitionOffset offset)
         {
             lock (_gate)
+            {
                 StoredOffsets.Add(offset);
+            }
         }
 
         public ValueTask CloseAsync(CancellationToken cancellationToken = default)
@@ -2508,7 +2631,10 @@ public sealed partial class PartitionedConsumerRuntimeTests
         public long? GetPosition(TopicPartition partition)
             => null;
 
-        public List<TopicPartitionOffset> SeekCalls { get; } = [];
+        public List<TopicPartitionOffset> SeekCalls
+        {
+            get;
+        } = [];
 
         /// <summary>
         /// Mirrors KafkaConsumer.Seek: drops the partition's queued records and fetches it again
@@ -2525,13 +2651,17 @@ public sealed partial class PartitionedConsumerRuntimeTests
                 {
                     var queued = _records.Dequeue();
                     if (queued.Topic != offset.Topic || queued.Partition != offset.Partition)
+                    {
                         _records.Enqueue(queued);
+                    }
                 }
 
                 foreach (var logged in _log)
                 {
                     if (new TopicPartition(logged.Topic, logged.Partition) == partition && logged.Offset >= offset.Offset)
+                    {
                         _records.Enqueue(logged);
+                    }
                 }
             }
 
@@ -2559,7 +2689,9 @@ public sealed partial class PartitionedConsumerRuntimeTests
             lock (_gate)
             {
                 foreach (var offset in partitions)
+                {
                     _assignment.Add(new TopicPartition(offset.Topic, offset.Partition));
+                }
             }
 
             _changed.Release();
@@ -2572,7 +2704,9 @@ public sealed partial class PartitionedConsumerRuntimeTests
             lock (_gate)
             {
                 foreach (var partition in partitions)
+                {
                     _assignment.Remove(partition);
+                }
             }
 
             _changed.Release();
@@ -2586,7 +2720,9 @@ public sealed partial class PartitionedConsumerRuntimeTests
             {
                 PauseCalls.Add(partitions.ToArray());
                 foreach (var partition in partitions)
+                {
                     _paused.Add(partition);
+                }
             }
 
             PausedCallback?.Invoke(partitions);
@@ -2594,7 +2730,10 @@ public sealed partial class PartitionedConsumerRuntimeTests
         }
 
         /// <summary>Runs after each Pause call records its partitions.</summary>
-        public Action<TopicPartition[]>? PausedCallback { get; init; }
+        public Action<TopicPartition[]>? PausedCallback
+        {
+            get; init;
+        }
 
         public void Resume(params TopicPartition[] partitions)
         {
@@ -2604,14 +2743,19 @@ public sealed partial class PartitionedConsumerRuntimeTests
             {
                 ResumeCalls.Add(partitions.ToArray());
                 foreach (var partition in partitions)
+                {
                     _paused.Remove(partition);
+                }
             }
 
             _changed.Release();
         }
 
         /// <summary>Resolves offsets-for-times lookups; no partition resolves when unset.</summary>
-        public Func<TopicPartitionTimestamp, long>? OffsetForTime { get; init; }
+        public Func<TopicPartitionTimestamp, long>? OffsetForTime
+        {
+            get; init;
+        }
 
         public ValueTask<IReadOnlyDictionary<TopicPartition, long>> GetOffsetsForTimesAsync(
             IEnumerable<TopicPartitionTimestamp> timestampsToSearch,
@@ -2621,7 +2765,9 @@ public sealed partial class PartitionedConsumerRuntimeTests
             if (OffsetForTime is { } offsetForTime)
             {
                 foreach (var timestamp in timestampsToSearch)
+                {
                     offsets[timestamp.TopicPartition] = offsetForTime(timestamp);
+                }
             }
 
             return ValueTask.FromResult<IReadOnlyDictionary<TopicPartition, long>>(offsets);
@@ -2642,7 +2788,9 @@ public sealed partial class PartitionedConsumerRuntimeTests
                 _assignment.Clear();
                 _paused.RemoveWhere(partition => !partitions.Contains(partition));
                 foreach (var partition in partitions)
+                {
                     _assignment.Add(partition);
+                }
             }
 
             _changed.Release();
@@ -2671,7 +2819,9 @@ public sealed partial class PartitionedConsumerRuntimeTests
             {
                 _assignment.Clear();
                 foreach (var partition in partitions)
+                {
                     _assignment.Add(partition);
+                }
                 foreach (var result in results)
                 {
                     _records.Enqueue(result);
@@ -2778,7 +2928,9 @@ public sealed partial class PartitionedConsumerRuntimeTests
         private bool WasSeekedSince(List<ConsumeResult<string, string>> results, int seekIndex)
         {
             if (results.Count == 0)
+            {
                 return false;
+            }
 
             // A batch holds one partition.
             var partition = new TopicPartition(results[0].Topic, results[0].Partition);
@@ -2787,7 +2939,9 @@ public sealed partial class PartitionedConsumerRuntimeTests
                 for (var i = seekIndex; i < SeekCalls.Count; i++)
                 {
                     if (SeekCalls[i].Topic == partition.Topic && SeekCalls[i].Partition == partition.Partition)
+                    {
                         return true;
+                    }
                 }
             }
 
@@ -2800,9 +2954,13 @@ public sealed partial class PartitionedConsumerRuntimeTests
             {
                 var queued = _records.Count;
                 foreach (var result in results)
+                {
                     _records.Enqueue(result);
+                }
                 for (var i = 0; i < queued; i++)
+                {
                     _records.Enqueue(_records.Dequeue());
+                }
             }
 
             _changed.Release();
@@ -2811,7 +2969,9 @@ public sealed partial class PartitionedConsumerRuntimeTests
         private bool IsAssigned(TopicPartition partition)
         {
             lock (_gate)
+            {
                 return _assignment.Contains(partition);
+            }
         }
 
         private static PendingFetchData CreatePendingFetchData(IReadOnlyList<ConsumeResult<string, string>> results)
@@ -2872,27 +3032,37 @@ public sealed partial class PartitionedConsumerRuntimeTests
         private void RemoveRebalanceListener(IRebalanceListener listener)
         {
             lock (_gate)
+            {
                 _rebalanceListeners.Remove(listener);
+            }
         }
 
         private void FireRebalanceListener(Func<IRebalanceListener, ValueTask> callback)
         {
             IRebalanceListener[] listeners;
             lock (_gate)
+            {
                 listeners = _rebalanceListeners.ToArray();
+            }
 
             foreach (var listener in listeners)
+            {
                 callback(listener).AsTask().GetAwaiter().GetResult();
+            }
         }
 
         private async Task FireRebalanceListenerAsync(Func<IRebalanceListener, ValueTask> callback)
         {
             IRebalanceListener[] listeners;
             lock (_gate)
+            {
                 listeners = _rebalanceListeners.ToArray();
+            }
 
             foreach (var listener in listeners)
+            {
                 await callback(listener).ConfigureAwait(false);
+            }
         }
 
         private sealed class RebalanceRegistration(
@@ -2904,7 +3074,9 @@ public sealed partial class PartitionedConsumerRuntimeTests
             public void Dispose()
             {
                 if (Interlocked.Exchange(ref _disposed, 1) == 0)
+                {
                     consumer.RemoveRebalanceListener(listener);
+                }
             }
         }
     }
@@ -2923,13 +3095,20 @@ public sealed partial class PartitionedConsumerRuntimeTests
 
     private sealed class CapturingLoggerFactory : ILoggerFactory
     {
-        public ConcurrentQueue<LogEntry> Entries { get; } = new();
+        public ConcurrentQueue<LogEntry> Entries
+        {
+            get;
+        } = new();
 
         public ILogger CreateLogger(string categoryName) => new CapturingLogger(Entries);
 
-        public void AddProvider(ILoggerProvider provider) { }
+        public void AddProvider(ILoggerProvider provider)
+        {
+        }
 
-        public void Dispose() { }
+        public void Dispose()
+        {
+        }
     }
 
     private sealed class CapturingLogger(ConcurrentQueue<LogEntry> entries) : ILogger

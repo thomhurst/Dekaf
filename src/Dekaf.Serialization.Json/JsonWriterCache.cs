@@ -77,7 +77,9 @@ internal sealed class JsonWriterCache
     {
         _lastWriter?.Reset(DetachedBuffer);
         if (_lastOptions is not null)
+        {
             _writers?.Remove(_lastOptions);
+        }
         _lastOptions = null;
         _lastWriter = null;
     }

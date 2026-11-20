@@ -25,10 +25,16 @@ public class BatchMemoryAllocationBenchmarks
     private long _timestamp;
 
     [Params(100, 1000)]
-    public int MessageSize { get; set; }
+    public int MessageSize
+    {
+        get; set;
+    }
 
     [Params(BufferMemoryAllocationStrategy.Full, BufferMemoryAllocationStrategy.Incremental)]
-    public BufferMemoryAllocationStrategy AllocationStrategy { get; set; }
+    public BufferMemoryAllocationStrategy AllocationStrategy
+    {
+        get; set;
+    }
 
     [GlobalSetup]
     public void Setup()
@@ -67,7 +73,9 @@ public class BatchMemoryAllocationBenchmarks
         _batch = _batchPool.Rent(_topicPartition, partitionCount: 1);
 
         for (var i = 0; i < 100_000; i++)
+        {
             AppendOne();
+        }
     }
 
     [GlobalCleanup]
@@ -77,7 +85,9 @@ public class BatchMemoryAllocationBenchmarks
     public int Append()
     {
         for (var i = 0; i < OperationsPerInvoke; i++)
+        {
             AppendOne();
+        }
 
         return _batch.RecordCount;
     }
@@ -97,7 +107,9 @@ public class BatchMemoryAllocationBenchmarks
             _estimatedSize);
 
         if (result.Success)
+        {
             return;
+        }
 
         RotateBatch();
         if (!_batch.TryAppendFromSpans(

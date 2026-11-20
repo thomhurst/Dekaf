@@ -916,10 +916,16 @@ public sealed partial class KafkaConsumerServiceTests
     /// <summary>A handler that ignores cancellation until the test releases it.</summary>
     private sealed class UncooperativeProcessConsumerService : TestableKafkaConsumerService
     {
-        public TaskCompletionSource ProcessingStarted { get; } =
+        public TaskCompletionSource ProcessingStarted
+        {
+            get;
+        } =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
 
-        public TaskCompletionSource ReleaseProcessing { get; } =
+        public TaskCompletionSource ReleaseProcessing
+        {
+            get;
+        } =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         public UncooperativeProcessConsumerService(
@@ -938,7 +944,10 @@ public sealed partial class KafkaConsumerServiceTests
 
     private sealed class BlockingProcessConsumerService : TestableKafkaConsumerService
     {
-        public TaskCompletionSource ProcessingStarted { get; } =
+        public TaskCompletionSource ProcessingStarted
+        {
+            get;
+        } =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         public BlockingProcessConsumerService(IKafkaConsumer<string, string> consumer, string[] topics)
@@ -1441,7 +1450,10 @@ public sealed partial class KafkaConsumerServiceTests
 
     private sealed class TestConsumerService : TestableKafkaConsumerService
     {
-        public List<ConsumeResult<string, string>> ProcessedMessages { get; } = [];
+        public List<ConsumeResult<string, string>> ProcessedMessages
+        {
+            get;
+        } = [];
 
         public TestConsumerService(
             IKafkaConsumer<string, string> consumer,
@@ -1463,8 +1475,14 @@ public sealed partial class KafkaConsumerServiceTests
     {
         private readonly MessageFailureDisposition? _failureDisposition;
 
-        public List<Exception> Errors { get; } = [];
-        public List<MessageFailureContext<string, string>> FailureContexts { get; } = [];
+        public List<Exception> Errors
+        {
+            get;
+        } = [];
+        public List<MessageFailureContext<string, string>> FailureContexts
+        {
+            get;
+        } = [];
 
         public FailingConsumerService(
             IKafkaConsumer<string, string> consumer,

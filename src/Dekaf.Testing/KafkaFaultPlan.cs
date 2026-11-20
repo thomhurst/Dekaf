@@ -69,13 +69,21 @@ public readonly struct KafkaFaultScope
         string? groupId = null)
     {
         if (operation is < KafkaFaultOperation.Produce or > KafkaFaultOperation.ShareAcknowledge)
+        {
             throw new ArgumentOutOfRangeException(nameof(operation), operation, "Unknown fault operation.");
+        }
         if (topic is not null)
+        {
             ArgumentException.ThrowIfNullOrWhiteSpace(topic);
+        }
         if (partition < 0)
+        {
             throw new ArgumentOutOfRangeException(nameof(partition), partition, "Partition cannot be negative.");
+        }
         if (groupId is not null)
+        {
             ArgumentException.ThrowIfNullOrWhiteSpace(groupId);
+        }
         if (operation is KafkaFaultOperation.JoinGroup or
             KafkaFaultOperation.SyncGroup or
             KafkaFaultOperation.Rebalance)
@@ -102,25 +110,43 @@ public readonly struct KafkaFaultScope
     }
 
     /// <summary>Gets the operation selector.</summary>
-    public KafkaFaultOperation Operation { get; }
+    public KafkaFaultOperation Operation
+    {
+        get;
+    }
 
     /// <summary>Gets the optional topic selector.</summary>
-    public string? Topic { get; }
+    public string? Topic
+    {
+        get;
+    }
 
     /// <summary>Gets the optional partition selector.</summary>
-    public int? Partition { get; }
+    public int? Partition
+    {
+        get;
+    }
 
     /// <summary>Gets the optional consumer-group selector.</summary>
-    public string? GroupId { get; }
+    public string? GroupId
+    {
+        get;
+    }
 
     internal bool Matches(KafkaFaultScope context)
     {
         if (Operation != context.Operation)
+        {
             return false;
+        }
         if (Topic is not null && !string.Equals(Topic, context.Topic, StringComparison.Ordinal))
+        {
             return false;
+        }
         if (Partition is not null && Partition != context.Partition)
+        {
             return false;
+        }
 
         return GroupId is null || string.Equals(GroupId, context.GroupId, StringComparison.Ordinal);
     }
@@ -134,7 +160,9 @@ public readonly struct KafkaFaultScope
     internal void Validate()
     {
         if (Operation is < KafkaFaultOperation.Produce or > KafkaFaultOperation.ShareAcknowledge)
+        {
             throw new ArgumentOutOfRangeException(nameof(Operation), Operation, "Unknown fault operation.");
+        }
     }
 }
 
@@ -160,22 +188,40 @@ public readonly struct KafkaFaultObservation
     }
 
     /// <summary>Gets the configured rule scope.</summary>
-    public KafkaFaultScope RuleScope { get; }
+    public KafkaFaultScope RuleScope
+    {
+        get;
+    }
 
     /// <summary>Gets the concrete operation scope that matched.</summary>
-    public KafkaFaultScope OperationScope { get; }
+    public KafkaFaultScope OperationScope
+    {
+        get;
+    }
 
     /// <summary>Gets the consumed action.</summary>
-    public KafkaFaultAction Action { get; }
+    public KafkaFaultAction Action
+    {
+        get;
+    }
 
     /// <summary>Gets the configured exception for a throw action.</summary>
-    public Exception? Exception { get; }
+    public Exception? Exception
+    {
+        get;
+    }
 
     /// <summary>Gets whether the consumed rule remains persistent.</summary>
-    public bool IsPersistent { get; }
+    public bool IsPersistent
+    {
+        get;
+    }
 
     /// <summary>Gets the remaining occurrences, or null for a persistent rule.</summary>
-    public int? RemainingOccurrences { get; }
+    public int? RemainingOccurrences
+    {
+        get;
+    }
 }
 
 /// <summary>
@@ -204,7 +250,9 @@ public sealed class KafkaFaultBarrier
     public ValueTask WaitUntilEnteredAsync(CancellationToken cancellationToken = default)
     {
         if (_entered.Task.IsCompletedSuccessfully)
+        {
             return ValueTask.CompletedTask;
+        }
 
         return WaitAsync(_entered.Task, cancellationToken);
     }
@@ -224,7 +272,9 @@ public sealed class KafkaFaultBarrier
     {
         _entered.TrySetResult();
         if (_released.Task.IsCompletedSuccessfully)
+        {
             return ValueTask.CompletedTask;
+        }
 
         return WaitAsync(_released.Task, cancellationToken);
     }
@@ -246,7 +296,10 @@ public interface IKafkaFaultPlan
     /// <summary>
     /// Gets the number of queued entries. A next-N failure is one entry.
     /// </summary>
-    int Count { get; }
+    int Count
+    {
+        get;
+    }
 
     /// <summary>
     /// Gets a value that changes whenever the queued fault script changes.
@@ -254,7 +307,10 @@ public interface IKafkaFaultPlan
     /// <remarks>
     /// Implementations must expose this value thread-safely and change it whenever matching results can change.
     /// </remarks>
-    long Version { get; }
+    long Version
+    {
+        get;
+    }
 
     /// <summary>
     /// Returns whether the supplied concrete operation scope matches a queued entry.
@@ -431,7 +487,9 @@ public sealed class KafkaFaultPlan : IKafkaFaultPlan
         operationScope.Validate();
         cancellationToken.ThrowIfCancellationRequested();
         if (Volatile.Read(ref _hasEntries) == 0)
+        {
             return ValueTask.CompletedTask;
+        }
 
         if (!TryConsumeFirstMatchingEntry(
                 operationScope,
@@ -453,7 +511,9 @@ public sealed class KafkaFaultPlan : IKafkaFaultPlan
     {
         cancellationToken.ThrowIfCancellationRequested();
         for (var i = 0; i < operationScopes.Length; i++)
+        {
             operationScopes[i].Validate();
+        }
 
         FaultEntry? entry = null;
         KafkaFaultObservation observation = default;
@@ -467,7 +527,9 @@ public sealed class KafkaFaultPlan : IKafkaFaultPlan
                 {
                     var operationScope = operationScopes[scopeIndex];
                     if (!candidate.Scope.Matches(operationScope))
+                    {
                         continue;
+                    }
 
                     ConsumeEntryUnderLock(
                         entryIndex,
@@ -503,7 +565,9 @@ public sealed class KafkaFaultPlan : IKafkaFaultPlan
             {
                 var entry = _entries[i];
                 if (!entry.Scope.EqualsExactly(scope))
+                {
                     continue;
+                }
 
                 _entries.RemoveAt(i);
                 RemoveFaultIndexUnderLock(entry.Scope);
@@ -513,9 +577,13 @@ public sealed class KafkaFaultPlan : IKafkaFaultPlan
 
             Volatile.Write(ref _count, _entries.Count);
             if (_entries.Count == 0)
+            {
                 Volatile.Write(ref _hasEntries, 0);
+            }
             if (removed != 0)
+            {
                 PublishScopeIndexUnderLock();
+            }
         }
 
         return removed;
@@ -530,7 +598,9 @@ public sealed class KafkaFaultPlan : IKafkaFaultPlan
         {
             var removed = _entries.Count;
             for (var i = 0; i < _entries.Count; i++)
+            {
                 _entries[i].Barrier?.ClearBeforeEntry();
+            }
 
             _entries.Clear();
             Volatile.Write(ref _count, 0);
@@ -558,7 +628,9 @@ public sealed class KafkaFaultPlan : IKafkaFaultPlan
             case KafkaFaultOperation.ShareAcknowledge:
                 var index = Volatile.Read(ref _shareFaultIndex);
                 if (ReferenceEquals(index, ShareFaultIndex.Empty))
+                {
                     index = new ShareFaultIndex();
+                }
 
                 index = index.Add(scope, out var addedEligibility);
                 if (addedEligibility)
@@ -582,10 +654,14 @@ public sealed class KafkaFaultPlan : IKafkaFaultPlan
             case KafkaFaultOperation.ShareAcknowledge:
                 var index = Volatile.Read(ref _shareFaultIndex);
                 if (ReferenceEquals(index, ShareFaultIndex.Empty) || !index.Remove(scope))
+                {
                     break;
+                }
 
                 if (index.IsEmpty)
+                {
                     index = ShareFaultIndex.Empty;
+                }
                 Volatile.Write(ref _shareFaultIndex, index);
                 Interlocked.Increment(ref _shareFaultIndexVersion);
                 break;
@@ -604,11 +680,15 @@ public sealed class KafkaFaultPlan : IKafkaFaultPlan
             {
                 case KafkaFaultOperation.Produce:
                     if (scope.GroupId is null)
+                    {
                         produceScopes.Add(scope.Topic);
+                    }
                     break;
                 case KafkaFaultOperation.TransactionProduce:
                     if (scope.GroupId is null)
+                    {
                         transactionProduceScopes.Add(scope.Topic);
+                    }
                     break;
             }
         }
@@ -654,7 +734,9 @@ public sealed class KafkaFaultPlan : IKafkaFaultPlan
             }
 
             if (string.Equals(SingleTopic, topic, StringComparison.Ordinal))
+            {
                 return;
+            }
 
             Topics = new HashSet<string>(StringComparer.Ordinal) { SingleTopic, topic };
             SingleTopic = null;
@@ -669,7 +751,10 @@ public sealed class KafkaFaultPlan : IKafkaFaultPlan
         string? transactionProduceTopic,
         HashSet<string>? transactionProduceTopics)
     {
-        public static ProduceFaultIndex Empty { get; } = new(false, null, null, false, null, null);
+        public static ProduceFaultIndex Empty
+        {
+            get;
+        } = new(false, null, null, false, null, null);
 
         public bool Matches(KafkaFaultOperation operation, string topic) => operation switch
         {
@@ -703,7 +788,10 @@ public sealed class KafkaFaultPlan : IKafkaFaultPlan
             _acknowledgeScopes = acknowledgeScopes;
         }
 
-        public static ShareFaultIndex Empty { get; } = new(ShareScopeIndex.Empty, ShareScopeIndex.Empty);
+        public static ShareFaultIndex Empty
+        {
+            get;
+        } = new(ShareScopeIndex.Empty, ShareScopeIndex.Empty);
 
         public bool IsEmpty => _consumeScopes.IsEmpty && _acknowledgeScopes.IsEmpty;
 
@@ -715,7 +803,9 @@ public sealed class KafkaFaultPlan : IKafkaFaultPlan
             var scopes = GetScopes(scope.Operation);
             var updatedScopes = scopes.Add(scope, out eligibilityChanged);
             if (ReferenceEquals(scopes, updatedScopes))
+            {
                 return this;
+            }
 
             return scope.Operation == KafkaFaultOperation.ShareConsume
                 ? new ShareFaultIndex(updatedScopes, _acknowledgeScopes)
@@ -765,7 +855,10 @@ public sealed class KafkaFaultPlan : IKafkaFaultPlan
         {
         }
 
-        public static ShareScopeIndex Empty { get; } = new();
+        public static ShareScopeIndex Empty
+        {
+            get;
+        } = new();
 
         private ShareScopeIndex(ShareScopeIndex source)
         {
@@ -799,7 +892,9 @@ public sealed class KafkaFaultPlan : IKafkaFaultPlan
                 eligibilityChanged = _allCount == 0;
                 _allCount++;
                 if (eligibilityChanged)
+                {
                     _activeScopeCount++;
+                }
                 return this;
             }
 
@@ -809,7 +904,9 @@ public sealed class KafkaFaultPlan : IKafkaFaultPlan
                 eligibilityChanged = count == 0;
                 Volatile.Write(ref counter.Count, count + 1);
                 if (eligibilityChanged)
+                {
                     _activeScopeCount++;
+                }
                 return this;
             }
 
@@ -825,19 +922,25 @@ public sealed class KafkaFaultPlan : IKafkaFaultPlan
             {
                 _allCount--;
                 if (_allCount != 0)
+                {
                     return false;
+                }
 
                 _activeScopeCount--;
                 return true;
             }
 
             if (!TryGetCounter(scope, out var counter))
+            {
                 return false;
+            }
 
             var count = Volatile.Read(ref counter.Count) - 1;
             Volatile.Write(ref counter.Count, count);
             if (count != 0)
+            {
                 return false;
+            }
 
             RemoveCounter(scope);
             _activeScopeCount--;
@@ -847,12 +950,16 @@ public sealed class KafkaFaultPlan : IKafkaFaultPlan
         public bool Matches(string groupId, HashSet<TopicPartition> assignment)
         {
             if (assignment.Count == 0)
+            {
                 return false;
+            }
 
             foreach (var partition in assignment)
             {
                 if (Matches(partition.Topic, partition.Partition, groupId))
+                {
                     return true;
+                }
             }
 
             return false;
@@ -1066,7 +1173,9 @@ public sealed class KafkaFaultPlan : IKafkaFaultPlan
                 }
 
                 if (scope.Topic is not null || scope.Partition is not null)
+                {
                     break;
+                }
 
                 ConsumeEntryUnderLock(
                     entryIndex,
@@ -1118,7 +1227,9 @@ public sealed class KafkaFaultPlan : IKafkaFaultPlan
                         offset.Partition,
                         groupId);
                     if (!candidate.Scope.Matches(operationScope))
+                    {
                         continue;
+                    }
 
                     ConsumeEntryUnderLock(
                         entryIndex,
@@ -1178,7 +1289,9 @@ public sealed class KafkaFaultPlan : IKafkaFaultPlan
                 _entries.RemoveAt(entryIndex);
                 Volatile.Write(ref _count, _entries.Count);
                 if (_entries.Count == 0)
+                {
                     Volatile.Write(ref _hasEntries, 0);
+                }
                 RemoveFaultIndexUnderLock(entry.Scope);
                 PublishScopeIndexUnderLock();
             }
@@ -1205,7 +1318,9 @@ public sealed class KafkaFaultPlan : IKafkaFaultPlan
             for (var entryIndex = 0; entryIndex < _entries.Count; entryIndex++)
             {
                 if (!_entries[entryIndex].Scope.Matches(operationScope))
+                {
                     continue;
+                }
 
                 ConsumeEntryUnderLock(
                     entryIndex,
@@ -1231,7 +1346,9 @@ public sealed class KafkaFaultPlan : IKafkaFaultPlan
     {
         observer?.Invoke(observation);
         if (entry.Exception is { } exception)
+        {
             return ValueTask.FromException(exception);
+        }
 
         return entry.Barrier!.EnterAsync(cancellationToken);
     }
@@ -1273,12 +1390,17 @@ public sealed class KafkaFaultPlan : IKafkaFaultPlan
             }
         }
 
-        internal long Version { get; }
+        internal long Version
+        {
+            get;
+        }
 
         internal bool HasPotentialMatch(KafkaFaultOperation operation, string? groupId)
         {
             if ((_operations & (1UL << (int)operation)) == 0)
+            {
                 return false;
+            }
 
             return _operationGroups.Contains(new OperationGroupKey(operation, null)) ||
                    (groupId is not null &&
@@ -1291,7 +1413,9 @@ public sealed class KafkaFaultPlan : IKafkaFaultPlan
             IReadOnlySet<TopicPartition> assignment)
         {
             if (!HasPotentialMatch(operation, groupId))
+            {
                 return false;
+            }
 
             foreach (var scope in _scopes)
             {
@@ -1302,7 +1426,9 @@ public sealed class KafkaFaultPlan : IKafkaFaultPlan
                 }
 
                 if (scope.Topic is null && scope.Partition is null)
+                {
                     return true;
+                }
 
                 foreach (var assigned in assignment)
                 {
@@ -1320,7 +1446,9 @@ public sealed class KafkaFaultPlan : IKafkaFaultPlan
         internal bool HasMatchingFault(in KafkaFaultScope operationScope)
         {
             if (!HasPotentialMatch(operationScope.Operation, operationScope.GroupId))
+            {
                 return false;
+            }
 
             for (var selectors = 0; selectors < 8; selectors++)
             {
@@ -1330,7 +1458,9 @@ public sealed class KafkaFaultPlan : IKafkaFaultPlan
                     (selectors & 2) == 0 ? null : operationScope.Partition,
                     (selectors & 4) == 0 ? null : operationScope.GroupId);
                 if (_scopes.Contains(key))
+                {
                     return true;
+                }
             }
 
             return false;
@@ -1347,7 +1477,9 @@ public sealed class KafkaFaultPlan : IKafkaFaultPlan
                 {
                     var candidate = operationScopes[operationIndex];
                     if (!Matches(ruleScope, candidate))
+                    {
                         continue;
+                    }
 
                     operationScope = candidate;
                     return true;
@@ -1361,11 +1493,17 @@ public sealed class KafkaFaultPlan : IKafkaFaultPlan
         private static bool Matches(ScopeKey ruleScope, KafkaFaultScope candidate)
         {
             if (ruleScope.Operation != candidate.Operation)
+            {
                 return false;
+            }
             if (ruleScope.GroupId is not null && ruleScope.GroupId != candidate.GroupId)
+            {
                 return false;
+            }
             if (ruleScope.Topic is not null && ruleScope.Topic != candidate.Topic)
+            {
                 return false;
+            }
             return ruleScope.Partition is null || ruleScope.Partition == candidate.Partition;
         }
 
@@ -1399,12 +1537,30 @@ public sealed class KafkaFaultPlan : IKafkaFaultPlan
             IsPersistent = isPersistent;
         }
 
-        public KafkaFaultScope Scope { get; }
-        public KafkaFaultAction Action { get; }
-        public Exception? Exception { get; }
-        public KafkaFaultBarrier? Barrier { get; }
-        public int RemainingOccurrences { get; set; }
-        public bool IsPersistent { get; }
+        public KafkaFaultScope Scope
+        {
+            get;
+        }
+        public KafkaFaultAction Action
+        {
+            get;
+        }
+        public Exception? Exception
+        {
+            get;
+        }
+        public KafkaFaultBarrier? Barrier
+        {
+            get;
+        }
+        public int RemainingOccurrences
+        {
+            get; set;
+        }
+        public bool IsPersistent
+        {
+            get;
+        }
 
         public static FaultEntry Failure(
             KafkaFaultScope scope,

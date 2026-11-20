@@ -43,7 +43,9 @@ public sealed class PartitionedConsumerWideLimitsTests
         var budget = new PartitionedBufferBudget(4, () => capacity++, () => resumes++);
 
         for (var i = 0; i < 4; i++)
+        {
             await Assert.That(budget.TryReserve()).IsTrue();
+        }
         await Assert.That(budget.TryReserve()).IsFalse();
         await Assert.That(budget.IsFull).IsTrue();
 
@@ -112,7 +114,9 @@ public sealed class PartitionedConsumerWideLimitsTests
     {
         var capacityCalls = 0;
         var limits = new PartitionedProcessingLimits(
-            new PartitionedBufferBudget(3, () => capacityCalls++, static () => { }), null);
+            new PartitionedBufferBudget(3, () => capacityCalls++, static () =>
+            {
+            }), null);
         var a = CreateLane(new TopicPartition("limits", 0), limits);
         var b = CreateLane(new TopicPartition("limits", 1), limits);
 
@@ -134,7 +138,11 @@ public sealed class PartitionedConsumerWideLimitsTests
     public async Task Lane_ReleasesBudgetForRecordsItsProcessorNeverRead()
     {
         var limits = new PartitionedProcessingLimits(
-            new PartitionedBufferBudget(10, static () => { }, static () => { }), null);
+            new PartitionedBufferBudget(10, static () =>
+            {
+            }, static () =>
+            {
+            }), null);
         var lane = CreateLane(new TopicPartition("limits", 0), limits);
         await Assert.That(lane.TryEnqueueForTest(CreateResult(lane.TopicPartition, 0))).IsTrue();
         await Assert.That(lane.TryEnqueueForTest(CreateResult(lane.TopicPartition, 1))).IsTrue();
@@ -152,10 +160,16 @@ public sealed class PartitionedConsumerWideLimitsTests
     public async Task KeyOrderedDispatcher_CountsHeldRecordsUntilDispatched(bool fail)
     {
         var limits = new PartitionedProcessingLimits(
-            new PartitionedBufferBudget(10, static () => { }, static () => { }), null);
+            new PartitionedBufferBudget(10, static () =>
+            {
+            }, static () =>
+            {
+            }), null);
         var lane = CreateLane(new TopicPartition("limits", 0), limits);
         for (var offset = 0; offset < 4; offset++)
+        {
             await Assert.That(lane.TryEnqueueForTest(CreateResult(lane.TopicPartition, offset, $"key-{offset}"))).IsTrue();
+        }
         await lane.StopAsync(PartitionStopPolicy.Drain, System.Threading.Timeout.InfiniteTimeSpan);
 
         var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -168,7 +182,9 @@ public sealed class PartitionedConsumerWideLimitsTests
                 {
                     await release.Task.WaitAsync(token);
                     if (fail)
+                    {
                         throw new InvalidOperationException("handler failed");
+                    }
                 }
 
                 Interlocked.Increment(ref processed);
@@ -183,9 +199,13 @@ public sealed class PartitionedConsumerWideLimitsTests
 
         release.TrySetResult();
         if (fail)
+        {
             await Assert.That(async () => await running.WaitAsync(Timeout)).Throws<InvalidOperationException>();
+        }
         else
+        {
             await running.WaitAsync(Timeout);
+        }
 
         await Assert.That(limits.Buffer.Count).IsEqualTo(0);
         await Assert.That(processed).IsEqualTo(fail ? 0 : 4);
@@ -198,7 +218,9 @@ public sealed class PartitionedConsumerWideLimitsTests
         var limits = new PartitionedProcessingLimits(null, slots);
         var lane = CreateLane(new TopicPartition("limits", 0), limits);
         for (var offset = 0; offset < 3; offset++)
+        {
             await Assert.That(lane.TryEnqueueForTest(CreateResult(lane.TopicPartition, offset, $"key-{offset}"))).IsTrue();
+        }
         await lane.StopAsync(PartitionStopPolicy.Drain, System.Threading.Timeout.InfiniteTimeSpan);
 
         // Another partition holds the only slot.
@@ -253,7 +275,9 @@ public sealed class PartitionedConsumerWideLimitsTests
         await Assert.That(a.TryEnqueueForTest(CreateResult(a.TopicPartition, 0))).IsTrue();
         a.Start(processor);
         while (slots.Queued == 0)
+        {
             await Task.Yield();
+        }
 
         releaseB.TrySetResult();
         await aEntered.Task.WaitAsync(Timeout);
@@ -306,7 +330,9 @@ public sealed class PartitionedConsumerWideLimitsTests
         await Assert.That(a.TryEnqueueForTest(CreateResult(a.TopicPartition, 0, key: "k"))).IsTrue();
         a.Start(processor);
         while (slots.Queued == 0)
+        {
             await Task.Yield();
+        }
 
         a.DiscardQueuedRecords();
         var aStop = await a.StopAsync(PartitionStopPolicy.Drain, TimeSpan.FromSeconds(5));
@@ -360,7 +386,9 @@ public sealed class PartitionedConsumerWideLimitsTests
         await Assert.That(a.TryEnqueueForTest(CreateResult(a.TopicPartition, 0))).IsTrue();
         a.Start(processor);
         while (slots.Queued == 0)
+        {
             await Task.Yield();
+        }
 
         a.DiscardQueuedRecords();
         var aStop = await a.StopAsync(PartitionStopPolicy.Drain, TimeSpan.FromSeconds(5));
@@ -417,11 +445,15 @@ public sealed class PartitionedConsumerWideLimitsTests
             var now = Interlocked.Increment(ref active);
             UpdateMax(ref maxActive, now);
             if (now == limit)
+            {
                 limitReached.TrySetResult();
+            }
             await gate.Task.WaitAsync(token);
             Interlocked.Decrement(ref active);
             if (Interlocked.Add(ref processed, count) == partitionCount * recordsPerPartition)
+            {
                 allProcessed.TrySetResult();
+            }
         }
 
         var options = new PartitionedProcessingOptions
@@ -474,7 +506,9 @@ public sealed class PartitionedConsumerWideLimitsTests
             await Task.Yield();
             offsets.GetOrAdd(context.TopicPartition.Partition, static _ => new()).Enqueue(message.Offset);
             if (Interlocked.Increment(ref processed) == partitionCount * recordsPerPartition)
+            {
                 allProcessed.TrySetResult();
+            }
         }, new PartitionedProcessingOptions
         {
             Ordering = ordering,
@@ -492,7 +526,9 @@ public sealed class PartitionedConsumerWideLimitsTests
                 var seen = offsets[partition].ToArray();
                 await Assert.That(seen.Length).IsEqualTo(recordsPerPartition);
                 if (ordering == PartitionedProcessingOrder.Partition)
+                {
                     await Assert.That(seen).IsEquivalentTo(Enumerable.Range(0, recordsPerPartition).Select(static i => (long)i));
+                }
             }
         }
         finally
@@ -511,7 +547,9 @@ public sealed class PartitionedConsumerWideLimitsTests
         for (var offset = 0; offset < recordsPerPartition; offset++)
         {
             foreach (var partition in partitions)
+            {
                 consumer.Enqueue(CreateResult(partition, offset, $"key-{offset}"));
+            }
         }
 
         return consumer;
@@ -536,7 +574,9 @@ public sealed class PartitionedConsumerWideLimitsTests
         {
             var observed = Interlocked.CompareExchange(ref max, value, current);
             if (observed == current)
+            {
                 return;
+            }
             current = observed;
         }
     }
@@ -546,7 +586,9 @@ public sealed class PartitionedConsumerWideLimitsTests
             partition,
             16,
             static (_, _) => ValueTask.CompletedTask,
-            static _ => { },
+            static _ =>
+            {
+            },
             static (_, exception) => throw new InvalidOperationException("Lane failed.", exception),
             limits);
 

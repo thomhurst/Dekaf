@@ -23,7 +23,9 @@ public sealed partial class ShareConsumerRenewalTests
         fixture.Consumer.Subscribe("topic");
         using var stop = new CancellationTokenSource(TimeSpan.FromSeconds(10));
         await using (var first = fixture.Consumer.PollAsync(stop.Token).GetAsyncEnumerator())
+        {
             await Assert.That(await first.MoveNextAsync()).IsTrue();
+        }
 
         fixture.Consumer.Subscribe("topic");
         await using var next = fixture.Consumer.PollAsync(stop.Token).GetAsyncEnumerator();
@@ -61,7 +63,10 @@ public sealed partial class ShareConsumerRenewalTests
         {
             await Assert.That(await first.MoveNextAsync()).IsTrue();
             await Assert.That(first.Current.Offset).IsEqualTo(100);
-            if (!implicitAcknowledgement) fixture.Consumer.Acknowledge(first.Current);
+            if (!implicitAcknowledgement)
+            {
+                fixture.Consumer.Acknowledge(first.Current);
+            }
         }
         fixture.MetadataManager.Metadata.Update(BufferedLeaderMetadata(-1));
 
@@ -97,7 +102,9 @@ public sealed partial class ShareConsumerRenewalTests
         fixture.Consumer.Subscribe("topic");
         using var stop = new CancellationTokenSource(TimeSpan.FromSeconds(10));
         await using (var first = fixture.Consumer.PollAsync(stop.Token).GetAsyncEnumerator())
+        {
             await Assert.That(await first.MoveNextAsync()).IsTrue();
+        }
         fixture.MetadataManager.Metadata.Update(BufferedLeaderMetadata(-1));
         await using var next = fixture.Consumer.PollAsync(stop.Token).GetAsyncEnumerator();
         var pending = next.MoveNextAsync().AsTask();
@@ -111,7 +118,11 @@ public sealed partial class ShareConsumerRenewalTests
         {
             await stop.CancelAsync();
             metadata.TrySetCanceled();
-            try { await pending; } catch { }
+            try
+            {
+                await pending;
+            }
+            catch { }
         }
         await Assert.That(connection.ShareAcknowledgeRequests).IsEmpty();
         var outcomes = FlushPendingAcknowledgements(fixture.Consumer);
@@ -179,7 +190,11 @@ public sealed partial class ShareConsumerRenewalTests
             await stop.CancelAsync();
             firstReply.TrySetCanceled();
             metadata.TrySetCanceled();
-            try { await pending; } catch { }
+            try
+            {
+                await pending;
+            }
+            catch { }
         }
     }
 
@@ -188,18 +203,26 @@ public sealed partial class ShareConsumerRenewalTests
         Brokers = [new BrokerMetadata { NodeId = 1, Host = "localhost", Port = 9092 }],
         Topics = [new TopicMetadata
         {
-            ErrorCode = ErrorCode.None, Name = "topic", TopicId = TopicId,
+            ErrorCode = ErrorCode.None,
+            Name = "topic",
+            TopicId = TopicId,
             Partitions =
             [
                 new PartitionMetadata
                 {
-                    ErrorCode = ErrorCode.None, PartitionIndex = 0, LeaderId = leader,
-                    ReplicaNodes = [1], IsrNodes = [1]
+                    ErrorCode = ErrorCode.None,
+                    PartitionIndex = 0,
+                    LeaderId = leader,
+                    ReplicaNodes = [1],
+                    IsrNodes = [1]
                 },
                 new PartitionMetadata
                 {
-                    ErrorCode = ErrorCode.None, PartitionIndex = 1, LeaderId = 1,
-                    ReplicaNodes = [1], IsrNodes = [1]
+                    ErrorCode = ErrorCode.None,
+                    PartitionIndex = 1,
+                    LeaderId = 1,
+                    ReplicaNodes = [1],
+                    IsrNodes = [1]
                 }
             ]
         }]

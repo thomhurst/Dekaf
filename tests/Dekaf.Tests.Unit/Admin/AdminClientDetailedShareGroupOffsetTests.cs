@@ -38,21 +38,34 @@ public class AdminClientDetailedShareGroupOffsetTests
         using var cancellation = new CancellationTokenSource();
         var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         if (delete)
+        {
             connection.SendAsync<DeleteShareGroupOffsetsRequest, DeleteShareGroupOffsetsResponse>(Arg.Any<DeleteShareGroupOffsetsRequest>(), Arg.Any<short>(), Arg.Any<CancellationToken>())
                 .Returns(call => WaitForCancellation<DeleteShareGroupOffsetsResponse>(entered, call.Arg<CancellationToken>()));
+        }
         else
+        {
             connection.SendAsync<AlterShareGroupOffsetsRequest, AlterShareGroupOffsetsResponse>(Arg.Any<AlterShareGroupOffsetsRequest>(), Arg.Any<short>(), Arg.Any<CancellationToken>())
                 .Returns(call => WaitForCancellation<AlterShareGroupOffsetsResponse>(entered, call.Arg<CancellationToken>()));
+        }
         var pending = Invoke(admin, delete, new() { TimeoutMs = timeout ? 500 : 30000 }, cancellation.Token).AsTask();
         await entered.Task.WaitAsync(TimeSpan.FromSeconds(10));
-        if (!timeout) cancellation.Cancel();
+        if (!timeout)
+        {
+            cancellation.Cancel();
+        }
         var results = await pending.WaitAsync(TimeSpan.FromSeconds(10));
         foreach (var result in results.Values)
         {
             await Assert.That(result.Outcome).IsEqualTo(AdminMutationOutcome.Unknown);
             await Assert.That(result.ErrorCode).IsNull();
-            if (timeout) await Assert.That(result.Exception).IsTypeOf<KafkaTimeoutException>();
-            else await Assert.That(result.Exception is OperationCanceledException).IsTrue();
+            if (timeout)
+            {
+                await Assert.That(result.Exception).IsTypeOf<KafkaTimeoutException>();
+            }
+            else
+            {
+                await Assert.That(result.Exception is OperationCanceledException).IsTrue();
+            }
         }
     }
 
@@ -101,9 +114,14 @@ public class AdminClientDetailedShareGroupOffsetTests
             .Returns(call =>
             {
                 foreach (var partition in call.Arg<AlterShareGroupOffsetsRequest>().Topics.Single().Partitions)
+                {
                     requestOffsets.Add(partition.PartitionIndex, partition.StartOffset);
-                return ValueTask.FromResult(new AlterShareGroupOffsetsResponse { Responses =
-                    [new() { TopicName = "orders", Partitions = [new() { PartitionIndex = 7, ErrorCode = ErrorCode.InvalidRequest, ErrorMessage = "invalid" }, new() { PartitionIndex = 3 }] }] });
+                }
+                return ValueTask.FromResult(new AlterShareGroupOffsetsResponse
+                {
+                    Responses =
+                    [new() { TopicName = "orders", Partitions = [new() { PartitionIndex = 7, ErrorCode = ErrorCode.InvalidRequest, ErrorMessage = "invalid" }, new() { PartitionIndex = 3 }] }]
+                });
             });
         var results = await admin.AlterShareGroupOffsetsDetailedAsync("group",
             [new() { TopicPartition = new("orders", 3), StartOffset = 42 }, new() { TopicPartition = new("orders", 7), StartOffset = 84 }]);
@@ -121,7 +139,17 @@ public class AdminClientDetailedShareGroupOffsetTests
         var (admin, connection) = CreateAdmin();
         await using var owned = admin;
         var calls = 0;
-        Setup(connection, delete, _ => { calls++; return []; }, ErrorCode.RequestTimedOut, "broker timed out");
+        Setup(
+            connection,
+            delete,
+            _ =>
+            {
+                calls++;
+                return [];
+            },
+            ErrorCode.RequestTimedOut,
+            "broker timed out"
+        );
         var results = await Invoke(admin, delete);
         await Assert.That(calls).IsEqualTo(1);
         foreach (var result in results.Values)
@@ -181,8 +209,14 @@ public class AdminClientDetailedShareGroupOffsetTests
         var calls = 0;
         Setup(connection, delete, requested =>
         {
-            if (++calls == 1) return [("good", ErrorCode.None, null), ("bad", rejection, "moved")];
-            if (!requested.SequenceEqual(["bad"])) throw new InvalidOperationException("Replayed confirmed success.");
+            if (++calls == 1)
+            {
+                return [("good", ErrorCode.None, null), ("bad", rejection, "moved")];
+            }
+            if (!requested.SequenceEqual(["bad"]))
+            {
+                throw new InvalidOperationException("Replayed confirmed success.");
+            }
             return [("bad", ErrorCode.None, null)];
         });
         var results = await Invoke(admin, delete);
@@ -213,7 +247,11 @@ public class AdminClientDetailedShareGroupOffsetTests
         var (admin, connection) = CreateAdmin();
         await using var owned = admin;
         var calls = 0;
-        Setup(connection, delete, _ => { calls++; throw new IOException("lost response"); });
+        Setup(connection, delete, _ =>
+        {
+            calls++;
+            throw new IOException("lost response");
+        });
         var results = await Invoke(admin, delete);
         await Assert.That(calls).IsEqualTo(1);
         foreach (var result in results.Values)
@@ -235,7 +273,10 @@ public class AdminClientDetailedShareGroupOffsetTests
     private static async ValueTask<IReadOnlyDictionary<string, AdminMutationResult>> Invoke(AdminClient admin, bool delete,
         ShareGroupOffsetMutationOptions? options = null, CancellationToken cancellationToken = default)
     {
-        if (delete) return await admin.DeleteShareGroupOffsetsDetailedAsync("group", ["good", "bad"], options, cancellationToken);
+        if (delete)
+        {
+            return await admin.DeleteShareGroupOffsetsDetailedAsync("group", ["good", "bad"], options, cancellationToken);
+        }
         var results = await admin.AlterShareGroupOffsetsDetailedAsync("group",
             [new() { TopicPartition = new("good", 0), StartOffset = 12 }, new() { TopicPartition = new("bad", 0), StartOffset = 24 }], options, cancellationToken);
         return results.ToDictionary(static pair => pair.Key.Topic, static pair => pair.Value);
@@ -252,20 +293,26 @@ public class AdminClientDetailedShareGroupOffsetTests
         ErrorCode groupError = ErrorCode.None, string? groupMessage = null)
     {
         if (delete)
+        {
             connection.SendAsync<DeleteShareGroupOffsetsRequest, DeleteShareGroupOffsetsResponse>(Arg.Any<DeleteShareGroupOffsetsRequest>(), Arg.Any<short>(), Arg.Any<CancellationToken>())
                 .Returns(call => ValueTask.FromResult(new DeleteShareGroupOffsetsResponse
                 {
-                    ErrorCode = groupError, ErrorMessage = groupMessage,
+                    ErrorCode = groupError,
+                    ErrorMessage = groupMessage,
                     Responses = respond(call.Arg<DeleteShareGroupOffsetsRequest>().Topics.Select(static topic => topic.TopicName).ToArray())
                         .Select(static item => new DeleteShareGroupOffsetsResponseTopic { TopicName = item.Topic, ErrorCode = item.Code, ErrorMessage = item.Message }).ToArray()
                 }));
+        }
         else
+        {
             connection.SendAsync<AlterShareGroupOffsetsRequest, AlterShareGroupOffsetsResponse>(Arg.Any<AlterShareGroupOffsetsRequest>(), Arg.Any<short>(), Arg.Any<CancellationToken>())
                 .Returns(call => ValueTask.FromResult(new AlterShareGroupOffsetsResponse
                 {
-                    ErrorCode = groupError, ErrorMessage = groupMessage,
+                    ErrorCode = groupError,
+                    ErrorMessage = groupMessage,
                     Responses = respond(call.Arg<AlterShareGroupOffsetsRequest>().Topics.Select(static topic => topic.TopicName).ToArray())
                         .Select(static item => new AlterShareGroupOffsetsResponseTopic { TopicName = item.Topic, Partitions = [new() { PartitionIndex = 0, ErrorCode = item.Code, ErrorMessage = item.Message }] }).ToArray()
                 }));
+        }
     }
 }

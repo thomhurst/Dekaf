@@ -50,7 +50,9 @@ public sealed class ConsumerConnectionScalingIntegrationTests(KafkaTestContainer
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory());
 
         if (!adaptiveConnections)
+        {
             builder.WithoutAdaptiveConnections();
+        }
 
         await using var consumer = await builder.BuildAsync();
 

@@ -382,7 +382,9 @@ public sealed partial class ConsumerDirtyCommitTests
             .Returns(callInfo =>
             {
                 if (Interlocked.Increment(ref assignedCalls) == 2)
+                {
                     callInfo.Arg<IRebalanceConsumer>()!.Seek(new TopicPartitionOffset("topic-a", 0, 42));
+                }
                 return ValueTask.CompletedTask;
             });
         var consumer = CreateSingleTopicGroupConsumer(listener, fenceFirstOffsetFetch: true);
@@ -413,7 +415,9 @@ public sealed partial class ConsumerDirtyCommitTests
         {
             // A deadlocked consumer never releases the lock its disposal takes.
             if (sync.IsCompleted)
+            {
                 await consumer.DisposeAsync();
+            }
         }
     }
 
@@ -504,7 +508,9 @@ public sealed partial class ConsumerDirtyCommitTests
             .Returns(callInfo =>
             {
                 if (Interlocked.Increment(ref assignedCalls) == 2)
+                {
                     callInfo.Arg<IRebalanceConsumer>()!.Seek(new TopicPartitionOffset("topic-a", 0, 42));
+                }
                 return ValueTask.CompletedTask;
             });
         var consumer = CreateSingleTopicGroupConsumer(listener, fenceFirstOffsetFetch: true);
@@ -958,7 +964,9 @@ public sealed partial class ConsumerDirtyCommitTests
 
         await Assert.That(requests).Count().IsEqualTo(3);
         foreach (var request in requests)
+        {
             await Assert.That(GetCommittedOffsets(request)).IsEquivalentTo(offsets);
+        }
     }
 
     [Test]
@@ -1310,7 +1318,9 @@ public sealed partial class ConsumerDirtyCommitTests
             onOffsetCommitAsync: async token =>
             {
                 if (Interlocked.Increment(ref commitAttempt) != 1)
+                {
                     return;
+                }
 
                 commitStarted.SetResult();
                 await Task.Delay(Timeout.InfiniteTimeSpan, token);

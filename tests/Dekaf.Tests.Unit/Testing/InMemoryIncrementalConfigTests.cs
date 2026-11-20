@@ -30,7 +30,9 @@ public sealed class InMemoryIncrementalConfigTests
         await Assert.That(configs.ContainsKey("segment.ms")).IsEqualTo(validateOnly);
         await Assert.That(configs.ContainsKey("max.message.bytes")).IsEqualTo(!validateOnly);
         if (!validateOnly)
+        {
             await Assert.That(configs["max.message.bytes"]).IsEqualTo("4096");
+        }
         await Assert.That(configs.ContainsKey("absent")).IsFalse();
     }
 
@@ -172,7 +174,9 @@ public sealed class InMemoryIncrementalConfigTests
         var cluster = new InMemoryKafkaCluster();
         cluster.CreateTopic(Orders.Name, configs: new Dictionary<string, string>
         {
-            ["retention.ms"] = "1000", ["segment.ms"] = "500", ["cleanup.policy"] = "delete"
+            ["retention.ms"] = "1000",
+            ["segment.ms"] = "500",
+            ["cleanup.policy"] = "delete"
         });
         return cluster;
     }
@@ -207,10 +211,14 @@ public sealed class InMemoryIncrementalConfigTests
         {
             var results = await admin.IncrementalAlterConfigsDetailedAsync(changes, new() { ValidateOnly = validateOnly });
             foreach (var result in results.Values)
+            {
                 await Assert.That(result.IsSuccess).IsTrue();
+            }
         }
         else
+        {
             await admin.IncrementalAlterConfigsAsync(changes, new() { ValidateOnly = validateOnly });
+        }
     }
 
     private static async Task AssertRejectedAsync(InMemoryAdminClient admin, bool detailed,

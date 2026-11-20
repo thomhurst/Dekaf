@@ -48,9 +48,13 @@ public sealed partial class DynamoDbOutboxStore
                 // Strictly newer than the cutoff, as a lease is expired at its expiry tick:
                 // the last round of a dead relay stops counting when its leases free up.
                 if (!stopped && lastSeen > activeCutoff)
+                {
                     activeRelayIds.Add(relayId);
+                }
                 else if (lastSeen < (stopped ? activeCutoff : staleCutoff))
+                {
                     staleRelayIds.Add(relayId);
+                }
             }
             // Lease items beyond the range are left over from a larger bucket count. They
             // must not count towards this relay's share or come back as owned buckets.
@@ -93,7 +97,9 @@ public sealed partial class DynamoDbOutboxStore
             }, cancellationToken).ConfigureAwait(false);
 
             foreach (var item in response.Items ?? [])
+            {
                 yield return item;
+            }
 
             startKey = response.LastEvaluatedKey is { Count: > 0 } lastKey ? lastKey : null;
         }
@@ -117,7 +123,9 @@ public sealed partial class DynamoDbOutboxStore
         }
 
         if (DynamoDbOutboxSchema.TryReadNumber(item, DynamoDbOutboxSchema.ExpiresAtUtc, out expiresAt))
+        {
             owner = item.TryGetValue(DynamoDbOutboxSchema.Owner, out var ownerValue) ? ownerValue.S : null;
+        }
         return true;
     }
 
@@ -151,11 +159,17 @@ public sealed partial class DynamoDbOutboxStore
         for (var index = 0; index < buckets.Count; index++)
         {
             if (written[index])
+            {
                 owned.Add(buckets[index]);
+            }
             else if (claimed)
+            {
                 LogClaimRefused(relayId, buckets[index]);
+            }
             else
+            {
                 LogLeaseTakenOver(relayId, buckets[index]);
+            }
         }
     }
 
@@ -185,7 +199,9 @@ public sealed partial class DynamoDbOutboxStore
             {
                 forward = new List<int>(keep.Count);
                 for (var earlier = 0; earlier < index; earlier++)
+                {
                     forward.Add(keep[earlier]);
+                }
             }
 
             LogLeaseNotMovedBackwards(relayId, bucket);
@@ -300,12 +316,16 @@ public sealed partial class DynamoDbOutboxStore
         string relayId, long now, bool stopped, CancellationToken cancellationToken)
     {
         if (!stopped)
+        {
             RaiseLastHeartbeatSent(now);
+        }
 
         var record = _schema.RelayKey(relayId);
         record[DynamoDbOutboxSchema.LastSeenUtc] = DynamoDbOutboxSchema.Number(now);
         if (stopped)
+        {
             record[DynamoDbOutboxSchema.StoppedAtUtc] = DynamoDbOutboxSchema.Number(now);
+        }
 
         var write = new PutItemRequest { TableName = _schema.TableName, Item = record };
         if (!stopped)
@@ -345,7 +365,9 @@ public sealed partial class DynamoDbOutboxStore
         {
             var current = Interlocked.CompareExchange(ref _lastHeartbeatSent, now, seen);
             if (current == seen)
+            {
                 return;
+            }
             seen = current;
         }
     }

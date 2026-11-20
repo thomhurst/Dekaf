@@ -24,21 +24,21 @@ public sealed class PartitionedOffsetGapIntegrationTests(KafkaTestContainer kafk
         await using (var transaction = producer.BeginTransaction())
         {
             await transaction.ProduceAsync(new ProducerMessage<string, string>
-                { Topic = topic, Partition = 0, Key = "visible", Value = "first" }, timeout.Token);
+            { Topic = topic, Partition = 0, Key = "visible", Value = "first" }, timeout.Token);
             await transaction.CommitAsync(timeout.Token);
         }
         await using (var transaction = producer.BeginTransaction())
         {
             await transaction.ProduceAsync(new ProducerMessage<string, string>
-                { Topic = topic, Partition = 0, Key = "hidden", Value = "aborted" }, timeout.Token);
+            { Topic = topic, Partition = 0, Key = "hidden", Value = "aborted" }, timeout.Token);
             await transaction.AbortAsync(timeout.Token);
         }
         await using (var transaction = producer.BeginTransaction())
         {
             await transaction.ProduceAsync(new ProducerMessage<string, string>
-                { Topic = topic, Partition = 0, Key = "visible", Value = "second" }, timeout.Token);
+            { Topic = topic, Partition = 0, Key = "visible", Value = "second" }, timeout.Token);
             await transaction.ProduceAsync(new ProducerMessage<string, string>
-                { Topic = topic, Partition = 0, Key = "visible", Value = "third" }, timeout.Token);
+            { Topic = topic, Partition = 0, Key = "visible", Value = "third" }, timeout.Token);
             await transaction.CommitAsync(timeout.Token);
         }
 
@@ -54,7 +54,10 @@ public sealed class PartitionedOffsetGapIntegrationTests(KafkaTestContainer kafk
                 {
                     await Assert.That(message.Value).IsEqualTo(offsets.Count switch
                     {
-                        0 => "first", 1 => "second", 2 => "third", _ => "unexpected record"
+                        0 => "first",
+                        1 => "second",
+                        2 => "third",
+                        _ => "unexpected record"
                     });
                     offsets.Add(message.Offset);
                     context.MarkProcessed(message);
@@ -74,7 +77,9 @@ public sealed class PartitionedOffsetGapIntegrationTests(KafkaTestContainer kafk
             {
                 await Task.WhenAny(run, committed.Task).WaitAsync(timeout.Token);
                 if (run.IsCompleted)
+                {
                     await run;
+                }
                 await committed.Task.WaitAsync(timeout.Token);
                 await Assert.That(offsets[1]).IsGreaterThan(offsets[0] + 1);
                 await Assert.That(await consumer.GetCommittedOffsetAsync(new TopicPartition(topic, 0), timeout.Token))
@@ -97,7 +102,7 @@ public sealed class PartitionedOffsetGapIntegrationTests(KafkaTestContainer kafk
         await using (var transaction = producer.BeginTransaction())
         {
             await transaction.ProduceAsync(new ProducerMessage<string, string>
-                { Topic = topic, Partition = 0, Key = "visible", Value = "after-restart" }, timeout.Token);
+            { Topic = topic, Partition = 0, Key = "visible", Value = "after-restart" }, timeout.Token);
             await transaction.CommitAsync(timeout.Token);
         }
         await using var restarted = await CreateConsumerAsync();

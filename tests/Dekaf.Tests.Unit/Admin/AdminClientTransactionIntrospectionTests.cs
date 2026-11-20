@@ -1019,7 +1019,9 @@ public sealed class AdminClientTransactionIntrospectionTests
         long producerId)
     {
         if (errorCode != ErrorCode.None)
+        {
             return [];
+        }
 
         return
         [
@@ -1093,15 +1095,25 @@ public sealed class AdminClientTransactionIntrospectionTests
         metadataManager.SetApiVersion(ApiKey.FindCoordinator, 4, 5);
         metadataManager.SetApiVersion(ApiKey.Metadata, MetadataRequest.LowestSupportedVersion, MetadataRequest.HighestSupportedVersion);
         if (includeListTransactionsApi)
+        {
             metadataManager.SetApiVersion(ApiKey.ListTransactions, 0, listTransactionsMaxVersion);
+        }
         if (includeDescribeTransactionsApi)
+        {
             metadataManager.SetApiVersion(ApiKey.DescribeTransactions, 0, describeTransactionsMaxVersion);
+        }
         if (includeDescribeProducersApi)
+        {
             metadataManager.SetApiVersion(ApiKey.DescribeProducers, 0, 0);
+        }
         if (includeInitProducerIdApi)
+        {
             metadataManager.SetApiVersion(ApiKey.InitProducerId, 2, initProducerIdMaxVersion);
+        }
         if (includeWriteTxnMarkersApi)
+        {
             metadataManager.SetApiVersion(ApiKey.WriteTxnMarkers, 1, 2);
+        }
 
         var admin = new AdminClient(
             new AdminClientOptions
@@ -1202,7 +1214,10 @@ public sealed class AdminClientTransactionIntrospectionTests
         public string Host => $"broker-{brokerId}";
         public int Port => 9090 + brokerId;
         public bool IsConnected => true;
-        public KafkaConnectionCapabilities Capabilities { get; } =
+        public KafkaConnectionCapabilities Capabilities
+        {
+            get;
+        } =
             KafkaConnectionCapabilities.Create(new ApiVersionsResponse
             {
                 ErrorCode = ErrorCode.None,
@@ -1213,7 +1228,10 @@ public sealed class AdminClientTransactionIntrospectionTests
                     new ApiVersion(ApiKey.DescribeTransactions, 0, describeTransactionsMaxVersion)
                 ]
             });
-        internal List<short> DescribeTransactionsVersions { get; } = [];
+        internal List<short> DescribeTransactionsVersions
+        {
+            get;
+        } = [];
 
         public ValueTask<TResponse> SendAsync<TRequest, TResponse>(
             TRequest request,

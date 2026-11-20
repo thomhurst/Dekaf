@@ -131,7 +131,9 @@ public sealed class ProducerLeakEdgeCaseTests
             foreach (var result in allResults)
             {
                 foreach (var task in result.CompletionTasks)
+                {
                     _ = await task.WaitAsync(cancellationToken);
+                }
             }
 
             await Assert.That(accumulator.BufferedBytes).IsEqualTo(0L);
@@ -312,12 +314,16 @@ public sealed class ProducerLeakEdgeCaseTests
                     }
 
                     if (!accepted)
+                    {
                         throw new InvalidOperationException($"Cycle {cycle} message {i} rejected.");
+                    }
                 }
 
                 var counters = await DrainCycleAsync(accumulator, MessagesPerCycle, failEveryNthBatch: 0, cancellationToken);
                 foreach (var task in completionTasks)
+                {
                     _ = await task.WaitAsync(cancellationToken);
+                }
 
                 await Assert.That(counters.DrainedRecords).IsEqualTo(MessagesPerCycle);
                 // Each 3×BatchSize value cannot share a batch, so the wave must produce at
@@ -395,7 +401,9 @@ public sealed class ProducerLeakEdgeCaseTests
                     }
 
                     if (!accepted)
+                    {
                         throw new InvalidOperationException($"Cycle {cycle} message {i} rejected.");
+                    }
                 }
 
                 var counters = await DrainCycleAsync(accumulator, MessagesPerCycle, FailEveryNthBatch, cancellationToken);
@@ -456,7 +464,9 @@ public sealed class ProducerLeakEdgeCaseTests
                         PooledMemory.Null, value, headers: null, headerCount: 0,
                         completion, callback: null, cancellationToken);
                     if (!accepted)
+                    {
                         throw new InvalidOperationException($"Cycle {cycle} message {i} rejected.");
+                    }
                 }
 
                 // Abandon a flush: nothing drains yet, so the wait is guaranteed pending
@@ -485,7 +495,9 @@ public sealed class ProducerLeakEdgeCaseTests
                 // A clean flush + drain must fully retire the wave despite the abandoned wait.
                 var counters = await DrainCycleAsync(accumulator, MessagesPerCycle, failEveryNthBatch: 0, cancellationToken);
                 foreach (var task in completionTasks)
+                {
                     _ = await task.WaitAsync(cancellationToken);
+                }
 
                 await Assert.That(counters.DrainedRecords).IsEqualTo(MessagesPerCycle);
                 await Assert.That(accumulator.BufferedBytes).IsEqualTo(0L);
@@ -527,7 +539,9 @@ public sealed class ProducerLeakEdgeCaseTests
         {
             cancellationToken.ThrowIfCancellationRequested();
             if (!LeakGateHarness.TryDrainAndRetireOne(accumulator, counters, failEveryNthBatch))
+            {
                 await accumulator.WaitForWakeupAsync(5);
+            }
         }
 
         await flushTask.WaitAsync(cancellationToken);

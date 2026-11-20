@@ -310,7 +310,10 @@ public class ConsumerHotPathBenchmarks
 
     private sealed class SingleRecordBatchList : IReadOnlyList<RecordBatch>
     {
-        public RecordBatch Batch { get; set; } = null!;
+        public RecordBatch Batch
+        {
+            get; set;
+        } = null!;
 
         public int Count => 1;
 

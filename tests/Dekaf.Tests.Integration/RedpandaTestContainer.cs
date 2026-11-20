@@ -14,7 +14,10 @@ public sealed class RedpandaTestContainer : IAsyncInitializer, IAsyncDisposable
 
     private RedpandaContainer? _container;
 
-    public string BootstrapServers { get; private set; } = string.Empty;
+    public string BootstrapServers
+    {
+        get; private set;
+    } = string.Empty;
 
     public async Task InitializeAsync()
     {
@@ -42,6 +45,8 @@ public sealed class RedpandaTestContainer : IAsyncInitializer, IAsyncDisposable
         _container = null;
         BootstrapServers = string.Empty;
         if (container is not null)
+        {
             await container.DisposeAsync().ConfigureAwait(false);
+        }
     }
 }

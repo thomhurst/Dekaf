@@ -17,20 +17,41 @@ internal sealed record StoreInfo(string Name, string? ChangelogTopic, long Reten
 /// <summary>A node of the topology graph. It is immutable once the topology is built and shared by all tasks.</summary>
 internal abstract class GraphNode(string name)
 {
-    public int Id { get; set; }
+    public int Id
+    {
+        get; set;
+    }
 
-    public string Name { get; } = name;
+    public string Name
+    {
+        get;
+    } = name;
 
-    public List<GraphNode> Parents { get; } = [];
+    public List<GraphNode> Parents
+    {
+        get;
+    } = [];
 
-    public List<GraphNode> Children { get; } = [];
+    public List<GraphNode> Children
+    {
+        get;
+    } = [];
 
     /// <summary>Nodes whose stores this node reads; they must run in the same subtopology.</summary>
-    public List<GraphNode> Dependencies { get; } = [];
+    public List<GraphNode> Dependencies
+    {
+        get;
+    } = [];
 
-    public List<StoreInfo> Stores { get; } = [];
+    public List<StoreInfo> Stores
+    {
+        get;
+    } = [];
 
-    public int Subtopology { get; set; } = -1;
+    public int Subtopology
+    {
+        get; set;
+    } = -1;
 
     public virtual NodeKind Kind => NodeKind.Processor;
 
@@ -48,7 +69,10 @@ internal abstract class GraphNode(string name)
 
 internal interface ISourceNode
 {
-    string Topic { get; }
+    string Topic
+    {
+        get;
+    }
 
     ISourceProcessor BuildSource(TaskBuilder builder);
 }
@@ -198,7 +222,10 @@ internal sealed class TableSourceNode<TKey, TValue> : StreamNode<TKey, TValue>, 
         Stores.Add(new StoreInfo(storeName, ChangelogTopic: null));
     }
 
-    public string Topic { get; }
+    public string Topic
+    {
+        get;
+    }
 
     public override NodeKind Kind => NodeKind.Source;
 

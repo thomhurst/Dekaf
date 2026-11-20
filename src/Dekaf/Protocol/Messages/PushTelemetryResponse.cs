@@ -13,12 +13,18 @@ public sealed class PushTelemetryResponse : IKafkaResponse
     /// <summary>
     /// Throttle time in milliseconds.
     /// </summary>
-    public int ThrottleTimeMs { get; init; }
+    public int ThrottleTimeMs
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The top-level error code, or 0 if there was no error.
     /// </summary>
-    public ErrorCode ErrorCode { get; init; }
+    public ErrorCode ErrorCode
+    {
+        get; init;
+    }
 
     public static IKafkaResponse Read(ref KafkaProtocolReader reader, short version)
     {

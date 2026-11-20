@@ -46,7 +46,9 @@ public class AsyncSerdeTests(KafkaTestContainer kafka) : KafkaIntegrationTest(ka
             var key = await FetchKeyAsync(cancellationToken);
             var bytes = Encoding.UTF8.GetBytes(value);
             for (var i = 0; i < bytes.Length; i++)
+            {
                 bytes[i] ^= key;
+            }
             destination.Write(bytes);
         }
 
@@ -59,7 +61,9 @@ public class AsyncSerdeTests(KafkaTestContainer kafka) : KafkaIntegrationTest(ka
             var key = await FetchKeyAsync(cancellationToken);
             var bytes = data.ToArray();
             for (var i = 0; i < bytes.Length; i++)
+            {
                 bytes[i] ^= key;
+            }
             return Encoding.UTF8.GetString(bytes);
         }
     }
@@ -87,7 +91,9 @@ public class AsyncSerdeTests(KafkaTestContainer kafka) : KafkaIntegrationTest(ka
             , allows ref struct
         {
             if (Volatile.Read(ref _prepared) == 0)
+            {
                 throw new InvalidOperationException("Serialize ran before asynchronous preparation.");
+            }
 
             Serializers.String.Serialize(value, ref destination, context);
         }
@@ -208,7 +214,9 @@ public class AsyncSerdeTests(KafkaTestContainer kafka) : KafkaIntegrationTest(ka
         {
             seen.Add(result.Value);
             if (seen.Count == messageCount)
+            {
                 break;
+            }
         }
 
         await Assert.That(seen.Count).IsEqualTo(messageCount);

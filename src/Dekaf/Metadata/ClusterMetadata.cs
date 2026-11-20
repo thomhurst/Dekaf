@@ -24,14 +24,20 @@ internal sealed class TopicLeaderIndex
         AvailablePartitions = BuildAvailablePartitions(topic, brokers);
     }
 
-    public int PartitionCount { get; }
+    public int PartitionCount
+    {
+        get;
+    }
 
     /// <summary>
     /// Partitions whose leader is a known broker, matching Java's
     /// <c>Cluster.availablePartitionsForTopic</c>. Empty when every partition, or no partition,
     /// has a leader: in both cases the caller chooses from all partitions.
     /// </summary>
-    public int[] AvailablePartitions { get; }
+    public int[] AvailablePartitions
+    {
+        get;
+    }
 
     /// <summary>
     /// Leader rack to partition indices. Built on first use, so only rack-aware producers pay for it.
@@ -54,18 +60,24 @@ internal sealed class TopicLeaderIndex
         for (var i = 0; i < partitions.Count; i++)
         {
             if (HasKnownLeader(partitions[i], partitions.Count, brokers))
+            {
                 availableCount++;
+            }
         }
 
         if (availableCount == 0 || availableCount == partitions.Count)
+        {
             return [];
+        }
 
         var available = new int[availableCount];
         var index = 0;
         for (var i = 0; i < partitions.Count; i++)
         {
             if (HasKnownLeader(partitions[i], partitions.Count, brokers))
+            {
                 available[index++] = partitions[i].PartitionIndex;
+            }
         }
 
         return available;
@@ -96,17 +108,23 @@ internal sealed class TopicLeaderIndex
 
             var rack = leader.Rack;
             if (rack is not { Length: > 0 })
+            {
                 continue;
+            }
 
             if (!builders.TryGetValue(rack, out var rackPartitions))
+            {
                 builders[rack] = rackPartitions = [];
+            }
 
             rackPartitions.Add(partition.PartitionIndex);
         }
 
         var partitionsByRack = new Dictionary<string, int[]>(builders.Count, StringComparer.Ordinal);
         foreach (var (rack, rackPartitions) in builders)
+        {
             partitionsByRack[rack] = rackPartitions.ToArray();
+        }
 
         return partitionsByRack;
     }
@@ -125,25 +143,49 @@ internal sealed class ClusterMetadataSnapshot
         new Dictionary<string, TopicInfo>(),
         new Dictionary<Guid, TopicInfo>());
 
-    public string? ClusterId { get; }
-    public int ControllerId { get; }
-    public DateTimeOffset LastRefreshed { get; }
-    public IReadOnlyDictionary<int, BrokerNode> Brokers { get; }
-    public IReadOnlyDictionary<string, TopicInfo> Topics { get; }
-    public IReadOnlyDictionary<Guid, TopicInfo> TopicsById { get; }
+    public string? ClusterId
+    {
+        get;
+    }
+    public int ControllerId
+    {
+        get;
+    }
+    public DateTimeOffset LastRefreshed
+    {
+        get;
+    }
+    public IReadOnlyDictionary<int, BrokerNode> Brokers
+    {
+        get;
+    }
+    public IReadOnlyDictionary<string, TopicInfo> Topics
+    {
+        get;
+    }
+    public IReadOnlyDictionary<Guid, TopicInfo> TopicsById
+    {
+        get;
+    }
 
     /// <summary>
     /// Reverse index: broker node ID → list of TopicPartitions led by that broker.
     /// Built at snapshot creation time so the sender loop's drain algorithm can look up
     /// partitions for a broker in O(1) instead of scanning all topics × partitions.
     /// </summary>
-    public IReadOnlyDictionary<int, IReadOnlyList<TopicPartition>> PartitionsByBroker { get; }
+    public IReadOnlyDictionary<int, IReadOnlyList<TopicPartition>> PartitionsByBroker
+    {
+        get;
+    }
 
     /// <summary>
     /// Topic name → partition metadata array indexed by PartitionIndex.
     /// Built at snapshot creation time so partition-leader lookup is O(1).
     /// </summary>
-    public IReadOnlyDictionary<string, PartitionInfo?[]> PartitionsByTopicIndex { get; }
+    public IReadOnlyDictionary<string, PartitionInfo?[]> PartitionsByTopicIndex
+    {
+        get;
+    }
 
     // Topic name → leader index. Created on the first sticky-partition rotation against this
     // snapshot; snapshots that no producer partitions against never allocate it.
@@ -174,7 +216,9 @@ internal sealed class ClusterMetadataSnapshot
     {
         var cache = Volatile.Read(ref _leaderIndexByTopic) ?? InitializeLeaderIndexCache();
         if (cache.TryGetValue(topicName, out var index))
+        {
             return index;
+        }
 
         return Topics.TryGetValue(topicName, out var topic)
             ? cache.GetOrAdd(topicName, new TopicLeaderIndex(topic, Brokers))
@@ -198,7 +242,9 @@ internal sealed class ClusterMetadataSnapshot
             foreach (var partition in topic.Partitions)
             {
                 if (!builder.TryGetValue(partition.LeaderId, out var list))
+                {
                     builder[partition.LeaderId] = list = [];
+                }
                 list.Add(new TopicPartition(topic.Name, partition.PartitionIndex));
             }
         }
@@ -206,7 +252,9 @@ internal sealed class ClusterMetadataSnapshot
         // Freeze mutable lists into arrays for the immutable snapshot
         var result = new Dictionary<int, IReadOnlyList<TopicPartition>>(builder.Count);
         foreach (var (key, list) in builder)
+        {
             result[key] = list.ToArray();
+        }
         return result;
     }
 
@@ -220,7 +268,9 @@ internal sealed class ClusterMetadataSnapshot
             foreach (var partition in topic.Partitions)
             {
                 if (partition.PartitionIndex > maxPartitionIndex)
+                {
                     maxPartitionIndex = partition.PartitionIndex;
+                }
             }
 
             if (maxPartitionIndex < 0)
@@ -233,7 +283,9 @@ internal sealed class ClusterMetadataSnapshot
             foreach (var partition in topic.Partitions)
             {
                 if ((uint)partition.PartitionIndex < (uint)partitionsByIndex.Length)
+                {
                     partitionsByIndex[partition.PartitionIndex] = partition;
+                }
             }
 
             result[topic.Name] = partitionsByIndex;
@@ -407,7 +459,9 @@ public sealed class ClusterMetadata
         var partitionInfo = GetPartitionInfo(snapshot, topicName, partition);
 
         if (partitionInfo is null)
+        {
             return null;
+        }
 
         return snapshot.Brokers.TryGetValue(partitionInfo.LeaderId, out var broker) ? broker : null;
     }
@@ -424,26 +478,36 @@ public sealed class ClusterMetadata
         BrokerNode? leaderEndpoint)
     {
         if (leaderId < 0 || leaderEpoch < 0)
+        {
             return false;
+        }
 
         lock (_writeLock)
         {
             var existing = _snapshot;
             if (!existing.Topics.TryGetValue(topicName, out var topic))
+            {
                 return false;
+            }
 
             var currentPartition = GetPartitionInfo(existing, topicName, partition);
             if (currentPartition is null)
+            {
                 return false;
+            }
 
             if (currentPartition.LeaderEpoch >= 0 && leaderEpoch <= currentPartition.LeaderEpoch)
+            {
                 return false;
+            }
 
             var brokers = existing.Brokers.ToDictionary(static kvp => kvp.Key, static kvp => kvp.Value);
             if (leaderEndpoint is not null)
             {
                 if (leaderEndpoint.NodeId != leaderId)
+                {
                     return false;
+                }
 
                 brokers[leaderEndpoint.NodeId] = leaderEndpoint;
             }
@@ -477,7 +541,9 @@ public sealed class ClusterMetadata
             }
 
             if (!updated)
+            {
                 return false;
+            }
 
             var topics = existing.Topics.ToDictionary(static kvp => kvp.Key, static kvp => kvp.Value);
             var topicsById = existing.TopicsById.ToDictionary(static kvp => kvp.Key, static kvp => kvp.Value);
@@ -492,7 +558,9 @@ public sealed class ClusterMetadata
 
             topics[topicName] = updatedTopic;
             if (updatedTopic.TopicId != Guid.Empty)
+            {
                 topicsById[updatedTopic.TopicId] = updatedTopic;
+            }
 
             _snapshot = new ClusterMetadataSnapshot(
                 existing.ClusterId,
@@ -513,7 +581,9 @@ public sealed class ClusterMetadata
         int partition)
     {
         if (!snapshot.PartitionsByTopicIndex.TryGetValue(topicName, out var partitionsByIndex))
+        {
             return null;
+        }
 
         return (uint)partition < (uint)partitionsByIndex.Length
             ? partitionsByIndex[partition]
@@ -559,9 +629,13 @@ public sealed class ClusterMetadata
                 var topicsById = new Dictionary<Guid, TopicInfo>(existing.TopicsById.Count + response.Topics.Count);
 
                 foreach (var (name, info) in existing.Topics)
+                {
                     topics[name] = info;
+                }
                 foreach (var (id, info) in existing.TopicsById)
+                {
                     topicsById[id] = info;
+                }
 
                 AddResponseTopics(response, topics, topicsById, existing, brokers);
 
@@ -662,7 +736,9 @@ public sealed class ClusterMetadata
     private static bool ShouldPreserveExistingPartition(PartitionInfo existing, PartitionMetadata incoming)
     {
         if (existing.LeaderEpoch < 0)
+        {
             return false;
+        }
 
         if (incoming.LeaderEpoch >= 0)
         {
@@ -692,10 +768,22 @@ public sealed class ClusterMetadata
 /// </summary>
 public sealed class BrokerNode
 {
-    public required int NodeId { get; init; }
-    public required string Host { get; init; }
-    public required int Port { get; init; }
-    public string? Rack { get; init; }
+    public required int NodeId
+    {
+        get; init;
+    }
+    public required string Host
+    {
+        get; init;
+    }
+    public required int Port
+    {
+        get; init;
+    }
+    public string? Rack
+    {
+        get; init;
+    }
 
     public override string ToString() => $"Broker({NodeId}, {Host}:{Port})";
 }
@@ -705,11 +793,26 @@ public sealed class BrokerNode
 /// </summary>
 public sealed class TopicInfo
 {
-    public required string Name { get; init; }
-    public Guid TopicId { get; init; }
-    public ErrorCode ErrorCode { get; init; }
-    public bool IsInternal { get; init; }
-    public required IReadOnlyList<PartitionInfo> Partitions { get; init; }
+    public required string Name
+    {
+        get; init;
+    }
+    public Guid TopicId
+    {
+        get; init;
+    }
+    public ErrorCode ErrorCode
+    {
+        get; init;
+    }
+    public bool IsInternal
+    {
+        get; init;
+    }
+    public required IReadOnlyList<PartitionInfo> Partitions
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Gets the number of partitions.
@@ -722,13 +825,40 @@ public sealed class TopicInfo
 /// </summary>
 public sealed class PartitionInfo
 {
-    public required int PartitionIndex { get; init; }
-    public required int LeaderId { get; init; }
-    public int LeaderEpoch { get; init; } = -1;
-    public required IReadOnlyList<int> ReplicaNodes { get; init; }
-    public required IReadOnlyList<int> IsrNodes { get; init; }
-    public IReadOnlyList<int>? EligibleLeaderReplicas { get; init; }
-    public IReadOnlyList<int>? LastKnownElr { get; init; }
-    public IReadOnlyList<int>? OfflineReplicas { get; init; }
-    public ErrorCode ErrorCode { get; init; }
+    public required int PartitionIndex
+    {
+        get; init;
+    }
+    public required int LeaderId
+    {
+        get; init;
+    }
+    public int LeaderEpoch
+    {
+        get; init;
+    } = -1;
+    public required IReadOnlyList<int> ReplicaNodes
+    {
+        get; init;
+    }
+    public required IReadOnlyList<int> IsrNodes
+    {
+        get; init;
+    }
+    public IReadOnlyList<int>? EligibleLeaderReplicas
+    {
+        get; init;
+    }
+    public IReadOnlyList<int>? LastKnownElr
+    {
+        get; init;
+    }
+    public IReadOnlyList<int>? OfflineReplicas
+    {
+        get; init;
+    }
+    public ErrorCode ErrorCode
+    {
+        get; init;
+    }
 }

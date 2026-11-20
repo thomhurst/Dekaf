@@ -12,7 +12,10 @@ public sealed class ListConfigResourcesRequest : IKafkaRequest<ListConfigResourc
     /// <summary>
     /// Configuration resource type filters. An empty list requests every supported type.
     /// </summary>
-    public IReadOnlyList<sbyte> ResourceTypes { get; init; } = [];
+    public IReadOnlyList<sbyte> ResourceTypes
+    {
+        get; init;
+    } = [];
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {
@@ -34,9 +37,18 @@ public sealed class ListConfigResourcesResponse : IKafkaResponse
     public static short LowestSupportedVersion => 1;
     public static short HighestSupportedVersion => 1;
 
-    public int ThrottleTimeMs { get; init; }
-    public ErrorCode ErrorCode { get; init; }
-    public IReadOnlyList<ListConfigResource> ConfigResources { get; init; } = [];
+    public int ThrottleTimeMs
+    {
+        get; init;
+    }
+    public ErrorCode ErrorCode
+    {
+        get; init;
+    }
+    public IReadOnlyList<ListConfigResource> ConfigResources
+    {
+        get; init;
+    } = [];
 
     public static IKafkaResponse Read(ref KafkaProtocolReader reader, short version)
     {
@@ -63,8 +75,14 @@ public sealed class ListConfigResourcesResponse : IKafkaResponse
 /// </summary>
 public sealed class ListConfigResource
 {
-    public required string Name { get; init; }
-    public sbyte ResourceType { get; init; }
+    public required string Name
+    {
+        get; init;
+    }
+    public sbyte ResourceType
+    {
+        get; init;
+    }
 
     public static ListConfigResource Read(ref KafkaProtocolReader reader)
     {

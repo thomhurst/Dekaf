@@ -107,7 +107,10 @@ public sealed class IdempotentInitializationTimeoutCauseIntegrationTests
             _acceptLoop = AcceptLoopAsync();
         }
 
-        public string BootstrapServers { get; }
+        public string BootstrapServers
+        {
+            get;
+        }
 
         public int MetadataRequests => Volatile.Read(ref _metadataRequests);
 
@@ -122,7 +125,9 @@ public sealed class IdempotentInitializationTimeoutCauseIntegrationTests
                 {
                     var socket = await _listener.AcceptSocketAsync(_stop.Token);
                     lock (_sockets)
+                    {
                         _sockets.Add(socket);
+                    }
                     connections.Add(ServeAsync(socket));
                 }
             }
@@ -154,9 +159,13 @@ public sealed class IdempotentInitializationTimeoutCauseIntegrationTests
                     else if (apiKey == MetadataKey)
                     {
                         if (Interlocked.Increment(ref _metadataRequests) == 1)
+                        {
                             await stream.WriteAsync(Frame(correlationId, flexibleHeader: true, WriteNoBrokerMetadata), _stop.Token);
+                        }
                         else if (_recoverOnRefresh)
+                        {
                             await stream.WriteAsync(Frame(correlationId, flexibleHeader: true, WriteSelfAsBrokerMetadata), _stop.Token);
+                        }
                     }
                     else if (apiKey == InitProducerIdKey)
                     {
@@ -228,7 +237,9 @@ public sealed class IdempotentInitializationTimeoutCauseIntegrationTests
             var writer = new KafkaProtocolWriter(body);
             writer.WriteInt32(correlationId);
             if (flexibleHeader)
+            {
                 writer.WriteEmptyTaggedFields();
+            }
             writeBody(ref writer);
 
             var frame = new byte[sizeof(int) + body.WrittenCount];
@@ -244,7 +255,9 @@ public sealed class IdempotentInitializationTimeoutCauseIntegrationTests
             lock (_sockets)
             {
                 foreach (var socket in _sockets)
+                {
                     socket.Dispose();
+                }
             }
 
             await _acceptLoop;

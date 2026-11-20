@@ -286,7 +286,9 @@ public class ResponseWireFormatSnapshotTests
                         ancestors)
                 };
                 if (topicData.TopicId != Guid.Empty)
+                {
                     normalized[nameof(ProduceResponseTopicData.TopicId)] = topicData.TopicId;
+                }
                 return normalized;
             }
 
@@ -339,7 +341,9 @@ public class ResponseWireFormatSnapshotTests
                         ancestors)
                 };
                 if (offsetCommitTopic.TopicId != Guid.Empty)
+                {
                     normalized[nameof(OffsetCommitResponseTopic.TopicId)] = offsetCommitTopic.TopicId;
+                }
                 return normalized;
             }
 
@@ -353,7 +357,9 @@ public class ResponseWireFormatSnapshotTests
                         ancestors)
                 };
                 if (offsetFetchTopic.TopicId != Guid.Empty)
+                {
                     normalized[nameof(OffsetFetchResponseTopic.TopicId)] = offsetFetchTopic.TopicId;
+                }
                 return normalized;
             }
 

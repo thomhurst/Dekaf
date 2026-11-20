@@ -29,6 +29,8 @@ internal sealed class ActivityListenerIsolation : IDisposable
     public void Dispose()
     {
         if (_reportListener is not null)
+        {
             ActivitySource.AddActivityListener(_reportListener);
+        }
     }
 }

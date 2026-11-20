@@ -202,7 +202,9 @@ public class LazyRecordListTests
         var buffer = new ArrayBufferWriter<byte>();
         var writer = new KafkaProtocolWriter(buffer);
         foreach (var record in records)
+        {
             record.Write(ref writer);
+        }
 
         var firstRecordBuffer = new ArrayBufferWriter<byte>();
         var firstRecordWriter = new KafkaProtocolWriter(firstRecordBuffer);
@@ -227,7 +229,9 @@ public class LazyRecordListTests
         var buffer = new ArrayBufferWriter<byte>();
         var writer = new KafkaProtocolWriter(buffer);
         foreach (var record in records)
+        {
             record.Write(ref writer);
+        }
 
         var firstRecordBuffer = new ArrayBufferWriter<byte>();
         var firstRecordWriter = new KafkaProtocolWriter(firstRecordBuffer);
@@ -252,7 +256,9 @@ public class LazyRecordListTests
         var buffer = new ArrayBufferWriter<byte>();
         var writer = new KafkaProtocolWriter(buffer);
         foreach (var record in records)
+        {
             record.Write(ref writer);
+        }
 
         var firstRecordBuffer = new ArrayBufferWriter<byte>();
         var firstRecordWriter = new KafkaProtocolWriter(firstRecordBuffer);
@@ -279,7 +285,9 @@ public class LazyRecordListTests
         var buffer = new ArrayBufferWriter<byte>();
         var writer = new KafkaProtocolWriter(buffer);
         foreach (var record in records)
+        {
             record.Write(ref writer);
+        }
 
         var firstRecordBuffer = new ArrayBufferWriter<byte>();
         var firstRecordWriter = new KafkaProtocolWriter(firstRecordBuffer);
@@ -307,7 +315,9 @@ public class LazyRecordListTests
         var buffer = new ArrayBufferWriter<byte>();
         var writer = new KafkaProtocolWriter(buffer);
         foreach (var record in records)
+        {
             record.Write(ref writer);
+        }
 
         var bytes = new byte[buffer.WrittenCount + 6];
         buffer.WrittenSpan.CopyTo(bytes);
@@ -329,7 +339,9 @@ public class LazyRecordListTests
         var buffer = new ArrayBufferWriter<byte>();
         var writer = new KafkaProtocolWriter(buffer);
         foreach (var record in records)
+        {
             record.Write(ref writer);
+        }
 
         var firstTwoBuffer = new ArrayBufferWriter<byte>();
         var firstTwoWriter = new KafkaProtocolWriter(firstTwoBuffer);

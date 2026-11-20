@@ -27,7 +27,9 @@ internal static class BenchmarkJobSelection
             }
 
             foreach (var line in File.ReadAllLines(path))
+            {
                 expanded.AddRange(ConsumeTokens(line));
+            }
         }
 
         return expanded.ToArray();
@@ -39,14 +41,20 @@ internal static class BenchmarkJobSelection
         {
             var argument = arguments[i];
             if (argument is "-j" or "--job")
+            {
                 return i + 1 < arguments.Length ? Resolve(arguments[i + 1]) : null;
+            }
 
             const string longPrefix = "--job=";
             const string shortPrefix = "-j=";
             if (argument.StartsWith(longPrefix, StringComparison.OrdinalIgnoreCase))
+            {
                 return Resolve(argument[longPrefix.Length..]);
+            }
             if (argument.StartsWith(shortPrefix, StringComparison.OrdinalIgnoreCase))
+            {
                 return Resolve(argument[shortPrefix.Length..]);
+            }
         }
 
         return null;
@@ -110,7 +118,9 @@ internal static class BenchmarkJobSelection
         }
 
         if (token.Length > 0)
+        {
             yield return GetToken(token);
+        }
 
         static string GetToken(StringBuilder tokenBuilder)
         {

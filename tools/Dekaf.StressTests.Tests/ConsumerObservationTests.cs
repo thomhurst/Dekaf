@@ -15,8 +15,11 @@ public class ConsumerObservationTests
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(15));
         var options = new StressTestOptions
         {
-            BootstrapServers = "unused", Topic = "observation-test", DurationMinutes = 0,
-            MessageSizeBytes = 8, ProgressWatchdog = watchdog
+            BootstrapServers = "unused",
+            Topic = "observation-test",
+            DurationMinutes = 0,
+            MessageSizeBytes = 8,
+            ProgressWatchdog = watchdog
         };
         var tracker = new ThroughputTracker();
         var cycle = await StressTestHelpers.RunConsumerCycleAsync(options, new KeyedConsumerStressTest(),
@@ -29,14 +32,21 @@ public class ConsumerObservationTests
                 await expired.Task.WaitAsync(timeout.Token);
                 throughput.RecordMessage(8);
                 while (throughput.GetSnapshot().IntervalSamples.Count == 0)
+                {
                     await Task.Delay(10, timeout.Token);
-                if (failAfterDrain) throw new InvalidOperationException("drain failure");
+                }
+                if (failAfterDrain)
+                {
+                    throw new InvalidOperationException("drain failure");
+                }
             }, 1, null, TimeSpan.Zero, tracker, timeout.Token);
 
         await Assert.That(cycle.Result.Throughput.TotalMessages).IsEqualTo(1L);
         await Assert.That(cycle.Result.Throughput.IntervalSamples[^1].AcceptedMessages).IsEqualTo(1L);
         await Assert.That(cycle.Result.Throughput.TotalErrors).IsEqualTo(failAfterDrain ? 1L : 0L);
         if (failAfterDrain)
+        {
             await Assert.That(cycle.Result.Throughput.ErrorSamples.Single().Message).IsEqualTo("drain failure");
+        }
     }
 }

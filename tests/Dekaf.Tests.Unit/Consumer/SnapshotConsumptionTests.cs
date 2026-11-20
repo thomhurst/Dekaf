@@ -249,7 +249,10 @@ public sealed class SnapshotConsumptionTests
 
     private sealed class ThrowOnAccessRecordList(int count) : IReadOnlyList<Record>
     {
-        public int Count { get; } = count;
+        public int Count
+        {
+            get;
+        } = count;
 
         public Record this[int index] =>
             throw new InvalidOperationException($"Record {index} should not be inspected.");

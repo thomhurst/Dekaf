@@ -245,7 +245,9 @@ public sealed partial class AdminClient :
     public void RegisterMetricForSubscription(ApplicationTelemetryMetric metric)
     {
         if (Volatile.Read(ref _disposed) != 0)
+        {
             throw new ObjectDisposedException(nameof(AdminClient));
+        }
 
         _telemetryMetricCollector.RegisterMetricForSubscription(metric);
     }
@@ -254,7 +256,9 @@ public sealed partial class AdminClient :
     public void UnregisterMetricFromSubscription(string name)
     {
         if (Volatile.Read(ref _disposed) != 0)
+        {
             throw new ObjectDisposedException(nameof(AdminClient));
+        }
 
         _telemetryMetricCollector.UnregisterMetricFromSubscription(name);
     }
@@ -269,7 +273,9 @@ public sealed partial class AdminClient :
             using var connectionLease = await LeaseAnyBrokerConnectionAsync(attemptToken).ConfigureAwait(false);
             var connection = connectionLease.Connection;
             if (!_metadataManager.HasApiKey(connection, Protocol.ApiKey.ListClientMetricsResources))
+            {
                 throw new Errors.BrokerVersionException($"Broker {connection.BrokerId} does not support ListClientMetricsResources (API key 74).");
+            }
             var request = new ListClientMetricsResourcesRequest();
 
             var apiVersion = _metadataManager.GetNegotiatedApiVersion(
@@ -309,7 +315,9 @@ public sealed partial class AdminClient :
             using var connectionLease = await LeaseAnyBrokerConnectionAsync(attemptToken).ConfigureAwait(false);
             var connection = connectionLease.Connection;
             if (!_metadataManager.HasApiKey(connection, Protocol.ApiKey.ListClientMetricsResources))
+            {
                 throw new Errors.BrokerVersionException($"Broker {connection.BrokerId} does not support ListConfigResources (API key 74).");
+            }
 
             var apiVersion = _metadataManager.GetNegotiatedApiVersion(
                 connection,
@@ -416,7 +424,9 @@ public sealed partial class AdminClient :
                     if (!opts.ValidateOnly && writeContext.WriteStarted)
                     {
                         foreach (var topic in pending)
+                        {
                             ambiguousTopics.Add(topic.Name);
+                        }
                     }
                     throw;
                 }
@@ -444,13 +454,17 @@ public sealed partial class AdminClient :
                     }
 
                     if (!opts.ValidateOnly && MayHaveAppliedDespiteError(topic.ErrorCode))
+                    {
                         ambiguousTopics.Add(topic.Name);
+                    }
                     (retryTopics ??= new HashSet<string>(StringComparer.Ordinal)).Add(topic.Name);
                     retryFailure ??= failure;
                 }
 
                 if (definitiveFailure is not null)
+                {
                     throw definitiveFailure;
+                }
 
                 if (retryFailure is not null)
                 {
@@ -467,7 +481,9 @@ public sealed partial class AdminClient :
             // Poll until every partition has a leader, matching the retry pattern in
             // MetadataManager.GetTopicMetadataSlowAsync.
             if (!opts.ValidateOnly)
+            {
                 await WaitForTopicLeadersAsync(createdTopicNames, attemptToken).ConfigureAwait(false);
+            }
         }, cancellationToken, OperationTimeoutBudget(opts.TimeoutMs)).ConfigureAwait(false);
     }
 
@@ -507,11 +523,15 @@ public sealed partial class AdminClient :
                 }
 
                 if (!allReady)
+                {
                     break;
+                }
             }
 
             if (allReady)
+            {
                 return;
+            }
 
             if (attempt + 1 < leaderWaitRetries)
             {
@@ -538,9 +558,13 @@ public sealed partial class AdminClient :
 
         var topic = _metadataManager.Metadata.GetTopic(requested.Name);
         if (topic is not { ErrorCode: Protocol.ErrorCode.None } || topic.PartitionCount < requested.Count)
+        {
             return false;
+        }
         if (requested.Assignments is not { } assignments)
+        {
             return true;
+        }
 
         var firstNewPartition = requested.Count - assignments.Count;
         var matched = 0;
@@ -548,14 +572,20 @@ public sealed partial class AdminClient :
         {
             var assignmentIndex = partition.PartitionIndex - firstNewPartition;
             if (assignmentIndex < 0 || assignmentIndex >= assignments.Count)
+            {
                 continue;
+            }
             var expected = assignments[assignmentIndex].BrokerIds;
             if (partition.ErrorCode != Protocol.ErrorCode.None || partition.ReplicaNodes.Count != expected.Count)
+            {
                 return false;
+            }
             for (var index = 0; index < expected.Count; index++)
             {
                 if (partition.ReplicaNodes[index] != expected[index])
+                {
                     return false;
+                }
             }
             matched++;
         }
@@ -582,7 +612,9 @@ public sealed partial class AdminClient :
         {
             await EnsureInitializedAsync(attemptToken).ConfigureAwait(false);
             if (pending.Count == 0)
+            {
                 return;
+            }
 
             using var controllerLease = await LeaseControllerAsync(Protocol.ApiKey.DeleteTopics, attemptToken).ConfigureAwait(false);
             var controller = controllerLease.Connection;
@@ -626,7 +658,9 @@ public sealed partial class AdminClient :
             catch
             {
                 if (writeContext.WriteStarted)
+                {
                     ambiguousTopics.UnionWith(pending);
+                }
                 throw;
             }
 
@@ -652,13 +686,17 @@ public sealed partial class AdminClient :
                 }
 
                 if (MayHaveAppliedDespiteError(topic.ErrorCode))
+                {
                     ambiguousTopics.Add(topic.Name);
+                }
                 (retryTopics ??= new HashSet<string>(StringComparer.Ordinal)).Add(topic.Name);
                 retryFailure ??= failure;
             }
 
             if (definitiveFailure is not null)
+            {
                 throw definitiveFailure;
+            }
 
             if (retryFailure is not null)
             {
@@ -684,7 +722,9 @@ public sealed partial class AdminClient :
 
         var ids = DistinctTopicIds(topicIds);
         if (ids.Count == 0)
+        {
             return;
+        }
 
         var opts = options ?? new DeleteTopicsOptions();
         ArgumentOutOfRangeException.ThrowIfNegative(opts.TimeoutMs);
@@ -702,7 +742,9 @@ public sealed partial class AdminClient :
             {
                 var topicId = ids[sourceIndex];
                 if (unresolvedIds.Contains(topicId))
+                {
                     topics[destinationIndex++] = new DeleteTopicState { TopicId = topicId };
+                }
             }
 
             using var controllerLease = await LeaseControllerAsync(Protocol.ApiKey.DeleteTopics, attemptToken).ConfigureAwait(false);
@@ -731,7 +773,9 @@ public sealed partial class AdminClient :
             catch
             {
                 if (writeContext.WriteStarted)
+                {
                     ambiguousIds.UnionWith(unresolvedIds);
+                }
                 throw;
             }
 
@@ -741,7 +785,9 @@ public sealed partial class AdminClient :
                 var topic = response.Responses[i];
                 var identifier = topic.TopicId;
                 if (identifier == Guid.Empty && i < topics.Length)
+                {
                     identifier = topics[i].TopicId;
+                }
 
                 if (topic.ErrorCode == Protocol.ErrorCode.None ||
                     (topic.ErrorCode == Protocol.ErrorCode.UnknownTopicId &&
@@ -755,7 +801,9 @@ public sealed partial class AdminClient :
                 var isRetriable = topic.ErrorCode.IsRetriable();
                 if (MayHaveAppliedDespiteError(topic.ErrorCode)
                     || topic.ErrorCode == Protocol.ErrorCode.NetworkException)
+                {
                     ambiguousIds.Add(identifier);
+                }
 
                 if (failure is null || (failure.IsRetriable && !isRetriable))
                 {
@@ -765,7 +813,9 @@ public sealed partial class AdminClient :
             }
 
             if (failure is not null)
+            {
                 throw failure;
+            }
         }, cancellationToken, budgetMs).ConfigureAwait(false);
 
         await RefreshMetadataAfterMutationAsync(startedAt, budgetMs, cancellationToken).ConfigureAwait(false);
@@ -835,11 +885,15 @@ public sealed partial class AdminClient :
 
         var ids = DistinctTopicIds(topicIds);
         if (ids.Count == 0)
+        {
             return new Dictionary<Guid, TopicDescription>();
+        }
 
         var topics = new MetadataRequestTopic[ids.Count];
         for (var i = 0; i < ids.Count; i++)
+        {
             topics[i] = new MetadataRequestTopic { TopicId = ids[i] };
+        }
 
         return await WithRetryAsync(async attemptToken =>
         {
@@ -863,13 +917,17 @@ public sealed partial class AdminClient :
                 attemptToken).ConfigureAwait(false);
 
             if (response.ErrorCode != Protocol.ErrorCode.None)
+            {
                 throw new KafkaException(response.ErrorCode, $"Failed to describe topics by ID: {response.ErrorCode}.");
+            }
 
             var result = new Dictionary<Guid, TopicDescription>(response.Topics.Count);
             foreach (var topic in response.Topics)
             {
                 if (topic.TopicId != Guid.Empty)
+                {
                     result[topic.TopicId] = ToTopicDescription(topic);
+                }
             }
 
             return (IReadOnlyDictionary<Guid, TopicDescription>)result;
@@ -969,7 +1027,9 @@ public sealed partial class AdminClient :
 
             var connection = connectionLease.Connection;
             if (!_metadataManager.HasApiKey(connection, Protocol.ApiKey.DescribeTopicPartitions))
+            {
                 throw new Errors.BrokerVersionException($"Broker {connection.BrokerId} does not support DescribeTopicPartitions (API key 75).");
+            }
 
             var request = new DescribeTopicPartitionsRequest
             {
@@ -1301,10 +1361,14 @@ public sealed partial class AdminClient :
         foreach (var topicId in topicIds)
         {
             if (topicId == Guid.Empty)
+            {
                 throw new ArgumentException("Topic IDs cannot contain the empty UUID.", nameof(topicIds));
+            }
 
             if (seen.Add(topicId))
+            {
                 result.Add(topicId);
+            }
         }
 
         return result;
@@ -1360,7 +1424,9 @@ public sealed partial class AdminClient :
                 cancellationToken).ConfigureAwait(false);
 
             foreach (var (groupId, description) in classicDescriptions)
+            {
                 descriptions[groupId] = description;
+            }
         }
 
         return descriptions;
@@ -1615,7 +1681,9 @@ public sealed partial class AdminClient :
                 foreach (var state in response.TransactionStates)
                 {
                     if (!seenTransactionalIds.Add(state.TransactionalId))
+                    {
                         continue;
+                    }
 
                     transactions.Add(new TransactionListing
                     {
@@ -1829,7 +1897,9 @@ public sealed partial class AdminClient :
         }
 
         if (options is not null)
+        {
             ArgumentOutOfRangeException.ThrowIfNegative(options.TimeoutMs);
+        }
         var transactionTimeoutMs = options?.TimeoutMs ?? _options.RequestTimeoutMs;
 
         // Kept across attempts. Each InitProducerId bumps the producer epoch, so an ID whose fence
@@ -1868,7 +1938,9 @@ public sealed partial class AdminClient :
             foreach (var transactionalId in transactionalIdList)
             {
                 if (result.ContainsKey(transactionalId))
+                {
                     continue;
+                }
 
                 var coordinatorId = await FindTransactionCoordinatorAsync(transactionalId, attemptToken).ConfigureAwait(false);
                 if (!idsByCoordinator.TryGetValue(coordinatorId, out var ids))
@@ -1885,7 +1957,9 @@ public sealed partial class AdminClient :
                 using var connectionLease = await _connectionPool.LeaseConnectionAsync(coordinatorId, attemptToken).ConfigureAwait(false);
                 var connection = connectionLease.Connection;
                 if (!_metadataManager.HasApiKey(connection, Protocol.ApiKey.InitProducerId))
+                {
                     throw new Errors.BrokerVersionException($"Broker {coordinatorId} does not support InitProducerId (API key 22).");
+                }
 
                 var apiVersion = _metadataManager.GetNegotiatedApiVersion(
                     connection,
@@ -1980,13 +2054,17 @@ public sealed partial class AdminClient :
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(transactionalId);
         if (options?.TimeoutMs is { } timeoutMs)
+        {
             ArgumentOutOfRangeException.ThrowIfNegativeOrZero(timeoutMs);
+        }
 
         // Validate the public operation against controller-only bootstrap before delegating
         // to the single-ID producer fencing path used by Kafka's Admin client, which
         // initializes the client under its own API deadline.
         if (_controllerMetadataManager is not null)
+        {
             EnsureControllerOperationSupported(nameof(ForceTerminateTransactionAsync));
+        }
         var results = await FenceProducersAsync(
             [transactionalId],
             options?.TimeoutMs is { } configuredTimeoutMs
@@ -2047,7 +2125,9 @@ public sealed partial class AdminClient :
 
             var connection = connectionLease.Connection;
             if (!_metadataManager.HasApiKey(connection, Protocol.ApiKey.WriteTxnMarkers))
+            {
                 throw new Errors.BrokerVersionException($"Broker {leaderNode.NodeId} does not support WriteTxnMarkers (API key 27).");
+            }
 
             var apiVersion = _metadataManager.GetNegotiatedApiVersion(
                 connection,
@@ -2097,7 +2177,9 @@ public sealed partial class AdminClient :
             foreach (var groupId in groupIdList)
             {
                 if (deletedGroups.Contains(groupId))
+                {
                     continue;
+                }
 
                 var coordinatorId = await FindGroupCoordinatorAsync(groupId, attemptToken).ConfigureAwait(false);
                 if (!groupsByCoordinator.TryGetValue(coordinatorId, out var groups))
@@ -2136,7 +2218,9 @@ public sealed partial class AdminClient :
                 catch
                 {
                     if (writeContext.WriteStarted)
+                    {
                         ambiguousGroups.UnionWith(groups);
+                    }
                     throw;
                 }
 
@@ -2156,22 +2240,32 @@ public sealed partial class AdminClient :
                     }
 
                     if (MayHaveAppliedDespiteError(groupResult.ErrorCode))
+                    {
                         ambiguousGroups.Add(groupResult.GroupId);
+                    }
                     var groupFailure = new Errors.GroupException(groupResult.ErrorCode,
                         FormatDeleteGroupFailure("DeleteConsumerGroups", groupResult))
                     {
                         GroupId = groupResult.GroupId
                     };
                     if (groupResult.ErrorCode.IsRetriable())
+                    {
                         failure ??= groupFailure;
+                    }
                     else
+                    {
                         definitiveFailure ??= groupFailure;
+                    }
                 }
 
                 if (definitiveFailure is not null)
+                {
                     throw definitiveFailure;
+                }
                 if (failure is not null)
+                {
                     throw failure;
+                }
             }
         }, cancellationToken).ConfigureAwait(false);
     }
@@ -2207,7 +2301,9 @@ public sealed partial class AdminClient :
             foreach (var member in memberList)
             {
                 if (!identities.Add(member.GroupInstanceId))
+                {
                     throw new ArgumentException("Static member group.instance.id values must be unique.", nameof(members));
+                }
             }
         }
 
@@ -2334,7 +2430,9 @@ public sealed partial class AdminClient :
             var result = new Dictionary<TopicPartition, long>();
 
             if (response.ErrorCode != Protocol.ErrorCode.None)
+            {
                 throw ConsumerGroupOffsetQueryError(groupId, response.ErrorCode);
+            }
 
             // v8+ uses Groups array; v0-v7 uses flat Topics
             IReadOnlyList<OffsetFetchResponseTopic>? topics = response.Topics;
@@ -2352,9 +2450,13 @@ public sealed partial class AdminClient :
                     }
                 }
                 if (matchedGroup is null)
+                {
                     throw ConsumerGroupOffsetQueryError(groupId, Protocol.ErrorCode.UnknownServerError);
+                }
                 if (matchedGroup.ErrorCode != Protocol.ErrorCode.None)
+                {
                     throw ConsumerGroupOffsetQueryError(groupId, matchedGroup.ErrorCode);
+                }
                 topics = matchedGroup.Topics;
             }
 
@@ -2368,7 +2470,9 @@ public sealed partial class AdminClient :
                     {
                         var partition = partitions[partitionIndex];
                         if (partition.ErrorCode != Protocol.ErrorCode.None)
+                        {
                             throw ConsumerGroupOffsetQueryError(groupId, partition.ErrorCode);
+                        }
                         if (partition.CommittedOffset >= 0)
                         {
                             result[new TopicPartition(topic.Name, partition.PartitionIndex)] = partition.CommittedOffset;
@@ -2579,7 +2683,9 @@ public sealed partial class AdminClient :
         {
             await EnsureInitializedAsync(attemptToken, nameof(CreatePartitionsAsync)).ConfigureAwait(false);
             if (topics.Count == 0)
+            {
                 return;
+            }
 
             using var controllerLease = await LeaseControllerAsync(Protocol.ApiKey.CreatePartitions, attemptToken).ConfigureAwait(false);
             var controller = controllerLease.Connection;
@@ -2612,7 +2718,9 @@ public sealed partial class AdminClient :
                 if (!validateOnly && writeContext.WriteStarted)
                 {
                     foreach (var topic in topics)
+                    {
                         ambiguousTopics.Add(topic.Name);
+                    }
                 }
                 throw;
             }
@@ -2626,7 +2734,9 @@ public sealed partial class AdminClient :
             foreach (var topicResult in response.Results)
             {
                 if (topicResult.ErrorCode == Protocol.ErrorCode.None)
+                {
                     continue;
+                }
 
                 if (topicResult.ErrorCode == Protocol.ErrorCode.InvalidPartitions &&
                     ambiguousTopics.Contains(topicResult.Name) &&
@@ -2646,13 +2756,17 @@ public sealed partial class AdminClient :
                 }
 
                 if (!validateOnly && MayHaveAppliedDespiteError(topicResult.ErrorCode))
+                {
                     ambiguousTopics.Add(topicResult.Name);
+                }
                 (retryTopics ??= new HashSet<string>(StringComparer.Ordinal)).Add(topicResult.Name);
                 retryFailure ??= failure;
             }
 
             if (definitiveFailure is not null)
+            {
                 throw definitiveFailure;
+            }
 
             if (retryFailure is not null)
             {
@@ -2690,7 +2804,9 @@ public sealed partial class AdminClient :
         {
             await EnsureInitializedAsync(attemptToken).ConfigureAwait(false);
             if (topics.Count == 0)
+            {
                 return;
+            }
 
             using var controllerLease = await LeaseControllerAsync(Protocol.ApiKey.AlterPartitionReassignments, attemptToken).ConfigureAwait(false);
             var controller = controllerLease.Connection;
@@ -2721,7 +2837,9 @@ public sealed partial class AdminClient :
             catch
             {
                 if (writeContext.WriteStarted)
+                {
                     AddReassignmentPartitions(ambiguousPartitions, topics);
+                }
                 throw;
             }
 
@@ -2735,7 +2853,9 @@ public sealed partial class AdminClient :
                 }
 
                 if (MayHaveAppliedDespiteError(response.ErrorCode))
+                {
                     AddReassignmentPartitions(ambiguousPartitions, topics);
+                }
                 throw new KafkaException(response.ErrorCode,
                     $"AlterPartitionReassignments failed: {response.ErrorMessage ?? response.ErrorCode.ToString()}");
             }
@@ -2766,14 +2886,18 @@ public sealed partial class AdminClient :
                     }
 
                     if (MayHaveAppliedDespiteError(partition.ErrorCode))
+                    {
                         ambiguousPartitions.Add(topicPartition);
+                    }
                     (retryPartitions ??= []).Add(topicPartition);
                     retryFailure ??= failure;
                 }
             }
 
             if (definitiveFailure is not null)
+            {
                 throw definitiveFailure;
+            }
 
             if (retryFailure is not null)
             {
@@ -2792,7 +2916,9 @@ public sealed partial class AdminClient :
         foreach (var topic in topics)
         {
             foreach (var partition in topic.Partitions)
+            {
                 partitions.Add(new TopicPartition(topic.Name, partition.PartitionIndex));
+            }
         }
     }
 
@@ -2805,7 +2931,9 @@ public sealed partial class AdminClient :
             foreach (var partition in topic.Partitions)
             {
                 if (!partitions.Contains(new TopicPartition(topic.Name, partition.PartitionIndex)))
+                {
                     return false;
+                }
             }
         }
 
@@ -2824,11 +2952,15 @@ public sealed partial class AdminClient :
             foreach (var partition in topic.Partitions)
             {
                 if (keep.Contains(new TopicPartition(topic.Name, partition.PartitionIndex)))
+                {
                     partitions.Add(partition);
+                }
             }
 
             if (partitions.Count > 0)
+            {
                 remaining.Add(new AlterPartitionReassignmentsRequestTopic { Name = topic.Name, Partitions = partitions });
+            }
         }
 
         return remaining;
@@ -3069,20 +3201,28 @@ public sealed partial class AdminClient :
         // client is also reported as success.
         HashSet<string>? deletionOnlyUsers = null;
         foreach (var deletion in deletions)
+        {
             (deletionOnlyUsers ??= new HashSet<string>(StringComparer.Ordinal)).Add(deletion.Name);
+        }
         if (deletionOnlyUsers is not null)
         {
             foreach (var upsertion in upsertions)
+            {
                 deletionOnlyUsers.Remove(upsertion.Name);
+            }
         }
         // Tracked per user: only a user whose alterations may have reached the controller turns a
         // later RESOURCE_NOT_FOUND into success. Users settled by an earlier answer are not sent
         // again.
         var pendingUsers = new HashSet<string>(StringComparer.Ordinal);
         foreach (var deletion in deletions)
+        {
             pendingUsers.Add(deletion.Name);
+        }
         foreach (var upsertion in upsertions)
+        {
             pendingUsers.Add(upsertion.Name);
+        }
         var ambiguousUsers = new HashSet<string>(StringComparer.Ordinal);
         var writeContext = new KafkaRequestWriteContext(CancellationToken.None);
 
@@ -3090,7 +3230,9 @@ public sealed partial class AdminClient :
         {
             await EnsureInitializedAsync(attemptToken).ConfigureAwait(false);
             if (pendingUsers.Count == 0)
+            {
                 return;
+            }
 
             using var controllerLease = await LeaseControllerAsync(Protocol.ApiKey.AlterUserScramCredentials, attemptToken).ConfigureAwait(false);
             var controller = controllerLease.Connection;
@@ -3120,7 +3262,9 @@ public sealed partial class AdminClient :
             catch
             {
                 if (writeContext.WriteStarted)
+                {
                     ambiguousUsers.UnionWith(pendingUsers);
+                }
                 throw;
             }
 
@@ -3148,15 +3292,21 @@ public sealed partial class AdminClient :
                 }
 
                 if (MayHaveAppliedDespiteError(result.ErrorCode))
+                {
                     ambiguousUsers.Add(result.User);
+                }
                 retryFailure ??= failure;
             }
 
             if (definitiveFailure is not null)
+            {
                 throw definitiveFailure;
+            }
 
             if (retryFailure is not null)
+            {
                 throw retryFailure;
+            }
 
             pendingUsers.Clear();
         }, cancellationToken, timeoutMs).ConfigureAwait(false);
@@ -3407,7 +3557,9 @@ public sealed partial class AdminClient :
             }
 
             if (!groups.TryGetValue(endpoint, out var group))
+            {
                 groups.Add(endpoint, group = []);
+            }
             group.Add(resource);
         }
 
@@ -3432,7 +3584,9 @@ public sealed partial class AdminClient :
         foreach (var resource in resources)
         {
             if (resource.Type != ConfigResourceType.BrokerLogger)
+            {
                 continue;
+            }
 
             if (!int.TryParse(resource.Name, out var controllerId))
             {
@@ -3608,7 +3762,9 @@ public sealed partial class AdminClient :
             if (response.ErrorCode != Protocol.ErrorCode.None)
             {
                 if (MayHaveAppliedDespiteError(response.ErrorCode))
+                {
                     expireMayHaveApplied = true;
+                }
                 throw KafkaException.FromErrorCode(response.ErrorCode, $"ExpireDelegationToken failed: {response.ErrorCode}");
             }
 
@@ -3748,7 +3904,9 @@ public sealed partial class AdminClient :
             await EnsureInitializedAsync(attemptToken, nameof(DescribeConfigsAsync)).ConfigureAwait(false);
             var result = new Dictionary<ConfigResource, IReadOnlyList<ConfigEntry>>();
             foreach (var group in groups)
+            {
                 await DescribeConfigsOnEndpointAsync(group.Key, group.Value, opts, result, attemptToken).ConfigureAwait(false);
+            }
 
             return result;
         }, cancellationToken, opts.TimeoutMs).ConfigureAwait(false);
@@ -3844,7 +4002,9 @@ public sealed partial class AdminClient :
         {
             await EnsureInitializedAsync(attemptToken).ConfigureAwait(false);
             foreach (var group in groups)
+            {
                 await AlterConfigsOnEndpointAsync(group.Key, group.Value, configs, opts, attemptToken).ConfigureAwait(false);
+            }
         }, cancellationToken, timeoutMs).ConfigureAwait(false);
     }
 
@@ -3919,7 +4079,9 @@ public sealed partial class AdminClient :
         {
             await EnsureInitializedAsync(attemptToken).ConfigureAwait(false);
             foreach (var group in groups)
+            {
                 await IncrementalAlterConfigsOnEndpointAsync(group.Key, group.Value, configs, opts, attemptToken).ConfigureAwait(false);
+            }
         }, cancellationToken, timeoutMs).ConfigureAwait(false);
     }
 
@@ -3987,7 +4149,9 @@ public sealed partial class AdminClient :
 
         var bindings = aclBindings.ToList();
         if (bindings.Count == 0)
+        {
             return;
+        }
 
         var creations = bindings.Select(b => new AclCreation
         {
@@ -4046,7 +4210,9 @@ public sealed partial class AdminClient :
 
         var filterList = filters.ToList();
         if (filterList.Count == 0)
+        {
             return [];
+        }
 
         var deleteFilters = filterList.Select(f => new DeleteAclsFilter
         {
@@ -4312,10 +4478,14 @@ public sealed partial class AdminClient :
             if (response.ErrorCode != Protocol.ErrorCode.None)
             {
                 if (isRetryAttempt && response.ErrorCode == Protocol.ErrorCode.GroupIdNotFound)
+                {
                     return;
+                }
 
                 if (MayHaveAppliedDespiteError(response.ErrorCode))
+                {
                     deleteMayHaveApplied = true;
+                }
                 throw new Errors.GroupException(response.ErrorCode,
                     $"DeleteConsumerGroupOffsets failed for group '{groupId}': {response.ErrorCode}")
                 {
@@ -4331,7 +4501,9 @@ public sealed partial class AdminClient :
                     if (partition.ErrorCode != Protocol.ErrorCode.None)
                     {
                         if (MayHaveAppliedDespiteError(partition.ErrorCode))
+                        {
                             deleteMayHaveApplied = true;
+                        }
                         throw new Errors.GroupException(partition.ErrorCode,
                             $"DeleteConsumerGroupOffsets failed for {topic.Name}-{partition.PartitionIndex}: {partition.ErrorCode}")
                         {
@@ -4484,9 +4656,18 @@ public sealed partial class AdminClient :
 
     private sealed class ListOffsetsLeaderRequest
     {
-        internal List<ListOffsetsRequestTopic> Topics { get; } = [];
-        internal short MinimumVersion { get; set; } = ListOffsetsRequest.LowestSupportedVersion;
-        internal OffsetSpec RequiredSpec { get; set; }
+        internal List<ListOffsetsRequestTopic> Topics
+        {
+            get;
+        } = [];
+        internal short MinimumVersion
+        {
+            get; set;
+        } = ListOffsetsRequest.LowestSupportedVersion;
+        internal OffsetSpec RequiredSpec
+        {
+            get; set;
+        }
     }
 
     private readonly record struct ListOffsetsQuery(long Timestamp, short MinimumVersion);
@@ -4724,7 +4905,9 @@ public sealed partial class AdminClient :
             if (response.ErrorCode != Protocol.ErrorCode.None)
             {
                 if (MayHaveAppliedDespiteError(response.ErrorCode))
+                {
                     addMayHaveApplied = true;
+                }
                 throw KafkaException.FromErrorCode(
                     response.ErrorCode,
                     response.ErrorMessage ?? $"AddRaftVoter failed: {response.ErrorCode}");
@@ -4795,7 +4978,9 @@ public sealed partial class AdminClient :
             if (response.ErrorCode != Protocol.ErrorCode.None)
             {
                 if (MayHaveAppliedDespiteError(response.ErrorCode))
+                {
                     removeMayHaveApplied = true;
+                }
                 throw KafkaException.FromErrorCode(
                     response.ErrorCode,
                     response.ErrorMessage ?? $"RemoveRaftVoter failed: {response.ErrorCode}");
@@ -4844,12 +5029,16 @@ public sealed partial class AdminClient :
             }
 
             if (isRetryAttempt && response.ErrorCode == Protocol.ErrorCode.BrokerIdNotRegistered)
+            {
                 return;
+            }
 
             if (response.ErrorCode != Protocol.ErrorCode.None)
             {
                 if (MayHaveAppliedDespiteError(response.ErrorCode))
+                {
                     unregisterMayHaveApplied = true;
+                }
                 throw KafkaException.FromErrorCode(
                     response.ErrorCode,
                     response.ErrorMessage ?? $"UnregisterBroker failed: {response.ErrorCode}");
@@ -5255,15 +5444,30 @@ public sealed partial class AdminClient :
 
     private sealed class ReplicaLogDirAccumulator
     {
-        public string? CurrentReplicaLogDir { get; set; }
+        public string? CurrentReplicaLogDir
+        {
+            get; set;
+        }
 
-        public long CurrentReplicaOffsetLag { get; set; } = -1;
+        public long CurrentReplicaOffsetLag
+        {
+            get; set;
+        } = -1;
 
-        public string? FutureReplicaLogDir { get; set; }
+        public string? FutureReplicaLogDir
+        {
+            get; set;
+        }
 
-        public long FutureReplicaOffsetLag { get; set; } = -1;
+        public long FutureReplicaOffsetLag
+        {
+            get; set;
+        } = -1;
 
-        public Protocol.ErrorCode ErrorCode { get; set; }
+        public Protocol.ErrorCode ErrorCode
+        {
+            get; set;
+        }
     }
 
     public ValueTask<IReadOnlyDictionary<string, StreamsGroupDescription>> DescribeStreamsGroupsAsync(
@@ -5620,11 +5824,15 @@ public sealed partial class AdminClient :
         {
             ArgumentException.ThrowIfNullOrWhiteSpace(groupId);
             if (!uniqueGroupIds.Add(groupId))
+            {
                 throw new ArgumentException($"Share group ID '{groupId}' is duplicated.", nameof(groupIds));
+            }
         }
 
         if (groupIdList.Length == 0)
+        {
             return new Dictionary<string, DeleteShareGroupResult>(StringComparer.Ordinal);
+        }
 
         // Both collections intentionally survive retry attempts: terminal results prevent
         // resending completed groups, while ambiguity turns a later not-found response into success.
@@ -5639,7 +5847,9 @@ public sealed partial class AdminClient :
             foreach (var groupId in groupIdList)
             {
                 if (results.ContainsKey(groupId))
+                {
                     continue;
+                }
 
                 int coordinatorId;
                 try
@@ -5648,8 +5858,7 @@ public sealed partial class AdminClient :
                         groupId,
                         attemptToken).ConfigureAwait(false);
                 }
-                catch (Errors.GroupException exception) when (
-                    exception.ErrorCode is { } errorCode &&
+                catch (Errors.GroupException exception) when (exception.ErrorCode is { } errorCode &&
                     !errorCode.IsRetriable() &&
                     !errorCode.RequiresMetadataRefresh())
                 {
@@ -5692,12 +5901,13 @@ public sealed partial class AdminClient :
                         apiVersion,
                         attemptToken).ConfigureAwait(false);
                 }
-                catch (Exception exception) when (
-                    RetryHelper.IsRetriableRequestFailure(exception) &&
+                catch (Exception exception) when (RetryHelper.IsRetriableRequestFailure(exception) &&
                     !attemptToken.IsCancellationRequested)
                 {
                     if (shareWriteContext.WriteStarted)
+                    {
                         ambiguousGroups.UnionWith(coordinatorGroups);
+                    }
                     retryFailure ??= exception;
                     continue;
                 }
@@ -5707,14 +5917,18 @@ public sealed partial class AdminClient :
                 foreach (var groupResult in response.Results)
                 {
                     if (!coordinatorGroupIds.Contains(groupResult.GroupId))
+                    {
                         continue;
+                    }
 
                     responseGroupIds.Add(groupResult.GroupId);
                     var errorCode = groupResult.ErrorCode;
                     if (errorCode.IsRetriable() || errorCode.RequiresMetadataRefresh())
                     {
                         if (MayHaveAppliedDespiteError(errorCode))
+                        {
                             ambiguousGroups.Add(groupResult.GroupId);
+                        }
                         retryFailure ??= new Errors.GroupException(
                             errorCode,
                             FormatDeleteGroupFailure("DeleteShareGroups", groupResult))
@@ -5752,11 +5966,15 @@ public sealed partial class AdminClient :
             }
 
             if (retryFailure is not null)
+            {
                 throw retryFailure;
+            }
 
             var orderedResults = new Dictionary<string, DeleteShareGroupResult>(groupIdList.Length, StringComparer.Ordinal);
             foreach (var groupId in groupIdList)
+            {
                 orderedResults[groupId] = results[groupId];
+            }
 
             return orderedResults;
         }, cancellationToken).ConfigureAwait(false);
@@ -5968,10 +6186,14 @@ public sealed partial class AdminClient :
             if (response.ErrorCode != Protocol.ErrorCode.None)
             {
                 if (isRetryAttempt && response.ErrorCode == Protocol.ErrorCode.GroupIdNotFound)
+                {
                     return;
+                }
 
                 if (MayHaveAppliedDespiteError(response.ErrorCode))
+                {
                     deleteMayHaveApplied = true;
+                }
                 throw new Errors.GroupException(response.ErrorCode,
                     $"DeleteShareGroupOffsets failed for group '{groupId}': {response.ErrorCode}")
                 {
@@ -5984,7 +6206,9 @@ public sealed partial class AdminClient :
                 if (topic.ErrorCode != Protocol.ErrorCode.None)
                 {
                     if (MayHaveAppliedDespiteError(topic.ErrorCode))
+                    {
                         deleteMayHaveApplied = true;
+                    }
                     throw new Errors.GroupException(topic.ErrorCode,
                         $"DeleteShareGroupOffsets failed for group '{groupId}', topic '{topic.TopicName}': {topic.ErrorCode}")
                     {
@@ -6048,8 +6272,7 @@ public sealed partial class AdminClient :
                 }
             }
         }
-        catch (OperationCanceledException ex) when (
-            lastFailure is not null
+        catch (OperationCanceledException ex) when (lastFailure is not null
             && ex.InnerException is null
             && deadlineToken.IsCancellationRequested)
         {
@@ -6064,7 +6287,9 @@ public sealed partial class AdminClient :
             for (var current = exception; current is not null; current = current.InnerException)
             {
                 if (TransportFailureClassifier.IsSocketLevelFailure(current))
+                {
                     return true;
+                }
             }
 
             return false;
@@ -6108,7 +6333,10 @@ public sealed partial class AdminClient :
 
     // The budget WithRetryAsync applies when the API has no per-call timeout. Tests shorten it;
     // it is not a public option.
-    internal int DefaultApiTimeoutBudgetMs { get; init; } = DefaultApiTimeoutMs;
+    internal int DefaultApiTimeoutBudgetMs
+    {
+        get; init;
+    } = DefaultApiTimeoutMs;
 
     // For options whose TimeoutMs is also sent to the broker as the operation timeout. A positive
     // value bounds the whole call, retries included, as Java's AdminClient does: once the broker
@@ -6172,7 +6400,9 @@ public sealed partial class AdminClient :
     {
         var remaining = TimeSpan.FromMilliseconds(budgetMs) - System.Diagnostics.Stopwatch.GetElapsedTime(startedAt);
         if (remaining <= TimeSpan.Zero)
+        {
             return;
+        }
 
         using var budget = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         budget.CancelAfter(remaining);
@@ -6219,7 +6449,9 @@ public sealed partial class AdminClient :
             // straight into the retry loop without another async frame or exception rethrow.
             var pending = voidOperation(attemptToken);
             if (!pending.IsCompleted)
+            {
                 return AwaitOperationAsync(pending);
+            }
 
             pending.GetAwaiter().GetResult();
             return new ValueTask<bool>(true);
@@ -6309,8 +6541,7 @@ public sealed partial class AdminClient :
                 deadline,
                 attemptToken).ConfigureAwait(false);
         }
-        catch (OperationCanceledException ex) when (
-            apiTimeout.IsCancellationRequested
+        catch (OperationCanceledException ex) when (apiTimeout.IsCancellationRequested
             && !cancellationToken.IsCancellationRequested)
         {
             // The API timeout ended an attempt still in flight, a recovery or a backoff. The
@@ -6331,8 +6562,7 @@ public sealed partial class AdminClient :
                     $"{operationName} did not complete within {budgetMs}ms: no response was received.",
                     ex);
         }
-        catch (OperationCanceledException ex) when (
-            cancellationToken.IsCancellationRequested && ex.CancellationToken != cancellationToken)
+        catch (OperationCanceledException ex) when (cancellationToken.IsCancellationRequested && ex.CancellationToken != cancellationToken)
         {
             throw CallerCancellation(ex, cancellationToken);
         }
@@ -6366,13 +6596,25 @@ public sealed partial class AdminClient :
         TOperation operation,
         CancellationToken attemptToken)
     {
-        public AdminClient Admin { get; } = admin;
+        public AdminClient Admin
+        {
+            get;
+        } = admin;
 
-        public Func<TOperation, CancellationToken, ValueTask<T>> Invoke { get; } = invoke;
+        public Func<TOperation, CancellationToken, ValueTask<T>> Invoke
+        {
+            get;
+        } = invoke;
 
-        public TOperation Operation { get; } = operation;
+        public TOperation Operation
+        {
+            get;
+        } = operation;
 
-        public CancellationToken AttemptToken { get; } = attemptToken;
+        public CancellationToken AttemptToken
+        {
+            get;
+        } = attemptToken;
     }
 
     // For per-group result APIs (Streams group offsets and deletion) that report a group whose
@@ -6449,17 +6691,23 @@ public sealed partial class AdminClient :
         foreach (var marker in response.Markers)
         {
             if (marker.ProducerId != transaction.ProducerId)
+            {
                 continue;
+            }
 
             foreach (var topic in marker.Topics)
             {
                 if (!string.Equals(topic.Name, topicPartition.Topic, StringComparison.Ordinal))
+                {
                     continue;
+                }
 
                 foreach (var partition in topic.Partitions)
                 {
                     if (partition.PartitionIndex == topicPartition.Partition)
+                    {
                         return partition;
+                    }
                 }
             }
         }
@@ -6504,7 +6752,9 @@ public sealed partial class AdminClient :
         foreach (var voter in quorum.CurrentVoters)
         {
             if (voter.ReplicaId != voterId)
+            {
                 continue;
+            }
 
             if (expectedListeners is null)
             {
@@ -6537,10 +6787,14 @@ public sealed partial class AdminClient :
         foreach (var node in nodes)
         {
             if (node.NodeId != nodeId)
+            {
                 continue;
+            }
 
             if (node.Listeners.Count != expected.Count)
+            {
                 return false;
+            }
 
             foreach (var listener in expected)
             {
@@ -6557,7 +6811,9 @@ public sealed partial class AdminClient :
                 }
 
                 if (!found)
+                {
                     return false;
+                }
             }
 
             return true;
@@ -6682,8 +6938,7 @@ public sealed partial class AdminClient :
                 _connectionPool.RegisterBroker(coordinator.NodeId, coordinator.Host, coordinator.Port);
                 return coordinator.NodeId;
             }
-            catch (Exception exception) when (
-                RetryHelper.IsRetriableRequestFailure(exception)
+            catch (Exception exception) when (RetryHelper.IsRetriableRequestFailure(exception)
                 && !cancellationToken.IsCancellationRequested)
             {
                 lastFailure = exception;
@@ -6744,7 +6999,9 @@ public sealed partial class AdminClient :
     private static IReadOnlyList<TopicPartition>? ParseMemberAssignment(byte[]? assignmentBytes)
     {
         if (assignmentBytes is null || assignmentBytes.Length == 0)
+        {
             return null;
+        }
 
         try
         {
@@ -6756,27 +7013,37 @@ public sealed partial class AdminClient :
 
             var version = reader.ReadInt16();
             if (version < 0)
+            {
                 return null;
+            }
 
             var topicCount = reader.ReadInt32();
             // Each topic needs a non-empty string and a partition-count field.
             // Bound the topic count by the encoded frame before reading entries.
             if (topicCount < 0 || topicCount > reader.Remaining / 7)
+            {
                 return null;
+            }
             List<TopicPartition>? assignments = null;
 
             for (var i = 0; i < topicCount; i++)
             {
                 var topicLength = reader.ReadInt16();
                 if (topicLength <= 0)
+                {
                     return null;
+                }
                 var topicOffset = (int)reader.Consumed;
                 reader.Skip(topicLength);
                 var partitionCount = reader.ReadInt32();
                 if (partitionCount < 0 || partitionCount > reader.Remaining / sizeof(int))
+                {
                     return null;
+                }
                 if (partitionCount == 0)
+                {
                     continue;
+                }
                 // Empty assignments do not expose the topic name. Decode only names
                 // that are retained in the result, after validating the wire bounds.
                 var topic = Encoding.UTF8.GetString(assignmentBytes.AsSpan(topicOffset, topicLength));
@@ -6785,18 +7052,26 @@ public sealed partial class AdminClient :
                 {
                     var partition = reader.ReadInt32();
                     if (partition < 0)
+                    {
                         return null;
+                    }
                     assignments.Add(new TopicPartition(topic, partition));
                 }
             }
 
             if (reader.Remaining < sizeof(int))
+            {
                 return null;
+            }
             var userDataLength = reader.ReadInt32();
             if (userDataLength < -1 || userDataLength > reader.Remaining)
+            {
                 return null;
+            }
             if (userDataLength > 0)
+            {
                 reader.Skip(userDataLength);
+            }
 
             return assignments is null ? Array.Empty<TopicPartition>() : assignments;
         }
@@ -6810,7 +7085,9 @@ public sealed partial class AdminClient :
     private static IReadOnlyList<TopicPartition>? FlattenAssignment(ConsumerGroupDescribeAssignment assignment)
     {
         if (assignment.TopicPartitions.Count == 0)
+        {
             return null;
+        }
 
         return assignment.TopicPartitions
             .SelectMany(topic => topic.Partitions.Select(partition => new TopicPartition(topic.TopicName, partition)))
@@ -6820,7 +7097,9 @@ public sealed partial class AdminClient :
     public async ValueTask DisposeAsync()
     {
         if (Interlocked.Exchange(ref _disposed, 1) != 0)
+        {
             return;
+        }
 
         var telemetryStopMs = Math.Max(1, Math.Min(_options.RequestTimeoutMs, 5000));
         await _telemetryManager.StopAsync(TimeSpan.FromMilliseconds(telemetryStopMs)).ConfigureAwait(false);
@@ -6848,22 +7127,40 @@ public sealed class AdminClientOptions
 
     internal const string DefaultClientId = "dekaf-admin";
 
-    public IReadOnlyList<string> BootstrapServers { get; init; } = [];
-    public IReadOnlyList<string> BootstrapControllers { get; init; } = [];
-    public string? ClientId { get; init; } = DefaultClientId;
-    public int RequestTimeoutMs { get; init; } = 30000;
+    public IReadOnlyList<string> BootstrapServers
+    {
+        get; init;
+    } = [];
+    public IReadOnlyList<string> BootstrapControllers
+    {
+        get; init;
+    } = [];
+    public string? ClientId
+    {
+        get; init;
+    } = DefaultClientId;
+    public int RequestTimeoutMs
+    {
+        get; init;
+    } = 30000;
 
     /// <summary>
     /// Initial delay in milliseconds for retrying failed broker requests.
     /// Equivalent to Kafka's <c>retry.backoff.ms</c>.
     /// </summary>
-    public int RetryBackoffMs { get; init; } = 100;
+    public int RetryBackoffMs
+    {
+        get; init;
+    } = 100;
 
     /// <summary>
     /// Maximum delay in milliseconds for retrying repeatedly failed broker requests.
     /// Equivalent to Kafka's <c>retry.backoff.max.ms</c>.
     /// </summary>
-    public int RetryBackoffMaxMs { get; init; } = 1000;
+    public int RetryBackoffMaxMs
+    {
+        get; init;
+    } = 1000;
     public int ReconnectBackoffMs
     {
         get => _reconnectBackoffMs;
@@ -6892,12 +7189,18 @@ public sealed class AdminClientOptions
     /// Default is 9 minutes, below Kafka's default broker-side 10 minute idle timeout.
     /// Set to -1 to disable client-side idle connection reaping.
     /// </summary>
-    public int ConnectionsMaxIdleMs { get; init; } = ConnectionOptions.DefaultConnectionsMaxIdleMs;
+    public int ConnectionsMaxIdleMs
+    {
+        get; init;
+    } = ConnectionOptions.DefaultConnectionsMaxIdleMs;
 
     /// <summary>
     /// Maximum time allowed for socket connection setup, including TLS/SASL handshakes.
     /// </summary>
-    public TimeSpan ConnectionTimeout { get; init; } = ConnectionOptions.DefaultConnectionTimeout;
+    public TimeSpan ConnectionTimeout
+    {
+        get; init;
+    } = ConnectionOptions.DefaultConnectionTimeout;
 
     /// <summary>
     /// Maximum connection setup timeout after consecutive failures. Defaults to
@@ -6915,38 +7218,74 @@ public sealed class AdminClientOptions
     /// <summary>
     /// Whether to enable TCP keepalive on broker sockets.
     /// </summary>
-    public bool EnableTcpKeepAlive { get; init; } = ConnectionOptions.DefaultEnableTcpKeepAlive;
+    public bool EnableTcpKeepAlive
+    {
+        get; init;
+    } = ConnectionOptions.DefaultEnableTcpKeepAlive;
 
     /// <summary>
     /// Idle time before TCP keepalive probes start. Unsupported platforms ignore this.
     /// </summary>
-    public TimeSpan TcpKeepAliveTime { get; init; } = ConnectionOptions.DefaultTcpKeepAliveTime;
+    public TimeSpan TcpKeepAliveTime
+    {
+        get; init;
+    } = ConnectionOptions.DefaultTcpKeepAliveTime;
 
     /// <summary>
     /// Interval between TCP keepalive probes. Unsupported platforms ignore this.
     /// </summary>
-    public TimeSpan TcpKeepAliveInterval { get; init; } = ConnectionOptions.DefaultTcpKeepAliveInterval;
+    public TimeSpan TcpKeepAliveInterval
+    {
+        get; init;
+    } = ConnectionOptions.DefaultTcpKeepAliveInterval;
 
     /// <summary>
     /// Number of TCP keepalive probes before the connection is considered dead.
     /// Unsupported platforms ignore this.
     /// </summary>
-    public int TcpKeepAliveRetryCount { get; init; } = ConnectionOptions.DefaultTcpKeepAliveRetryCount;
+    public int TcpKeepAliveRetryCount
+    {
+        get; init;
+    } = ConnectionOptions.DefaultTcpKeepAliveRetryCount;
 
-    public bool UseTls { get; init; }
-    public TlsConfig? TlsConfig { get; init; }
+    public bool UseTls
+    {
+        get; init;
+    }
+    public TlsConfig? TlsConfig
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Custom TLS certificate validation callback.
     /// </summary>
-    public RemoteCertificateValidationCallback? RemoteCertificateValidationCallback { get; init; }
+    public RemoteCertificateValidationCallback? RemoteCertificateValidationCallback
+    {
+        get; init;
+    }
 
-    public SaslMechanism SaslMechanism { get; init; } = SaslMechanism.None;
-    public string? SaslUsername { get; init; }
-    public string? SaslPassword { get; init; }
+    public SaslMechanism SaslMechanism
+    {
+        get; init;
+    } = SaslMechanism.None;
+    public string? SaslUsername
+    {
+        get; init;
+    }
+    public string? SaslPassword
+    {
+        get; init;
+    }
 
-    public Func<CancellationToken, ValueTask<SaslCredentials>>? SaslCredentialProvider { get; init; }
-    public bool SaslScramTokenAuth { get; init; }
+    public Func<CancellationToken, ValueTask<SaslCredentials>>? SaslCredentialProvider
+    {
+        get; init;
+    }
+    public bool SaslScramTokenAuth
+    {
+        get; init;
+    }
 
     private int _saslScramMaxIterations = ScramAuthenticator.DefaultMaxIterations;
 
@@ -6969,43 +7308,64 @@ public sealed class AdminClientOptions
     /// GSSAPI (Kerberos) configuration. Required when <see cref="SaslMechanism"/> is
     /// <see cref="SaslMechanism.Gssapi"/>.
     /// </summary>
-    public GssapiConfig? GssapiConfig { get; init; }
+    public GssapiConfig? GssapiConfig
+    {
+        get; init;
+    }
 
     /// <summary>
     /// OAuth 2.0 / OIDC configuration used to fetch bearer tokens from a token endpoint.
     /// Used when <see cref="SaslMechanism"/> is <see cref="SaslMechanism.OAuthBearer"/>.
     /// </summary>
-    public OAuthBearerConfig? OAuthBearerConfig { get; init; }
+    public OAuthBearerConfig? OAuthBearerConfig
+    {
+        get; init;
+    }
 
     /// <summary>
     /// A callback that supplies OAuth bearer tokens on demand.
     /// Takes precedence over <see cref="OAuthBearerConfig"/> if both are specified.
     /// </summary>
-    public Func<CancellationToken, ValueTask<OAuthBearerToken>>? OAuthBearerTokenProvider { get; init; }
+    public Func<CancellationToken, ValueTask<OAuthBearerToken>>? OAuthBearerTokenProvider
+    {
+        get; init;
+    }
 
     /// <summary>
     /// A pre-obtained OAuth bearer token. Use this for static tokens; for dynamic
     /// retrieval use <see cref="OAuthBearerTokenProvider"/> instead.
     /// </summary>
-    public OAuthBearerToken? OAuthBearerToken { get; init; }
+    public OAuthBearerToken? OAuthBearerToken
+    {
+        get; init;
+    }
 
     /// <summary>
     /// AWS_MSK_IAM configuration.
     /// </summary>
-    public AwsMskIamConfig? AwsMskIamConfig { get; init; }
+    public AwsMskIamConfig? AwsMskIamConfig
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Strategy for recovering cluster metadata when all known brokers become unavailable.
     /// Default is <see cref="MetadataRecoveryStrategy.Rebootstrap"/>.
     /// </summary>
-    public MetadataRecoveryStrategy MetadataRecoveryStrategy { get; init; } = MetadataRecoveryStrategy.Rebootstrap;
+    public MetadataRecoveryStrategy MetadataRecoveryStrategy
+    {
+        get; init;
+    } = MetadataRecoveryStrategy.Rebootstrap;
 
     /// <summary>
     /// Whether new broker connections verify the expected cluster and node identity (KIP-1242).
     /// Default is true; ignored when <see cref="MetadataRecoveryStrategy"/> is
     /// <see cref="MetadataRecoveryStrategy.None"/>.
     /// </summary>
-    public bool MetadataClusterCheckEnabled { get; init; } = true;
+    public bool MetadataClusterCheckEnabled
+    {
+        get; init;
+    } = true;
 
     /// <summary>
     /// How long in milliseconds to wait before triggering a rebootstrap when all known brokers
@@ -7013,24 +7373,36 @@ public sealed class AdminClientOptions
     /// <see cref="MetadataRecoveryStrategy.Rebootstrap"/>.
     /// Default is 300000 (5 minutes).
     /// </summary>
-    public int MetadataRecoveryRebootstrapTriggerMs { get; init; } = 300000;
+    public int MetadataRecoveryRebootstrapTriggerMs
+    {
+        get; init;
+    } = 300000;
 
     /// <summary>
     /// Controls how broker hostnames are resolved before connecting.
     /// </summary>
-    public ClientDnsLookup ClientDnsLookup { get; init; } = ClientDnsLookup.UseAllDnsIps;
+    public ClientDnsLookup ClientDnsLookup
+    {
+        get; init;
+    } = ClientDnsLookup.UseAllDnsIps;
 
     /// <summary>
     /// Maximum time in milliseconds spent retrying initial bootstrap DNS resolution.
     /// Corresponds to Kafka's <c>bootstrap.resolve.timeout.ms</c>, but defaults to 120000 (the original
     /// KIP-909 value) where Kafka 4.4 defaults to 0. Zero resolves once with no deadline.
     /// </summary>
-    public int BootstrapResolveTimeoutMs { get; init; } = 120000;
+    public int BootstrapResolveTimeoutMs
+    {
+        get; init;
+    } = 120000;
 
     /// <summary>
     /// Application metrics registered for broker telemetry subscriptions.
     /// </summary>
-    public IReadOnlyList<ApplicationTelemetryMetric> ApplicationMetrics { get; init; } = [];
+    public IReadOnlyList<ApplicationTelemetryMetric> ApplicationMetrics
+    {
+        get; init;
+    } = [];
 }
 
 /// <summary>
@@ -7516,7 +7888,9 @@ public sealed class AdminClientBuilder
     {
         ThrowIfClientOwnedConnectionSettings();
         if (interval <= TimeSpan.Zero)
+        {
             throw new ArgumentOutOfRangeException(nameof(interval), "Metadata max age must be positive");
+        }
 
         _metadataMaxAge = interval;
         return this;
@@ -7525,7 +7899,9 @@ public sealed class AdminClientBuilder
     internal AdminClientBuilder WithRequestTimeout(TimeSpan timeout)
     {
         if (timeout <= TimeSpan.Zero)
+        {
             throw new ArgumentOutOfRangeException(nameof(timeout), "Request timeout must be positive");
+        }
         ArgumentOutOfRangeException.ThrowIfGreaterThan(timeout.TotalMilliseconds, int.MaxValue, nameof(timeout));
 
         _requestTimeoutMs = (int)timeout.TotalMilliseconds;
@@ -7540,7 +7916,9 @@ public sealed class AdminClientBuilder
     {
         ThrowIfClientOwnedConnectionSettings();
         if (backoff < TimeSpan.Zero)
+        {
             throw new ArgumentOutOfRangeException(nameof(backoff), "Retry backoff cannot be negative");
+        }
         ArgumentOutOfRangeException.ThrowIfGreaterThan(backoff.TotalMilliseconds, int.MaxValue, nameof(backoff));
         _retryBackoffMs = (int)backoff.TotalMilliseconds;
         return this;
@@ -7554,7 +7932,9 @@ public sealed class AdminClientBuilder
     {
         ThrowIfClientOwnedConnectionSettings();
         if (backoff < TimeSpan.Zero)
+        {
             throw new ArgumentOutOfRangeException(nameof(backoff), "Maximum retry backoff cannot be negative");
+        }
         ArgumentOutOfRangeException.ThrowIfGreaterThan(backoff.TotalMilliseconds, int.MaxValue, nameof(backoff));
         _retryBackoffMaxMs = (int)backoff.TotalMilliseconds;
         return this;
@@ -7701,7 +8081,9 @@ public sealed class AdminClientBuilder
     public IAdminClient Build()
     {
         if (_bootstrapServers.Count == 0 && _bootstrapControllers.Count == 0)
+        {
             throw new InvalidOperationException("Bootstrap servers or controllers must be specified");
+        }
         if (_bootstrapServers.Count > 0 && _bootstrapControllers.Count > 0)
         {
             throw new InvalidOperationException(
@@ -7778,12 +8160,16 @@ public sealed class AdminClientBuilder
     private void ThrowIfClientOwnedBootstrap()
     {
         if (_clientInfrastructure is not null)
+        {
             throw new InvalidOperationException("Bootstrap servers are owned by KafkaClient. Configure them on Kafka.Connect(...).");
+        }
     }
 
     private void ThrowIfClientOwnedConnectionSettings()
     {
         if (_clientInfrastructure is not null)
+        {
             throw new InvalidOperationException("Connection settings are owned by KafkaClient. Configure them on Kafka.Connect(...).");
+        }
     }
 }

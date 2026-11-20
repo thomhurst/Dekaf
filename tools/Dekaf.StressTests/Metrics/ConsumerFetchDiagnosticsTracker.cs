@@ -37,9 +37,13 @@ internal sealed class ConsumerFetchDiagnosticsTracker : IDisposable
         _enabled = enabled;
         _captureGcDiagnostics = captureGcDiagnostics ?? CaptureGcDiagnostics;
         if (!enabled || !listenToMetrics)
+        {
             return;
+        }
         if (Interlocked.CompareExchange(ref s_activeMetricListener, 1, 0) != 0)
+        {
             throw new InvalidOperationException("Only one consumer diagnostics metric listener can be active at a time.");
+        }
 
         var fetchDurationName = DekafMetrics.FetchDuration.Name;
         var bytesReceivedName = DekafMetrics.BytesReceived.Name;
@@ -61,12 +65,16 @@ internal sealed class ConsumerFetchDiagnosticsTracker : IDisposable
                 // Fetch duration has no destination tag. Stress scenarios run one consumer and
                 // one diagnostics listener at a time, enforced above, so process-wide RTT is exact.
                 if (instrument.Name == fetchDurationName)
+                {
                     RecordFetchDuration(measurement);
+                }
             });
             _listener.SetMeasurementEventCallback<long>((instrument, measurement, tags, _) =>
             {
                 if (instrument.Name == bytesReceivedName && HasTopic(tags))
+                {
                     RecordBytesReceived(measurement);
+                }
             });
             _listener.Start();
         }
@@ -81,7 +89,9 @@ internal sealed class ConsumerFetchDiagnosticsTracker : IDisposable
     internal void Start(ConsumerDiagnosticSnapshot snapshot)
     {
         if (!_enabled)
+        {
             return;
+        }
 
         _lastSampleAtUtc = snapshot.CapturedAtUtc;
         _lastFetchRequestCount = Interlocked.Read(ref _fetchRequestCount);
@@ -112,7 +122,9 @@ internal sealed class ConsumerFetchDiagnosticsTracker : IDisposable
         _connectionReapEvents = snapshot.ConnectionReapEvents;
         var intervalSeconds = (snapshot.CapturedAtUtc - lastSampleAtUtc).TotalSeconds;
         if (intervalSeconds <= 0)
+        {
             return;
+        }
 
         var fetchRequestCount = Interlocked.Read(ref _fetchRequestCount);
         var fetchDurationTicks = Interlocked.Read(ref _fetchDurationTicks);
@@ -166,12 +178,16 @@ internal sealed class ConsumerFetchDiagnosticsTracker : IDisposable
     internal void TryTakeSample(Func<ConsumerDiagnosticSnapshot?> captureSnapshot)
     {
         if (!_enabled)
+        {
             return;
+        }
 
         try
         {
             if (captureSnapshot() is { } snapshot)
+            {
                 TakeSample(snapshot);
+            }
         }
         catch
         {
@@ -234,36 +250,98 @@ internal sealed class ConsumerFetchDiagnosticsTracker : IDisposable
     {
         _listener?.Dispose();
         if (_listener is not null)
+        {
             Interlocked.Exchange(ref s_activeMetricListener, 0);
+        }
     }
 }
 
 internal sealed class ConsumerFetchDiagnosticsSnapshot
 {
-    public List<ConsumerFetchDiagnosticSample> Samples { get; init; } = [];
-    public List<ConnectionReapDiagnostic> ConnectionReapEvents { get; init; } = [];
+    public List<ConsumerFetchDiagnosticSample> Samples
+    {
+        get; init;
+    } = [];
+    public List<ConnectionReapDiagnostic> ConnectionReapEvents
+    {
+        get; init;
+    } = [];
 }
 
 internal sealed class ConsumerFetchDiagnosticSample
 {
-    public required DateTimeOffset CapturedAtUtc { get; init; }
-    public required double IntervalSeconds { get; init; }
-    public required long FetchRequestCount { get; init; }
-    public required double FetchRequestsPerSecond { get; init; }
-    public required double BytesPerFetch { get; init; }
-    public required double AverageFetchRttMs { get; init; }
-    public required int PendingFetchDepth { get; init; }
-    public required int PrefetchBufferDepth { get; init; }
-    public required int PrefetchDepth { get; init; }
-    public required long PrefetchedBytes { get; init; }
-    public int Gen0Collections { get; init; }
-    public int Gen1Collections { get; init; }
-    public int Gen2Collections { get; init; }
-    public double GcPauseDurationMs { get; init; }
-    public long GcHeapSizeBytes { get; init; }
-    public int GcHeapCount { get; init; }
-    public int GcDynamicAdaptationMode { get; init; } = -1;
-    public bool ServerGc { get; init; }
+    public required DateTimeOffset CapturedAtUtc
+    {
+        get; init;
+    }
+    public required double IntervalSeconds
+    {
+        get; init;
+    }
+    public required long FetchRequestCount
+    {
+        get; init;
+    }
+    public required double FetchRequestsPerSecond
+    {
+        get; init;
+    }
+    public required double BytesPerFetch
+    {
+        get; init;
+    }
+    public required double AverageFetchRttMs
+    {
+        get; init;
+    }
+    public required int PendingFetchDepth
+    {
+        get; init;
+    }
+    public required int PrefetchBufferDepth
+    {
+        get; init;
+    }
+    public required int PrefetchDepth
+    {
+        get; init;
+    }
+    public required long PrefetchedBytes
+    {
+        get; init;
+    }
+    public int Gen0Collections
+    {
+        get; init;
+    }
+    public int Gen1Collections
+    {
+        get; init;
+    }
+    public int Gen2Collections
+    {
+        get; init;
+    }
+    public double GcPauseDurationMs
+    {
+        get; init;
+    }
+    public long GcHeapSizeBytes
+    {
+        get; init;
+    }
+    public int GcHeapCount
+    {
+        get; init;
+    }
+    public int GcDynamicAdaptationMode
+    {
+        get; init;
+    } = -1;
+    public bool ServerGc
+    {
+        get; init;
+    }
 }
 
 internal readonly record struct GcDiagnosticSnapshot(

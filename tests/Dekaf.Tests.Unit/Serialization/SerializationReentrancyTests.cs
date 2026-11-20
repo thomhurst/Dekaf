@@ -20,7 +20,10 @@ public sealed class SerializationReentrancyTests
         var fail = nestedThrows;
         var innerOptions = Options(new CallbackConverter(() =>
         {
-            if (!fail) return;
+            if (!fail)
+            {
+                return;
+            }
             fail = false;
             throw new InvalidOperationException("nested");
         }));
@@ -33,7 +36,10 @@ public sealed class SerializationReentrancyTests
         var outer = new Dekaf.Serialization.Json.JsonSerializer<Payload>(Options(converter));
         var output = new ArrayBufferWriter<byte>();
         Exception? error = null;
-        try { outer.Serialize(new Payload("outer"), ref output, Context); }
+        try
+        {
+            outer.Serialize(new Payload("outer"), ref output, Context);
+        }
         catch (InvalidOperationException exception) { error = exception; }
         var firstOutput = Text(output);
         output.ResetWrittenCount();
@@ -46,7 +52,9 @@ public sealed class SerializationReentrancyTests
 
         await Assert.That(error is not null).IsEqualTo(nestedThrows);
         if (!nestedThrows)
+        {
             await Assert.That(firstOutput).IsEqualTo("{\"value\":\"outer\"}");
+        }
         await Assert.That(Text(nested)).IsEqualTo("{\"value\":\"inner\"}");
         await Assert.That(recovered).IsEqualTo("{\"value\":\"recovered\"}");
         await Assert.That(Text(output)).IsEqualTo("{\"value\":\"outer\"}");
@@ -101,7 +109,10 @@ public sealed class SerializationReentrancyTests
         var fail = true;
         var innerConverter = new CallbackConverter(() =>
         {
-            if (!fail) return;
+            if (!fail)
+            {
+                return;
+            }
             fail = false;
             throw new InvalidOperationException("nested");
         });
@@ -116,13 +127,24 @@ public sealed class SerializationReentrancyTests
         _ = await inner.PrepareAsync(Context.Topic, new Payload("inner"));
         var admission = await prepared.PrepareForSerializationAsync(new Payload("outer"), Context);
         var output = new ArrayBufferWriter<byte>();
+
         void Serialize()
         {
-            if (preparedPath) prepared.SerializePrepared(new Payload("outer"), ref output, Context, in admission);
-            else outer.Serialize(new Payload("outer"), ref output, Context);
+            if (preparedPath)
+            {
+                prepared.SerializePrepared(new Payload("outer"), ref output, Context, in admission);
+            }
+            else
+            {
+                outer.Serialize(new Payload("outer"), ref output, Context);
+            }
         }
+
         var threw = false;
-        try { Serialize(); }
+        try
+        {
+            Serialize();
+        }
         catch (InvalidOperationException) { threw = true; }
         nested.ResetWrittenCount();
         Serialize();
@@ -149,7 +171,12 @@ public sealed class SerializationReentrancyTests
         await using var json = new JsonSchemaRegistrySerializer<Payload>(registry, "{}");
         await using var custom = new SchemaRegistrySerializer<Payload>(registry,
             static (value, writer) => Write(writer, value.Value), static () => Schema());
-        ISerializer<Payload> serializer = kind switch { 0 => plain, 1 => json, _ => custom };
+        ISerializer<Payload> serializer = kind switch
+        {
+            0 => plain,
+            1 => json,
+            _ => custom
+        };
         var innerOutput = new ArrayBufferWriter<byte>();
         var prepared = serializer as IAsyncSerializerPreparationAdmission<Payload>;
         var admission = prepared is null ? default : await prepared.PrepareForSerializationAsync(new Payload("outer"), Context);
@@ -157,15 +184,29 @@ public sealed class SerializationReentrancyTests
         var destination = new CallbackWriter(() =>
         {
             serializer.Serialize(new Payload(new string('i', 8192)), ref innerOutput, Context);
-            if (fail) throw new InvalidOperationException("destination");
+            if (fail)
+            {
+                throw new InvalidOperationException("destination");
+            }
         }, onAdvance);
+
         void Serialize()
         {
-            if (preparedPath) prepared!.SerializePrepared(new Payload("outer"), ref destination, Context, in admission);
-            else serializer.Serialize(new Payload("outer"), ref destination, Context);
+            if (preparedPath)
+            {
+                prepared!.SerializePrepared(new Payload("outer"), ref destination, Context, in admission);
+            }
+            else
+            {
+                serializer.Serialize(new Payload("outer"), ref destination, Context);
+            }
         }
+
         var threw = false;
-        try { Serialize(); }
+        try
+        {
+            Serialize();
+        }
         catch (InvalidOperationException) { threw = true; }
         fail = false;
         innerOutput.ResetWrittenCount();
@@ -194,14 +235,25 @@ public sealed class SerializationReentrancyTests
         var prepared = (IAsyncSerializerPreparationAdmission<Payload>)outer;
         var admission = await prepared.PrepareForSerializationAsync(new Payload("outer"), Context);
         var output = new ArrayBufferWriter<byte>();
+
         void Serialize()
         {
-            if (preparedPath) prepared.SerializePrepared(new Payload("outer"), ref output, Context, in admission);
-            else ((ISerializer<Payload>)outer).Serialize(new Payload("outer"), ref output, Context);
+            if (preparedPath)
+            {
+                prepared.SerializePrepared(new Payload("outer"), ref output, Context, in admission);
+            }
+            else
+            {
+                ((ISerializer<Payload>)outer).Serialize(new Payload("outer"), ref output, Context);
+            }
         }
+
         rule.Throw = true;
         var threw = false;
-        try { Serialize(); }
+        try
+        {
+            Serialize();
+        }
         catch (InvalidOperationException) { threw = true; }
         rule.Throw = false;
         Serialize();
@@ -235,15 +287,24 @@ public sealed class SerializationReentrancyTests
 
     private sealed class CallbackWriter(Action callback, bool onAdvance) : IBufferWriter<byte>
     {
-        internal ArrayBufferWriter<byte> Buffer { get; } = new();
+        internal ArrayBufferWriter<byte> Buffer
+        {
+            get;
+        } = new();
         public void Advance(int count)
         {
-            if (onAdvance) callback();
+            if (onAdvance)
+            {
+                callback();
+            }
             Buffer.Advance(count);
         }
         public Memory<byte> GetMemory(int sizeHint = 0)
         {
-            if (!onAdvance) callback();
+            if (!onAdvance)
+            {
+                callback();
+            }
             return Buffer.GetMemory(sizeHint);
         }
         public Span<byte> GetSpan(int sizeHint = 0) => GetMemory(sizeHint).Span;
@@ -251,11 +312,17 @@ public sealed class SerializationReentrancyTests
 
     private sealed class CallbackRule(Action callback) : ISchemaRegistryRuleExecutor
     {
-        internal bool Throw { get; set; }
+        internal bool Throw
+        {
+            get; set;
+        }
         public ReadOnlyMemory<byte> TransformSerializedPayload(ReadOnlyMemory<byte> payload, SchemaRegistryRuleContext context)
         {
             callback();
-            if (Throw) throw new InvalidOperationException("rule");
+            if (Throw)
+            {
+                throw new InvalidOperationException("rule");
+            }
             return payload;
         }
         public ReadOnlyMemory<byte> TransformDeserializedPayload(ReadOnlyMemory<byte> payload, SchemaRegistryRuleContext context) => payload;

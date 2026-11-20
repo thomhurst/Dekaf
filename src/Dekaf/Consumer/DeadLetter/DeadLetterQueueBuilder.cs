@@ -103,7 +103,9 @@ public sealed class DeadLetterQueueBuilder
     {
         ArgumentNullException.ThrowIfNull(delays);
         if (delays.Length == 0)
+        {
             throw new ArgumentException("At least one retry topic delay is required.", nameof(delays));
+        }
 
         _retryTopicDelays.Clear();
         foreach (var delay in delays)

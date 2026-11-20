@@ -44,7 +44,9 @@ public sealed class PartitionLaneStopTests
                 cancelWait ? Timeout.InfiniteTimeSpan : TimeSpan.FromMilliseconds(100),
                 stopCancellation.Token).AsTask();
             if (cancelWait && policy == PartitionStopPolicy.Drain)
+            {
                 await stopCancellation.CancelAsync();
+            }
 
             await callbackEntered.Task.WaitAsync(deadline.Token);
             if (processorExits)
@@ -53,7 +55,9 @@ public sealed class PartitionLaneStopTests
                 await processorExited.Task.WaitAsync(deadline.Token);
             }
             if (cancelWait && policy == PartitionStopPolicy.Cancel)
+            {
                 await stopCancellation.CancelAsync();
+            }
 
             var exception = await stopping.WaitAsync(deadline.Token);
             await Assert.That(exception).IsTypeOf<TimeoutException>();
@@ -65,7 +69,9 @@ public sealed class PartitionLaneStopTests
             releaseCallback.Set();
             releaseProcessor.TrySetResult();
             if (stopping is not null)
+            {
                 await stopping.WaitAsync(TimeSpan.FromSeconds(10));
+            }
             await lane.StopAsync(PartitionStopPolicy.Cancel, TimeSpan.FromSeconds(10));
             await callbackExited.Task.WaitAsync(TimeSpan.FromSeconds(10));
             registration.Dispose();
@@ -135,7 +141,9 @@ public sealed class PartitionLaneStopTests
                 {
                     cancelled[partition].TrySetResult();
                     if (partition == 0)
+                    {
                         releaseCallback.Wait();
+                    }
                 });
                 started[partition].TrySetResult();
                 await releaseProcessor.Task;
@@ -155,9 +163,13 @@ public sealed class PartitionLaneStopTests
         {
             await Task.WhenAll(started[0].Task, started[1].Task).WaitAsync(deadline.Token);
             if (revoke)
+            {
                 consumer.SetAssignment();
+            }
             else
+            {
                 await stop.CancelAsync();
+            }
 
             // Wait for completion without confusing the lane's TimeoutException with
             // the independent test deadline. Both lanes must cancel before either gate opens.
@@ -182,7 +194,11 @@ public sealed class PartitionLaneStopTests
 
     private static PartitionLane<string, string> CreateLane() => new(
         new TopicPartition("stop", 0), 1,
-        static (_, _) => default, static _ => { }, static (_, _) => { });
+        static (_, _) => default, static _ =>
+        {
+        }, static (_, _) =>
+        {
+        });
 
     private static TaskCompletionSource NewSignal() => new(TaskCreationOptions.RunContinuationsAsynchronously);
 }

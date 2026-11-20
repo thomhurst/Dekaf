@@ -40,12 +40,16 @@ public class ConsumerEofTrackingTests
         var addTask = Task.Run(() =>
         {
             for (var i = 0; i < 10_000; i++)
+            {
                 eofEmitted.TryAdd(partitions[i % 100], 0);
+            }
         });
         var removeTask = Task.Run(() =>
         {
             for (var i = 0; i < 10_000; i++)
+            {
                 eofEmitted.TryRemove(partitions[i % 100], out _);
+            }
         });
 
         await Task.WhenAll(addTask, removeTask);

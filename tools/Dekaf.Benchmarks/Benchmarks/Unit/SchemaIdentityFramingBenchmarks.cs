@@ -69,9 +69,13 @@ public class SchemaIdentityFramingBenchmarks
     {
         var span = _idPrefix.AsSpan();
         if (span.Length < SchemaIdentityFraming.SchemaIdFrameSize)
+        {
             throw new InvalidOperationException("Message too short to contain Schema Registry wire format");
+        }
         if (span[0] != SchemaIdentityFraming.SchemaIdMagicByte)
+        {
             throw new InvalidOperationException("Unknown Schema Registry magic byte");
+        }
 
         return new SchemaIdentity(BinaryPrimitives.ReadInt32BigEndian(span[1..]));
     }
@@ -96,11 +100,15 @@ public class SchemaIdentityFramingBenchmarks
     public SchemaIdentity RoutedProtobufHeaderReadWith32NoiseHeaders()
     {
         if (!_routingLookup.TryGetLast(SchemaIdentityHeaderNames.Value, out var identityHeader))
+        {
             throw new InvalidOperationException("The routed schema identity header was not found.");
+        }
 
         var identity = SchemaIdentityFraming.ReadHeader(in identityHeader, out var messageIndexes);
         if (messageIndexes.Length != 1 || messageIndexes.Span[0] != 0)
+        {
             throw new InvalidDataException("The Protobuf message-index vector is invalid.");
+        }
 
         return identity;
     }
@@ -109,11 +117,15 @@ public class SchemaIdentityFramingBenchmarks
     public SchemaIdentity CallerOwnedProtobufHeaderReadWith32NoiseHeaders()
     {
         if (!_callerOwnedHeaders.TryGetLastSchemaIdentity(SerializationComponent.Value, out var identityHeader))
+        {
             throw new InvalidOperationException("The caller-owned schema identity header was not found.");
+        }
 
         var identity = SchemaIdentityFraming.ReadHeader(in identityHeader, out var messageIndexes);
         if (messageIndexes.Length != 1 || messageIndexes.Span[0] != 0)
+        {
             throw new InvalidDataException("The Protobuf message-index vector is invalid.");
+        }
 
         return identity;
     }
@@ -126,7 +138,9 @@ public class SchemaIdentityFramingBenchmarks
         {
             var header = _callerOwnedAvroHeaders[index];
             if (string.Equals(header.Key, headerName, StringComparison.Ordinal))
+            {
                 return SchemaIdentityFraming.ReadHeader(in header, out _);
+            }
         }
 
         throw new InvalidOperationException("The caller-owned schema identity header was not found.");

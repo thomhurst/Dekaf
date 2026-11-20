@@ -6,10 +6,16 @@ internal static class StressClientLogging
 {
     internal const string LogLevelEnvironmentVariable = "DEKAF_STRESS_LOG_LEVEL";
 
-    internal static LogLevel MinimumLevel { get; } =
+    internal static LogLevel MinimumLevel
+    {
+        get;
+    } =
         ParseLevel(Environment.GetEnvironmentVariable(LogLevelEnvironmentVariable));
 
-    internal static ILoggerFactory LoggerFactory { get; } = new ConsoleLoggerFactory(MinimumLevel);
+    internal static ILoggerFactory LoggerFactory
+    {
+        get;
+    } = new ConsoleLoggerFactory(MinimumLevel);
 
     internal static ILoggerFactory Create(string? configuredLevel) =>
         new ConsoleLoggerFactory(ParseLevel(configuredLevel));
@@ -24,9 +30,13 @@ internal static class StressClientLogging
     {
         public ILogger CreateLogger(string categoryName) => new ConsoleLogger(categoryName, minimumLevel);
 
-        public void AddProvider(ILoggerProvider provider) { }
+        public void AddProvider(ILoggerProvider provider)
+        {
+        }
 
-        public void Dispose() { }
+        public void Dispose()
+        {
+        }
     }
 
     private sealed class ConsoleLogger(string categoryName, LogLevel minimumLevel) : ILogger
@@ -44,12 +54,16 @@ internal static class StressClientLogging
             Func<TState, Exception?, string> formatter)
         {
             if (!IsEnabled(logLevel))
+            {
                 return;
+            }
 
             Console.Error.WriteLine(
                 $"[{DateTimeOffset.UtcNow:O}] {logLevel,-11} {categoryName}[{eventId.Id}] {formatter(state, exception)}");
             if (exception is not null)
+            {
                 Console.Error.WriteLine(exception);
+            }
         }
     }
 }

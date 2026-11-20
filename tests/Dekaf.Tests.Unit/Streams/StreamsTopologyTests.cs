@@ -563,9 +563,15 @@ public sealed class StreamsTopologyTests
 
     private sealed class RecordingSerde : ISerde<string>
     {
-        public HashSet<string> Topics { get; } = [];
+        public HashSet<string> Topics
+        {
+            get;
+        } = [];
 
-        public HashSet<string> ReadKeys { get; } = [];
+        public HashSet<string> ReadKeys
+        {
+            get;
+        } = [];
 
         public void Serialize<TWriter>(string value, ref TWriter destination, SerializationContext context)
             where TWriter : System.Buffers.IBufferWriter<byte>, allows ref struct

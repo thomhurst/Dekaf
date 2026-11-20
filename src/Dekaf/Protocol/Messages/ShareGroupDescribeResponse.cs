@@ -19,12 +19,18 @@ public sealed class ShareGroupDescribeResponse : IKafkaResponse
     /// The duration in milliseconds for which the request was throttled due to quota violation
     /// (zero if not throttled).
     /// </summary>
-    public int ThrottleTimeMs { get; init; }
+    public int ThrottleTimeMs
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The described groups.
     /// </summary>
-    public required IReadOnlyList<ShareGroupDescribeGroup> Groups { get; init; }
+    public required IReadOnlyList<ShareGroupDescribeGroup> Groups
+    {
+        get; init;
+    }
 
     public static IKafkaResponse Read(ref KafkaProtocolReader reader, short version)
     {
@@ -53,47 +59,74 @@ public sealed class ShareGroupDescribeGroup
     /// <summary>
     /// The error code, or 0 if there was no error.
     /// </summary>
-    public ErrorCode ErrorCode { get; init; }
+    public ErrorCode ErrorCode
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The error message, or null if there was no error.
     /// </summary>
-    public string? ErrorMessage { get; init; }
+    public string? ErrorMessage
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The group ID.
     /// </summary>
-    public required string GroupId { get; init; }
+    public required string GroupId
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The group state.
     /// </summary>
-    public required string GroupState { get; init; }
+    public required string GroupState
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The group epoch.
     /// </summary>
-    public int GroupEpoch { get; init; }
+    public int GroupEpoch
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The assignment epoch.
     /// </summary>
-    public int AssignmentEpoch { get; init; }
+    public int AssignmentEpoch
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The server-side assignor name.
     /// </summary>
-    public string? AssignorName { get; init; }
+    public string? AssignorName
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The group members.
     /// </summary>
-    public required IReadOnlyList<ShareGroupDescribeMember> Members { get; init; }
+    public required IReadOnlyList<ShareGroupDescribeMember> Members
+    {
+        get; init;
+    }
 
     /// <summary>
     /// 32-bit bitfield representing authorized operations for this group.
     /// </summary>
-    public int AuthorizedOperations { get; init; }
+    public int AuthorizedOperations
+    {
+        get; init;
+    }
 
     public void Write(ref KafkaProtocolWriter writer)
     {
@@ -156,37 +189,58 @@ public sealed class ShareGroupDescribeMember
     /// <summary>
     /// The member ID.
     /// </summary>
-    public required string MemberId { get; init; }
+    public required string MemberId
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The rack ID of the member.
     /// </summary>
-    public string? RackId { get; init; }
+    public string? RackId
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The current member epoch.
     /// </summary>
-    public int MemberEpoch { get; init; }
+    public int MemberEpoch
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The client ID.
     /// </summary>
-    public required string ClientId { get; init; }
+    public required string ClientId
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The client host.
     /// </summary>
-    public required string ClientHost { get; init; }
+    public required string ClientHost
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The list of topic names the member is subscribed to.
     /// </summary>
-    public required IReadOnlyList<string> SubscribedTopicNames { get; init; }
+    public required IReadOnlyList<string> SubscribedTopicNames
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The assignment for this member.
     /// </summary>
-    public required ShareGroupDescribeAssignment Assignment { get; init; }
+    public required ShareGroupDescribeAssignment Assignment
+    {
+        get; init;
+    }
 
     public void Write(ref KafkaProtocolWriter writer)
     {
@@ -244,7 +298,10 @@ public sealed class ShareGroupDescribeAssignment
     /// <summary>
     /// The topic partitions assigned to this member.
     /// </summary>
-    public required IReadOnlyList<ShareGroupDescribeTopicPartitions> TopicPartitions { get; init; }
+    public required IReadOnlyList<ShareGroupDescribeTopicPartitions> TopicPartitions
+    {
+        get; init;
+    }
 
     public void Write(ref KafkaProtocolWriter writer)
     {
@@ -279,17 +336,26 @@ public sealed class ShareGroupDescribeTopicPartitions
     /// <summary>
     /// The topic ID (UUID).
     /// </summary>
-    public required Guid TopicId { get; init; }
+    public required Guid TopicId
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The topic name.
     /// </summary>
-    public string? TopicName { get; init; }
+    public string? TopicName
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The partition indexes.
     /// </summary>
-    public required IReadOnlyList<int> Partitions { get; init; }
+    public required IReadOnlyList<int> Partitions
+    {
+        get; init;
+    }
 
     public void Write(ref KafkaProtocolWriter writer)
     {

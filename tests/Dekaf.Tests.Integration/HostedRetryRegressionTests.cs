@@ -33,7 +33,9 @@ public sealed class HostedRetryRegressionTests(KafkaTestContainer kafka) : Kafka
         try
         {
             foreach (var payload in payloads)
+            {
                 await producer.ProduceAsync(topic, payload, payload, cancellationToken);
+            }
 
             await using var verifier = await Kafka.CreateConsumer<byte[]?, byte[]?>()
                 .WithBootstrapServers(KafkaContainer.BootstrapServers)

@@ -122,7 +122,9 @@ public sealed class ProducerInitializationTests
         {
             producer.FireAsync(
                 new ProducerMessage<string, string> { Topic = "test", Key = "key", Value = "value" },
-                (_, _) => { });
+                (_, _) =>
+                {
+                });
         }).Throws<InvalidOperationException>();
     }
 

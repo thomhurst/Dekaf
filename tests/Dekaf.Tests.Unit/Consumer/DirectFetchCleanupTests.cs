@@ -28,7 +28,10 @@ public sealed class DirectFetchCleanupTests
     private sealed class TrackingPooledMemory : IPooledMemory
     {
         public ReadOnlyMemory<byte> Memory => ReadOnlyMemory<byte>.Empty;
-        public int DisposeCount { get; private set; }
+        public int DisposeCount
+        {
+            get; private set;
+        }
         public void Dispose() => DisposeCount++;
     }
 }

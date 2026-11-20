@@ -305,7 +305,10 @@ public sealed class SchemaRegistryDekRegistryTests
     {
         private readonly Queue<(HttpStatusCode StatusCode, string Content)> _responses = new();
 
-        public List<CapturedRequest> Requests { get; } = [];
+        public List<CapturedRequest> Requests
+        {
+            get;
+        } = [];
 
         public CapturingSchemaRegistryHandler Enqueue(HttpStatusCode statusCode, string content)
         {

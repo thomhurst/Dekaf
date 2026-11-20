@@ -13,10 +13,16 @@ public class ShareBatchHeaderTraversalBenchmarks
     private ShareBatchHeaders _headers;
 
     [Params(0, 2, 16)]
-    public int HeaderCount { get; set; }
+    public int HeaderCount
+    {
+        get; set;
+    }
 
     [Params(4, 256)]
-    public int KeyLength { get; set; }
+    public int KeyLength
+    {
+        get; set;
+    }
 
     [GlobalSetup]
     public void Setup()
@@ -32,7 +38,9 @@ public class ShareBatchHeaderTraversalBenchmarks
         _headers = new ShareBatchHeaders(buffer.WrittenMemory, HeaderCount);
         var expected = HeaderCount * KeyLength + (HeaderCount + 1) / 2 * 37;
         if (Traverse() != expected)
+        {
             throw new InvalidOperationException("Header traversal changed bytes, count or null values.");
+        }
     }
 
     [Benchmark]
@@ -43,7 +51,9 @@ public class ShareBatchHeaderTraversalBenchmarks
         {
             checksum += header.KeyUtf8.Length;
             if (!header.IsValueNull)
+            {
                 checksum += header.Value.Span[0];
+            }
         }
         return checksum;
     }

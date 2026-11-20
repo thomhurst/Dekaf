@@ -607,7 +607,9 @@ public sealed class ConsumerLeaderDiscoveryTests
                     consumeTask,
                     Task.Delay(TimeSpan.FromSeconds(30)));
                 if (ReferenceEquals(completedTask, consumeTask))
+                {
                     _ = consumeTask.Exception;
+                }
             }
         }
         var result = await consumeTask.WaitAsync(TimeSpan.FromSeconds(30));
@@ -821,9 +823,13 @@ public sealed class ConsumerLeaderDiscoveryTests
             refreshResponse.TrySetCanceled();
 
             if (disposeTask is not null)
+            {
                 await disposeTask;
+            }
             else
+            {
                 await consumer.DisposeAsync();
+            }
         }
     }
 
@@ -980,7 +986,9 @@ public sealed class ConsumerLeaderDiscoveryTests
 
         var result = method.Invoke(consumer, [Topic, partitionResponse, nodeEndpoints]);
         if (result is not ValueTask valueTask)
+        {
             throw new InvalidOperationException("HandleLeaderEpochRefreshAsync did not return ValueTask");
+        }
 
         await valueTask.ConfigureAwait(false);
     }
@@ -999,7 +1007,9 @@ public sealed class ConsumerLeaderDiscoveryTests
         var staged = (bool)method.Invoke(consumer, [Topic, partitionResponse, epoch, startsBatch])!;
 
         if (fetchBufferEpoch is null && staged)
+        {
             InvokeCompleteDivergingEpochResets(consumer);
+        }
 
         return staged;
     }
@@ -1018,7 +1028,9 @@ public sealed class ConsumerLeaderDiscoveryTests
             consumer,
             [brokerId, partitions, fetchBufferEpoch, CancellationToken.None]);
         if (result is not ValueTask<List<PendingFetchData>?> valueTask)
+        {
             throw new InvalidOperationException("FetchFromBrokerAsync returned unexpected type");
+        }
 
         return await valueTask.ConfigureAwait(false);
     }
@@ -1026,12 +1038,16 @@ public sealed class ConsumerLeaderDiscoveryTests
     private static void DisposeAndReturn(List<PendingFetchData>? pendingItems)
     {
         if (pendingItems is null)
+        {
             return;
+        }
 
         try
         {
             foreach (var pending in pendingItems)
+            {
                 pending.Dispose();
+            }
         }
         finally
         {
@@ -1100,7 +1116,9 @@ public sealed class ConsumerLeaderDiscoveryTests
 
         object?[] arguments = [partition, 0L, -1, true];
         if (!(bool)method.Invoke(consumer, arguments)!)
+        {
             return null;
+        }
 
         return ((long)arguments[1]!, (int)arguments[2]!);
     }
@@ -1133,7 +1151,10 @@ public sealed class ConsumerLeaderDiscoveryTests
 
     private sealed class CallbackConsumerInterceptor : IConsumerInterceptor<string, string>
     {
-        public Action? Callback { get; set; }
+        public Action? Callback
+        {
+            get; set;
+        }
 
         public ConsumeResult<string, string> OnConsume(ConsumeResult<string, string> result)
         {
@@ -1141,6 +1162,8 @@ public sealed class ConsumerLeaderDiscoveryTests
             return result;
         }
 
-        public void OnCommit(IReadOnlyList<TopicPartitionOffset> offsets) { }
+        public void OnCommit(IReadOnlyList<TopicPartitionOffset> offsets)
+        {
+        }
     }
 }

@@ -25,23 +25,35 @@ public interface IKafkaShareConsumer<TKey, TValue> : IInitializableKafkaClient, 
     /// <summary>
     /// Gets the current topic subscription.
     /// </summary>
-    StringSet Subscription { get; }
+    StringSet Subscription
+    {
+        get;
+    }
 
     /// <summary>
     /// Gets the current partition assignment from the share group coordinator.
     /// </summary>
-    TopicPartitionSet Assignment { get; }
+    TopicPartitionSet Assignment
+    {
+        get;
+    }
 
     /// <summary>
     /// Gets the member ID (client-generated UUID) if part of a share group.
     /// </summary>
-    string? MemberId { get; }
+    string? MemberId
+    {
+        get;
+    }
 
     /// <summary>
     /// Gets the acquisition lock timeout reported by the latest applicable ShareFetch or
     /// renewal ShareAcknowledge response, or <see langword="null"/> before one is available.
     /// </summary>
-    int? AcquisitionLockTimeoutMs { get; }
+    int? AcquisitionLockTimeoutMs
+    {
+        get;
+    }
 
     /// <summary>
     /// Subscribes to topics. Share groups do not support manual partition assignment.

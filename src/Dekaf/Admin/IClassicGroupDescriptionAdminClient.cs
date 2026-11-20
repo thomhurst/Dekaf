@@ -15,45 +15,105 @@ public interface IClassicGroupDescriptionAdminClient
 public sealed class DescribeClassicGroupsOptions
 {
     /// <summary>Requests the broker's authorized-operations bit field.</summary>
-    public bool IncludeAuthorizedOperations { get; init; }
+    public bool IncludeAuthorizedOperations
+    {
+        get; init;
+    }
     /// <summary>Total operation budget in milliseconds, including discovery and retries.</summary>
-    public int TimeoutMs { get; init; } = 30000;
+    public int TimeoutMs
+    {
+        get; init;
+    } = 30000;
 }
 
 /// <summary>The outcome for one requested group. Description is null on failure.</summary>
 public sealed class ClassicGroupDescriptionResult
 {
-    public required string GroupId { get; init; }
-    public ErrorCode ErrorCode { get; init; }
-    public string? ErrorMessage { get; init; }
-    public ClassicGroupDescription? Description { get; init; }
+    public required string GroupId
+    {
+        get; init;
+    }
+    public ErrorCode ErrorCode
+    {
+        get; init;
+    }
+    public string? ErrorMessage
+    {
+        get; init;
+    }
+    public ClassicGroupDescription? Description
+    {
+        get; init;
+    }
 }
 
 /// <summary>A classic group's protocol, state and members, without assuming a consumer protocol.</summary>
 public sealed class ClassicGroupDescription
 {
-    public required string GroupId { get; init; }
-    public string? ProtocolType { get; init; }
+    public required string GroupId
+    {
+        get; init;
+    }
+    public string? ProtocolType
+    {
+        get; init;
+    }
     /// <summary>Selected protocol name: assignor for consumer groups, protocol name for Connect/custom groups.</summary>
-    public string? ProtocolData { get; init; }
-    public required string State { get; init; }
-    public int CoordinatorId { get; init; }
+    public string? ProtocolData
+    {
+        get; init;
+    }
+    public required string State
+    {
+        get; init;
+    }
+    public int CoordinatorId
+    {
+        get; init;
+    }
     /// <summary>Broker bit field, or null when not requested or unavailable.</summary>
-    public int? AuthorizedOperations { get; init; }
-    public required IReadOnlyList<ClassicGroupMemberDescription> Members { get; init; }
+    public int? AuthorizedOperations
+    {
+        get; init;
+    }
+    public required IReadOnlyList<ClassicGroupMemberDescription> Members
+    {
+        get; init;
+    }
 }
 
 /// <summary>A classic member with opaque protocol bytes retained for custom decoders.</summary>
 public sealed class ClassicGroupMemberDescription
 {
-    public required string MemberId { get; init; }
-    public string? GroupInstanceId { get; init; }
-    public string? ClientId { get; init; }
-    public string? ClientHost { get; init; }
-    public ReadOnlyMemory<byte> Metadata { get; init; }
-    public ReadOnlyMemory<byte> AssignmentData { get; init; }
+    public required string MemberId
+    {
+        get; init;
+    }
+    public string? GroupInstanceId
+    {
+        get; init;
+    }
+    public string? ClientId
+    {
+        get; init;
+    }
+    public string? ClientHost
+    {
+        get; init;
+    }
+    public ReadOnlyMemory<byte> Metadata
+    {
+        get; init;
+    }
+    public ReadOnlyMemory<byte> AssignmentData
+    {
+        get; init;
+    }
     /// <summary>Decoded only for the exact consumer protocol; null for custom protocols or an absent/unparseable assignment.</summary>
-    public IReadOnlyList<TopicPartition>? Assignment { get; init; }
+    public IReadOnlyList<TopicPartition>? Assignment
+    {
+        get; init;
+    }
 }
 
 /// <summary>Classic-group inspection for clients supporting the additive capability.</summary>

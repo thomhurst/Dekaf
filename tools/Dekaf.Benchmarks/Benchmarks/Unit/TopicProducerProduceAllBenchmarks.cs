@@ -20,10 +20,16 @@ public class TopicProducerProduceAllBenchmarks
     }
 
     [Params(1, 100)]
-    public int MessageCount { get; set; }
+    public int MessageCount
+    {
+        get; set;
+    }
 
     [ParamsAllValues]
-    public MessageSource Source { get; set; }
+    public MessageSource Source
+    {
+        get; set;
+    }
 
     [GlobalSetup]
     public void Setup()
@@ -49,7 +55,9 @@ public class TopicProducerProduceAllBenchmarks
     private IEnumerable<TopicProducerMessage<string, string>> EnumerateMessages()
     {
         for (var i = 0; i < _messages.Length; i++)
+        {
             yield return _messages[i];
+        }
     }
 
     private sealed class BenchmarkProducer : IKafkaProducer<string, string>, IProducerFastPath<string, string>
@@ -150,7 +158,9 @@ public class TopicProducerProduceAllBenchmarks
         private void ValidateCount(int count)
         {
             if (count != _expectedCount)
+            {
                 throw new InvalidOperationException($"Expected {_expectedCount} messages but received {count}.");
+            }
         }
 
         public ValueTask FlushAsync(CancellationToken cancellationToken = default) => ValueTask.CompletedTask;
@@ -206,10 +216,16 @@ public class TopicProducerMessageMaterializationBenchmarks
     }
 
     [Params(1, 2, 100)]
-    public int MessageCount { get; set; }
+    public int MessageCount
+    {
+        get; set;
+    }
 
     [ParamsAllValues]
-    public EnumerableSource Source { get; set; }
+    public EnumerableSource Source
+    {
+        get; set;
+    }
 
     [GlobalSetup]
     public void Setup()
@@ -228,7 +244,9 @@ public class TopicProducerMessageMaterializationBenchmarks
         using var messages = PooledReadOnlyList<TopicProducerMessage<string, string>>.Rent(GetMessages());
         var checksum = 0;
         for (var i = 0; i < messages.Count; i++)
+        {
             checksum += messages[i].Value.Length;
+        }
         return checksum;
     }
 
@@ -244,6 +262,8 @@ public class TopicProducerMessageMaterializationBenchmarks
     private IEnumerable<TopicProducerMessage<string, string>> EnumerateMessages()
     {
         for (var i = 0; i < _messages.Length; i++)
+        {
             yield return _messages[i];
+        }
     }
 }

@@ -1,10 +1,10 @@
-using Dekaf.SchemaRegistry;
-using Dekaf.SchemaRegistry.Json;
-using Dekaf.Serialization;
 using System.Buffers;
 using System.Buffers.Binary;
 using System.Collections.Concurrent;
 using System.Text;
+using Dekaf.SchemaRegistry;
+using Dekaf.SchemaRegistry.Json;
+using Dekaf.Serialization;
 
 namespace Dekaf.Tests.Unit.SchemaRegistry;
 
@@ -303,8 +303,7 @@ public sealed class SchemaIdentityFramingTests
                 registry,
                 strategy,
                 schemaText,
-                (System.Text.Json.Serialization.Metadata.JsonTypeInfo<string>)
-                    System.Text.Json.JsonSerializerOptions.Default.GetTypeInfo(typeof(string)),
+                (System.Text.Json.Serialization.Metadata.JsonTypeInfo<string>)System.Text.Json.JsonSerializerOptions.Default.GetTypeInfo(typeof(string)),
                 autoRegisterSchemas: false)
             : new JsonSchemaRegistrySerializer<string>(
                 registry,
@@ -735,7 +734,10 @@ public sealed class SchemaIdentityFramingTests
 
     private sealed class CapturingRuleExecutor : ISchemaRegistryRuleExecutor
     {
-        internal Schema? Schema { get; private set; }
+        internal Schema? Schema
+        {
+            get; private set;
+        }
 
         public ReadOnlyMemory<byte> TransformSerializedPayload(
             ReadOnlyMemory<byte> payload,

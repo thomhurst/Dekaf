@@ -38,7 +38,9 @@ public sealed class InMemoryShareRenewalTests
         {
             consumer.Acknowledge(record, AcknowledgeType.Renew);
             if (withFault)
+            {
                 cluster.FaultPlan.PauseNext(new(KafkaFaultOperation.ShareAcknowledge)).Release();
+            }
             await consumer.CommitAsync();
             var replay = await consumer.PollAsync().FirstAsync();
             await Assert.That(replay).IsSameReferenceAs(record);
@@ -48,7 +50,9 @@ public sealed class InMemoryShareRenewalTests
         }
         consumer.Acknowledge(record, finalType);
         if (withFault)
+        {
             cluster.FaultPlan.PauseNext(new(KafkaFaultOperation.ShareAcknowledge)).Release();
+        }
         await consumer.CommitAsync();
         await Assert.That(await consumer.PollAsync().ToListAsync()).IsEmpty();
         await Assert.That(cluster.GetCommittedShareOffset("group", new("orders", 0))).IsEqualTo(1);
@@ -141,9 +145,13 @@ public sealed class InMemoryShareRenewalTests
         consumer.Acknowledge(records[1]);
         await consumer.CommitAsync();
         if (close)
+        {
             await consumer.CloseAsync();
+        }
         else
+        {
             consumer.Unsubscribe();
+        }
         await using var other = ExplicitConsumer(cluster);
         other.Subscribe("orders");
         var redelivered = await other.PollAsync().ToListAsync();
@@ -190,7 +198,9 @@ public sealed class InMemoryShareRenewalTests
         await Assert.That(next[0].Value).IsEqualTo("second");
         consumer.Acknowledge(next[0]);
         if (maxPollRecords == 2)
+        {
             await Assert.That(next[1].Offset).IsEqualTo(record.Offset);
+        }
         await Assert.That((await consumer.PollAsync().FirstAsync()).Offset).IsEqualTo(record.Offset);
     }
 
@@ -228,9 +238,13 @@ public sealed class InMemoryShareRenewalTests
             }
         }
         else if (delete)
+        {
             await admin.DeleteShareGroupOffsetsAsync("group", ["orders"]);
+        }
         else
+        {
             await admin.AlterShareGroupOffsetsAsync("group", [new() { TopicPartition = new("orders", 0), StartOffset = 0 }]);
+        }
         await using var restarted = ExplicitConsumer(cluster);
         restarted.Subscribe("orders");
         await Assert.That(await restarted.PollAsync().ToListAsync()).Count().IsEqualTo(2);
@@ -252,7 +266,9 @@ public sealed class InMemoryShareRenewalTests
         consumer.Acknowledge(records[1], AcknowledgeType.Renew);
         await consumer.CommitAsync();
         if (withFault)
+        {
             cluster.FaultPlan.PauseNext(new(KafkaFaultOperation.ShareConsume, "orders", 0, "group")).Release();
+        }
         var next = await consumer.PollAsync().ToListAsync();
         await Assert.That(next.Count).IsEqualTo(2);
         await Assert.That(next[0].Offset).IsEqualTo(records[0].Offset);
@@ -285,9 +301,13 @@ public sealed class InMemoryShareRenewalTests
         }
         await using var admin = new InMemoryAdminClient(cluster);
         if (deleteById)
+        {
             await admin.DeleteTopicsAsync([cluster.TopicListings(includeInternal: true).Single().TopicId]);
+        }
         else
+        {
             await admin.DeleteTopicsAsync(["orders"]);
+        }
         cluster.CreateTopic("orders");
         await producer.ProduceAsync("orders", "key", "new-first");
         await producer.ProduceAsync("orders", "key", "new-second");
@@ -300,7 +320,9 @@ public sealed class InMemoryShareRenewalTests
         await Assert.That(recreated[0].DeliveryCount).IsEqualTo(1);
         await Assert.That(recreated[1].DeliveryCount).IsEqualTo(1);
         foreach (var record in recreated)
+        {
             restarted.Acknowledge(record);
+        }
         await restarted.CommitAsync();
         await Assert.That(cluster.GetCommittedShareOffset("group", new("orders", 0))).IsEqualTo(2);
     }
@@ -325,7 +347,9 @@ public sealed class InMemoryShareRenewalTests
         var peerRecord = await other.PollAsync().FirstAsync();
         await producer.ProduceAsync("orders", "key", "third");
         if (withFault)
+        {
             cluster.FaultPlan.PauseNext(new(KafkaFaultOperation.ShareConsume, "orders", 0, "group")).Release();
+        }
 
         var next = await consumer.PollAsync().ToListAsync();
 
@@ -333,7 +357,9 @@ public sealed class InMemoryShareRenewalTests
         await Assert.That(next[0].Value).IsEqualTo("third");
         await Assert.That(next[1]).IsSameReferenceAs(records[1]);
         foreach (var record in next)
+        {
             consumer.Acknowledge(record);
+        }
         await consumer.CommitAsync();
         other.Acknowledge(peerRecord);
         await other.CommitAsync();
@@ -357,11 +383,17 @@ public sealed class InMemoryShareRenewalTests
         await consumer.CommitAsync();
         await using var admin = new InMemoryAdminClient(cluster);
         if (deleteById)
+        {
             await admin.DeleteTopicsAsync([cluster.TopicListings(includeInternal: true).Single().TopicId]);
+        }
         else
+        {
             await admin.DeleteTopicsAsync(["orders"]);
+        }
         if (!recreateBeforePoll)
+        {
             await Assert.That(await consumer.PollAsync().ToListAsync()).IsEmpty();
+        }
         cluster.CreateTopic("orders");
         await producer.ProduceAsync("orders", "key", "new");
 
@@ -393,7 +425,9 @@ public sealed class InMemoryShareRenewalTests
         var barrier = withFault ? cluster.FaultPlan.PauseNext(new(KafkaFaultOperation.ShareAcknowledge)) : null;
         var commit = withFault ? consumer.CommitAsync().AsTask() : Task.CompletedTask;
         if (barrier is not null)
+        {
             await barrier.WaitUntilEnteredAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(10));
+        }
         try
         {
             cluster.DeleteTopic("orders");
@@ -405,9 +439,13 @@ public sealed class InMemoryShareRenewalTests
             barrier?.Release();
         }
         if (withFault)
+        {
             await commit;
+        }
         else
+        {
             await consumer.CommitAsync();
+        }
 
         var next = await consumer.PollAsync().ToListAsync();
 

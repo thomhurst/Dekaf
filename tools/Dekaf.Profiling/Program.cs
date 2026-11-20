@@ -551,7 +551,9 @@ public static class Program
         {
             using var assignmentCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
             while (consumer.Assignment.Count == 0)
+            {
                 await Task.Delay(10, assignmentCts.Token).ConfigureAwait(false);
+            }
 
             result = await MeasureIdleAsync(durationSeconds).ConfigureAwait(false);
         }
@@ -689,7 +691,11 @@ public static class Program
 
         // Flush and wait for consumer
         await producer.FlushAsync().ConfigureAwait(false);
-        try { await consumerTask.ConfigureAwait(false); } catch { }
+        try
+        {
+            await consumerTask.ConfigureAwait(false);
+        }
+        catch { }
 
         sw.Stop();
         gcStats.Capture();
@@ -895,10 +901,22 @@ public static class Program
         private readonly int _gen2Before;
         private readonly long _allocatedBefore;
 
-        public int Gen0 { get; private set; }
-        public int Gen1 { get; private set; }
-        public int Gen2 { get; private set; }
-        public long AllocatedBytes { get; private set; }
+        public int Gen0
+        {
+            get; private set;
+        }
+        public int Gen1
+        {
+            get; private set;
+        }
+        public int Gen2
+        {
+            get; private set;
+        }
+        public long AllocatedBytes
+        {
+            get; private set;
+        }
 
         public GcStats()
         {
@@ -921,7 +939,10 @@ public static class Program
 
     private sealed class KafkaEnvironment : IAsyncDisposable
     {
-        public string BootstrapServers { get; }
+        public string BootstrapServers
+        {
+            get;
+        }
         private readonly KafkaContainer? _container;
 
         public KafkaEnvironment(string bootstrapServers, KafkaContainer? container)

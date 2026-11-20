@@ -197,7 +197,9 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
         CancellationToken cancellationToken)
     {
         if (context is { IsNull: true, Component: SerializationComponent.Value })
+        {
             return default;
+        }
 
         var identity = ReadIdentity(data, identityHeader, out _);
         if (identity.SchemaGuid is { } schemaGuid)
@@ -447,7 +449,9 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
     private bool TryGetCachedPlan(int schemaId, out AvroPocoReaderPlan plan)
     {
         if (_plans.TryGetValue(schemaId, out plan!))
+        {
             return true;
+        }
 
         if (_schemaRegistry is ISchemaRegistryCache cache &&
             cache.TryGetCachedSchema(schemaId, out var schema) &&
@@ -479,7 +483,9 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
     void IRecordHeaderRoutingProvider.CollectHeaderNames(List<string> names)
     {
         if (_config.SchemaIdStrategy == SchemaIdDeserializerStrategy.Prefix)
+        {
             return;
+        }
 
         AddHeaderName(names, SchemaIdentityHeaderNames.Key);
         AddHeaderName(names, SchemaIdentityHeaderNames.Value);
@@ -491,7 +497,9 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
         Header? identityHeader)
     {
         if (context is { IsNull: true, Component: SerializationComponent.Value })
+        {
             return default!;
+        }
 
         var identity = ReadIdentity(data, identityHeader, out var payloadOffset);
         var schemaId = identity.SchemaId ?? GetResolvedGuidSchemaId(
@@ -519,7 +527,9 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
         }
 
         if (_canUseSynchronousRuleCache)
+        {
             return DeserializeWithRules(payload, schemaId, context);
+        }
 
         return DeserializeWithPreparedRulesOrFallback(payload, schemaId, context);
     }
@@ -528,11 +538,15 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
     private AvroInlineRuleValidator? GetInlineValidator(int schemaId, AvroPocoReaderPlan plan)
     {
         if (!AvroPocoRuleSupport.IsSupported || _inlineRuleValidators is null)
+        {
             return null;
+        }
 
         var cached = Volatile.Read(ref _lastInlineValidationDecision);
         if (cached >= 0 && (int)(uint)(cached >> 1) == schemaId && (cached & 1) == 0)
+        {
             return null;
+        }
 
         var validator = _inlineRuleValidators.Get(GetValidationSchema(schemaId, plan));
         var hasRules = validator.HasAnyRules;
@@ -589,7 +603,9 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
 
         var plan = GetOrBuildPlanCached(schemaId, scopedSchema);
         if (scopedSchema.RuleSet is not null)
+        {
             return DeserializeWithTaggedRules(payload, schemaId, subject, scopedSchema, context, plan);
+        }
 
         var ruleContext = SchemaRegistryRuleContext.Rent(
             context.Topic,
@@ -637,7 +653,9 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
         }
 
         if (scopedSchema.RuleSet is not null)
+        {
             return DeserializeWithTaggedRules(payload, schemaId, subject, scopedSchema, context, plan);
+        }
 
         var ruleContext = SchemaRegistryRuleContext.Rent(
             context.Topic,
@@ -799,10 +817,14 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
             GetRuleSchema(scopedSchema, plan));
         payload = ruleExecutor.TransformDeserializedEncodingPayload(payload, context);
         if (_config.ValidationRulesExecution == ValidationRulesExecution.BeforeDomainRules)
+        {
             validator.Validate(payload, schemaId, _config.ValidationRulesFailFast);
+        }
         payload = ruleExecutor.TransformDeserializedDomainPayload(payload, context);
         if (_config.ValidationRulesExecution == ValidationRulesExecution.AfterDomainRules)
+        {
             validator.Validate(payload, schemaId, _config.ValidationRulesFailFast);
+        }
         return payload;
     }
 
@@ -817,9 +839,13 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
     private static AvroSchema GetRuleSchema(Schema schema, AvroPocoReaderPlan plan)
     {
         if (!AvroPocoRuleSupport.IsSupported)
+        {
             throw AvroPocoRuleSupport.CreateNotSupportedException();
+        }
         if (plan.ResolvedWriterSchema is { } resolved)
+        {
             return resolved;
+        }
         var parsed = AvroSchema.Parse(schema.SchemaString);
         plan.ResolvedWriterSchema = parsed;
         return parsed;
@@ -835,7 +861,9 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
         CancellationToken cancellationToken)
     {
         if (!AvroPocoRuleSupport.IsSupported)
+        {
             throw AvroPocoRuleSupport.CreateNotSupportedException();
+        }
         plan.ResolvedWriterSchema = await AvroSchemaReferenceResolver.ParseAsync(
                 _schemaRegistry,
                 schema,
@@ -846,7 +874,9 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
     private AvroPocoReaderPlan GetPlanCached(int schemaId)
     {
         if (TryGetCachedPlan(schemaId, out var plan))
+        {
             return plan;
+        }
 
         throw new InvalidOperationException(
             $"Schema {schemaId} is not cached. Consume through an asynchronous consumer API or call WarmupAsync first.");
@@ -868,7 +898,9 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
                 cancellationToken)
             .ConfigureAwait(false);
         if (scopedSchema.RuleSet is not null || _migrationRunner is not null)
+        {
             PrepareTaggedTransformer(scopedSchema, plan);
+        }
 
         Dictionary<int, AvroPocoReaderPlan>? migrationPlans = null;
         if (_migrationRunner is not null)
@@ -937,10 +969,14 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
     {
         state = Volatile.Read(ref _lastPreparedRuleState)!;
         if (state is not null && state.Matches(key.SchemaId, key.Topic, key.IsKey, subjectGeneration))
+        {
             return true;
+        }
 
         if (!_preparedRuleStates.TryGetValue(key, out state!) || state.Generation != subjectGeneration)
+        {
             return false;
+        }
 
         Volatile.Write(ref _lastPreparedRuleState, state);
         return true;
@@ -954,7 +990,9 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
         Dictionary<int, AvroPocoReaderPlan>? migrationPlans)
     {
         if (_subjectNames is not null && !_subjectNames.IsCurrent(in preparedSubject))
+        {
             return false;
+        }
 
         var state = new PreparedRuleState(
             key,
@@ -1018,10 +1056,14 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
         {
             var count = Volatile.Read(ref _cachedPreparedRuleStateCount);
             if (count <= MaxCachedPreparedRuleStates)
+            {
                 return;
+            }
 
             if (Interlocked.CompareExchange(ref _cachedPreparedRuleStateCount, count - 1, count) != count)
+            {
                 continue;
+            }
 
             var removed = false;
             while (_preparedRuleStateEvictionQueue.TryDequeue(out var oldest))
@@ -1044,7 +1086,9 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
     private AvroPocoReaderPlan GetOrBuildPlanCached(int schemaId, Schema schema)
     {
         if (_plans.TryGetValue(schemaId, out var cached))
+        {
             return cached;
+        }
 
         // Resolving references is asynchronous; asynchronous preparation builds those plans.
         if (schema.References is { Count: > 0 })
@@ -1061,7 +1105,9 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
     private async Task<AvroPocoReaderPlan> GetPlanAsync(int schemaId, CancellationToken cancellationToken)
     {
         if (_plans.TryGetValue(schemaId, out var cached))
+        {
             return cached;
+        }
 
         cancellationToken.ThrowIfCancellationRequested();
         var entry = GetOrAddInFlightPlan(schemaId);
@@ -1108,7 +1154,9 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
         var schema = await _schemaRegistry.GetSchemaAsync(schemaId, cancellationToken)
             .ConfigureAwait(false);
         if (schema.References is not { Count: > 0 })
+        {
             return BuildPlan(schemaId, schema);
+        }
 
         var plan = await BuildReferencedPlanAsync(schemaId, schema, cancellationToken).ConfigureAwait(false);
         // Rule processing cannot parse a referenced schema later without its references.
@@ -1146,7 +1194,9 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
     private static void ValidateAvroSchema(int schemaId, Schema schema)
     {
         if (schema.SchemaType != SchemaType.Avro)
+        {
             throw new InvalidOperationException($"Schema {schemaId} is {schema.SchemaType}, not Avro.");
+        }
     }
 
     private void RemoveInFlightPlan(int schemaId, PlanEntry entry) =>
@@ -1156,7 +1206,9 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
     private void CacheSuccessfulPlan(int schemaId, AvroPocoReaderPlan plan)
     {
         if (!_plans.TryAdd(schemaId, plan))
+        {
             return;
+        }
 
         Interlocked.Increment(ref _cachedPlanCount);
         _planEvictionQueue.Enqueue(new KeyValuePair<int, AvroPocoReaderPlan>(schemaId, plan));
@@ -1169,10 +1221,14 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
         {
             var count = Volatile.Read(ref _cachedPlanCount);
             if (count <= MaxCachedPlans)
+            {
                 return;
+            }
 
             if (Interlocked.CompareExchange(ref _cachedPlanCount, count - 1, count) != count)
+            {
                 continue;
+            }
 
             var removed = false;
             while (_planEvictionQueue.TryDequeue(out var oldest))
@@ -1232,7 +1288,9 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
     private Lazy<Task<GuidResolvedSchema>> GetOrAddGuidSchemaLazy(GuidTopicKey key)
     {
         if (_guidSchemaCache.TryGetValue(key, out var cached))
+        {
             return cached;
+        }
 
         return _guidSchemaCache.GetOrAdd(
             key,
@@ -1286,7 +1344,9 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
                 : BuildPlan(schemaId, unscopedSchema);
             // A GUID plan has a local schema ID that the registry cannot resolve later, so attach now.
             if (AvroPocoRuleSupport.IsSupported && _inlineRuleValidators is not null)
+            {
                 await AttachRuleSchemaAsync(unscopedSchema, plan, cancellationToken).ConfigureAwait(false);
+            }
             CacheSuccessfulPlan(schemaId, plan);
             return new GuidResolvedSchema(schemaId, plan);
         }
@@ -1328,7 +1388,9 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
             out payloadOffset,
             out var trailingHeaderData);
         if (!trailingHeaderData.IsEmpty)
+        {
             throw new InvalidDataException("Avro schema identity headers cannot contain trailing data.");
+        }
         return identity;
     }
 
@@ -1356,7 +1418,9 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
     private static void AddHeaderName(List<string> names, string name)
     {
         if (!names.Contains(name))
+        {
             names.Add(name);
+        }
     }
 
     private static string GetIdentityHeaderName(SerializationComponent component) => component switch
@@ -1378,7 +1442,9 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
     public ValueTask DisposeAsync()
     {
         if (_ownsClient)
+        {
             _schemaRegistry.Dispose();
+        }
         return ValueTask.CompletedTask;
     }
 
@@ -1388,7 +1454,10 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
         {
         }
 
-        internal Lazy<Task<AvroPocoReaderPlan>> Plan { get; private set; } = null!;
+        internal Lazy<Task<AvroPocoReaderPlan>> Plan
+        {
+            get; private set;
+        } = null!;
 
         internal static PlanEntry Create(
             AvroPocoSchemaRegistryDeserializer<T, TCodec> owner,
@@ -1421,11 +1490,26 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
         Dictionary<int, AvroPocoReaderPlan>? migrationPlans,
         int generation)
     {
-        internal PreparedRuleKey Key { get; } = key;
-        internal string Subject { get; } = subject;
-        internal Schema Schema { get; } = schema;
-        internal AvroPocoReaderPlan Plan { get; } = plan;
-        internal int Generation { get; } = generation;
+        internal PreparedRuleKey Key
+        {
+            get;
+        } = key;
+        internal string Subject
+        {
+            get;
+        } = subject;
+        internal Schema Schema
+        {
+            get;
+        } = schema;
+        internal AvroPocoReaderPlan Plan
+        {
+            get;
+        } = plan;
+        internal int Generation
+        {
+            get;
+        } = generation;
 
         private Dictionary<int, AvroPocoReaderPlan>? _migrationPlans = migrationPlans;
 
@@ -1442,7 +1526,9 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
 
             var plans = Volatile.Read(ref _migrationPlans);
             if (plans is not null && plans.TryGetValue(schemaId, out plan!))
+            {
                 return true;
+            }
 
             plan = null!;
             return false;

@@ -110,7 +110,10 @@ public sealed class LeaveGroupMessageTests
             {
                 memberId = reader.ReadCompactString();
                 instanceId = reader.ReadCompactString();
-                if (version >= 5) reason = reader.ReadCompactString();
+                if (version >= 5)
+                {
+                    reason = reader.ReadCompactString();
+                }
                 reader.SkipTaggedFields();
             }
             else

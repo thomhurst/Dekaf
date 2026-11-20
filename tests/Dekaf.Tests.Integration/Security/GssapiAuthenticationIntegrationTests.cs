@@ -28,7 +28,9 @@ public sealed class GssapiAuthenticationIntegrationTests
             await realm.RunClientAsync(kafka.BootstrapServers, cancellationToken);
             var packageClient = Environment.GetEnvironmentVariable("DEKAF_KERBEROS_PACKAGE_CLIENT");
             if (!string.IsNullOrEmpty(packageClient))
+            {
                 await realm.RunPackageClientAsync(packageClient, kafka.BootstrapServers, cancellationToken);
+            }
             return;
         }
         var topic = $"kerberos-{Guid.NewGuid():N}";
@@ -92,7 +94,10 @@ internal sealed class LocalKerberosRealm : IAsyncDisposable
     private Process? _kdc;
     private Task<string>? _kdcOutput;
     private Task<string>? _kdcError;
-    public string BrokerHost { get; } = Environment.GetEnvironmentVariable("TESTCONTAINERS_HOST_OVERRIDE") ?? "127.0.0.1";
+    public string BrokerHost
+    {
+        get;
+    } = Environment.GetEnvironmentVariable("TESTCONTAINERS_HOST_OVERRIDE") ?? "127.0.0.1";
     public string Configuration => Path.Combine(_directory.FullName, "krb5.conf");
     public string ServerKeytab => Path.Combine(_directory.FullName, "server.keytab");
     private string KdcProfile => Path.Combine(_directory.FullName, "kdc.conf");
@@ -138,7 +143,11 @@ internal sealed class LocalKerberosRealm : IAsyncDisposable
         await TestWait.WaitForConditionAsync(async () =>
         {
             using var socket = new TcpClient();
-            try { await socket.ConnectAsync(IPAddress.Loopback, port, cancellationToken); return true; }
+            try
+            {
+                await socket.ConnectAsync(IPAddress.Loopback, port, cancellationToken);
+                return true;
+            }
             catch (SocketException) { return false; }
         }, static ready => ready, description: "isolated local KDC accepts TCP connections");
         var cache = Path.Combine(_directory.FullName, "ccache");
@@ -153,7 +162,9 @@ internal sealed class LocalKerberosRealm : IAsyncDisposable
         var processPath = Environment.ProcessPath ?? throw new InvalidOperationException("Cannot find test executable.");
         var info = StartInfo(processPath, []);
         if (Path.GetFileNameWithoutExtension(processPath).Equals("dotnet", StringComparison.OrdinalIgnoreCase))
+        {
             info.ArgumentList.Add(Environment.GetCommandLineArgs()[0]);
+        }
         info.ArgumentList.Add("--treenode-filter");
         info.ArgumentList.Add("/*/*/GssapiAuthenticationIntegrationTests/*");
         info.ArgumentList.Add("--results-directory");
@@ -175,10 +186,15 @@ internal sealed class LocalKerberosRealm : IAsyncDisposable
     {
         var info = new ProcessStartInfo(executable)
         {
-            UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true
         };
         foreach (var argument in arguments)
+        {
             info.ArgumentList.Add(argument);
+        }
         info.Environment["KRB5_CONFIG"] = Configuration;
         info.Environment["KRB5_KDC_PROFILE"] = KdcProfile;
         return info;
@@ -192,7 +208,10 @@ internal sealed class LocalKerberosRealm : IAsyncDisposable
         using var process = Process.Start(info)!;
         var stdout = process.StandardOutput.ReadToEndAsync(CancellationToken.None);
         var stderr = process.StandardError.ReadToEndAsync(CancellationToken.None);
-        try { await process.WaitForExitAsync(cancellationToken); }
+        try
+        {
+            await process.WaitForExitAsync(cancellationToken);
+        }
         finally
         {
             if (!process.HasExited)
@@ -204,7 +223,9 @@ internal sealed class LocalKerberosRealm : IAsyncDisposable
         var output = await stdout;
         var error = await stderr;
         if (process.ExitCode != 0)
+        {
             throw new InvalidOperationException($"{info.FileName} failed ({process.ExitCode}): {output} {error}");
+        }
     }
 
     public async ValueTask DisposeAsync()
@@ -212,7 +233,9 @@ internal sealed class LocalKerberosRealm : IAsyncDisposable
         if (_kdc is not null)
         {
             if (!_kdc.HasExited)
+            {
                 _kdc.Kill(entireProcessTree: true);
+            }
             await _kdc.WaitForExitAsync();
             Console.WriteLine(await _kdcOutput!);
             Console.WriteLine(await _kdcError!);

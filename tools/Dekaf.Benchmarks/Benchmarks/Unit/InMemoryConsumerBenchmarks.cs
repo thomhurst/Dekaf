@@ -198,7 +198,9 @@ public class InMemoryConsumerBenchmarks
         var snapshotCluster = new InMemoryKafkaCluster();
         var snapshotProducer = new InMemoryProducer<Ignore, Ignore>(snapshotCluster);
         for (var i = 0; i < SnapshotRecordCount; i++)
+        {
             snapshotProducer.ProduceAsync(Topic, default, default).GetAwaiter().GetResult();
+        }
 
         _snapshotConsumer = new InMemoryConsumer<Ignore, Ignore>(
             snapshotCluster,
@@ -230,7 +232,9 @@ public class InMemoryConsumerBenchmarks
             offsets[partition] = offset;
             _multiPartitionCommitOffsets.Add(topicPartition, offset);
             if (partition < 4)
+            {
                 firstFourOffsets.Add(topicPartition, offset);
+            }
         }
 
         _multiPartitionCommitConsumers = new InMemoryConsumer<Ignore, Ignore>[128];
@@ -261,7 +265,9 @@ public class InMemoryConsumerBenchmarks
         _consumer.Seek(new TopicPartitionOffset(Topic, 0, 0));
         var operation = _consumer.ConsumeOneAsync(TimeSpan.Zero);
         if (!operation.IsCompletedSuccessfully)
+        {
             throw new InvalidOperationException("No-fault consume did not complete synchronously.");
+        }
 
         _result = operation.Result;
     }
@@ -273,7 +279,9 @@ public class InMemoryConsumerBenchmarks
         _unrelatedFaultConsumer.Seek(new TopicPartitionOffset(Topic, 0, 0));
         var operation = _unrelatedFaultConsumer.ConsumeOneAsync(TimeSpan.Zero);
         if (!operation.IsCompletedSuccessfully)
+        {
             throw new InvalidOperationException("Unrelated-fault consume did not complete synchronously.");
+        }
 
         _result = operation.Result;
     }
@@ -285,7 +293,9 @@ public class InMemoryConsumerBenchmarks
         _manualCommitFaultConsumer.Seek(new TopicPartitionOffset(Topic, 0, 0));
         var operation = _manualCommitFaultConsumer.ConsumeOneAsync(TimeSpan.Zero);
         if (!operation.IsCompletedSuccessfully)
+        {
             throw new InvalidOperationException("Manual commit fault consume did not complete synchronously.");
+        }
 
         _result = operation.Result;
     }
@@ -297,7 +307,9 @@ public class InMemoryConsumerBenchmarks
         _asyncAutoCommitConsumer.Seek(new TopicPartitionOffset(Topic, 0, 0));
         var operation = _asyncAutoCommitConsumer.ConsumeOneAsync(TimeSpan.Zero);
         if (!operation.IsCompletedSuccessfully)
+        {
             throw new InvalidOperationException("Async auto-commit consume did not complete synchronously.");
+        }
 
         _result = operation.Result;
     }
@@ -317,7 +329,9 @@ public class InMemoryConsumerBenchmarks
         _asyncAutoCommitUnrelatedFaultConsumer.Seek(new TopicPartitionOffset(Topic, 0, 0));
         var operation = _asyncAutoCommitUnrelatedFaultConsumer.ConsumeOneAsync(TimeSpan.Zero);
         if (!operation.IsCompletedSuccessfully)
+        {
             throw new InvalidOperationException("Async auto-commit unrelated-fault consume did not complete synchronously.");
+        }
 
         _result = operation.Result;
     }
@@ -329,7 +343,9 @@ public class InMemoryConsumerBenchmarks
         _noStoreCommitFaultConsumer.Seek(new TopicPartitionOffset(Topic, 0, 0));
         var operation = _noStoreCommitFaultConsumer.ConsumeOneAsync(TimeSpan.Zero);
         if (!operation.IsCompletedSuccessfully)
+        {
             throw new InvalidOperationException("No-stored-offset consume did not complete synchronously.");
+        }
 
         _result = operation.Result;
     }
@@ -342,7 +358,9 @@ public class InMemoryConsumerBenchmarks
         _manualStoreNoFaultConsumer.Seek(new TopicPartitionOffset(Topic, 0, 0));
         var operation = _manualStoreNoFaultConsumer.ConsumeOneAsync(TimeSpan.Zero);
         if (!operation.IsCompletedSuccessfully)
+        {
             throw new InvalidOperationException("Manual-store no-fault consume did not complete synchronously.");
+        }
 
         _result = operation.Result;
     }
@@ -354,7 +372,9 @@ public class InMemoryConsumerBenchmarks
         _customPlanStoredOffsetConsumer.Seek(new TopicPartitionOffset(Topic, 0, 0));
         var operation = _customPlanStoredOffsetConsumer.ConsumeOneAsync(TimeSpan.Zero);
         if (!operation.IsCompletedSuccessfully)
+        {
             throw new InvalidOperationException("Custom-plan consume did not complete synchronously.");
+        }
 
         _result = operation.Result;
     }
@@ -371,7 +391,9 @@ public class InMemoryConsumerBenchmarks
         }
 
         if (count != SnapshotRecordCount)
+        {
             throw new InvalidOperationException("Snapshot benchmark consumed an unexpected record count.");
+        }
 
         return count;
     }
@@ -391,7 +413,9 @@ public class InMemoryConsumerBenchmarks
     {
         var operation = _consumer.CommitAsync(ExplicitOffsets);
         if (!operation.IsCompletedSuccessfully)
+        {
             throw new InvalidOperationException("No-fault commit did not complete synchronously.");
+        }
 
         operation.GetAwaiter().GetResult();
     }

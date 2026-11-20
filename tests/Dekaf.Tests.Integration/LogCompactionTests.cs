@@ -90,7 +90,10 @@ public sealed class LogCompactionTests(KafkaTestContainer kafka) : KafkaIntegrat
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))
         {
             messages.Add(msg);
-            if (messages.Count(m => m.Key != "warmup") >= 2) break;
+            if (messages.Count(m => m.Key != "warmup") >= 2)
+            {
+                break;
+            }
         }
 
         var actual = messages.Where(m => m.Key != "warmup").ToList();

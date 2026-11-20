@@ -196,7 +196,9 @@ public sealed class JsonataSchemaRegistryRuleHandlerTests
             var output = executor.TransformSerializedPayload(input, context);
             using var document = JsonDocument.Parse(output);
             if (document.RootElement.GetProperty("double").GetInt32() != value * 2)
+            {
                 failures.Enqueue(value);
+            }
         });
 
         await Assert.That(failures).IsEmpty();

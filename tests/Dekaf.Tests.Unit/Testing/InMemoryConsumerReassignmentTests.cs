@@ -26,9 +26,13 @@ public sealed class InMemoryConsumerReassignmentTests
         await Produce(producer, 1, "third");
         await using var first = CreateConsumer(cluster, "a", mode);
         if (manualAssignment)
+        {
             first.Assign(new TopicPartition("topic", 0), new TopicPartition("topic", 1));
+        }
         else
+        {
             first.Subscribe("topic");
+        }
         await Assert.That((await first.ConsumeOneAsync(TimeSpan.Zero))!.Value.Offset).IsEqualTo(0);
         await first.CommitAsync();
         // Leave a dirty stored offset behind as well as the old delivery position.
@@ -37,9 +41,13 @@ public sealed class InMemoryConsumerReassignmentTests
         first.Pause(moved);
         await using var second = CreateConsumer(cluster, "b", mode);
         if (manualAssignment)
+        {
             second.Assign(new TopicPartition("topic", 0), new TopicPartition("topic", 1));
+        }
         else
+        {
             second.Subscribe("topic");
+        }
         if (observeRevocation)
         {
             await Assert.That(first.Assignment.Contains(moved)).IsFalse();
@@ -49,9 +57,13 @@ public sealed class InMemoryConsumerReassignmentTests
         await Assert.That((await second.ConsumeOneAsync(TimeSpan.Zero))!.Value.Offset).IsEqualTo(1);
         await second.CommitAsync();
         if (manualAssignment)
+        {
             second.Unassign();
+        }
         else
+        {
             second.Unsubscribe();
+        }
 
         // No Assignment read here: consumption must discover even an unobserved loss and regain.
         await Produce(producer, 0, "unrelated");
@@ -75,20 +87,28 @@ public sealed class InMemoryConsumerReassignmentTests
         cluster.CreateTopic("topic", 2);
         await using var producer = new InMemoryProducer<string, string>(cluster);
         for (var i = 0; i < 4; i++)
+        {
             await Produce(producer, 1, $"record-{i}");
+        }
         var moved = new TopicPartition("topic", 1);
         await using var first = CreateConsumer(cluster, "a", OffsetCommitMode.Manual);
         if (manualAssignment)
+        {
             first.Assign(new TopicPartition("topic", 0), moved);
+        }
         else
+        {
             first.Subscribe("topic");
+        }
         _ = await first.ConsumeOneAsync(TimeSpan.Zero);
         first.StoreOffset(new TopicPartitionOffset("topic", 1, 1));
         first.Pause(moved);
         await using var second = CreateConsumer(cluster, "b", OffsetCommitMode.Manual);
         second.Subscribe("topic");
         if (observeRevocation)
+        {
             await Assert.That(first.Assignment.Contains(moved)).IsFalse();
+        }
         await second.CommitAsync([new("topic", 1, 2)]);
         second.Unsubscribe();
 
@@ -130,19 +150,27 @@ public sealed class InMemoryConsumerReassignmentTests
         cluster.CreateTopic("topic", 2);
         await using var producer = new InMemoryProducer<string, string>(cluster);
         for (var i = 0; i < 4; i++)
+        {
             await Produce(producer, 1, $"record-{i}");
+        }
         var moved = new TopicPartition("topic", 1);
         await using var first = CreateConsumer(cluster, "a", OffsetCommitMode.Manual);
         if (manualAssignment)
+        {
             first.Assign(new TopicPartition("topic", 0), moved);
+        }
         else
+        {
             first.Subscribe("topic");
+        }
         _ = await first.ConsumeOneAsync(TimeSpan.Zero);
         first.Pause(moved);
         await using var second = CreateConsumer(cluster, "b", OffsetCommitMode.Manual);
         second.Subscribe("topic");
         if (observeRevocation)
+        {
             await Assert.That(first.Assignment.Contains(moved)).IsFalse();
+        }
         await second.CommitAsync([new("topic", 1, 2)]);
         second.Unsubscribe();
 
@@ -203,21 +231,31 @@ public sealed class InMemoryConsumerReassignmentTests
         var moved = new TopicPartition("topic", 1);
         await using var first = CreateConsumer(cluster, "a", pendingCommit ? OffsetCommitMode.Auto : OffsetCommitMode.Manual);
         if (manualAssignment)
+        {
             first.Assign(new TopicPartition("topic", 0), moved);
+        }
         else
+        {
             first.Subscribe("topic");
+        }
         var barrier = pendingCommit
             ? cluster.FaultPlan.PauseNext(new KafkaFaultScope(KafkaFaultOperation.Commit, groupId: "group"))
             : null;
         var consume = first.ConsumeOneAsync(TimeSpan.Zero).AsTask();
         if (barrier is not null)
+        {
             await barrier.WaitUntilEnteredAsync();
+        }
         else
+        {
             _ = await consume;
+        }
         await using var second = CreateConsumer(cluster, "b", OffsetCommitMode.Manual);
         second.Subscribe("topic");
         if (observeRevocation)
+        {
             await Assert.That(first.Assignment.Contains(moved)).IsFalse();
+        }
         await second.CommitAsync([new("topic", 1, 1)]);
         second.Unsubscribe();
 
@@ -289,9 +327,13 @@ public sealed class InMemoryConsumerReassignmentTests
         consumer.Subscribe("topic");
         consumer.StoreOffset(new TopicPartitionOffset("topic", 0, 5));
         if (explicitOffsets)
+        {
             await consumer.CommitAsync([new("topic", 0, 5)]);
+        }
         else
+        {
             await consumer.CommitAsync();
+        }
         cluster.CommitOffsets("group", (IEnumerable<TopicPartitionOffset>)[new("topic", 0, 100)]);
         consumer.StoreOffset(new TopicPartitionOffset("topic", 1, 7));
         await consumer.CommitAsync();
@@ -334,7 +376,10 @@ public sealed class InMemoryConsumerReassignmentTests
         cluster.CreateTopic("topic", 2);
         await using var first = new InMemoryConsumer<string, string>(cluster, new InMemoryConsumerOptions
         {
-            GroupId = "group", MemberId = "a", AutoOffsetReset = reset, OffsetCommitMode = OffsetCommitMode.Manual
+            GroupId = "group",
+            MemberId = "a",
+            AutoOffsetReset = reset,
+            OffsetCommitMode = OffsetCommitMode.Manual
         });
         first.Subscribe("topic");
         await using var second = CreateConsumer(cluster, "b", OffsetCommitMode.Manual);
@@ -427,9 +472,13 @@ public sealed class InMemoryConsumerReassignmentTests
         _ = await consumer.ConsumeOneAsync(TimeSpan.Zero);
         consumer.Pause(new TopicPartition("topic", 0));
         if (unassign)
+        {
             consumer.IncrementalUnassign([new("topic", 1)]);
+        }
         else
+        {
             consumer.IncrementalAssign([new TopicPartitionOffset("topic", 1, 0)]);
+        }
         await Assert.That(consumer.GetPosition(new("topic", 0))).IsEqualTo(1);
         await Assert.That(consumer.Paused.Contains(new("topic", 0))).IsTrue();
         await consumer.CommitAsync();
@@ -468,13 +517,19 @@ public sealed class InMemoryConsumerReassignmentTests
         InMemoryKafkaCluster cluster, string member, OffsetCommitMode mode,
         OffsetStoreTiming timing = OffsetStoreTiming.OnDelivery) => new(cluster, new InMemoryConsumerOptions
         {
-            GroupId = "group", MemberId = member, AutoOffsetReset = AutoOffsetReset.Earliest,
-            OffsetCommitMode = mode, OffsetStoreTiming = timing
+            GroupId = "group",
+            MemberId = member,
+            AutoOffsetReset = AutoOffsetReset.Earliest,
+            OffsetCommitMode = mode,
+            OffsetStoreTiming = timing
         });
 
     private static ValueTask<RecordMetadata> Produce(InMemoryProducer<string, string> producer, int partition, string value) =>
         producer.ProduceAsync(new ProducerMessage<string, string>
         {
-            Topic = "topic", Partition = partition, Key = "key", Value = value
+            Topic = "topic",
+            Partition = partition,
+            Key = "key",
+            Value = value
         });
 }

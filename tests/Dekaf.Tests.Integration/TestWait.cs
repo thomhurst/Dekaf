@@ -57,7 +57,9 @@ internal static class TestWait
             await Task.Delay(initialDelayMs * (i + 1));
             result = await check();
             if (condition(result))
+            {
                 return result;
+            }
         }
 
         var observed = formatObserved is null ? result?.ToString() : formatObserved(result);

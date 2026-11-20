@@ -53,7 +53,10 @@ public sealed class MultiInflightProducerTests(KafkaTestContainer kafka) : Kafka
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))
         {
             messages.Add(msg);
-            if (messages.Count >= messageCount) break;
+            if (messages.Count >= messageCount)
+            {
+                break;
+            }
         }
 
         await Assert.That(messages).Count().IsEqualTo(messageCount);
@@ -83,13 +86,13 @@ public sealed class MultiInflightProducerTests(KafkaTestContainer kafka) : Kafka
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-multi-inflight-multi-partition")
             .WithAcks(Acks.All)
-
             .WithLinger(TimeSpan.FromMilliseconds(2))
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         // Warm up all partitions to ensure the broker has fully initialized partition state.
         for (var p = 0; p < partitionCount; p++)
+        {
             await producer.ProduceAsync(new ProducerMessage<int, string>
             {
                 Topic = topic,
@@ -97,6 +100,7 @@ public sealed class MultiInflightProducerTests(KafkaTestContainer kafka) : Kafka
                 Value = "warmup",
                 Partition = p
             }, CancellationToken.None);
+        }
 
         // Produce messages keyed by partition index
         for (var p = 0; p < partitionCount; p++)
@@ -141,7 +145,10 @@ public sealed class MultiInflightProducerTests(KafkaTestContainer kafka) : Kafka
 
             list.Add(msg);
             totalConsumed++;
-            if (totalConsumed >= totalExpected) break;
+            if (totalConsumed >= totalExpected)
+            {
+                break;
+            }
         }
 
         await Assert.That(totalConsumed).IsEqualTo(totalExpected);
@@ -171,7 +178,6 @@ public sealed class MultiInflightProducerTests(KafkaTestContainer kafka) : Kafka
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-multi-inflight-concurrent")
             .WithAcks(Acks.All)
-
             .WithLinger(TimeSpan.FromMilliseconds(2))
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
@@ -207,7 +213,10 @@ public sealed class MultiInflightProducerTests(KafkaTestContainer kafka) : Kafka
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))
         {
             messages.Add(msg);
-            if (messages.Count >= totalExpected) break;
+            if (messages.Count >= totalExpected)
+            {
+                break;
+            }
         }
 
         await Assert.That(messages).Count().IsEqualTo(totalExpected);
@@ -229,7 +238,6 @@ public sealed class MultiInflightProducerTests(KafkaTestContainer kafka) : Kafka
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-multi-inflight-high-volume")
             .WithAcks(Acks.All)
-
             .WithBatchSize(256) // Very small to force many batch rotations
             .WithLinger(TimeSpan.FromMilliseconds(1))
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
@@ -260,7 +268,10 @@ public sealed class MultiInflightProducerTests(KafkaTestContainer kafka) : Kafka
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))
         {
             messages.Add(msg);
-            if (messages.Count >= messageCount) break;
+            if (messages.Count >= messageCount)
+            {
+                break;
+            }
         }
 
         await Assert.That(messages).Count().IsEqualTo(messageCount);
@@ -283,7 +294,6 @@ public sealed class MultiInflightProducerTests(KafkaTestContainer kafka) : Kafka
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-multi-inflight-fire-and-forget")
             .WithAcks(Acks.All)
-
             .WithLinger(TimeSpan.FromMilliseconds(2))
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
@@ -313,7 +323,10 @@ public sealed class MultiInflightProducerTests(KafkaTestContainer kafka) : Kafka
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))
         {
             messages.Add(msg);
-            if (messages.Count >= messageCount) break;
+            if (messages.Count >= messageCount)
+            {
+                break;
+            }
         }
 
         await Assert.That(messages).Count().IsEqualTo(messageCount);
@@ -360,7 +373,10 @@ public sealed class MultiInflightProducerTests(KafkaTestContainer kafka) : Kafka
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))
         {
             messages.Add(msg);
-            if (messages.Count >= messageCount) break;
+            if (messages.Count >= messageCount)
+            {
+                break;
+            }
         }
 
         await Assert.That(messages).Count().IsEqualTo(messageCount);
@@ -384,7 +400,6 @@ public sealed class MultiInflightProducerTests(KafkaTestContainer kafka) : Kafka
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-multi-inflight-coalescing")
             .WithAcks(Acks.All)
-
             .WithLinger(TimeSpan.FromMilliseconds(5)) // Higher linger to trigger coalescing
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
@@ -392,6 +407,7 @@ public sealed class MultiInflightProducerTests(KafkaTestContainer kafka) : Kafka
         // Warm up all partitions so this test covers coalescing rather than initial
         // partition metadata recovery.
         for (var p = 0; p < partitionCount; p++)
+        {
             await producer.ProduceAsync(new ProducerMessage<int, string>
             {
                 Topic = topic,
@@ -399,6 +415,7 @@ public sealed class MultiInflightProducerTests(KafkaTestContainer kafka) : Kafka
                 Value = "warmup",
                 Partition = p
             }, CancellationToken.None);
+        }
 
         // Produce to all partitions to trigger coalescing
         for (var i = 0; i < messagesPerPartition; i++)
@@ -442,7 +459,10 @@ public sealed class MultiInflightProducerTests(KafkaTestContainer kafka) : Kafka
 
             list.Add(msg);
             totalConsumed++;
-            if (totalConsumed >= totalExpected) break;
+            if (totalConsumed >= totalExpected)
+            {
+                break;
+            }
         }
 
         await Assert.That(totalConsumed).IsEqualTo(totalExpected);

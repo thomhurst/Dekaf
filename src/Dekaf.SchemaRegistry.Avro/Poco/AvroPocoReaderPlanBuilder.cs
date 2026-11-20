@@ -14,7 +14,9 @@ internal static class AvroPocoReaderPlanBuilder
         where TCodec : struct, IAvroPocoCodec<T>
     {
         if (writerSchema.Tag != AvroWriterSchemaTag.Record)
+        {
             throw new InvalidOperationException("POCO Avro writer schema must be a record.");
+        }
         if (!string.Equals(writerSchema.Fullname, TCodec.FullName, StringComparison.Ordinal))
         {
             throw new InvalidOperationException(
@@ -71,13 +73,17 @@ internal static class AvroPocoReaderPlanBuilder
         {
             ref readonly var field = ref fields[index];
             if (string.Equals(field.Name, writerName, StringComparison.Ordinal))
+            {
                 return index;
+            }
 
             var aliases = field.Aliases.Span;
             for (var aliasIndex = 0; aliasIndex < aliases.Length; aliasIndex++)
             {
                 if (string.Equals(aliases[aliasIndex], writerName, StringComparison.Ordinal))
+                {
                     return index;
+                }
             }
         }
 
@@ -87,7 +93,9 @@ internal static class AvroPocoReaderPlanBuilder
     private static AvroPocoReadNode BuildNode(AvroWriterSchema writer, AvroPocoType reader)
     {
         if (writer.Tag == AvroWriterSchemaTag.Logical)
+        {
             return BuildLogicalNode(writer, reader);
+        }
 
         if (writer.Tag == AvroWriterSchemaTag.Union)
         {
@@ -186,17 +194,23 @@ internal static class AvroPocoReaderPlanBuilder
         var kind = GetLogicalKind(writer.LogicalTypeName!);
 
         if (kind is not { } logicalKind)
+        {
             return BuildNode(writer.Child!, reader);
+        }
 
         if (reader.Kind != logicalKind)
         {
             if (IsLogicalKind(reader.Kind))
+            {
                 throw Incompatible(writer, reader);
+            }
 
             return BuildNode(writer.Child!, reader);
         }
         if (logicalKind == AvroPocoTypeKind.Decimal && !DecimalMatches(writer, reader))
+        {
             throw Incompatible(writer, reader);
+        }
         return new AvroPocoReadNode(logicalKind)
         {
             FixedSize = GetFixedSize(writer.Child!)
@@ -212,7 +226,9 @@ internal static class AvroPocoReaderPlanBuilder
     {
         var index = TryFindCompatibleReaderIndex(writer, readers);
         if (index >= 0)
+        {
             return index;
+        }
 
         throw new InvalidOperationException(
             $"Writer Avro type '{writer.Tag}' has no compatible generated POCO union branch.");
@@ -225,13 +241,17 @@ internal static class AvroPocoReaderPlanBuilder
         for (var index = 0; index < readers.Length; index++)
         {
             if (IsExactMatch(writer, readers[index]))
+            {
                 return index;
+            }
         }
 
         for (var index = 0; index < readers.Length; index++)
         {
             if (IsCompatible(writer, readers[index]))
+            {
                 return index;
+            }
         }
 
         return -1;
@@ -274,7 +294,9 @@ internal static class AvroPocoReaderPlanBuilder
             for (var index = 0; index < branches.Length; index++)
             {
                 if (IsCompatible(writer, branches[index]))
+                {
                     return true;
+                }
             }
             return false;
         }
@@ -283,9 +305,13 @@ internal static class AvroPocoReaderPlanBuilder
         {
             var logicalKind = GetLogicalKind(writer.LogicalTypeName!);
             if (logicalKind is null)
+            {
                 return IsCompatible(writer.Child!, reader);
+            }
             if (reader.Kind != logicalKind)
+            {
                 return !IsLogicalKind(reader.Kind) && IsCompatible(writer.Child!, reader);
+            }
             return logicalKind != AvroPocoTypeKind.Decimal || DecimalMatches(writer, reader);
         }
 
@@ -335,7 +361,9 @@ internal static class AvroPocoReaderPlanBuilder
         {
             var kind = GetLogicalKind(writer.LogicalTypeName!);
             if (kind is not { } logicalKind)
+            {
                 return BuildSkipNode(writer.Child!, records);
+            }
 
             return new AvroPocoReadNode(logicalKind)
             {
@@ -375,7 +403,9 @@ internal static class AvroPocoReaderPlanBuilder
         Dictionary<AvroWriterSchema, AvroPocoReadNode> records)
     {
         if (records.TryGetValue(record, out var existing))
+        {
             return existing;
+        }
 
         var node = new AvroPocoReadNode(AvroPocoTypeKind.Record);
         records.Add(record, node);
@@ -402,7 +432,9 @@ internal static class AvroPocoReaderPlanBuilder
         for (var index = 0; index < nodes.Length; index++)
         {
             if (!nodes[index].IsZeroWidth)
+            {
                 return false;
+            }
         }
 
         return true;
@@ -415,7 +447,9 @@ internal static class AvroPocoReaderPlanBuilder
         var fields = record.Fields;
         var nodes = new AvroPocoReadNode[fields.Length];
         for (var index = 0; index < nodes.Length; index++)
+        {
             nodes[index] = BuildSkipNode(fields[index].Schema, records);
+        }
         return nodes;
     }
 
@@ -426,7 +460,9 @@ internal static class AvroPocoReaderPlanBuilder
         var branches = union.Branches;
         var nodes = new AvroPocoReadNode[branches.Length];
         for (var index = 0; index < nodes.Length; index++)
+        {
             nodes[index] = BuildSkipNode(branches[index], records);
+        }
         return nodes;
     }
 
@@ -435,7 +471,9 @@ internal static class AvroPocoReaderPlanBuilder
         var symbols = writer.Symbols;
         var map = new int[symbols.Length];
         for (var writerIndex = 0; writerIndex < symbols.Length; writerIndex++)
+        {
             map[writerIndex] = readerSymbols.IndexOf(symbols[writerIndex]);
+        }
         return map;
     }
 

@@ -341,7 +341,10 @@ public class SchemaRegistryHeaderPreparationBenchmarks
 
     private sealed class PassThroughRuleExecutor : ISchemaRegistryRuleExecutor
     {
-        internal static PassThroughRuleExecutor Instance { get; } = new();
+        internal static PassThroughRuleExecutor Instance
+        {
+            get;
+        } = new();
 
         public ReadOnlyMemory<byte> TransformSerializedPayload(
             ReadOnlyMemory<byte> payload,
@@ -373,13 +376,13 @@ public class SchemaRegistryHeaderPreparationBenchmarks
             bool ignoreDeletedSchemas = true,
             bool normalize = false,
             CancellationToken cancellationToken = default) => Task.FromResult(new RegisteredSchema
-        {
-            Id = 1,
-            Guid = SchemaGuid.ToString("D"),
-            Subject = subject,
-            Version = 1,
-            Schema = schema
-        });
+            {
+                Id = 1,
+                Guid = SchemaGuid.ToString("D"),
+                Subject = subject,
+                Version = 1,
+                Schema = schema
+            });
 
         public Task<int> RegisterSchemaAsync(
             string subject,

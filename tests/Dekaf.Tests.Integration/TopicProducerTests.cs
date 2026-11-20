@@ -384,7 +384,9 @@ public class TopicProducerTests(KafkaTestContainer kafka) : KafkaIntegrationTest
         {
             consumed++;
             if (consumed >= 10)
+            {
                 break;
+            }
         }
 
         await Assert.That(consumed).IsEqualTo(10);

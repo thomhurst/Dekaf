@@ -52,7 +52,9 @@ public class ProducerAsyncPreparerTests
                 using var activity = DekafDiagnostics.Source.StartActivity(
                     PublishActivityName, ActivityKind.Producer);
                 if (activity is null)
+                {
                     throw new InvalidOperationException("Publish activity was not sampled.");
+                }
             });
 
             await Assert.That(started.Count).IsEqualTo(operationCount);
@@ -174,7 +176,9 @@ public class ProducerAsyncPreparerTests
         // right here, leaving the value preparer unobserved. Give that path ample time to appear;
         // awaiting both keeps the produce pending until the value preparer also completes.
         for (var i = 0; i < 100 && !produce.IsCompleted; i++)
+        {
             await Task.Delay(10);
+        }
 
         await Assert.That(produce.IsCompleted).IsFalse();
 
@@ -198,7 +202,9 @@ public class ProducerAsyncPreparerTests
     {
         var source = new TrackingValueTaskSource();
         if (!completesAfterStatusCheck)
+        {
             source.Complete();
+        }
 
         var serializer = new ConsumptionObservingSerializer(source);
         await using var producer = keyPreparer
@@ -375,7 +381,9 @@ public class ProducerAsyncPreparerTests
                 await producer.FireAsync(Topic, "k", "v");
                 break;
             default:
-                await producer.FireAsync(NewMessage(), static (_, _) => { });
+                await producer.FireAsync(NewMessage(), static (_, _) =>
+                {
+                });
                 break;
         }
 
@@ -451,7 +459,9 @@ public class ProducerAsyncPreparerTests
     private static void CaptureActivity(ConcurrentQueue<Activity> activities, Activity activity)
     {
         if (activity.OperationName == PublishActivityName)
+        {
             activities.Enqueue(activity);
+        }
     }
 
     private static KafkaProducer<string, string> CreateProducer(
@@ -567,7 +577,10 @@ public class ProducerAsyncPreparerTests
     private sealed class ConsumptionObservingSerializer(TrackingValueTaskSource source)
         : ISerializer<string>, IAsyncSerializerPreparer<string>
     {
-        public int GetResultCountAtSerialize { get; private set; } = -1;
+        public int GetResultCountAtSerialize
+        {
+            get; private set;
+        } = -1;
 
         public ValueTask PrepareAsync(string value, SerializationContext context, CancellationToken cancellationToken = default)
             => new(source, 0);
@@ -608,7 +621,9 @@ public class ProducerAsyncPreparerTests
             _state = state;
             Volatile.Write(ref _continuation, continuation);
             if (_completed)
+            {
                 Interlocked.Exchange(ref _continuation, null)?.Invoke(state);
+            }
         }
 
         public void GetResult(short token) => Interlocked.Increment(ref _getResultCount);
@@ -654,10 +669,22 @@ public class ProducerAsyncPreparerTests
     {
         private static readonly object PreparedSchema = new();
 
-        public int PrepareForSerializationCount { get; private set; }
-        public int SerializePreparedCount { get; private set; }
-        public int SerializeCount { get; private set; }
-        public int ObservedSchemaId { get; private set; }
+        public int PrepareForSerializationCount
+        {
+            get; private set;
+        }
+        public int SerializePreparedCount
+        {
+            get; private set;
+        }
+        public int SerializeCount
+        {
+            get; private set;
+        }
+        public int ObservedSchemaId
+        {
+            get; private set;
+        }
 
         public ValueTask PrepareAsync(
             string value,

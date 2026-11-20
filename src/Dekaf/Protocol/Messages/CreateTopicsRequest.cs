@@ -13,17 +13,26 @@ public sealed class CreateTopicsRequest : IKafkaRequest<CreateTopicsResponse>
     /// <summary>
     /// The topics to create.
     /// </summary>
-    public required IReadOnlyList<CreateTopicData> Topics { get; init; }
+    public required IReadOnlyList<CreateTopicData> Topics
+    {
+        get; init;
+    }
 
     /// <summary>
     /// How long to wait in milliseconds before timing out the request.
     /// </summary>
-    public int TimeoutMs { get; init; } = 30000;
+    public int TimeoutMs
+    {
+        get; init;
+    } = 30000;
 
     /// <summary>
     /// If true, check that the topics can be created as specified, but don't create anything.
     /// </summary>
-    public bool ValidateOnly { get; init; }
+    public bool ValidateOnly
+    {
+        get; init;
+    }
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {
@@ -48,27 +57,42 @@ public sealed class CreateTopicData
     /// <summary>
     /// The topic name.
     /// </summary>
-    public required string Name { get; init; }
+    public required string Name
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The number of partitions to create, or -1 to use the broker default.
     /// </summary>
-    public int NumPartitions { get; init; } = -1;
+    public int NumPartitions
+    {
+        get; init;
+    } = -1;
 
     /// <summary>
     /// The replication factor, or -1 to use the broker default.
     /// </summary>
-    public short ReplicationFactor { get; init; } = -1;
+    public short ReplicationFactor
+    {
+        get; init;
+    } = -1;
 
     /// <summary>
     /// Manual partition-to-broker assignments.
     /// </summary>
-    public IReadOnlyList<CreateTopicAssignment>? Assignments { get; init; }
+    public IReadOnlyList<CreateTopicAssignment>? Assignments
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Topic-level configuration overrides.
     /// </summary>
-    public IReadOnlyList<CreateTopicConfig>? Configs { get; init; }
+    public IReadOnlyList<CreateTopicConfig>? Configs
+    {
+        get; init;
+    }
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {
@@ -103,12 +127,18 @@ public sealed class CreateTopicAssignment
     /// <summary>
     /// The partition index.
     /// </summary>
-    public required int PartitionIndex { get; init; }
+    public required int PartitionIndex
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The broker IDs for replicas.
     /// </summary>
-    public required IReadOnlyList<int> BrokerIds { get; init; }
+    public required IReadOnlyList<int> BrokerIds
+    {
+        get; init;
+    }
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {
@@ -130,12 +160,18 @@ public sealed class CreateTopicConfig
     /// <summary>
     /// The configuration name.
     /// </summary>
-    public required string Name { get; init; }
+    public required string Name
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The configuration value.
     /// </summary>
-    public string? Value { get; init; }
+    public string? Value
+    {
+        get; init;
+    }
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {

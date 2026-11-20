@@ -103,7 +103,9 @@ internal sealed class BrokerUnackedByteBudget
         _floorBytes = floor;
         var cap = Math.Max(floor, initialCapBytes);
         if (initialRequestBytes <= 0)
+        {
             initialRequestBytes = Math.Clamp(64 * 1024, floor, cap);
+        }
 
         // The latency governor shares the cold-start gate's arming condition (no explicit cap
         // override, acknowledgements exist to pace the slow start) plus a positive latency
@@ -143,7 +145,9 @@ internal sealed class BrokerUnackedByteBudget
     internal static double ComputeGovernedTargetSeconds(double targetSeconds, double lingerSeconds)
     {
         if (targetSeconds <= 0)
+        {
             return targetSeconds;
+        }
 
         var linger = Math.Max(0, lingerSeconds);
         return Math.Max(targetSeconds - linger, targetSeconds / 2);
@@ -205,7 +209,9 @@ internal sealed class BrokerUnackedByteBudget
             }
 
             if (Interlocked.CompareExchange(ref _unackedBytes, used + bytes, used) != used)
+            {
                 continue;
+            }
 
             var generationAfter = Volatile.Read(ref _generation);
             generation = generationBefore == generationAfter ? generationAfter : 0;
@@ -225,14 +231,18 @@ internal sealed class BrokerUnackedByteBudget
     public void Charge(long bytes)
     {
         if (bytes > 0)
+        {
             Interlocked.Add(ref _unackedBytes, bytes);
+        }
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public void Release(long bytes)
     {
         if (bytes <= 0)
+        {
             return;
+        }
 
         var remaining = Interlocked.Add(ref _unackedBytes, -bytes);
         if (remaining < 0)
@@ -255,7 +265,9 @@ internal sealed class BrokerUnackedByteBudget
         {
             var prior = Interlocked.CompareExchange(ref _unackedBytes, 0, observed);
             if (prior == observed)
+            {
                 return 0;
+            }
             observed = prior;
         }
 
@@ -267,10 +279,14 @@ internal sealed class BrokerUnackedByteBudget
     {
         Interlocked.Increment(ref _admissionBlockEvents);
         if (_admissionBlockMicrosLog2Histogram is null)
+        {
             return;
+        }
 
         if (nowTicks == 0)
+        {
             nowTicks = Stopwatch.GetTimestamp();
+        }
         _ = Interlocked.CompareExchange(ref _admissionBlockedSinceTimestamp, nowTicks, 0);
     }
 
@@ -285,7 +301,9 @@ internal sealed class BrokerUnackedByteBudget
     public void RecordAdmissionWait(long waitTicks)
     {
         if (waitTicks > 0)
+        {
             Interlocked.Add(ref _admissionWaitTicks, waitTicks);
+        }
     }
 
     /// <summary>
@@ -297,14 +315,20 @@ internal sealed class BrokerUnackedByteBudget
     {
         claim = 0;
         if (Volatile.Read(ref _pipelineBatchCount) != 0)
+        {
             return false;
+        }
 
         var requestedClaim = Interlocked.Increment(ref _nextAdmissionFlushClaim);
         if (requestedClaim == 0)
+        {
             requestedClaim = Interlocked.Increment(ref _nextAdmissionFlushClaim);
+        }
 
         if (Interlocked.CompareExchange(ref _admissionFlushClaim, requestedClaim, 0) != 0)
+        {
             return false;
+        }
 
         // Close the race with a batch entering the pipeline after the first count read.
         if (Volatile.Read(ref _pipelineBatchCount) == 0)
@@ -327,7 +351,9 @@ internal sealed class BrokerUnackedByteBudget
     internal void ReleaseAdmissionFlushClaim(long claim)
     {
         if (claim != 0)
+        {
             _ = Interlocked.CompareExchange(ref _admissionFlushClaim, 0, claim);
+        }
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -357,7 +383,9 @@ internal sealed class BrokerUnackedByteBudget
         _ = nowTicks;
         var decision = _controller.SetCap(capBytes);
         if (_awaitingInitialAcknowledgement && coldStartBudgetBytes is { } coldStartBudget)
+        {
             decision = ArmColdStartWave(coldStartBudget);
+        }
         Publish(GetPublishedBudget(decision.WindowBytes), decision.Generation);
     }
 
@@ -394,7 +422,9 @@ internal sealed class BrokerUnackedByteBudget
     {
         var rttTicks = nowTicks - sendSnapshot.SendTimestamp;
         if (ackedBytes <= 0 || rttTicks <= 0)
+        {
             return;
+        }
 
         var sealToSendTicks = sendSnapshot.OldestBatchTimestamp > 0
             && sendSnapshot.OldestBatchTimestamp < sendSnapshot.SendTimestamp
@@ -423,7 +453,9 @@ internal sealed class BrokerUnackedByteBudget
     private void EndColdStartGate()
     {
         if (!_awaitingInitialAcknowledgement)
+        {
             return;
+        }
 
         _awaitingInitialAcknowledgement = false;
         Publish(_controller.WindowBytes, _controller.Generation);
@@ -441,7 +473,9 @@ internal sealed class BrokerUnackedByteBudget
             Interlocked.Exchange(ref _admissionWaitTicks, 0));
         PublishDecision(decision, nowTicks);
         if (!IsOverBudget())
+        {
             RecordAdmissionAvailable(nowTicks);
+        }
     }
 
     internal long[] CopyRequestSizeHistogram() => CopyHistogram(_requestSizeLog2Histogram);
@@ -455,10 +489,14 @@ internal sealed class BrokerUnackedByteBudget
     internal BrokerBudgetProbeEvent[] CopyProbeEvents()
     {
         if (_probeEvents is null)
+        {
             return [];
+        }
 
         lock (_probeDiagnosticsLock!)
+        {
             return [.. _probeEvents];
+        }
     }
 
     internal void ResetDiagnostics(long nowTicks = 0)
@@ -466,20 +504,30 @@ internal sealed class BrokerUnackedByteBudget
         ClearHistogram(_requestSizeLog2Histogram);
         ClearHistogram(_requestRttMicrosLog2Histogram);
         if (_admissionBlockMicrosLog2Histogram is { } histogram)
+        {
             ClearHistogram(histogram);
+        }
 
         if (_probeEvents is not null)
         {
             lock (_probeDiagnosticsLock!)
+            {
                 _probeEvents.Clear();
+            }
         }
 
         if (nowTicks == 0)
+        {
             nowTicks = Stopwatch.GetTimestamp();
+        }
         if (IsOverBudget())
+        {
             Volatile.Write(ref _admissionBlockedSinceTimestamp, nowTicks);
+        }
         else
+        {
             Volatile.Write(ref _admissionBlockedSinceTimestamp, 0);
+        }
     }
 
     internal long GetCurrentAdmissionBlockDurationMicros(long nowTicks)
@@ -505,7 +553,9 @@ internal sealed class BrokerUnackedByteBudget
         Volatile.Write(ref _capacityProbeFailureCount, _controller.CapacityProbeFailureCount);
 
         if (decision.ProbeType is { } probeType && decision.ProbeOutcome is { } outcome)
+        {
             RecordProbeEvent(probeType, outcome, nowTicks);
+        }
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -538,7 +588,9 @@ internal sealed class BrokerUnackedByteBudget
         long nowTicks)
     {
         if (_probeEvents is null)
+        {
             return;
+        }
 
         long durationMilliseconds = 0;
         if (outcome == BrokerBudgetProbeOutcome.Started)
@@ -562,7 +614,9 @@ internal sealed class BrokerUnackedByteBudget
         lock (_probeDiagnosticsLock!)
         {
             if (_probeEvents.Count >= MaxProbeDiagnosticEvents)
+            {
                 _ = _probeEvents.Dequeue();
+            }
             _probeEvents.Enqueue(probeEvent);
         }
     }
@@ -571,11 +625,15 @@ internal sealed class BrokerUnackedByteBudget
     {
         var histogram = _admissionBlockMicrosLog2Histogram;
         if (histogram is null)
+        {
             return;
+        }
 
         var startedAt = Interlocked.Exchange(ref _admissionBlockedSinceTimestamp, 0);
         if (startedAt == 0 || nowTicks <= startedAt)
+        {
             return;
+        }
 
         var durationMicros = (ulong)Math.Max(
             1,
@@ -608,13 +666,17 @@ internal sealed class BrokerUnackedByteBudget
     {
         var copy = new long[source.Length];
         for (var i = 0; i < source.Length; i++)
+        {
             copy[i] = Volatile.Read(ref source[i]);
+        }
         return copy;
     }
 
     private static void ClearHistogram(long[] histogram)
     {
         for (var i = 0; i < histogram.Length; i++)
+        {
             Interlocked.Exchange(ref histogram[i], 0);
+        }
     }
 }

@@ -82,7 +82,9 @@ public class ConsumerRecordFilterBenchmarks
                 recordFilter: filter,
                 tryRecordPollFast: PollRefresh);
             foreach (var _ in batch)
+            {
                 delivered++;
+            }
         }
         while (!pending.IsExhausted);
 
@@ -121,7 +123,10 @@ public class ConsumerRecordFilterBenchmarks
 
     private sealed class SingleRecordBatchList : IReadOnlyList<RecordBatch>
     {
-        public RecordBatch Batch { get; set; } = null!;
+        public RecordBatch Batch
+        {
+            get; set;
+        } = null!;
         public int Count => 1;
         public RecordBatch this[int index] => index == 0
             ? Batch

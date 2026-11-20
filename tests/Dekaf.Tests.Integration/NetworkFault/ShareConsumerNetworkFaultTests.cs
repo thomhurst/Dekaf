@@ -103,11 +103,15 @@ public sealed class ShareConsumerNetworkFaultTests(ShareFaultKafkaContainer kafk
                 foreach (ref readonly var result in results)
                 {
                     if (result.Exception is not null)
+                    {
                         continue;
+                    }
                     lock (acknowledged)
                     {
                         for (var i = 0; i < result.Offsets.Length; i++)
+                        {
                             acknowledged.Add(result.Offsets[i]);
+                        }
                     }
                 }
             })
@@ -137,7 +141,9 @@ public sealed class ShareConsumerNetworkFaultTests(ShareFaultKafkaContainer kafk
                 try
                 {
                     await foreach (var record in consumer.PollAsync(pollTimeout.Token))
+                    {
                         delivered.TryAdd(record.Value, record);
+                    }
                 }
                 catch (Exception) when (!cancellationToken.IsCancellationRequested)
                 {
@@ -325,9 +331,13 @@ public sealed class ShareConsumerNetworkFaultTests(ShareFaultKafkaContainer kafk
                     {
                         consumer.Acknowledge(record);
                         if (record.Value == "first-0")
+                        {
                             firstReceived.TrySetResult();
+                        }
                         else if (record.Value == "second-0")
+                        {
                             secondReceived.TrySetResult();
+                        }
                     }
                 }
                 catch (Exception) when (!stopPolling.IsCancellationRequested)
@@ -399,7 +409,9 @@ public sealed class ShareConsumerNetworkFaultTests(ShareFaultKafkaContainer kafk
     private static bool AllAcknowledged(HashSet<long> acknowledged, long[] offsets)
     {
         lock (acknowledged)
+        {
             return offsets.All(acknowledged.Contains);
+        }
     }
 
     /// <summary>
@@ -424,7 +436,9 @@ public sealed class ShareConsumerNetworkFaultTests(ShareFaultKafkaContainer kafk
                     {
                         delivered.TryAdd(record.Value, record);
                         if (delivered.Count >= count)
+                        {
                             return;
+                        }
                     }
 
                     // PollAsync ends without throwing once its token is cancelled.
@@ -461,9 +475,13 @@ public sealed class ShareConsumerNetworkFaultTests(ShareFaultKafkaContainer kafk
         {
             var configs = await admin.DescribeConfigsAsync([resource], cancellationToken: cancellationToken);
             if (configs[resource].Any(entry => entry.Name == offsetReset && entry.Value == "earliest"))
+            {
                 return;
+            }
             if (attempt == 20)
+            {
                 throw new TimeoutException($"Group {groupId} did not report {offsetReset}=earliest.");
+            }
             await Task.Delay(TimeSpan.FromMilliseconds(250), cancellationToken);
         }
     }
@@ -480,7 +498,9 @@ public sealed class ShareConsumerNetworkFaultTests(ShareFaultKafkaContainer kafk
 
         var deliveries = new Task[count];
         for (var i = 0; i < count; i++)
+        {
             deliveries[i] = producer.ProduceAsync(topic, "key", $"{label}-{i}", cancellationToken).AsTask();
+        }
         await Task.WhenAll(deliveries);
     }
 
@@ -493,6 +513,8 @@ public sealed class ShareConsumerNetworkFaultTests(ShareFaultKafkaContainer kafk
             .BuildAsync(cancellationToken);
 
         for (var i = 0; i < count; i++)
+        {
             _ = await producer.ProduceAsync(topic, "key", $"{label}-{i}", cancellationToken);
+        }
     }
 }

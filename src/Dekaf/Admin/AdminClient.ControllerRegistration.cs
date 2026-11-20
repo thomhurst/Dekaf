@@ -51,12 +51,16 @@ public sealed partial class AdminClient
             }
 
             if (isRetryAttempt && response.ErrorCode == Protocol.ErrorCode.ControllerIdNotRegistered)
+            {
                 return;
+            }
 
             if (response.ErrorCode != Protocol.ErrorCode.None)
             {
                 if (MayHaveAppliedDespiteError(response.ErrorCode))
+                {
                     unregisterMayHaveApplied = true;
+                }
                 throw KafkaException.FromErrorCode(
                     response.ErrorCode,
                     response.ErrorMessage ?? $"UnregisterController failed: {response.ErrorCode}");

@@ -26,10 +26,16 @@ public class ConsumerPrefetchPublicationBenchmarks
     private int _epoch;
 
     [Params(1, 1024)]
-    public int RecordsPerResponse { get; set; }
+    public int RecordsPerResponse
+    {
+        get; set;
+    }
 
     [Params(0, 1, 50, 100)]
-    public int OverlapPercent { get; set; }
+    public int OverlapPercent
+    {
+        get; set;
+    }
 
     [GlobalSetup]
     public void Setup()
@@ -50,7 +56,9 @@ public class ConsumerPrefetchPublicationBenchmarks
             .CreateDelegate<Action<PendingFetchData, bool>>(_consumer);
         _records = new Record[RecordsPerResponse];
         for (var i = 0; i < _records.Length; i++)
+        {
             _records[i] = new Record { OffsetDelta = i, Key = "key"u8.ToArray(), Value = "value"u8.ToArray() };
+        }
 
         // Both revisions use this fixture. The baseline exposes duplicates; the
         // corrected publisher trims them. Declare both contracts explicitly.
@@ -58,7 +66,9 @@ public class ConsumerPrefetchPublicationBenchmarks
             BindingFlags.Instance | BindingFlags.NonPublic) is not null;
         var expected = 2 * RecordsPerResponse - (trimsOverlap ? RecordsPerResponse * OverlapPercent / 100 : 0);
         if (PublishAndDrain() != expected)
+        {
             throw new InvalidOperationException("Prefetch publication fixture produced an unexpected record count.");
+        }
     }
 
     [Benchmark]
@@ -71,14 +81,18 @@ public class ConsumerPrefetchPublicationBenchmarks
         _pending[1] = PendingFetchData.Create(Topic, 0, _secondBatches, skipRecordsBelowOffset: 0);
         var write = _write(_pending, _epoch, CancellationToken.None);
         if (!write.IsCompletedSuccessfully)
+        {
             throw new InvalidOperationException("The empty prefetch buffer must accept both responses synchronously.");
+        }
         write.GetAwaiter().GetResult();
         var count = 0;
         while (_buffer.TryRead(out var pending))
         {
             _trackBytes(pending, true);
             while (pending.MoveNext())
+            {
                 count++;
+            }
             pending.Dispose();
         }
         return count;

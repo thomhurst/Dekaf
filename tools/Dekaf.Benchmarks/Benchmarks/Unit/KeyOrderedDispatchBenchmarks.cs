@@ -23,15 +23,27 @@ public class KeyOrderedDispatchBenchmarks
     private int _thread;
 
     [Params(KeyPattern.Repeated, KeyPattern.Distinct, KeyPattern.PendingPairs)]
-    public KeyPattern Pattern { get; set; }
+    public KeyPattern Pattern
+    {
+        get; set;
+    }
 
     [Params(1, 16)]
-    public int BatchSize { get; set; }
+    public int BatchSize
+    {
+        get; set;
+    }
 
     [Params(128, 262144)]
-    public int RecordCount { get; set; }
+    public int RecordCount
+    {
+        get; set;
+    }
 
-    internal IEqualityComparer<int>? KeyComparer { get; set; }
+    internal IEqualityComparer<int>? KeyComparer
+    {
+        get; set;
+    }
 
     [GlobalSetup]
     public async Task Setup()
@@ -54,9 +66,15 @@ public class KeyOrderedDispatchBenchmarks
         _thread = Environment.CurrentManagedThreadId;
         Array.Fill(_lastByKey, -1);
         _lane = new(new TopicPartition("key-dispatch", 0), Capacity,
-            static (_, _) => default, static _ => { }, static (_, _) => { });
+            static (_, _) => default, static _ =>
+            {
+            }, static (_, _) =>
+            {
+            });
         for (var index = 0; index < Capacity; index++)
+        {
             EnqueueNext();
+        }
         var dispatcher = new KeyOrderedPartitionDispatcher<int, int>(
             new PartitionProcessorContext<int, int>(_lane), BatchSize, 2, Capacity,
             _handler, keyComparer: KeyComparer, automaticCompletion: true);
@@ -64,9 +82,13 @@ public class KeyOrderedDispatchBenchmarks
         await dispatcher.RunAsync(deadline.Token).ConfigureAwait(false);
         if (_handled != RecordCount
             || _lane.GetCommitOffset() != new TopicPartitionOffset("key-dispatch", 0, RecordCount, 7))
+        {
             throw new InvalidOperationException("Dispatch lost records or committed incomplete progress.");
+        }
         if (Pattern == KeyPattern.PendingPairs && _largestBatch != BatchSize)
+        {
             throw new InvalidOperationException("Paired handlers did not exercise the configured batch size.");
+        }
         return _handled;
     }
 
@@ -79,23 +101,33 @@ public class KeyOrderedDispatchBenchmarks
             var record = records[index];
             if (record.Key != key || record.Offset <= _lastByKey[key]
                 || Environment.CurrentManagedThreadId != _thread)
+            {
                 throw new InvalidOperationException("Dispatch mixed keys, reordered records or changed the handler thread.");
+            }
             _lastByKey[key] = record.Offset;
             _handled++;
             if (_written < RecordCount)
+            {
                 EnqueueNext();
+            }
             if (_handled == RecordCount)
             {
                 var stopped = _lane.StopAsync(PartitionStopPolicy.Drain, Timeout.InfiniteTimeSpan, CancellationToken.None);
                 if (!stopped.IsCompletedSuccessfully || stopped.GetAwaiter().GetResult() is not null)
+                {
                     throw new InvalidOperationException("Closing the fixture input unexpectedly suspended or failed.");
+                }
             }
         }
 
         if (Pattern != KeyPattern.PendingPairs)
+        {
             return default;
+        }
         if (key == 0)
+        {
             return _handlerGate.Wait(records.Count);
+        }
         _handlerGate.Complete(records.Count);
         return default;
     }
@@ -113,7 +145,9 @@ public class KeyOrderedDispatchBenchmarks
         var record = new ConsumeResult<int, int>("key-dispatch", 0, _written++, key, 0,
             null, 0, TimestampType.CreateTime, 7);
         if (!_lane.TryEnqueue(record, completionBatch: null))
+        {
             throw new InvalidOperationException("Replenished input exceeded the bounded queue.");
+        }
     }
 
     public enum KeyPattern
@@ -139,7 +173,9 @@ public class KeyOrderedDispatchBenchmarks
         internal void Cancel()
         {
             if (Interlocked.CompareExchange(ref _waiting, 0, 1) == 1)
+            {
                 _source.SetException(new TimeoutException("Paired handler fixture did not make progress."));
+            }
         }
 
         internal ValueTask Wait(int count)
@@ -159,10 +195,14 @@ public class KeyOrderedDispatchBenchmarks
         {
             _credits += count;
             if (Volatile.Read(ref _waiting) == 0 || _credits < _needed)
+            {
                 return;
+            }
             _credits -= _needed;
             if (Interlocked.CompareExchange(ref _waiting, 0, 1) == 1)
+            {
                 _source.SetResult(true);
+            }
         }
 
         public void GetResult(short token) => _source.GetResult(token);

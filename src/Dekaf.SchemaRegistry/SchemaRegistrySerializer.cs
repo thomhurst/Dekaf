@@ -269,7 +269,9 @@ public sealed class SchemaRegistrySerializer<T> :
     {
         var cache = Volatile.Read(ref _subjectSchemaIdCache);
         if (cache.TryGet(topic, isKey, out var cached))
+        {
             return new ValueTask<ResolvedSchemaContext>(ToResolvedContext(cached));
+        }
 
         return PrepareCoreAsync(topic, isKey, cache, cancellationToken);
     }
@@ -458,7 +460,9 @@ public sealed class SchemaRegistrySerializer<T> :
         CancellationToken cancellationToken)
     {
         if (_asyncSubjectNameStrategy is not null)
+        {
             return PrepareAssociatedCoreAsync(topic, isKey, cache, cancellationToken);
+        }
 
         var resolved = ResolveSubjectAndSchema(topic, isKey);
         var resolution = ResolveSchemaAsync(
@@ -514,12 +518,16 @@ public sealed class SchemaRegistrySerializer<T> :
                     resolved.Subject,
                     in value);
                 if (ReferenceEquals(cache, Volatile.Read(ref _subjectSchemaIdCache)))
+                {
                     return ToResolvedContext(preparedEntry);
+                }
             }
 
             cache = Volatile.Read(ref _subjectSchemaIdCache);
             if (cache.TryGet(topic, isKey, out var cached))
+            {
                 return ToResolvedContext(cached);
+            }
         }
 
         throw new InvalidOperationException(
@@ -552,7 +560,9 @@ public sealed class SchemaRegistrySerializer<T> :
                     cancellationToken).ConfigureAwait(false);
 
             if (_schemaFactoryIgnoresSubject || string.Equals(resolvedSubject, subject, StringComparison.Ordinal))
+            {
                 return new ResolvedSubjectSchema(resolvedSubject, schema);
+            }
 
             subject = resolvedSubject;
         }
@@ -575,7 +585,9 @@ public sealed class SchemaRegistrySerializer<T> :
                 : GetSubjectName(topic, recordName, isKey);
 
             if (_schemaFactoryIgnoresSubject || string.Equals(resolvedSubject, subject, StringComparison.Ordinal))
+            {
                 return new ResolvedSubjectSchema(resolvedSubject, schema);
+            }
 
             subject = resolvedSubject;
         }
@@ -586,11 +598,15 @@ public sealed class SchemaRegistrySerializer<T> :
     private FactorySchema GetSchema(string subject, string fallbackRecordName)
     {
         if (!_schemaFactoryIgnoresSubject)
+        {
             return _subjectSchemaCache!.GetOrAdd(subject, fallbackRecordName, _getSchema);
+        }
 
         var cached = Volatile.Read(ref _subjectIndependentSchema);
         if (cached is not null)
+        {
             return cached.Value;
+        }
 
         var schema = _getSchema(subject);
         var candidate = new CachedFactorySchema(new FactorySchema(
@@ -616,19 +632,27 @@ public sealed class SchemaRegistrySerializer<T> :
             Func<string, Schema> schemaFactory)
         {
             if (_cache.TryGetValue(subject, out var cached))
+            {
                 return cached;
+            }
             if (TryGetOverflow(subject, out cached))
+            {
                 return cached;
+            }
 
             var schema = schemaFactory(subject);
             var factorySchema = new FactorySchema(
                 schema,
                 SubjectNameResolver.GetRecordName(schema, fallbackRecordName));
             if (!TryReserveSlot())
+            {
                 return PublishOverflow(subject, factorySchema);
+            }
 
             if (_cache.TryAdd(subject, factorySchema))
+            {
                 return factorySchema;
+            }
 
             Interlocked.Decrement(ref _cacheCount);
             return _cache.TryGetValue(subject, out cached)
@@ -651,7 +675,9 @@ public sealed class SchemaRegistrySerializer<T> :
             for (var index = 0; index < TurnoverCapacity; index++)
             {
                 if (_turnover[index].TryGet(subject, out factorySchema))
+                {
                     return true;
+                }
             }
 
             return TryGetRetainedOverflow(subject, out factorySchema);
@@ -663,7 +689,9 @@ public sealed class SchemaRegistrySerializer<T> :
             for (var index = 0; index < TurnoverCapacity; index++)
             {
                 if (_turnover[index].TryGetRetained(subject, out factorySchema))
+                {
                     return true;
+                }
             }
 
             factorySchema = default;
@@ -681,11 +709,15 @@ public sealed class SchemaRegistrySerializer<T> :
                     candidate ??= new CachedSubjectSchema(subject, factorySchema);
                     cached = Interlocked.CompareExchange(ref _overflow[index], candidate, null);
                     if (cached is null)
+                    {
                         return factorySchema;
+                    }
                 }
 
                 if (string.Equals(cached.Subject, subject, StringComparison.Ordinal))
+                {
                     return cached.Value;
+                }
             }
 
             if (Volatile.Read(ref _turnoverCount) >= TurnoverCapacity)
@@ -693,11 +725,15 @@ public sealed class SchemaRegistrySerializer<T> :
                 for (var index = 0; index < TurnoverCapacity; index++)
                 {
                     if (_turnover[index].TryGet(subject, out var cached))
+                    {
                         return cached;
+                    }
                 }
 
                 if (TryGetRetainedOverflow(subject, out var retained))
+                {
                     return retained;
+                }
 
                 return PublishTurnover(subject, factorySchema);
             }
@@ -706,7 +742,9 @@ public sealed class SchemaRegistrySerializer<T> :
             {
                 var turnover = _turnover[index];
                 if (turnover.TryGet(subject, out var cached))
+                {
                     return cached;
+                }
 
                 if (turnover.TryPublishEmpty(subject, factorySchema))
                 {
@@ -715,7 +753,9 @@ public sealed class SchemaRegistrySerializer<T> :
                 }
 
                 if (turnover.TryGet(subject, out cached))
+                {
                     return cached;
+                }
             }
 
             return PublishTurnover(subject, factorySchema);
@@ -728,7 +768,9 @@ public sealed class SchemaRegistrySerializer<T> :
             {
                 var index = (startIndex + attempt) & (TurnoverCapacity - 1);
                 if (_turnover[index].TryPublish(subject, factorySchema))
+                {
                     break;
+                }
             }
 
             return factorySchema;
@@ -738,7 +780,9 @@ public sealed class SchemaRegistrySerializer<T> :
         {
             var slots = new TurnoverSubjectSchema[TurnoverCapacity];
             for (var index = 0; index < slots.Length; index++)
+            {
                 slots[index] = new TurnoverSubjectSchema();
+            }
 
             return slots;
         }
@@ -749,10 +793,14 @@ public sealed class SchemaRegistrySerializer<T> :
             {
                 var count = Volatile.Read(ref _cacheCount);
                 if (count >= SubjectSchemaIdCache.MaxCachedEntries)
+                {
                     return false;
+                }
 
                 if (Interlocked.CompareExchange(ref _cacheCount, count + 1, count) == count)
+                {
                     return true;
+                }
             }
         }
     }
@@ -761,13 +809,22 @@ public sealed class SchemaRegistrySerializer<T> :
 
     private sealed class CachedFactorySchema(FactorySchema value)
     {
-        internal FactorySchema Value { get; } = value;
+        internal FactorySchema Value
+        {
+            get;
+        } = value;
     }
 
     private sealed class CachedSubjectSchema(string subject, FactorySchema value)
     {
-        internal string Subject { get; } = subject;
-        internal FactorySchema Value { get; } = value;
+        internal string Subject
+        {
+            get;
+        } = subject;
+        internal FactorySchema Value
+        {
+            get;
+        } = value;
     }
 
     private sealed class TurnoverSubjectSchema
@@ -859,7 +916,9 @@ public sealed class SchemaRegistrySerializer<T> :
         internal bool TryPublishEmpty(string subject, FactorySchema value)
         {
             if (Interlocked.CompareExchange(ref _version, 1, 0) != 0)
+            {
                 return false;
+            }
 
             _firstSubject = subject;
             _firstValue = value;
@@ -961,7 +1020,9 @@ public sealed class SchemaRegistrySerializer<T> :
     private void RegisterAssociatedNameInvalidation()
     {
         if (_asyncSubjectNameStrategy is AssociatedNameStrategy strategy)
+        {
             strategy.RegisterCacheInvalidationTarget(this);
+        }
     }
 
     void IAssociatedNameCacheInvalidationTarget.InvalidateAssociatedNameCache()
@@ -972,7 +1033,9 @@ public sealed class SchemaRegistrySerializer<T> :
     public ValueTask DisposeAsync()
     {
         if (_ownsClient)
+        {
             _schemaRegistry.Dispose();
+        }
         return ValueTask.CompletedTask;
     }
 }
@@ -989,7 +1052,10 @@ internal static class SchemaRegistryBuffers
     // Nested calls, including other T and JSON serializers, borrow independent storage.
     internal readonly struct Lease : IDisposable
     {
-        internal ArrayBufferWriter<byte> Buffer { get; }
+        internal ArrayBufferWriter<byte> Buffer
+        {
+            get;
+        }
 
         // Avoid an out-of-line struct constructor and its checked reference write on every message.
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -1163,15 +1229,21 @@ public sealed class SchemaRegistryDeserializer<T> :
     public T Deserialize(ReadOnlyMemory<byte> data, SerializationContext context)
     {
         if (context is { IsNull: true, Component: SerializationComponent.Value })
+        {
             return default!;
+        }
 
         var span = data.Span;
 
         if (span.Length < 5)
+        {
             throw new InvalidOperationException("Message too short to contain Schema Registry wire format");
+        }
 
         if (span[0] != MagicByte)
+        {
             throw new InvalidOperationException($"Unknown magic byte: {span[0]}. Expected Schema Registry format.");
+        }
 
         var schemaId = BinaryPrimitives.ReadInt32BigEndian(span.Slice(1, 4));
 
@@ -1238,15 +1310,21 @@ public sealed class SchemaRegistryDeserializer<T> :
         string subject)
     {
         if (context is { IsNull: true, Component: SerializationComponent.Value })
+        {
             return default!;
+        }
 
         var span = data.Span;
 
         if (span.Length < 5)
+        {
             throw new InvalidOperationException("Message too short to contain Schema Registry wire format");
+        }
 
         if (span[0] != MagicByte)
+        {
             throw new InvalidOperationException($"Unknown magic byte: {span[0]}. Expected Schema Registry format.");
+        }
 
         var schemaId = BinaryPrimitives.ReadInt32BigEndian(span.Slice(1, 4));
         var payload = data.Slice(5);
@@ -1300,7 +1378,9 @@ public sealed class SchemaRegistryDeserializer<T> :
     public ValueTask DisposeAsync()
     {
         if (_ownsClient)
+        {
             _schemaRegistry.Dispose();
+        }
         return ValueTask.CompletedTask;
     }
 }

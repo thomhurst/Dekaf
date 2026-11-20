@@ -253,7 +253,9 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
             var heartbeatIntervalMatches = entries["consumer.heartbeat.interval.ms"].Value == heartbeatInterval;
 
             if (sessionTimeoutMatches && heartbeatIntervalMatches)
+            {
                 return;
+            }
 
             if (attempt == GroupConfigVerificationAttempts - 1)
             {
@@ -528,9 +530,13 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
         survivor.Allow(PartitionCount * MessagesPerPartition * 2);
         await oracle.WaitForAllSequencesAsync(cancellationToken);
         if (offsetCommitMode == OffsetCommitMode.Manual)
+        {
             await oracle.WaitForFinalCommitsAsync(cancellationToken);
+        }
         else
+        {
             await WaitForFinalBrokerCommitsAsync(groupId, oracle, cancellationToken);
+        }
         await survivor.StopAsync();
 
         await AssertCompletedScenarioAsync(
@@ -562,7 +568,9 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
     {
         await Assert.That(oracle.UniqueCount).IsEqualTo(PartitionCount * MessagesPerPartition);
         if (maximumDuplicateCount is { } maximum)
+        {
             await Assert.That(oracle.DuplicateCount).IsLessThanOrEqualTo(maximum);
+        }
 
         var violations = oracle.Violations;
         await Assert.That(violations).IsEmpty()
@@ -725,7 +733,9 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
         survivor.Allow(remainingPermits);
         await oracle.WaitForAllSequencesAsync(cancellationToken);
         if (offsetCommitMode == OffsetCommitMode.Manual)
+        {
             await oracle.WaitForFinalCommitsAsync(cancellationToken);
+        }
 
         await Assert.That(oracle.WasDuplicatedAfterCrash(
                 crashedObservation.Partition,
@@ -734,12 +744,16 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
             .Because("the crashed member's last uncommitted record must be replayed after session expiry");
 
         if (offsetCommitMode == OffsetCommitMode.Auto)
+        {
             await WaitForFinalBrokerCommitsAsync(groupId, oracle, cancellationToken);
+        }
         await survivor.StopAsync();
 
         await Assert.That(oracle.UniqueCount).IsEqualTo(PartitionCount * MessagesPerPartition);
         if (offsetCommitMode == OffsetCommitMode.Auto)
+        {
             await Assert.That(oracle.DuplicateCount).IsLessThanOrEqualTo(MaxAutoCrashDuplicates);
+        }
         var violations = oracle.Violations;
         await Assert.That(violations).IsEmpty()
             .Because(string.Join(Environment.NewLine, violations));
@@ -793,7 +807,9 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
         if (protocol == MemberProtocol.ClassicEagerRange)
         {
             if (offsetCommitMode != OffsetCommitMode.Manual)
+            {
                 throw new NotSupportedException("Auto-commit chaos coverage uses Dekaf KIP-848 members.");
+            }
 
             return CreateClassicMember(topic, groupId, clientId, oracle, cancellationToken);
         }
@@ -832,13 +848,19 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory());
 
         if (offsetCommitMode == OffsetCommitMode.Manual)
+        {
             builder.WithOffsetCommitMode(OffsetCommitMode.Manual);
+        }
 
         if (groupInstanceId is not null)
+        {
             builder.WithGroupInstanceId(groupInstanceId);
+        }
 
         if (maxPollInterval is { } interval)
+        {
             builder.WithMaxPollInterval(interval);
+        }
 
         var consumer = await builder.BuildAsync(cancellationToken);
 
@@ -932,7 +954,9 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
             {
                 await AssertCommittedOffsetsAsync(groupId, oracle, linkedSource.Token);
                 if (!oracle.AllPartitionsCommitted)
+                {
                     await Task.Delay(100, linkedSource.Token);
+                }
             }
         }
         catch (OperationCanceledException) when (timeoutSource.IsCancellationRequested)
@@ -1064,7 +1088,9 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
         {
             await runTask;
             if (!signal.IsCompleted)
+            {
                 throw new InvalidOperationException(completionMessage);
+            }
         }
 
         await signal.WaitAsync(cancellationToken);
@@ -1072,8 +1098,14 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
 
     private interface IConsumerMember : IAsyncDisposable
     {
-        int ObservedCount { get; }
-        int MaxAssignmentCount { get; }
+        int ObservedCount
+        {
+            get;
+        }
+        int MaxAssignmentCount
+        {
+            get;
+        }
         void Allow(int count);
         void ResetMaxAssignmentCount();
         RecordProcessingBarrier PauseNextRecord();
@@ -1111,8 +1143,14 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
             _stopping = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         }
 
-        protected string ClientId { get; }
-        protected SequenceOracle Oracle { get; }
+        protected string ClientId
+        {
+            get;
+        }
+        protected SequenceOracle Oracle
+        {
+            get;
+        }
         protected CancellationToken StoppingToken => _stopping.Token;
         protected SemaphoreSlim Permits => _permits;
         protected int PermitCount => _permits.CurrentCount;
@@ -1129,7 +1167,9 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
         {
             var barrier = new RecordProcessingBarrier();
             if (Interlocked.CompareExchange(ref _nextRecordBarrier, barrier, null) is not null)
+            {
                 throw new InvalidOperationException("A record-processing barrier is already pending.");
+            }
 
             return barrier;
         }
@@ -1183,7 +1223,9 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
         public async Task StopAsync()
         {
             if (Interlocked.Exchange(ref _stopped, 1) != 0)
+            {
                 return;
+            }
 
             try
             {
@@ -1224,7 +1266,9 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
         {
             var barrier = Interlocked.Exchange(ref _nextRecordBarrier, null);
             if (barrier is not null)
+            {
                 await barrier.PauseAsync(StoppingToken);
+            }
         }
 
         protected abstract Task RunAsync();
@@ -1307,7 +1351,9 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
                         result.Value);
                     Oracle.Record(ClientId, record);
                     if (_explicitlyCommit)
+                    {
                         await Oracle.CommitIfNeededAsync(record, TryCommitAsync, StoppingToken);
+                    }
                     IncrementObserved();
                 }
             }
@@ -1332,8 +1378,7 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
                 await _consumer.CommitAsync([offset], cancellationToken);
                 return true;
             }
-            catch (GroupException exception) when (
-                exception.ErrorCode is { } errorCode && IsExpectedCommitFailure(errorCode))
+            catch (GroupException exception) when (exception.ErrorCode is { } errorCode && IsExpectedCommitFailure(errorCode))
             {
                 return false;
             }
@@ -1372,14 +1417,18 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
                         var result = _consumer.Consume(StoppingToken);
                         await ObserveAsync(result);
                         if (PermitCount == 0)
+                        {
                             PauseCurrentAssignment();
+                        }
                         continue;
                     }
 
                     PauseCurrentAssignment();
                     var eventResult = _consumer.Consume(EventPollInterval);
                     if (eventResult is null)
+                    {
                         continue;
+                    }
 
                     // A poll can install a new eager assignment and return its first record before
                     // the next pause. Rewind it so permit-gated consumption observes it later.
@@ -1422,11 +1471,12 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
             {
                 _consumer.Seek(result.TopicPartitionOffset);
             }
-            catch (Exception exception) when (
-                exception is ConfluentKafka.KafkaException or InvalidOperationException)
+            catch (Exception exception) when (exception is ConfluentKafka.KafkaException or InvalidOperationException)
             {
                 if (!_consumer.Assignment.Contains(result.TopicPartition))
+                {
                     return;
+                }
 
                 throw new InvalidOperationException(
                     $"Classic consumer could not rewind {result.TopicPartitionOffset} after an idle poll",
@@ -1438,14 +1488,18 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
         {
             var assignment = _consumer.Assignment;
             if (assignment.Count > 0)
+            {
                 _consumer.Pause(assignment);
+            }
         }
 
         private void ResumeCurrentAssignment()
         {
             var assignment = _consumer.Assignment;
             if (assignment.Count > 0)
+            {
                 _consumer.Resume(assignment);
+            }
         }
 
         private ValueTask<bool> TryCommitAsync(
@@ -1464,13 +1518,11 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
                 ]);
                 return ValueTask.FromResult(true);
             }
-            catch (ConfluentKafka.TopicPartitionOffsetException exception)
-                when (ContainsOnlyExpectedConfluentCommitFailures(exception.Results))
+            catch (ConfluentKafka.TopicPartitionOffsetException exception) when (ContainsOnlyExpectedConfluentCommitFailures(exception.Results))
             {
                 return ValueTask.FromResult(false);
             }
-            catch (ConfluentKafka.KafkaException exception)
-                when (IsExpectedCommitFailure(exception.Error.Code))
+            catch (ConfluentKafka.KafkaException exception) when (IsExpectedCommitFailure(exception.Error.Code))
             {
                 return ValueTask.FromResult(false);
             }
@@ -1543,7 +1595,9 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
                     lock (state.Gate)
                     {
                         if (state.CommittedExclusive < _messagesPerPartition)
+                        {
                             return false;
+                        }
                     }
                 }
 
@@ -1556,7 +1610,9 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
             get
             {
                 lock (_violationsGate)
+                {
                     return [.. _violations];
+                }
             }
         }
 
@@ -1590,7 +1646,9 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
             }
 
             if (sequence != offset)
+            {
                 AddViolation($"Partition {partition}: payload {sequence} does not match offset {offset}");
+            }
 
             if (offset < 0 || offset >= _messagesPerPartition)
             {
@@ -1612,7 +1670,9 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
                     }
 
                     while (state.Seen.Contains(state.NextExpected))
+                    {
                         state.NextExpected++;
+                    }
                 }
                 else
                 {
@@ -1639,7 +1699,9 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
             }
 
             if (unique)
+            {
                 _unique.Increment();
+            }
         }
 
         public async Task CommitIfNeededAsync(
@@ -1658,7 +1720,9 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
                 {
                     candidate = Math.Min(state.NextExpected, result.Offset + 1);
                     if (candidate <= state.CommittedExclusive)
+                    {
                         return;
+                    }
 
                     if (candidate < _messagesPerPartition &&
                         candidate - state.CommittedExclusive < _commitInterval)
@@ -1670,7 +1734,9 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
                 if (!await tryCommitAsync(
                         new TopicPartitionOffset(_topic, partition, candidate),
                         cancellationToken))
+                {
                     return;
+                }
 
                 var finalCommit = false;
                 lock (state.Gate)
@@ -1694,7 +1760,9 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
                 }
 
                 if (finalCommit)
+                {
                     _finalCommits.Increment();
+                }
             }
             finally
             {
@@ -1712,14 +1780,18 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
         {
             var state = _partitions[partition];
             lock (state.Gate)
+            {
                 return [.. state.Seen.Order()];
+            }
         }
 
         public (long ConfirmedCommit, long ProcessedExclusive) GetProgressBounds(int partition)
         {
             var state = _partitions[partition];
             lock (state.Gate)
+            {
                 return (state.CommittedExclusive, state.NextExpected);
+            }
         }
 
         public void ObserveCommittedOffset(int partition, long committedExclusive)
@@ -1729,7 +1801,9 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
             lock (state.Gate)
             {
                 if (committedExclusive <= state.CommittedExclusive)
+                {
                     return;
+                }
 
                 if (committedExclusive > state.NextExpected)
                 {
@@ -1744,13 +1818,17 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
             }
 
             if (finalCommit)
+            {
                 _finalCommits.Increment();
+            }
         }
 
         public void BeginCrashWindow(IReadOnlyList<long> brokerCommittedOffsets)
         {
             if (brokerCommittedOffsets.Count != _partitions.Length)
+            {
                 throw new ArgumentException("A committed offset is required for every partition.", nameof(brokerCommittedOffsets));
+            }
 
             for (var partition = 0; partition < _partitions.Length; partition++)
             {
@@ -1779,25 +1857,53 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
         {
             var state = _partitions[partition];
             lock (state.Gate)
+            {
                 return state.PostCrashDuplicates.Contains(offset);
+            }
         }
 
         private void AddViolation(string violation)
         {
             lock (_violationsGate)
+            {
                 _violations.Add(violation);
+            }
         }
 
         private sealed class PartitionState
         {
-            public object Gate { get; } = new();
-            public HashSet<long> Seen { get; } = [];
-            public HashSet<long> PostCrashDuplicates { get; } = [];
-            public long NextExpected { get; set; }
-            public long CommittedExclusive { get; set; }
-            public long CrashCommittedExclusive { get; set; }
-            public long CrashProcessedExclusive { get; set; }
-            public bool CrashWindowActive { get; set; }
+            public object Gate
+            {
+                get;
+            } = new();
+            public HashSet<long> Seen
+            {
+                get;
+            } = [];
+            public HashSet<long> PostCrashDuplicates
+            {
+                get;
+            } = [];
+            public long NextExpected
+            {
+                get; set;
+            }
+            public long CommittedExclusive
+            {
+                get; set;
+            }
+            public long CrashCommittedExclusive
+            {
+                get; set;
+            }
+            public long CrashProcessedExclusive
+            {
+                get; set;
+            }
+            public bool CrashWindowActive
+            {
+                get; set;
+            }
         }
     }
 
@@ -1813,14 +1919,18 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
             get
             {
                 lock (_gate)
+                {
                     return _maxAssignmentCount;
+                }
             }
         }
 
         public void ResetMaxAssignmentCount()
         {
             lock (_gate)
+            {
                 _maxAssignmentCount = _assigned.Count;
+            }
         }
 
         public ValueTask OnPartitionsAssignedAsync(
@@ -1878,7 +1988,9 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
             lock (_gate)
             {
                 if (predicate(_assigned))
+                {
                     return Task.CompletedTask;
+                }
 
                 var completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
                 _waiters.Add(new AssignmentWaiter(predicate, completion));
@@ -1896,9 +2008,13 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
                 foreach (var partition in partitions)
                 {
                     if (assigned)
+                    {
                         _assigned.Add(partition);
+                    }
                     else
+                    {
                         _assigned.Remove(partition);
+                    }
                 }
 
                 _maxAssignmentCount = Math.Max(_maxAssignmentCount, _assigned.Count);
@@ -1907,7 +2023,9 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
                 {
                     var waiter = _waiters[index];
                     if (!waiter.Predicate(_assigned))
+                    {
                         continue;
+                    }
 
                     completed ??= [];
                     completed.Add(waiter.Completion);
@@ -1916,10 +2034,14 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
             }
 
             if (completed is null)
+            {
                 return;
+            }
 
             foreach (var completion in completed)
+            {
                 completion.TrySetResult();
+            }
         }
 
         private sealed record AssignmentWaiter(
@@ -1969,7 +2091,9 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
                 {
                     var waiter = _waiters[index];
                     if (_value < waiter.Target)
+                    {
                         continue;
+                    }
 
                     completed ??= [];
                     completed.Add(waiter.Completion);
@@ -1978,10 +2102,14 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
             }
 
             if (completed is null)
+            {
                 return;
+            }
 
             foreach (var completion in completed)
+            {
                 completion.TrySetResult();
+            }
         }
 
         public Task WaitForAsync(int target, CancellationToken cancellationToken)
@@ -1990,7 +2118,9 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
             lock (_gate)
             {
                 if (_value >= target)
+                {
                     return Task.CompletedTask;
+                }
 
                 var completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
                 _waiters.Add(new CounterWaiter(target, completion));

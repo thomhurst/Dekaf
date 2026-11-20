@@ -23,7 +23,9 @@ public static class ShareConsumerTelemetryExtensions
     {
         ArgumentNullException.ThrowIfNull(consumer);
         if (consumer is not IApplicationTelemetryShareConsumer telemetry)
+        {
             throw new NotSupportedException("The share consumer does not support application telemetry registration.");
+        }
         telemetry.RegisterMetricForSubscription(metric);
     }
 
@@ -34,7 +36,9 @@ public static class ShareConsumerTelemetryExtensions
     {
         ArgumentNullException.ThrowIfNull(consumer);
         if (consumer is not IApplicationTelemetryShareConsumer telemetry)
+        {
             throw new NotSupportedException("The share consumer does not support application telemetry registration.");
+        }
         telemetry.UnregisterMetricFromSubscription(name);
     }
 }

@@ -51,13 +51,19 @@ internal sealed class FetchedLeaderEpoch
         var recordedOffset = Volatile.Read(ref _fetchOffset);
         var recordedEpoch = Volatile.Read(ref _leaderEpoch);
         if ((version & 1) != 0 || Volatile.Read(ref _version) != version)
+        {
             return true;
+        }
 
         if (recordedOffset == NotRecorded)
+        {
             return false;
+        }
 
         if (recordedOffset == fetchOffset)
+        {
             leaderEpoch = recordedEpoch;
+        }
         return true;
     }
 }

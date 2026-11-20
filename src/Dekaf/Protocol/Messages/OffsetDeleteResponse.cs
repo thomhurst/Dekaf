@@ -13,18 +13,27 @@ public sealed class OffsetDeleteResponse : IKafkaResponse
     /// <summary>
     /// The top-level error code, or 0 if there was no error.
     /// </summary>
-    public ErrorCode ErrorCode { get; init; }
+    public ErrorCode ErrorCode
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The duration in milliseconds for which the request was throttled due to quota violation
     /// (zero if not throttled).
     /// </summary>
-    public int ThrottleTimeMs { get; init; }
+    public int ThrottleTimeMs
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Results for each topic.
     /// </summary>
-    public required IReadOnlyList<OffsetDeleteResponseTopic> Topics { get; init; }
+    public required IReadOnlyList<OffsetDeleteResponseTopic> Topics
+    {
+        get; init;
+    }
 
     public static IKafkaResponse Read(ref KafkaProtocolReader reader, short version)
     {
@@ -54,12 +63,18 @@ public sealed class OffsetDeleteResponseTopic
     /// <summary>
     /// The topic name.
     /// </summary>
-    public required string Name { get; init; }
+    public required string Name
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The responses for each partition in the topic.
     /// </summary>
-    public required IReadOnlyList<OffsetDeleteResponsePartition> Partitions { get; init; }
+    public required IReadOnlyList<OffsetDeleteResponsePartition> Partitions
+    {
+        get; init;
+    }
 
     public static OffsetDeleteResponseTopic Read(ref KafkaProtocolReader reader, short version)
     {
@@ -87,12 +102,18 @@ public sealed class OffsetDeleteResponsePartition
     /// <summary>
     /// The partition index.
     /// </summary>
-    public required int PartitionIndex { get; init; }
+    public required int PartitionIndex
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The error code, or 0 if there was no error.
     /// </summary>
-    public required ErrorCode ErrorCode { get; init; }
+    public required ErrorCode ErrorCode
+    {
+        get; init;
+    }
 
     public static OffsetDeleteResponsePartition Read(ref KafkaProtocolReader reader, short version)
     {

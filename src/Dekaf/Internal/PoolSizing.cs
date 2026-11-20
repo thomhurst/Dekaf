@@ -37,23 +37,50 @@ internal static class PoolSizing
 
     internal readonly record struct ProducerPoolSizes
     {
-        public required int ValueTaskSources { get; init; }
-        public required int MaxRetainedBufferSize { get; init; }
-        public required int InflightEntries { get; init; }
-        public required int PendingAppends { get; init; }
+        public required int ValueTaskSources
+        {
+            get; init;
+        }
+        public required int MaxRetainedBufferSize
+        {
+            get; init;
+        }
+        public required int InflightEntries
+        {
+            get; init;
+        }
+        public required int PendingAppends
+        {
+            get; init;
+        }
     }
 
     internal readonly record struct ConnectionPoolSizes
     {
-        public required int PendingRequests { get; init; }
-        public required int CancellationTokenSources { get; init; }
+        public required int PendingRequests
+        {
+            get; init;
+        }
+        public required int CancellationTokenSources
+        {
+            get; init;
+        }
     }
 
     internal readonly record struct ConsumerPoolSizes
     {
-        public required int FetchDataPool { get; init; }
-        public required int ParsedRecordSlabsPerBucket { get; init; }
-        public required int CancellationTokenSources { get; init; }
+        public required int FetchDataPool
+        {
+            get; init;
+        }
+        public required int ParsedRecordSlabsPerBucket
+        {
+            get; init;
+        }
+        public required int CancellationTokenSources
+        {
+            get; init;
+        }
     }
 
     internal static ProducerPoolSizes ForProducer(
@@ -63,7 +90,9 @@ internal static class PoolSizing
         int maxConnectionsPerBroker = 10)
     {
         if (batchSize <= 0)
+        {
             throw new ArgumentOutOfRangeException(nameof(batchSize), "Batch size must be positive.");
+        }
 
         const ulong maxUsefulBatches = MaxValueTaskSources / EstimatedMessagesPerBatch; // 64
         var maxBatches = Math.Min(bufferMemory / (ulong)batchSize, maxUsefulBatches);
@@ -206,14 +235,20 @@ internal static class PoolSizing
         /// Depth covers in-flight PooledMemory arrays on the cold path (buffer-full scenario).
         /// Scales with batch size, max connections (adaptive scaling), and in-flight depth.
         /// </summary>
-        public required int ProducerDataArraysPerBucket { get; init; }
+        public required int ProducerDataArraysPerBucket
+        {
+            get; init;
+        }
 
         /// <summary>
         /// <c>maxArraysPerBucket</c> for per-message <c>Header[]</c> arrays.
         /// Header arrays have the same in-flight lifetime as producer data arrays:
         /// rent on append, return after batch response cleanup.
         /// </summary>
-        public required int HeaderArraysPerBucket { get; init; }
+        public required int HeaderArraysPerBucket
+        {
+            get; init;
+        }
 
         /// <summary>
         /// <c>maxArraysPerBucket</c> for the shared <c>PipeMemoryPool</c> in ConnectionPool.
@@ -221,21 +256,30 @@ internal static class PoolSizing
         /// since all connections share the same pool instance and adaptive scaling can
         /// concentrate load before metadata discovers more brokers.
         /// </summary>
-        public required int PipeMemoryArraysPerBucket { get; init; }
+        public required int PipeMemoryArraysPerBucket
+        {
+            get; init;
+        }
 
         /// <summary>
         /// <c>maxArraysPerBucket</c> for <see cref="DekafPools.SerializationBuffers"/>.
         /// Covers concurrent request serialization across all connections. Each
         /// RentedBufferWriter growth step rents/returns through this pool.
         /// </summary>
-        public required int SerializationArraysPerBucket { get; init; }
+        public required int SerializationArraysPerBucket
+        {
+            get; init;
+        }
 
         /// <summary>
         /// Pool size for <c>ProduceResponsePool</c>. With N brokers each having up to
         /// <c>MaxInFlightRequestsPerConnection</c> pipelined requests, the pool must
         /// hold enough responses to avoid allocation under concurrent load.
         /// </summary>
-        public required int ProduceResponsePoolSize { get; init; }
+        public required int ProduceResponsePoolSize
+        {
+            get; init;
+        }
     }
 
     /// <summary>
@@ -323,7 +367,9 @@ internal static class PoolSizing
     private static long SaturatingMultiply(long left, long right)
     {
         if (left <= 0 || right <= 0)
+        {
             return 0;
+        }
 
         return left > long.MaxValue / right
             ? long.MaxValue

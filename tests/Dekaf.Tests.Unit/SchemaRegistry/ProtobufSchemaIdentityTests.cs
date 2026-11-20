@@ -634,7 +634,9 @@ public class ProtobufSchemaIdentityTests
         var identity = CreateIdentityHeaders(Guid.NewGuid(), [0])[0];
         var headers = new Header[33];
         for (var index = 0; index < 32; index++)
+        {
             headers[index] = new Header($"noise-{index}", ReadOnlyMemory<byte>.Empty);
+        }
         headers[32] = identity;
         var plan = RecordHeaderRoutingPlan.Create<string, TestMessage>(null, deserializer)!;
         var lookup = new RecordHeaderRoutingLookup(
@@ -893,7 +895,9 @@ public class ProtobufSchemaIdentityTests
     {
         var proto = TestMessage.Descriptor.File.ToProto();
         for (var index = leadingMessages.Length - 1; index >= 0; index--)
+        {
             proto.MessageType.Insert(0, new Google.Protobuf.Reflection.DescriptorProto { Name = leadingMessages[index] });
+        }
 
         return new Schema
         {
@@ -964,7 +968,10 @@ public class ProtobufSchemaIdentityTests
 
     private sealed class CapturingRuleExecutor(byte[] replacement) : ISchemaRegistryRuleExecutor
     {
-        internal SchemaRegistryRuleContext? Context { get; private set; }
+        internal SchemaRegistryRuleContext? Context
+        {
+            get; private set;
+        }
 
         public ReadOnlyMemory<byte> TransformSerializedPayload(
             ReadOnlyMemory<byte> payload,

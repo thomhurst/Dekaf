@@ -249,7 +249,9 @@ public class BufferMemoryStressTests(KafkaTestContainer kafka) : KafkaIntegratio
             {
                 received++;
                 if (received >= messageCount)
+                {
                     break;
+                }
             }
         }
         catch (OperationCanceledException) when (received < messageCount)

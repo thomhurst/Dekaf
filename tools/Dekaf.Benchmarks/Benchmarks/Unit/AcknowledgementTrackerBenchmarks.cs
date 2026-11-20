@@ -15,7 +15,10 @@ public class AcknowledgementTrackerBenchmarks
     private TopicPartition _topicPartition;
 
     [Params(100, 1_000, 10_000)]
-    public int RecordCount { get; set; }
+    public int RecordCount
+    {
+        get; set;
+    }
 
     [GlobalSetup]
     public void Setup()
@@ -54,7 +57,9 @@ public class AcknowledgementTrackerBenchmarks
             var capacity = checked((int)(lastOffset - firstOffset + 1));
             var partitionAcks = GetOrAddPartition(topicPartition, capacity);
             for (var offset = firstOffset; offset <= lastOffset; offset++)
+            {
                 partitionAcks[offset] = AcknowledgeType.Accept;
+            }
         }
 
         internal Dictionary<TopicPartition, List<AcknowledgementBatchData>> Flush()
@@ -62,7 +67,9 @@ public class AcknowledgementTrackerBenchmarks
             var result = new Dictionary<TopicPartition, List<AcknowledgementBatchData>>(_pendingAcks.Count);
 
             foreach (var (topicPartition, partitionAcks) in _pendingAcks)
+            {
                 result[topicPartition] = BuildBatches(partitionAcks);
+            }
 
             _pendingAcks.Clear();
             return result;
@@ -71,7 +78,9 @@ public class AcknowledgementTrackerBenchmarks
         private Dictionary<long, AcknowledgeType> GetOrAddPartition(TopicPartition topicPartition, int capacity)
         {
             if (_pendingAcks.TryGetValue(topicPartition, out var partitionAcks))
+            {
                 return partitionAcks;
+            }
 
             partitionAcks = new Dictionary<long, AcknowledgeType>(capacity);
             _pendingAcks[topicPartition] = partitionAcks;
@@ -82,7 +91,9 @@ public class AcknowledgementTrackerBenchmarks
             Dictionary<long, AcknowledgeType> partitionAcks)
         {
             if (partitionAcks.Count == 0)
+            {
                 return [];
+            }
 
             var offsets = partitionAcks.Keys.ToArray();
             Array.Sort(offsets);

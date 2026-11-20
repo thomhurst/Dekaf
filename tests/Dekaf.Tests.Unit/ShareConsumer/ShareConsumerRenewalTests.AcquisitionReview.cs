@@ -44,7 +44,9 @@ public sealed partial class ShareConsumerRenewalTests
             await Assert.That(first.Current.Offset).IsEqualTo(100);
         }
         await using (var failedParse = fixture.Consumer.PollAsync(stop.Token).GetAsyncEnumerator())
+        {
             await Assert.That(async () => await failedParse.MoveNextAsync()).Throws<FormatException>();
+        }
 
         attempts = 0;
         connection.ShareAcknowledgeRequests.Clear();
@@ -156,7 +158,9 @@ public sealed partial class ShareConsumerRenewalTests
             ShareAcknowledgeHandler = (_, _) =>
             {
                 if (++attempts == 1)
+                {
                     return new(CreateAcknowledgeResponse((0, ErrorCode.TopicAuthorizationFailed)));
+                }
                 acknowledged.TrySetResult();
                 return new(CreateAcknowledgeResponse((0, ErrorCode.None)));
             }
@@ -167,7 +171,9 @@ public sealed partial class ShareConsumerRenewalTests
         fixture.Consumer.Subscribe("topic");
         using var stop = new CancellationTokenSource(TimeSpan.FromSeconds(10));
         await using (var first = fixture.Consumer.PollAsync(stop.Token).GetAsyncEnumerator())
+        {
             await Assert.That(await first.MoveNextAsync()).IsTrue();
+        }
 
         PrepareForPoll(fixture.Consumer, new TopicPartition("topic", 1));
         if (emptyAssignment)
@@ -178,7 +184,9 @@ public sealed partial class ShareConsumerRenewalTests
                 .SetValue(coordinator, new HashSet<TopicPartition>());
         }
         await using (var failed = fixture.Consumer.PollAsync(stop.Token).GetAsyncEnumerator())
+        {
             await Assert.That(async () => await failed.MoveNextAsync()).Throws<KafkaException>();
+        }
 
         await using var retry = fixture.Consumer.PollAsync(stop.Token).GetAsyncEnumerator();
         var pending = retry.MoveNextAsync().AsTask();
@@ -219,7 +227,9 @@ public sealed partial class ShareConsumerRenewalTests
         fixture.Consumer.Subscribe("topic");
         using var stop = new CancellationTokenSource(TimeSpan.FromSeconds(10));
         await using (var first = fixture.Consumer.PollAsync(stop.Token).GetAsyncEnumerator())
+        {
             await Assert.That(await first.MoveNextAsync()).IsTrue();
+        }
 
         PrepareForPoll(fixture.Consumer, new TopicPartition("topic", 1));
         await using var next = fixture.Consumer.PollAsync(stop.Token).GetAsyncEnumerator();
@@ -296,7 +306,9 @@ public sealed partial class ShareConsumerRenewalTests
         fixture.Consumer.Subscribe("topic");
         using var stop = new CancellationTokenSource(TimeSpan.FromSeconds(10));
         await using (var first = fixture.Consumer.PollAsync(stop.Token).GetAsyncEnumerator())
+        {
             await Assert.That(await first.MoveNextAsync()).IsTrue();
+        }
 
         fixture.Consumer.Subscribe("topic", "additional-topic");
         await using var next = fixture.Consumer.PollAsync(stop.Token).GetAsyncEnumerator();
@@ -335,7 +347,9 @@ public sealed partial class ShareConsumerRenewalTests
         fixture.Consumer.Subscribe("topic");
         using var stop = new CancellationTokenSource(TimeSpan.FromSeconds(10));
         await using (var first = fixture.Consumer.PollAsync(stop.Token).GetAsyncEnumerator())
+        {
             await Assert.That(await first.MoveNextAsync()).IsTrue();
+        }
 
         fixture.Consumer.Subscribe("topic", "additional-topic");
         await using var next = fixture.Consumer.PollAsync(stop.Token).GetAsyncEnumerator();
@@ -354,7 +368,9 @@ public sealed partial class ShareConsumerRenewalTests
         {
             failedFetch.SetResult(new ShareFetchResponse
             {
-                ErrorCode = ErrorCode.TopicAuthorizationFailed, Responses = [], NodeEndpoints = []
+                ErrorCode = ErrorCode.TopicAuthorizationFailed,
+                Responses = [],
+                NodeEndpoints = []
             });
         }
         await Assert.That(await pending).IsTrue();

@@ -66,7 +66,9 @@ public class InMemoryShareRecordAcquisitionBenchmarks
         // Include one batch release per invocation so every invocation measures the same workload.
         _cluster.ReleaseShareRecords(GroupId, MemberId, _registration, _benchmarkLeases);
         if (acquired != OperationsPerInvoke)
+        {
             throw new InvalidOperationException("Benchmark records must remain available for successful acquisition.");
+        }
         return acquired;
     }
 }

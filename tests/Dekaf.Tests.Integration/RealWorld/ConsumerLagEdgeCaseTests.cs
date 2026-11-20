@@ -48,7 +48,10 @@ public sealed class ConsumerLagEdgeCaseTests(KafkaTestContainer kafka) : KafkaIn
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))
         {
             count++;
-            if (count >= 3) break;
+            if (count >= 3)
+            {
+                break;
+            }
         }
 
         // Position should be 3
@@ -84,7 +87,10 @@ public sealed class ConsumerLagEdgeCaseTests(KafkaTestContainer kafka) : KafkaIn
         await foreach (var msg in consumer.ConsumeAsync(cts2.Token))
         {
             remaining.Add(msg);
-            if (remaining.Count >= 12) break;
+            if (remaining.Count >= 12)
+            {
+                break;
+            }
         }
 
         await Assert.That(remaining).Count().IsEqualTo(12);
@@ -131,7 +137,10 @@ public sealed class ConsumerLagEdgeCaseTests(KafkaTestContainer kafka) : KafkaIn
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))
         {
             consumed++;
-            if (consumed >= 5) break;
+            if (consumed >= 5)
+            {
+                break;
+            }
         }
 
         // Produce 10 more while consumer is running
@@ -196,7 +205,10 @@ public sealed class ConsumerLagEdgeCaseTests(KafkaTestContainer kafka) : KafkaIn
             {
                 await consumer.CommitAsync();
             }
-            if (count >= 15) break;
+            if (count >= 15)
+            {
+                break;
+            }
         }
 
         var tp = new TopicPartition(topic, 0);
@@ -314,9 +326,15 @@ public sealed class ConsumerLagEdgeCaseTests(KafkaTestContainer kafka) : KafkaIn
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))
         {
-            if (msg.Partition == 0) p0Count++;
+            if (msg.Partition == 0)
+            {
+                p0Count++;
+            }
             // Consume until we have 10 from p0 plus whatever came from p1/p2
-            if (p0Count >= 10) break;
+            if (p0Count >= 10)
+            {
+                break;
+            }
         }
 
         // Check per-partition watermarks

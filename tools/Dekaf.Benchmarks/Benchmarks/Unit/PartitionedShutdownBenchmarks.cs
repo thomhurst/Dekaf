@@ -49,10 +49,11 @@ public class PartitionedShutdownBenchmarks
         _startDeadline = runtimeType.GetMethod("StopHandlerCommits", PrivateInstance)!
             .CreateDelegate<Action>(_runtime);
         var partition = new TopicPartition("shutdown", 0);
-        _lane = new(partition, RecordCount, static (_, _) => default, static _ => { },
+        _lane = new(partition, RecordCount, static (_, _) => default, static _ =>
+        {
+        },
             (_, error) => _processorFailure = error);
-        var lanes = (Dictionary<TopicPartition, PartitionLane<string, string>>)
-            runtimeType.GetField("_lanes", PrivateInstance)!.GetValue(_runtime)!;
+        var lanes = (Dictionary<TopicPartition, PartitionLane<string, string>>)runtimeType.GetField("_lanes", PrivateInstance)!.GetValue(_runtime)!;
         lanes.Add(partition, _lane);
         var completionBatch = _lane.CreateCompletionBatch(RecordCount);
         var published = 0;
@@ -63,7 +64,9 @@ public class PartitionedShutdownBenchmarks
                 var record = new ConsumeResult<string, string>("shutdown", 0, index,
                     default, true, default, true, null, 0, TimestampType.NotAvailable, null, null, null);
                 if (!_lane.TryEnqueue(record, completionBatch))
+                {
                     throw new InvalidOperationException("Queue fill failed.");
+                }
                 published++;
             }
         }
@@ -74,7 +77,9 @@ public class PartitionedShutdownBenchmarks
 
         _backpressure = _lane.WaitToWriteAsync(CancellationToken.None).AsTask();
         if (_backpressure.IsCompleted || !_lane.IsFull)
+        {
             throw new InvalidOperationException("Queue is not full with a waiting writer.");
+        }
 
         _lane.Start(async (context, token) =>
         {
@@ -83,7 +88,9 @@ public class PartitionedShutdownBenchmarks
             await foreach (var record in context.Messages.WithCancellation(token))
             {
                 if (record.Offset != _processed++)
+                {
                     throw new InvalidOperationException("Record order changed.");
+                }
                 context.MarkProcessed(record);
             }
         });
@@ -111,16 +118,22 @@ public class PartitionedShutdownBenchmarks
                 .AsTask().GetAwaiter().GetResult();
             _backpressure.GetAwaiter().GetResult();
             if (failure is not null || _processorFailure is not null)
+            {
                 throw new InvalidOperationException("Partition processor failed.", failure ?? _processorFailure);
+            }
             if (_writerAccepted || _processed != RecordCount
                 || _lane.GetCommitOffset()?.Offset != RecordCount || _lane.IsFull)
+            {
                 throw new InvalidOperationException("Incomplete drain, checkpoint, or writer rejection.");
+            }
         }
         finally
         {
             foreach (var name in new[] { "_shutdownCancellation", "_restartCancellation" })
+            {
                 ((CancellationTokenSource)_runtime.GetType().GetField(name, PrivateInstance)!
                     .GetValue(_runtime)!).Dispose();
+            }
             (_runtime.GetType().GetField("_capacitySignal", PrivateInstance)!
                 .GetValue(_runtime) as IDisposable)?.Dispose();
         }

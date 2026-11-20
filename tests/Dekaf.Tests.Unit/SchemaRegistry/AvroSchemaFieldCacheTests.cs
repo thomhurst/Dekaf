@@ -17,7 +17,10 @@ public class AvroSchemaFieldCacheTests
     /// </summary>
     private sealed class TypeWithoutSchemaField
     {
-        public int SomeProperty { get; set; }
+        public int SomeProperty
+        {
+            get; set;
+        }
     }
 
     [Test]

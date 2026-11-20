@@ -207,7 +207,9 @@ public sealed class KafkaConnectionBrokerThrottleTests
             var leaseTask = pool.LeaseConnectionAsync(1, cancellationToken).AsTask();
             // Surface a fake-broker failure immediately instead of waiting for the setup timeout.
             if (await Task.WhenAny(leaseTask, serverTask) == serverTask)
+            {
                 await serverTask;
+            }
             using var lease = await leaseTask;
             var writtenAtMs = await throttledResponseWritten.Task;
             var acceptedAtMs = await secondConnectionAccepted.Task;
@@ -219,7 +221,10 @@ public sealed class KafkaConnectionBrokerThrottleTests
         {
             releaseSecondConnection.TrySetResult();
             await serverCts.CancelAsync();
-            try { await serverTask; }
+            try
+            {
+                await serverTask;
+            }
             catch (OperationCanceledException) when (serverCts.IsCancellationRequested) { }
         }
     }

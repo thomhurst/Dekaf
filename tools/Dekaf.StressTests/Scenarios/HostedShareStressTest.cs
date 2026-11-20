@@ -6,9 +6,9 @@ using Dekaf.Extensions.DependencyInjection;
 using Dekaf.Extensions.Hosting;
 using Dekaf.Producer;
 using Dekaf.ShareConsumer;
-using Dekaf.Telemetry;
 using Dekaf.StressTests.Metrics;
 using Dekaf.StressTests.Reporting;
+using Dekaf.Telemetry;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -29,7 +29,9 @@ internal sealed class HostedShareStressTest(bool telemetryEnabled = false) : ISt
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(options.MessageSizeBytes, 16);
         if (options.BrokerCount != 1 || options.ConnectionsPerBroker != 1 || options.Compression != "none")
+        {
             throw new ArgumentException("Hosted-share requires one broker, one producer connection and no compression.");
+        }
         var group = $"stress-hosted-share-{Guid.NewGuid():N}";
         await using (var admin = Kafka.CreateAdminClient().WithBootstrapServers(options.BootstrapServers).Build())
         {
@@ -43,7 +45,9 @@ internal sealed class HostedShareStressTest(bool telemetryEnabled = false) : ISt
         using var telemetry = telemetryEnabled ? new ShareTelemetryObserver(options.TelemetryReceiverEndpoint
             ?? throw new ArgumentException("Subscribed stress requires a broker telemetry receiver.")) : null;
         if (telemetry is not null)
+        {
             await telemetry.ConfigureAsync(options.BootstrapServers, cancellationToken).ConfigureAwait(false);
+        }
         var state = new HostedShareWorkloadState(options.Topic, options.MessageSizeBytes);
         var builder = Host.CreateApplicationBuilder();
         builder.Logging.ClearProviders();
@@ -63,7 +67,9 @@ internal sealed class HostedShareStressTest(bool telemetryEnabled = false) : ISt
         await using var producer = await producerBuilder.BuildAsync(cancellationToken).ConfigureAwait(false);
         var workers = host.Services.GetServices<IHostedService>().OfType<Worker>().ToArray();
         if (workers.Length != 2 || ReferenceEquals(workers[0].Consumer, workers[1].Consumer))
+        {
             throw new InvalidOperationException("The two keyed registrations did not create independent workers.");
+        }
 
         var measured = new ThroughputTracker();
         StressTestResult result;
@@ -76,7 +82,10 @@ internal sealed class HostedShareStressTest(bool telemetryEnabled = false) : ISt
                 RunCycleAsync, cancellationToken).ConfigureAwait(false);
             if (telemetry is not null)
             {
-                for (var i = 0; i < workers.Length; i++) telemetry.ObserveIdentity(i, workers[i].Consumer);
+                for (var i = 0; i < workers.Length; i++)
+                {
+                    telemetry.ObserveIdentity(i, workers[i].Consumer);
+                }
                 await telemetry.VerifyAsync(false, options.OutputDirectory, cancellationToken).ConfigureAwait(false);
             }
             var warmupProcessed = new[] { workers[0].Processed, workers[1].Processed };
@@ -88,7 +97,10 @@ internal sealed class HostedShareStressTest(bool telemetryEnabled = false) : ISt
             for (var i = 0; i < workers.Length; i++)
             {
                 var worker = workers[i];
-                if (worker.ExecuteTask is { } execution) await execution.WaitAsync(shutdown.Token).ConfigureAwait(false);
+                if (worker.ExecuteTask is { } execution)
+                {
+                    await execution.WaitAsync(shutdown.Token).ConfigureAwait(false);
+                }
                 ValidateWorkerProgress(warmupProcessed[i], worker.Processed);
             }
             state.ThrowIfFailed();
@@ -99,21 +111,31 @@ internal sealed class HostedShareStressTest(bool telemetryEnabled = false) : ISt
         finally
         {
             using var shutdown = new CancellationTokenSource(StressTestHelpers.OperationTimeout);
-            try { await host.StopAsync(shutdown.Token).ConfigureAwait(false); }
+            try
+            {
+                await host.StopAsync(shutdown.Token).ConfigureAwait(false);
+            }
             finally
             {
                 // Observe every cleanup even if another worker faults during disposal.
-                try { await Task.WhenAll(workers.Select(worker => worker.DisposeAsync().AsTask())).ConfigureAwait(false); }
+                try
+                {
+                    await Task.WhenAll(workers.Select(worker => worker.DisposeAsync().AsTask())).ConfigureAwait(false);
+                }
                 finally
                 {
                     if (!workloadComplete && telemetry is not null)
+                    {
                         await telemetry.CaptureFailureAsync(options.OutputDirectory).ConfigureAwait(false);
+                    }
                 }
             }
         }
 
         if (telemetry is not null)
+        {
             result.ShareTelemetry = await telemetry.VerifyAsync(true, options.OutputDirectory, cancellationToken).ConfigureAwait(false);
+        }
         return result;
 
         void Configure(ShareConsumerBuilder<string, byte[]> consumer, int worker)
@@ -122,9 +144,11 @@ internal sealed class HostedShareStressTest(bool telemetryEnabled = false) : ISt
                 .WithBootstrapServers(options.BootstrapServers).WithGroupId(group)
                 .WithAcknowledgementCommitCallback(state.ObserveAcknowledgements);
             if (telemetry is not null)
+            {
                 consumer.WithClientId(telemetry.ClientIds[worker])
                     .RegisterMetricForSubscription(new ApplicationTelemetryMetric(ShareTelemetryObserver.ApplicationMetric,
                         ApplicationTelemetryMetricKind.Gauge, () => worker + 1));
+            }
         }
 
         async Task<ProducerWorkloadResult> RunCycleAsync(TimeSpan duration, ThroughputTracker tracker, CancellationToken token)
@@ -133,7 +157,9 @@ internal sealed class HostedShareStressTest(bool telemetryEnabled = false) : ISt
             StressTestHelpers.ResetProducerDeliveryDiagnostics(producer);
             var payload = new byte[options.MessageSizeBytes];
             if (tracker.Warmup is not null)
+            {
                 Console.WriteLine($"  Running {Client} {Name} stress test for {options.DurationMinutes} minutes...");
+            }
             using var deliveryErrors = new DekafDeliveryErrorListener(tracker, options.Topic);
             using var gc = new GcStats();
             using var ingress = CancellationTokenSource.CreateLinkedTokenSource(token);
@@ -196,34 +222,49 @@ internal sealed class HostedShareStressTest(bool telemetryEnabled = false) : ISt
     internal static void ValidateWorkerProgress(long warmupProcessed, long totalProcessed)
     {
         if (totalProcessed <= warmupProcessed)
+        {
             throw new InvalidOperationException("A keyed worker processed no records in the measured phase.");
+        }
     }
 
     internal StressTestResult CreateResult(StressTestOptions options, DateTime started,
         ProducerWorkloadResult run, ThroughputTracker measured, LatencyTracker latency,
         IKafkaProducer<string, byte[]> producer) => new()
-    {
-        Scenario = Name, Client = Client, DurationMinutes = options.DurationMinutes,
-        MessageSizeBytes = options.MessageSizeBytes, BrokerCount = options.BrokerCount,
-        StartedAtUtc = started, CompletedAtUtc = DateTime.UtcNow,
-        Throughput = run.Throughput, GcStats = run.Gc, Latency = latency.GetSnapshot(),
-        CpuTimeSeconds = measured.CpuTimeSeconds, ConsumedMessages = measured.MessageCount,
-        Idempotent = true,
-        ProducerDeliveryDiagnostics = StressTestHelpers.CaptureProducerDeliveryDiagnostics(producer, options)
-            ?? throw new InvalidOperationException("Hosted-share results require producer delivery diagnostics.")
-    };
+        {
+            Scenario = Name,
+            Client = Client,
+            DurationMinutes = options.DurationMinutes,
+            MessageSizeBytes = options.MessageSizeBytes,
+            BrokerCount = options.BrokerCount,
+            StartedAtUtc = started,
+            CompletedAtUtc = DateTime.UtcNow,
+            Throughput = run.Throughput,
+            GcStats = run.Gc,
+            Latency = latency.GetSnapshot(),
+            CpuTimeSeconds = measured.CpuTimeSeconds,
+            ConsumedMessages = measured.MessageCount,
+            Idempotent = true,
+            ProducerDeliveryDiagnostics = StressTestHelpers.CaptureProducerDeliveryDiagnostics(producer, options)
+                ?? throw new InvalidOperationException("Hosted-share results require producer delivery diagnostics.")
+        };
 
     private sealed class Worker(IKafkaShareConsumer<string, byte[]> consumer, HostedShareWorkloadState state)
         : KafkaShareConsumerService<string, byte[]>(consumer,
             StressClientLogging.LoggerFactory.CreateLogger("HostedShareStress"))
     {
-        public IKafkaShareConsumer<string, byte[]> Consumer { get; } = consumer;
+        public IKafkaShareConsumer<string, byte[]> Consumer
+        {
+            get;
+        } = consumer;
         private long _processed;
         public long Processed => Volatile.Read(ref _processed);
         protected override IEnumerable<string> Topics => [state.Topic];
         protected override ValueTask ProcessAsync(ShareConsumeResult<string, byte[]> result, CancellationToken cancellationToken)
         {
-            if (state.Process(result.Value)) Volatile.Write(ref _processed, _processed + 1);
+            if (state.Process(result.Value))
+            {
+                Volatile.Write(ref _processed, _processed + 1);
+            }
             return ValueTask.CompletedTask;
         }
         protected override ValueTask OnErrorAsync(Exception exception, ShareConsumeResult<string, byte[]>? result, CancellationToken cancellationToken)
@@ -244,11 +285,20 @@ internal sealed class HostedShareWorkloadState
     private Exception? _failure;
     private long _completed;
     private long _duplicates;
-    public string Topic { get; }
-    public long Produced { get; private set; }
+    public string Topic
+    {
+        get;
+    }
+    public long Produced
+    {
+        get; private set;
+    }
     public long Completed => Interlocked.Read(ref _completed);
     public long Duplicates => Interlocked.Read(ref _duplicates);
-    public LatencyTracker Latency { get; } = new();
+    public LatencyTracker Latency
+    {
+        get;
+    } = new();
     public bool CanProduce => Produced - Completed < WindowSize
         && Volatile.Read(ref _completedSequences[Produced % WindowSize]) == Produced - WindowSize;
 
@@ -256,12 +306,18 @@ internal sealed class HostedShareWorkloadState
     {
         Topic = topic;
         _messageSize = messageSize;
-        for (var i = 0; i < WindowSize; i++) _completedSequences[i] = i - WindowSize;
+        for (var i = 0; i < WindowSize; i++)
+        {
+            _completedSequences[i] = i - WindowSize;
+        }
     }
 
     public void BeginCycle(ThroughputTracker throughput)
     {
-        if (Completed != Produced) throw new InvalidOperationException("Previous hosted-share cycle has not drained.");
+        if (Completed != Produced)
+        {
+            throw new InvalidOperationException("Previous hosted-share cycle has not drained.");
+        }
         ThrowIfFailed();
         Latency.Reset();
         _throughput = throughput;
@@ -272,12 +328,20 @@ internal sealed class HostedShareWorkloadState
     public bool Process(byte[]? payload)
     {
         if (payload is null || payload.Length != _messageSize || payload.Length < 16)
+        {
             throw new InvalidOperationException("Hosted-share payload size does not match the workload.");
+        }
         var sequence = BinaryPrimitives.ReadInt64LittleEndian(payload);
-        if (sequence < 0) throw new InvalidOperationException("Hosted-share sequence is negative.");
+        if (sequence < 0)
+        {
+            throw new InvalidOperationException("Hosted-share sequence is negative.");
+        }
         var timestamp = BinaryPrimitives.ReadInt64LittleEndian(payload.AsSpan(8));
         var ticks = Stopwatch.GetTimestamp() - timestamp;
-        if (timestamp <= 0 || ticks < 0) throw new InvalidOperationException("Hosted-share timestamp is invalid.");
+        if (timestamp <= 0 || ticks < 0)
+        {
+            throw new InvalidOperationException("Hosted-share timestamp is invalid.");
+        }
         ref var slot = ref _completedSequences[sequence % WindowSize];
         var previous = Interlocked.CompareExchange(ref slot, sequence, sequence - WindowSize);
         if (previous >= sequence)
@@ -286,7 +350,9 @@ internal sealed class HostedShareWorkloadState
             return false;
         }
         if (previous != sequence - WindowSize)
+        {
             throw new InvalidOperationException("Hosted-share sequence skipped an unfinished slot generation.");
+        }
         Latency.RecordTicks(ticks);
         _throughput!.RecordMessage(payload.Length);
         Interlocked.Increment(ref _completed);
@@ -296,13 +362,24 @@ internal sealed class HostedShareWorkloadState
     public void ObserveAcknowledgements(ReadOnlySpan<ShareAcknowledgementCommitResult> results)
     {
         foreach (var result in results)
-            if (result.Exception is { } failure) RecordFailure(failure);
+        {
+            if (result.Exception is { } failure)
+            {
+                RecordFailure(failure);
+            }
+        }
     }
 
     public void RecordFailure(Exception exception) => Interlocked.CompareExchange(ref _failure, exception, null);
     public void ThrowIfFailed()
     {
-        if (Volatile.Read(ref _failure) is { } failure) ExceptionDispatchInfo.Capture(failure).Throw();
-        if (_throughput?.DeliveryErrorCount > 0) throw new InvalidOperationException("The hosted-share feeder reported a delivery failure.");
+        if (Volatile.Read(ref _failure) is { } failure)
+        {
+            ExceptionDispatchInfo.Capture(failure).Throw();
+        }
+        if (_throughput?.DeliveryErrorCount > 0)
+        {
+            throw new InvalidOperationException("The hosted-share feeder reported a delivery failure.");
+        }
     }
 }

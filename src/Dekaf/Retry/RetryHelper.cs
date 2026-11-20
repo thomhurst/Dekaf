@@ -101,7 +101,9 @@ internal static class RetryHelper
                 }
 
                 if (onRetry is not null)
+                {
                     await onRetry(cancellationToken).ConfigureAwait(false);
+                }
 
                 var delayMs = ExponentialRetryBackoff.CalculateDelayMilliseconds(
                     retryBackoffMs,
@@ -165,7 +167,9 @@ internal static class RetryHelper
                 }
 
                 if (onRetry is not null)
+                {
                     await onRetry(cancellationToken).ConfigureAwait(false);
+                }
 
                 var delayMs = ExponentialRetryBackoff.CalculateDelayMilliseconds(
                     retryBackoffMs,
@@ -236,7 +240,9 @@ internal static class RetryHelper
                 catch (Exception ex) when (IsRetriableUntilDeadline(ex, deadline))
                 {
                     if (IsBoundedByRetryCount(ex, deadline) && ++brokerAnsweredRetries > maxRetries)
+                    {
                         throw;
+                    }
 
                     lastFailure = ex;
 
@@ -260,7 +266,9 @@ internal static class RetryHelper
                         catch (Exception recoveryFailure) when (IsRetriableUntilDeadline(recoveryFailure, deadline))
                         {
                             if (IsBoundedByRetryCount(recoveryFailure, deadline) && ++brokerAnsweredRetries > maxRetries)
+                            {
                                 throw;
+                            }
 
                             lastFailure = recoveryFailure;
                         }
@@ -275,8 +283,7 @@ internal static class RetryHelper
                 }
             }
         }
-        catch (OperationCanceledException ex) when (
-            lastFailure is not null
+        catch (OperationCanceledException ex) when (lastFailure is not null
             && ex.InnerException is null
             && cancellationToken.IsCancellationRequested)
         {
@@ -289,17 +296,23 @@ internal static class RetryHelper
         void ThrowIfBudgetSpent(Exception failure, int delayMs)
         {
             if (deadline.Budget == Timeout.InfiniteTimeSpan)
+            {
                 return;
+            }
 
             var elapsed = Stopwatch.GetElapsedTime(startedAt);
             if (elapsed + TimeSpan.FromMilliseconds(delayMs) < deadline.Budget)
+            {
                 return;
+            }
 
             // A failure a broker answered with stays the final error. A transport failure, raw or
             // reported as a Kafka error (NETWORK_EXCEPTION, a lookup that exhausted its attempts
             // against unreachable brokers), becomes the API timeout it retried until.
             if (failure is KafkaException && !HasTransportCause(failure))
+            {
                 ExceptionDispatchInfo.Capture(failure).Throw();
+            }
 
             throw new KafkaTimeoutException(
                 TimeoutKind.Api,
@@ -354,13 +367,25 @@ internal static class RetryHelper
         Func<CancellationToken, ValueTask>? onRetry,
         Func<KafkaException, bool>? shouldRefreshMetadata)
     {
-        public TOperation Operation { get; } = operation;
+        public TOperation Operation
+        {
+            get;
+        } = operation;
 
-        private MetadataManager MetadataManager { get; } = metadataManager;
+        private MetadataManager MetadataManager
+        {
+            get;
+        } = metadataManager;
 
-        private Func<CancellationToken, ValueTask>? OnRetry { get; } = onRetry;
+        private Func<CancellationToken, ValueTask>? OnRetry
+        {
+            get;
+        } = onRetry;
 
-        private Func<KafkaException, bool>? ShouldRefreshMetadata { get; } = shouldRefreshMetadata;
+        private Func<KafkaException, bool>? ShouldRefreshMetadata
+        {
+            get;
+        } = shouldRefreshMetadata;
 
         public ValueTask RecoverAsync(Exception failure, CancellationToken cancellationToken) =>
             RecoverAsync(failure, MetadataManager, OnRetry, ShouldRefreshMetadata, cancellationToken);
@@ -379,7 +404,9 @@ internal static class RetryHelper
             }
 
             if (onRetry is not null)
+            {
                 await onRetry(cancellationToken).ConfigureAwait(false);
+            }
         }
     }
 
@@ -404,22 +431,30 @@ internal static class RetryHelper
         // Cancellation is never a transport failure, even when it wraps one; deadline mode's
         // TransportFailureClassifier applies the same rule.
         if (exception is OperationCanceledException)
+        {
             return false;
+        }
 
         // Request retries respect the outer Kafka error, including terminal operation
         // deadlines. Broker failover can retry a KafkaTimeoutException within its own budget.
         if (exception is KafkaException kafkaException)
+        {
             return kafkaException.IsRetriable;
+        }
 
         if (IsRetriableBrokerFailure(exception))
+        {
             return true;
+        }
 
         if (exception is AggregateException aggregateException)
         {
             foreach (var innerException in aggregateException.InnerExceptions)
             {
                 if (IsRetriableRequestFailure(innerException))
+                {
                     return true;
+                }
             }
         }
 
@@ -440,8 +475,7 @@ internal static class RetryHelper
         {
             await metadataManager.RefreshMetadataAsync(cancellationToken).ConfigureAwait(false);
         }
-        catch (InvalidOperationException ex) when (
-            ex is not ObjectDisposedException)
+        catch (InvalidOperationException ex) when (ex is not ObjectDisposedException)
         {
             // Convert only the metadata-refresh race. An unrelated operation invariant
             // must still propagate even if its caller cancels concurrently.
@@ -449,8 +483,7 @@ internal static class RetryHelper
             // Refresh is best-effort. Keep retrying the original operation so its typed
             // Kafka failure remains the final error when every broker is unavailable.
         }
-        catch (Exception ex) when (
-            IsRetriableRequestFailure(ex)
+        catch (Exception ex) when (IsRetriableRequestFailure(ex)
             && !cancellationToken.IsCancellationRequested)
         {
             // Same best-effort behavior for transient transport failures.

@@ -79,7 +79,9 @@ internal sealed class ConsumerGroupCrashClientProcess : IAsyncDisposable
         {
             started = process.Start();
             if (!started)
+            {
                 throw new InvalidOperationException("Consumer group crash client did not start.");
+            }
 
             process.BeginOutputReadLine();
             process.BeginErrorReadLine();
@@ -88,7 +90,9 @@ internal sealed class ConsumerGroupCrashClientProcess : IAsyncDisposable
         catch
         {
             if (started)
+            {
                 TryTerminateStartedProcess(process);
+            }
 
             process.Dispose();
             readyPipe.Dispose();
@@ -317,7 +321,9 @@ public sealed class ConsumerGroupCrashClient
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory());
 
         if (offsetCommitMode == OffsetCommitMode.Manual)
+        {
             builder.WithOffsetCommitMode(OffsetCommitMode.Manual);
+        }
 
         await using var consumer = await builder.BuildAsync();
 
@@ -327,7 +333,9 @@ public sealed class ConsumerGroupCrashClient
             .ConsumeAsync(timeoutSource.Token)
             .GetAsyncEnumerator(timeoutSource.Token);
         if (!await enumerator.MoveNextAsync())
+        {
             throw new InvalidOperationException("Consumer group crash client completed before receiving a record.");
+        }
 
         var committedResult = enumerator.Current;
         var committedPartition = new TopicPartition(topic, committedResult.Partition);
@@ -335,7 +343,9 @@ public sealed class ConsumerGroupCrashClient
             .Where(partition => partition != committedPartition)
             .ToArray();
         if (otherPartitions.Length > 0)
+        {
             consumer.Pause(otherPartitions);
+        }
 
         var committedExclusive = committedResult.Offset + 1;
         if (offsetCommitMode == OffsetCommitMode.Manual)

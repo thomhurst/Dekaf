@@ -50,7 +50,9 @@ public class RecordBatchTests
         await Assert.That(slab![0].Value.ToArray()).IsEquivalentTo("value-0"u8.ToArray());
         await Assert.That(slab[2].Value.ToArray()).IsEquivalentTo("value-2"u8.ToArray());
         for (var i = 0; i < 3; i++)
+        {
             await Assert.That(slab[i].Headers).IsNotNull();
+        }
         await Assert.That(pending.MoveNext()).IsTrue();
         await Assert.That(pending.CurrentRecord.Value.ToArray()).IsEquivalentTo("value-0"u8.ToArray());
         await Assert.That(pending.MoveNext()).IsTrue();
@@ -68,7 +70,9 @@ public class RecordBatchTests
         // Records hold pooled header arrays and frame slices; the owner scrubs the whole used
         // range once when the slab returns to its pool, so none of them ride back in.
         for (var i = 0; i < 3; i++)
+        {
             await Assert.That(slab[i]).IsEqualTo(default(Record));
+        }
     }
 
     [Test]
@@ -382,7 +386,9 @@ public class RecordBatchTests
         try
         {
             foreach (var record in corrupt.Records)
+            {
                 yielded.Add(record.OffsetDelta);
+            }
         }
         catch (MalformedProtocolDataException caught)
         {
@@ -845,7 +851,10 @@ public class RecordBatchTests
 
     private sealed class TrackingRecordList : List<Record>, IDisposable
     {
-        public bool WasDisposed { get; private set; }
+        public bool WasDisposed
+        {
+            get; private set;
+        }
 
         public void Dispose() => WasDisposed = true;
     }
@@ -1040,7 +1049,10 @@ public class RecordBatchTests
         public MockPooledMemory(byte[] data) => _data = data;
 
         public ReadOnlyMemory<byte> Memory => _data;
-        public bool IsDisposed { get; private set; }
+        public bool IsDisposed
+        {
+            get; private set;
+        }
 
         public void Dispose() => IsDisposed = true;
     }
@@ -1306,7 +1318,9 @@ public class RecordBatchTests
         var writer = new KafkaProtocolWriter(buffer);
 
         foreach (var record in records)
+        {
             record.Write(ref writer);
+        }
 
         return buffer.WrittenSpan.ToArray();
     }
@@ -1489,18 +1503,35 @@ public class RecordBatchTests
     {
         public static readonly byte[] Payload = [0x44, 0x45, 0x4b, 0x41, 0x46];
 
-        public CompressionType Type { get; } = type;
-        public byte[]? OutputArray { get; private set; }
-        public int BytesWritten { get; private set; }
-        public int InitialArrayLength { get; private set; }
-        public int SourceLength { get; private set; }
+        public CompressionType Type
+        {
+            get;
+        } = type;
+        public byte[]? OutputArray
+        {
+            get; private set;
+        }
+        public int BytesWritten
+        {
+            get; private set;
+        }
+        public int InitialArrayLength
+        {
+            get; private set;
+        }
+        public int SourceLength
+        {
+            get; private set;
+        }
 
         public void Compress(ReadOnlySequence<byte> source, IBufferWriter<byte> destination)
         {
             SourceLength = checked((int)source.Length);
             var memory = destination.GetMemory(Payload.Length);
             if (!MemoryMarshal.TryGetArray<byte>(memory, out var segment) || segment.Array is null)
+            {
                 throw new InvalidOperationException("Expected array-backed compression destination.");
+            }
 
             OutputArray = segment.Array;
             InitialArrayLength = segment.Array.Length;
@@ -1512,7 +1543,9 @@ public class RecordBatchTests
         public void Decompress(ReadOnlySequence<byte> source, IBufferWriter<byte> destination)
         {
             foreach (var segment in source)
+            {
                 destination.Write(segment.Span);
+            }
         }
     }
 
@@ -2111,7 +2144,9 @@ public class RecordBatchTests
         writer.WriteVarInt(declaredLength ?? body.Length);
         writer.WriteRawBytes(body);
         if (trailingBytes > 0)
+        {
             writer.WriteRawBytes(new byte[trailingBytes]);
+        }
         return buffer.WrittenMemory;
     }
 

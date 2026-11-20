@@ -77,9 +77,13 @@ public partial class OutboxMetricTests
         using var relay = Relay(new MetricStore { Rows = [Row(1)] }, publisher, "exception");
         var cycle = BindCycle(relay);
         if (shutdown)
+        {
             await Assert.That(async () => await cycle(cancellation.Token)).Throws<OperationCanceledException>();
+        }
         else
+        {
             await Assert.That(async () => await cycle(cancellation.Token)).Throws<InvalidOperationException>();
+        }
         await Assert.That(capture.Counter("dekaf.outbox.publish.failures")).IsEqualTo(shutdown ? 0 : 1);
         await Assert.That(capture.Samples("dekaf.outbox.publish.duration")).IsEqualTo(1);
         await Assert.That(capture.Samples("dekaf.outbox.cycle.duration")).IsEqualTo(1);
@@ -118,7 +122,9 @@ public partial class OutboxMetricTests
             OnAcquire = () =>
             {
                 if (++acquisitions == 2)
+                {
                     time.Advance(TimeSpan.FromSeconds(41));
+                }
             }
         };
         using var relay = Relay(store, new MetricPublisher(), name, time);
@@ -147,7 +153,9 @@ public partial class OutboxMetricTests
             OnBatchReturned = () =>
             {
                 if (++fetches == 1)
+                {
                     time.Advance(TimeSpan.FromSeconds(61));
+                }
             }
         };
         var publisher = new MetricPublisher();
@@ -219,11 +227,16 @@ public partial class OutboxMetricTests
             OnCounter = (name, _) =>
             {
                 if (name == "dekaf.outbox.publish.acknowledged")
+                {
                     time.Advance(TimeSpan.FromSeconds(delaySeconds));
+                }
             },
             OnHistogram = (name, value) =>
             {
-                if (name == "dekaf.outbox.publish.duration") duration = value;
+                if (name == "dekaf.outbox.publish.duration")
+                {
+                    duration = value;
+                }
             }
         };
         var store = new MetricStore { Rows = [Row(1)] };
@@ -247,7 +260,10 @@ public partial class OutboxMetricTests
         {
             OnHistogram = (name, value) =>
             {
-                if (name == "dekaf.outbox.publish.duration") observed.TrySetResult(value);
+                if (name == "dekaf.outbox.publish.duration")
+                {
+                    observed.TrySetResult(value);
+                }
             }
         };
         var time = new ManualTimeProvider();
@@ -256,8 +272,12 @@ public partial class OutboxMetricTests
         var publisher = new MetricPublisher { Handler = (_, _) => new(completion.Task) };
         using var relay = new OutboxRelayService(store, publisher, new OutboxRelayOptions
         {
-            MetricsName = metricsName, RelayId = "metric-relay", BucketCount = 1, BatchSize = 100,
-            LeaseDuration = TimeSpan.FromSeconds(60), LeaseRenewInterval = TimeSpan.FromSeconds(20),
+            MetricsName = metricsName,
+            RelayId = "metric-relay",
+            BucketCount = 1,
+            BatchSize = 100,
+            LeaseDuration = TimeSpan.FromSeconds(60),
+            LeaseRenewInterval = TimeSpan.FromSeconds(20),
             MaxPublishDuration = boundedPublish ? TimeSpan.FromSeconds(30) : null
         }, NullLogger<OutboxRelayService>.Instance, time);
         var cycle = BindCycle(relay)(default);
@@ -274,7 +294,10 @@ public partial class OutboxMetricTests
             await Assert.That(store.Rows.Count).IsEqualTo(1);
             // The publisher met its 30-second budget even if renewing the lease
             // completes after that budget. Lease ownership is still valid here.
-            if (boundedPublish) time.Advance(TimeSpan.FromSeconds(20));
+            if (boundedPublish)
+            {
+                time.Advance(TimeSpan.FromSeconds(20));
+            }
         }
         finally
         {
@@ -331,16 +354,26 @@ public partial class OutboxMetricTests
 
     private static OutboxMessage Row(long id) => new()
     {
-        Id = id, MessageId = Guid.NewGuid(), Bucket = 0, Topic = "metric-topic",
-        CreatedAtUtc = DateTimeOffset.UnixEpoch, Value = [1]
+        Id = id,
+        MessageId = Guid.NewGuid(),
+        Bucket = 0,
+        Topic = "metric-topic",
+        CreatedAtUtc = DateTimeOffset.UnixEpoch,
+        Value = [1]
     };
 
     private static OutboxRelayOptions Options(string name, bool sampleOnEveryRelay = false) => new()
     {
-        MetricsName = name, RelayId = "metric-relay", BucketCount = 1, BatchSize = 100,
-        LeaseDuration = TimeSpan.FromSeconds(60), LeaseRenewInterval = TimeSpan.FromSeconds(20),
-        MaxPublishDuration = TimeSpan.FromSeconds(10), PollInterval = TimeSpan.FromMinutes(1),
-        MetricsCollectionInterval = TimeSpan.FromSeconds(30), MetricsCollectionTimeout = TimeSpan.FromSeconds(5),
+        MetricsName = name,
+        RelayId = "metric-relay",
+        BucketCount = 1,
+        BatchSize = 100,
+        LeaseDuration = TimeSpan.FromSeconds(60),
+        LeaseRenewInterval = TimeSpan.FromSeconds(20),
+        MaxPublishDuration = TimeSpan.FromSeconds(10),
+        PollInterval = TimeSpan.FromMinutes(1),
+        MetricsCollectionInterval = TimeSpan.FromSeconds(30),
+        MetricsCollectionTimeout = TimeSpan.FromSeconds(5),
         CollectMetricsOnBucketZeroOwnerOnly = !sampleOnEveryRelay
     };
 
@@ -366,12 +399,30 @@ public partial class OutboxMetricTests
     private class MetricStore : IOutboxStore
     {
         private static readonly int[] Owned = [0];
-        internal IReadOnlyList<OutboxMessage> Rows { get; set; } = [];
-        internal IReadOnlyList<int> Acquired { get; set; } = Owned;
-        internal Action? OnAcquire { get; init; }
-        internal Action? OnBatchReturned { get; init; }
-        internal int DeleteFailures { get; set; }
-        internal TaskCompletionSource Marked { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        internal IReadOnlyList<OutboxMessage> Rows
+        {
+            get; set;
+        } = [];
+        internal IReadOnlyList<int> Acquired
+        {
+            get; set;
+        } = Owned;
+        internal Action? OnAcquire
+        {
+            get; init;
+        }
+        internal Action? OnBatchReturned
+        {
+            get; init;
+        }
+        internal int DeleteFailures
+        {
+            get; set;
+        }
+        internal TaskCompletionSource Marked
+        {
+            get;
+        } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public ValueTask<IReadOnlyList<int>> AcquireBucketLeasesAsync(OutboxLeaseRequest request,
             CancellationToken cancellationToken = default)
         {
@@ -402,8 +453,14 @@ public partial class OutboxMetricTests
 
     private sealed class BlockedMetricRenewalStore : MetricStore, IOutboxLeaseRenewalStore
     {
-        internal TaskCompletionSource Started { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        internal TaskCompletionSource<bool> Release { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        internal TaskCompletionSource Started
+        {
+            get;
+        } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        internal TaskCompletionSource<bool> Release
+        {
+            get;
+        } = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         public ValueTask<bool> RenewBucketLeasesAsync(OutboxLeaseRequest request, IReadOnlyList<int> buckets,
             CancellationToken cancellationToken = default)
@@ -415,8 +472,14 @@ public partial class OutboxMetricTests
 
     private sealed class MetricPublisher : IOutboxPublisher
     {
-        internal Task Initialization { get; init; } = Task.CompletedTask;
-        internal Func<IReadOnlyList<OutboxMessage>, CancellationToken, ValueTask<OutboxPublishResult>>? Handler { get; init; }
+        internal Task Initialization
+        {
+            get; init;
+        } = Task.CompletedTask;
+        internal Func<IReadOnlyList<OutboxMessage>, CancellationToken, ValueTask<OutboxPublishResult>>? Handler
+        {
+            get; init;
+        }
         internal int PublishCalls;
         public ValueTask InitializeAsync(CancellationToken cancellationToken = default) => new(Initialization.WaitAsync(cancellationToken));
         public ValueTask<OutboxPublishResult> PublishAsync(IReadOnlyList<OutboxMessage> messages,
@@ -434,23 +497,46 @@ public partial class OutboxMetricTests
         private readonly ConcurrentDictionary<string, long> _counters = new();
         private readonly ConcurrentDictionary<string, double> _gauges = new();
         private readonly ConcurrentDictionary<string, int> _samples = new();
-        internal bool ThrowOnMeasurement { get; init; }
-        internal Action<string, double>? OnHistogram { get; init; }
-        internal Action<string, long>? OnCounter { get; init; }
-        internal bool UnexpectedTags { get; private set; }
+        internal bool ThrowOnMeasurement
+        {
+            get; init;
+        }
+        internal Action<string, double>? OnHistogram
+        {
+            get; init;
+        }
+        internal Action<string, long>? OnCounter
+        {
+            get; init;
+        }
+        internal bool UnexpectedTags
+        {
+            get; private set;
+        }
 
         internal MetricCapture(string name)
         {
             _listener.InstrumentPublished = (instrument, listener) =>
             {
                 if (instrument.Meter.Name == OutboxDiagnostics.MeterName)
+                {
                     listener.EnableMeasurementEvents(instrument);
+                }
             };
             _listener.SetMeasurementEventCallback<long>((instrument, value, tags, _) =>
             {
-                if (!Matches(tags, name)) return;
-                if (ThrowOnMeasurement) throw new InvalidOperationException("listener failed");
-                if (instrument.IsObservable) _gauges[instrument.Name] = value;
+                if (!Matches(tags, name))
+                {
+                    return;
+                }
+                if (ThrowOnMeasurement)
+                {
+                    throw new InvalidOperationException("listener failed");
+                }
+                if (instrument.IsObservable)
+                {
+                    _gauges[instrument.Name] = value;
+                }
                 else
                 {
                     _counters.AddOrUpdate(instrument.Name, value, (_, total) => total + value);
@@ -459,9 +545,18 @@ public partial class OutboxMetricTests
             });
             _listener.SetMeasurementEventCallback<double>((instrument, value, tags, _) =>
             {
-                if (!Matches(tags, name)) return;
-                if (ThrowOnMeasurement) throw new InvalidOperationException("listener failed");
-                if (instrument.IsObservable) _gauges[instrument.Name] = value;
+                if (!Matches(tags, name))
+                {
+                    return;
+                }
+                if (ThrowOnMeasurement)
+                {
+                    throw new InvalidOperationException("listener failed");
+                }
+                if (instrument.IsObservable)
+                {
+                    _gauges[instrument.Name] = value;
+                }
                 else
                 {
                     _samples.AddOrUpdate(instrument.Name, 1, static (_, count) => count + 1);
@@ -473,14 +568,21 @@ public partial class OutboxMetricTests
 
         private bool Matches(ReadOnlySpan<KeyValuePair<string, object?>> tags, string name)
         {
-            if (tags.Length == 0 || !Equals(tags[0].Value, name)) return false;
+            if (tags.Length == 0 || !Equals(tags[0].Value, name))
+            {
+                return false;
+            }
             UnexpectedTags |= tags.Length != 1 || tags[0].Key != "outbox.name";
             return true;
         }
         internal long Counter(string name) => _counters.GetValueOrDefault(name);
         internal int Samples(string name) => _samples.GetValueOrDefault(name);
         internal double? Gauge(string name) => _gauges.TryGetValue(name, out var value) ? value : null;
-        internal void Observe() { _gauges.Clear(); _listener.RecordObservableInstruments(); }
+        internal void Observe()
+        {
+            _gauges.Clear();
+            _listener.RecordObservableInstruments();
+        }
         public void Dispose() => _listener.Dispose();
     }
 }

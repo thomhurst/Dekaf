@@ -42,7 +42,9 @@ public sealed class PartitionedBackpressureTests
                 {
                     context.MarkProcessed(record);
                     if (record.Offset == 2)
+                    {
                         allProcessed.TrySetResult();
+                    }
                 }
             }
         }, new PartitionedProcessingOptions
@@ -75,7 +77,10 @@ public sealed class PartitionedBackpressureTests
         finally
         {
             await timeout.CancelAsync();
-            try { await running; }
+            try
+            {
+                await running;
+            }
             catch (OperationCanceledException) when (timeout.IsCancellationRequested)
             {
                 await Assert.That(running.IsCanceled).IsTrue();
@@ -102,7 +107,9 @@ public sealed class PartitionedBackpressureTests
             await foreach (var record in context.Messages.WithCancellation(token))
             {
                 if (record.Offset == 0)
+                {
                     await releaseFirst.Task.WaitAsync(token);
+                }
                 context.MarkProcessed(record);
                 await context.CommitProcessedAsync(token);
             }
@@ -121,9 +128,13 @@ public sealed class PartitionedBackpressureTests
             // The revoke callback returns only after the drain, which waits for releaseFirst.
             var revoked = Task.CompletedTask;
             if (shutdown)
+            {
                 await stop.CancelAsync();
+            }
             else
+            {
                 revoked = consumer.RevokeFromCoordinatorAsync(partition);
+            }
             releaseFirst.TrySetResult();
             await revoked.WaitAsync(timeout.Token);
 
@@ -136,7 +147,9 @@ public sealed class PartitionedBackpressureTests
             {
                 var completed = await Task.WhenAny(consumer.BatchAdvanced.Task, running).WaitAsync(timeout.Token);
                 if (completed == running)
+                {
                     await running;
+                }
                 await consumer.BatchAdvanced.Task.WaitAsync(timeout.Token);
             }
 
@@ -185,16 +198,22 @@ public sealed class PartitionedBackpressureTests
         {
             await consumer.ThirdRecordRead.Task.WaitAsync(timeout.Token);
             if (lost)
+            {
                 consumer.LoseFromCoordinator(partition);
+            }
             else
+            {
                 await consumer.RevokeFromCoordinatorAsync(partition).WaitAsync(timeout.Token);
+            }
 
             await consumer.BatchAdvanced.Task.WaitAsync(timeout.Token);
             await Assert.That(delivered).IsEquivalentTo(new long[] { 0 });
             await Assert.That(consumer.CommitCalls.Count).IsEqualTo(lost ? 0 : 1);
             if (!lost)
+            {
                 await Assert.That(consumer.CommitCalls[0]).IsEquivalentTo(
                     new[] { new TopicPartitionOffset("backpressure", 0, 1) });
+            }
         }
         finally
         {
@@ -234,7 +253,10 @@ public sealed class PartitionedBackpressureTests
         finally
         {
             await timeout.CancelAsync();
-            try { await running; }
+            try
+            {
+                await running;
+            }
             catch (InvalidOperationException exception) when (exception.Message.Contains("completed before the partition stopped", StringComparison.Ordinal))
             {
                 await Assert.That(running.IsFaulted).IsTrue();
@@ -288,7 +310,10 @@ public sealed class PartitionedBackpressureTests
         finally
         {
             await timeout.CancelAsync();
-            try { await running; }
+            try
+            {
+                await running;
+            }
             catch (OperationCanceledException) when (timeout.IsCancellationRequested)
             {
                 await Assert.That(running.IsCanceled).IsTrue();
@@ -329,7 +354,9 @@ public sealed class PartitionedBackpressureTests
                     if (firstGeneration)
                     {
                         if (record.Offset == 0)
+                        {
                             await releaseFirst.Task.WaitAsync(token);
+                        }
                         context.MarkProcessed(record);
                         await context.CommitProcessedAsync(token);
                     }
@@ -342,7 +369,9 @@ public sealed class PartitionedBackpressureTests
             finally
             {
                 if (firstGeneration)
+                {
                     oldStopped.TrySetResult();
+                }
             }
         }, new PartitionedProcessingOptions
         {
@@ -462,12 +491,16 @@ public sealed class PartitionedBackpressureTests
         var running = consumer.RunPartitionedAsync(async (context, token) =>
         {
             if (context.TopicPartition.Topic == "assigned-during-stop")
+            {
                 Interlocked.Increment(ref assignedProcessorStarts);
+            }
             using var linked = CancellationTokenSource.CreateLinkedTokenSource(token, handlerCancellation.Token);
             await foreach (var record in context.Messages.WithCancellation(token))
             {
                 if (record.Offset == 0)
+                {
                     await releaseFirst.Task.WaitAsync(token);
+                }
                 context.MarkProcessed(record);
                 await context.CommitProcessedAsync(linked.Token);
             }
@@ -494,9 +527,13 @@ public sealed class PartitionedBackpressureTests
             }
             await stop.CancelAsync();
             if (cancelHandler)
+            {
                 await handlerCancellation.CancelAsync();
+            }
             if (!stallCommit)
+            {
                 consumer.ReleaseCommit.TrySetResult();
+            }
 
             await Assert.That(async () => await running.WaitAsync(timeout.Token))
                 .Throws<OperationCanceledException>();
@@ -569,7 +606,10 @@ public sealed class PartitionedBackpressureTests
             failOther.TrySetResult();
             consumer.ReleaseCommit.TrySetResult();
             await stop.CancelAsync();
-            try { await running; }
+            try
+            {
+                await running;
+            }
             catch (InvalidOperationException exception) when (ReferenceEquals(exception, failure))
             {
                 await Assert.That(running.IsFaulted).IsTrue();
@@ -606,7 +646,9 @@ public sealed class PartitionedBackpressureTests
             using var registration = token.Register(() =>
             {
                 if (Interlocked.Increment(ref cancelledCount) == laneCount)
+                {
                     cancelled.TrySetResult();
+                }
             });
             try
             {
@@ -614,7 +656,9 @@ public sealed class PartitionedBackpressureTests
                 {
                     context.MarkProcessed(record);
                     if (Interlocked.Increment(ref startedCount) == laneCount)
+                    {
                         started.TrySetResult();
+                    }
                     // Deliberately ignore cancellation until the test releases all handlers.
                     await release.Task;
                     break;
@@ -623,7 +667,9 @@ public sealed class PartitionedBackpressureTests
             finally
             {
                 if (Interlocked.Increment(ref finishedCount) == laneCount)
+                {
                     finished.TrySetResult();
+                }
             }
         }, new PartitionedProcessingOptions
         {
@@ -650,7 +696,10 @@ public sealed class PartitionedBackpressureTests
             release.TrySetResult();
             consumer.ReleaseCommit.TrySetResult();
             await stop.CancelAsync();
-            try { await running; }
+            try
+            {
+                await running;
+            }
             catch (Exception exception) when (exception is TimeoutException or OperationCanceledException) { }
             await finished.Task.WaitAsync(TimeSpan.FromSeconds(5));
         }
@@ -659,7 +708,10 @@ public sealed class PartitionedBackpressureTests
     private static async Task StopAsync(CancellationTokenSource timeout, Task running)
     {
         await timeout.CancelAsync();
-        try { await running; }
+        try
+        {
+            await running;
+        }
         catch (OperationCanceledException) when (timeout.IsCancellationRequested)
         {
             await Assert.That(running.IsCanceled).IsTrue();
@@ -670,9 +722,18 @@ public sealed class PartitionedBackpressureTests
 
     private sealed class FullBatchConsumer : PartitionedConsumerRuntimeTests.TestConsumer
     {
-        public Action? BeforeThirdRecordReturns { get; init; }
-        public TaskCompletionSource ThirdRecordRead { get; } = NewSignal();
-        public TaskCompletionSource BatchAdvanced { get; } = NewSignal();
+        public Action? BeforeThirdRecordReturns
+        {
+            get; init;
+        }
+        public TaskCompletionSource ThirdRecordRead
+        {
+            get;
+        } = NewSignal();
+        public TaskCompletionSource BatchAdvanced
+        {
+            get;
+        } = NewSignal();
 
         public override async IAsyncEnumerable<ConsumeBatch<string, string>> ConsumeBatchAsync(
             [EnumeratorCancellation] CancellationToken cancellationToken = default)

@@ -232,9 +232,18 @@ public sealed class SchemaRegistryDataContractTests
 
     private sealed class CapturingSchemaRegistryHandler(string responseContent) : HttpMessageHandler
     {
-        public string? LastRequestBody { get; private set; }
-        public Uri? LastRequestUri { get; private set; }
-        public int RequestCount { get; private set; }
+        public string? LastRequestBody
+        {
+            get; private set;
+        }
+        public Uri? LastRequestUri
+        {
+            get; private set;
+        }
+        public int RequestCount
+        {
+            get; private set;
+        }
 
         protected override async Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request,
@@ -243,7 +252,9 @@ public sealed class SchemaRegistryDataContractTests
             RequestCount++;
             LastRequestUri = request.RequestUri;
             if (request.Content is not null)
+            {
                 LastRequestBody = await request.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+            }
 
             return new HttpResponseMessage(HttpStatusCode.OK)
             {

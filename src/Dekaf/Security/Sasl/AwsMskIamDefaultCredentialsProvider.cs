@@ -56,7 +56,9 @@ public sealed class AwsMskIamDefaultCredentialsProvider : IAwsCredentialsProvide
     {
         var cached = _cachedCredentials;
         if (cached is not null && _utcNow() < cached.RefreshAt)
+        {
             return cached.Credentials;
+        }
 
         await _refreshLock.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
@@ -64,7 +66,9 @@ public sealed class AwsMskIamDefaultCredentialsProvider : IAwsCredentialsProvide
             cached = _cachedCredentials;
             var now = _utcNow();
             if (cached is not null && now < cached.RefreshAt)
+            {
                 return cached.Credentials;
+            }
 
             var credentials =
                 TryGetEnvironmentCredentials() ??
@@ -93,9 +97,15 @@ public sealed class AwsMskIamDefaultCredentialsProvider : IAwsCredentialsProvide
 
     private sealed class CachedCredentials(AwsCredentials credentials, DateTimeOffset refreshAt)
     {
-        public AwsCredentials Credentials { get; } = credentials;
+        public AwsCredentials Credentials
+        {
+            get;
+        } = credentials;
 
-        public DateTimeOffset RefreshAt { get; } = refreshAt;
+        public DateTimeOffset RefreshAt
+        {
+            get;
+        } = refreshAt;
     }
 
     private static AwsCredentials? TryGetEnvironmentCredentials()
@@ -104,7 +114,9 @@ public sealed class AwsMskIamDefaultCredentialsProvider : IAwsCredentialsProvide
         var secretAccessKey = Environment.GetEnvironmentVariable("AWS_SECRET_ACCESS_KEY");
 
         if (string.IsNullOrWhiteSpace(accessKeyId) || string.IsNullOrWhiteSpace(secretAccessKey))
+        {
             return null;
+        }
 
         return new AwsCredentials(
             accessKeyId,
@@ -118,7 +130,9 @@ public sealed class AwsMskIamDefaultCredentialsProvider : IAwsCredentialsProvide
         var tokenFile = Environment.GetEnvironmentVariable("AWS_WEB_IDENTITY_TOKEN_FILE");
 
         if (string.IsNullOrWhiteSpace(roleArn) || string.IsNullOrWhiteSpace(tokenFile) || !File.Exists(tokenFile))
+        {
             return null;
+        }
 
         var webIdentityToken = await File.ReadAllTextAsync(tokenFile, cancellationToken).ConfigureAwait(false);
         var sessionName = Environment.GetEnvironmentVariable("AWS_ROLE_SESSION_NAME") ?? _webIdentitySessionName;
@@ -146,7 +160,9 @@ public sealed class AwsMskIamDefaultCredentialsProvider : IAwsCredentialsProvide
             var document = XDocument.Parse(xml);
             var credentials = document.Descendants().FirstOrDefault(element => element.Name.LocalName == "Credentials");
             if (credentials is null)
+            {
                 throw new InvalidOperationException("STS AssumeRoleWithWebIdentity response did not contain credentials");
+            }
 
             return new AwsCredentials(
                 RequiredElement(credentials, "AccessKeyId"),
@@ -171,7 +187,9 @@ public sealed class AwsMskIamDefaultCredentialsProvider : IAwsCredentialsProvide
         foreach (var path in GetProfilePaths())
         {
             if (!File.Exists(path))
+            {
                 continue;
+            }
 
             var profiles = ReadProfileFile(path);
             if (TryGetProfile(profiles, profileName, out var profile) &&
@@ -192,7 +210,9 @@ public sealed class AwsMskIamDefaultCredentialsProvider : IAwsCredentialsProvide
         out Dictionary<string, string> profile)
     {
         if (profiles.TryGetValue(profileName, out profile!))
+        {
             return true;
+        }
 
         return profiles.TryGetValue("profile " + profileName, out profile!);
     }
@@ -213,7 +233,9 @@ public sealed class AwsMskIamDefaultCredentialsProvider : IAwsCredentialsProvide
         }
 
         if (endpoint is null)
+        {
             return null;
+        }
 
         try
         {
@@ -222,7 +244,9 @@ public sealed class AwsMskIamDefaultCredentialsProvider : IAwsCredentialsProvide
 
             using var response = await _httpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
             if (!response.IsSuccessStatusCode)
+            {
                 return null;
+            }
 
             var json = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
             return ParseJsonCredentials(json);
@@ -240,10 +264,14 @@ public sealed class AwsMskIamDefaultCredentialsProvider : IAwsCredentialsProvide
     internal static bool IsTrustedContainerCredentialsFullUri(Uri uri)
     {
         if (uri.Scheme == Uri.UriSchemeHttps)
+        {
             return true;
+        }
 
         if (uri.Scheme != Uri.UriSchemeHttp)
+        {
             return false;
+        }
 
         return uri.IsLoopback ||
                string.Equals(uri.DnsSafeHost, "localhost", StringComparison.OrdinalIgnoreCase) ||
@@ -266,13 +294,17 @@ public sealed class AwsMskIamDefaultCredentialsProvider : IAwsCredentialsProvide
         {
             var token = await TryGetImdsTokenAsync(cancellationToken).ConfigureAwait(false);
             if (string.IsNullOrWhiteSpace(token))
+            {
                 return null;
+            }
 
             var roleName = await GetImdsStringAsync("http://169.254.169.254/latest/meta-data/iam/security-credentials/", token, cancellationToken)
                 .ConfigureAwait(false);
 
             if (string.IsNullOrWhiteSpace(roleName))
+            {
                 return null;
+            }
 
             roleName = roleName!.Split('\n', StringSplitOptions.RemoveEmptyEntries)
                 .Select(static line => line.Trim())
@@ -319,7 +351,9 @@ public sealed class AwsMskIamDefaultCredentialsProvider : IAwsCredentialsProvide
     {
         using var request = new HttpRequestMessage(HttpMethod.Get, endpoint);
         if (!string.IsNullOrWhiteSpace(token))
+        {
             request.Headers.Add("X-aws-ec2-metadata-token", token);
+        }
 
         using var response = await _httpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
         return response.IsSuccessStatusCode
@@ -333,10 +367,14 @@ public sealed class AwsMskIamDefaultCredentialsProvider : IAwsCredentialsProvide
         var tokenFile = Environment.GetEnvironmentVariable("AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE");
 
         if (!string.IsNullOrWhiteSpace(tokenFile))
+        {
             token = File.ReadAllText(tokenFile).Trim();
+        }
 
         if (!string.IsNullOrWhiteSpace(token))
+        {
             request.Headers.TryAddWithoutValidation("Authorization", token);
+        }
     }
 
     private string ResolveStsRegion()
@@ -362,15 +400,23 @@ public sealed class AwsMskIamDefaultCredentialsProvider : IAwsCredentialsProvide
         var home = _userProfileDirectory ?? Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
         var sharedCredentialsFile = Environment.GetEnvironmentVariable("AWS_SHARED_CREDENTIALS_FILE");
         if (!string.IsNullOrWhiteSpace(sharedCredentialsFile))
+        {
             yield return sharedCredentialsFile;
+        }
         else if (!string.IsNullOrWhiteSpace(home))
+        {
             yield return Path.Combine(home, ".aws", "credentials");
+        }
 
         var configFile = Environment.GetEnvironmentVariable("AWS_CONFIG_FILE");
         if (!string.IsNullOrWhiteSpace(configFile))
+        {
             yield return configFile;
+        }
         else if (!string.IsNullOrWhiteSpace(home))
+        {
             yield return Path.Combine(home, ".aws", "config");
+        }
     }
 
     private static Dictionary<string, Dictionary<string, string>> ReadProfileFile(string path)
@@ -382,7 +428,9 @@ public sealed class AwsMskIamDefaultCredentialsProvider : IAwsCredentialsProvide
         {
             var line = rawLine.Trim();
             if (line.Length == 0 || line[0] is '#' or ';')
+            {
                 continue;
+            }
 
             if (line[0] == '[' && line[^1] == ']')
             {
@@ -397,11 +445,15 @@ public sealed class AwsMskIamDefaultCredentialsProvider : IAwsCredentialsProvide
             }
 
             if (currentProfile is null)
+            {
                 continue;
+            }
 
             var equalsIndex = line.IndexOf('=');
             if (equalsIndex <= 0)
+            {
                 continue;
+            }
 
             currentProfile[line[..equalsIndex].Trim()] = line[(equalsIndex + 1)..].Trim();
         }

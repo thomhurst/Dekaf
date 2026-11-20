@@ -77,7 +77,9 @@ public class ConnectionRecoveryTests(NetworkPartitionKafkaContainer kafka)
         {
             consumed.Add(msg.Value!);
             if (consumed.Count >= 2)
+            {
                 break;
+            }
         }
 
         await Assert.That(consumed).Contains("pre-value");

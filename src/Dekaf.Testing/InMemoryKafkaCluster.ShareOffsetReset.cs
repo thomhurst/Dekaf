@@ -19,10 +19,14 @@ public sealed partial class InMemoryKafkaCluster
     internal void ConfigureShareOffsetReset(InMemoryShareConsumerOptions options)
     {
         if (options.AutoOffsetReset is null)
+        {
             return;
+        }
 
         lock (_gate)
+        {
             _shareOffsetResetOptions[options.GroupId] = options;
+        }
     }
 
     // Called under _gate only after validating the member registration. Even an empty first fetch
@@ -31,7 +35,9 @@ public sealed partial class InMemoryKafkaCluster
     {
         if (_shareGroupOffsets.TryGetValue(groupId, out var offsets) &&
             offsets.TryGetValue(partition, out var existing))
+        {
             return existing.Offset;
+        }
 
         var isolationLevel = GetShareIsolationUnderLock(groupId);
         var watermarks = GetWatermarks(partition, isolationLevel);
@@ -47,12 +53,16 @@ public sealed partial class InMemoryKafkaCluster
                     options.AutoOffsetResetDuration, DateTimeOffset.UtcNow);
                 var timestampOffset = GetOffsetForTimestamp(partition, timestamp, isolationLevel);
                 if (timestampOffset >= 0)
+                {
                     offset = timestampOffset;
+                }
                 break;
         }
 
         if (offsets is null)
+        {
             _shareGroupOffsets[groupId] = offsets = [];
+        }
         offsets[partition] = new TopicPartitionOffset(partition.Topic, partition.Partition, offset);
         return offset;
     }

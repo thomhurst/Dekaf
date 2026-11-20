@@ -18,13 +18,22 @@ public class OutboxTransportNotificationBenchmarks
 {
     private static readonly int[] Owned = [0];
     [Params(8, 64)]
-    public int BucketCount { get; set; }
+    public int BucketCount
+    {
+        get; set;
+    }
 
     [Params(2, 8)]
-    public int CommittedCount { get; set; }
+    public int CommittedCount
+    {
+        get; set;
+    }
 
     [Params("HashSet", "SortedSet", "ImmutableHashSet")]
-    public string SetType { get; set; } = "HashSet";
+    public string SetType
+    {
+        get; set;
+    } = "HashSet";
 
     private ServiceProvider _provider = null!;
     private IOutboxBucketNotifier _notifier = null!;
@@ -34,6 +43,7 @@ public class OutboxTransportNotificationBenchmarks
     private Func<Memory<int>, CancellationToken, ValueTask<int>> _drainRemote = null!;
     private int[] _local = null!;
     private int[] _remote = null!;
+
     private delegate int DrainHints(Span<int> destination, out bool unknown);
 
     [GlobalSetup]
@@ -46,7 +56,9 @@ public class OutboxTransportNotificationBenchmarks
         _notifier.SetOwnedBuckets(Owned);
         var committed = new int[CommittedCount];
         for (var index = 0; index < committed.Length - 1; index++)
+        {
             committed[index] = index;
+        }
         committed[^1] = BucketCount - 1;
         _committed = SetType switch
         {
@@ -69,7 +81,9 @@ public class OutboxTransportNotificationBenchmarks
             .GetValue(_notifier)!).Reader;
         var count = CommitAndDrain().GetAwaiter().GetResult();
         if (count != CommittedCount && !(count == 1 && _remote[0] == -1))
+        {
             throw new InvalidOperationException("Committed buckets must reach the transport buffer as exact or unknown hints.");
+        }
     }
 
     [Benchmark]

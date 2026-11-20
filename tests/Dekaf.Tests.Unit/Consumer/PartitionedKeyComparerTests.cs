@@ -68,7 +68,10 @@ public sealed class PartitionedKeyComparerTests
 
     private sealed class CustomerKey(byte id)
     {
-        public byte Id { get; } = id;
+        public byte Id
+        {
+            get;
+        } = id;
     }
 
     private sealed class CustomerKeyComparer : IEqualityComparer<CustomerKey>

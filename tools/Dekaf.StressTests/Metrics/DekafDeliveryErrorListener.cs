@@ -39,7 +39,9 @@ internal sealed class DekafDeliveryErrorListener : IDisposable
         _listener.SetMeasurementEventCallback<long>((_, measurement, tags, _) =>
         {
             if (topic is null || HasTopic(tags, topic))
+            {
                 throughput.RecordDeliveryErrors(measurement);
+            }
         });
         _listener.Start();
     }

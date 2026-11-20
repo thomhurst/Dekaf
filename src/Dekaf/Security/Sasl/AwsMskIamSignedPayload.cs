@@ -28,9 +28,13 @@ internal static class AwsMskIamSignedPayload
         ArgumentException.ThrowIfNullOrWhiteSpace(userAgent);
 
         if (expiration <= TimeSpan.Zero)
+        {
             throw new ArgumentOutOfRangeException(nameof(expiration), "Expiration must be positive");
+        }
         if (expiration.TotalSeconds > int.MaxValue)
+        {
             throw new ArgumentOutOfRangeException(nameof(expiration), "Expiration is too large");
+        }
 
         var utc = now.ToUniversalTime();
         var dateStamp = utc.ToString("yyyyMMdd", CultureInfo.InvariantCulture);
@@ -50,7 +54,9 @@ internal static class AwsMskIamSignedPayload
         };
 
         if (credentials.SessionToken is not null)
+        {
             queryParameters["X-Amz-Security-Token"] = credentials.SessionToken;
+        }
 
         var canonicalRequest = CreateCanonicalRequest(queryParameters, host);
         var stringToSign = string.Join(
@@ -74,7 +80,9 @@ internal static class AwsMskIamSignedPayload
             writer.WriteString("x-amz-credential", credential);
             writer.WriteString("x-amz-date", amzDate);
             if (credentials.SessionToken is not null)
+            {
                 writer.WriteString("x-amz-security-token", credentials.SessionToken);
+            }
             writer.WriteString("x-amz-signedheaders", SignedHeaders);
             writer.WriteString("x-amz-expires", expires);
             writer.WriteString("x-amz-signature", signature);

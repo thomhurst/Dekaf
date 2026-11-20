@@ -50,8 +50,12 @@ public sealed partial class ConsumerRackAwarenessTests
                     [
                         new PartitionMetadata
                         {
-                            ErrorCode = ErrorCode.None, PartitionIndex = 0, LeaderId = 2, LeaderEpoch = 6,
-                            ReplicaNodes = [1, 2], IsrNodes = [1, 2]
+                            ErrorCode = ErrorCode.None,
+                            PartitionIndex = 0,
+                            LeaderId = 2,
+                            LeaderEpoch = 6,
+                            ReplicaNodes = [1, 2],
+                            IsrNodes = [1, 2]
                         }
                     ]
                 }
@@ -72,8 +76,12 @@ public sealed partial class ConsumerRackAwarenessTests
                     [
                         new PartitionMetadata
                         {
-                            ErrorCode = ErrorCode.None, PartitionIndex = 1, LeaderId = 2, LeaderEpoch = 6,
-                            ReplicaNodes = [1, 2], IsrNodes = [1, 2]
+                            ErrorCode = ErrorCode.None,
+                            PartitionIndex = 1,
+                            LeaderId = 2,
+                            LeaderEpoch = 6,
+                            ReplicaNodes = [1, 2],
+                            IsrNodes = [1, 2]
                         }
                     ]
                 }
@@ -473,9 +481,13 @@ public sealed partial class ConsumerRackAwarenessTests
         {
             await lookupStarted.Task.WaitAsync(timeout.Token);
             if (seek)
+            {
                 consumer.Seek(new TopicPartitionOffset(Topic, 0, 99));
+            }
             else
+            {
                 await Assert.That(metadata.TryUpdatePartitionLeader(Topic, 0, 2, 6)).IsTrue();
+            }
         }
         finally
         {
@@ -527,7 +539,9 @@ public sealed partial class ConsumerRackAwarenessTests
             // Seek does not take the assignment lock that initialization holds.
             await lookupStarted.Task.WaitAsync(timeout.Token);
             if (seek)
+            {
                 consumer.Seek(new TopicPartitionOffset(Topic, 0, 99));
+            }
         }
         finally
         {
@@ -615,7 +629,9 @@ public sealed partial class ConsumerRackAwarenessTests
                 var publisher = new Thread(() =>
                 {
                     if (!Monitor.TryEnter(metadata.Metadata.UpdateLock))
+                    {
                         return;
+                    }
                     try
                     {
                         leaderChangedBeforeCommit = metadata.TryUpdatePartitionLeader(Topic, 0, 2, 6);
@@ -624,10 +640,13 @@ public sealed partial class ConsumerRackAwarenessTests
                     {
                         Monitor.Exit(metadata.Metadata.UpdateLock);
                     }
-                }) { IsBackground = true };
+                })
+                { IsBackground = true };
                 publisher.Start();
                 if (!publisher.Join(TimeSpan.FromSeconds(10)))
+                {
                     throw new TimeoutException("Metadata publication probe did not finish.");
+                }
             };
             try
             {
@@ -664,7 +683,9 @@ public sealed partial class ConsumerRackAwarenessTests
     private static ValueTask InvokeReplicaFetchAsync(KafkaConsumer<string, string> consumer, int brokerId, bool prefetch)
     {
         if (!prefetch)
+        {
             return InvokeFetchFromBrokerAsync(consumer, brokerId, [Partition]);
+        }
 
         var method = typeof(KafkaConsumer<string, string>).GetMethod(
             "PrefetchFromBrokerAsync", BindingFlags.Instance | BindingFlags.NonPublic)!;

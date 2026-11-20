@@ -118,7 +118,9 @@ public class DekafKafkaResourceTests
         var kafka = builder.AddDekafKafka("kafka").WithKafkaUI();
         var ui = builder.Resources.OfType<DekafKafkaUIContainerResource>().Single();
         if (removeUI)
+        {
             builder.Resources.Remove(ui);
+        }
 
         using var app = builder.Build();
         await builder.Eventing.PublishAsync(new BeforeStartEvent(app.Services, app.Services.GetRequiredService<DistributedApplicationModel>()));

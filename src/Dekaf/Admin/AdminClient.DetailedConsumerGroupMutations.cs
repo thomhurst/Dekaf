@@ -23,10 +23,19 @@ public sealed partial class AdminClient : IDetailedConsumerGroupMutationAdminCli
         List<string> groups, int timeoutMs, CancellationToken cancellationToken)
     {
         var results = new Dictionary<string, AdminMutationResult>(groups.Count, StringComparer.Ordinal);
-        if (groups.Count == 0) return results;
+        if (groups.Count == 0)
+        {
+            return results;
+        }
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        if (timeoutMs == 0) deadline.Cancel();
-        else deadline.CancelAfter(timeoutMs);
+        if (timeoutMs == 0)
+        {
+            deadline.Cancel();
+        }
+        else
+        {
+            deadline.CancelAfter(timeoutMs);
+        }
         var token = deadline.Token;
         const string operation = "DeleteConsumerGroupsDetailed";
         HashSet<string>? stoppedGroups = null;
@@ -36,9 +45,12 @@ public sealed partial class AdminClient : IDetailedConsumerGroupMutationAdminCli
             (stoppedGroups ??= new(StringComparer.Ordinal)).Add(group);
             // Preserve a prior confirmed coordinator rejection if its retry cannot start.
             if (!results.ContainsKey(group))
+            {
                 results.Add(group, AdminMutationResult.Unconfirmed(AdminMutationOutcome.NotAttempted,
                     "The operation stopped before this mutation was sent.", failure));
+            }
         }
+
         try
         {
             // token already carries this call's deadline, so the retry loop runs without a budget or
@@ -55,7 +67,9 @@ public sealed partial class AdminClient : IDetailedConsumerGroupMutationAdminCli
                     // an earlier coordinator. Only unsent work and confirmed rejections remain.
                     if (stoppedGroups?.Contains(group) == true ||
                         (results.TryGetValue(group, out var prior) && !AdminMutationResult.IsSafeCoordinatorRetry(prior)))
+                    {
                         continue;
+                    }
                     token.ThrowIfCancellationRequested();
                     int coordinator;
                     try
@@ -66,13 +80,19 @@ public sealed partial class AdminClient : IDetailedConsumerGroupMutationAdminCli
                     {
                         token.ThrowIfCancellationRequested();
                         if (RetryHelper.IsRetriableRequestFailure(exception))
+                        {
                             retryFailure ??= exception;
+                        }
                         else
+                        {
                             StopUnsentGroup(group, exception);
+                        }
                         continue;
                     }
                     if (!byCoordinator.TryGetValue(coordinator, out var pending))
+                    {
                         byCoordinator.Add(coordinator, pending = []);
+                    }
                     pending.Add(group);
                 }
 
@@ -92,10 +112,16 @@ public sealed partial class AdminClient : IDetailedConsumerGroupMutationAdminCli
                         acquiredLease.Dispose();
                         token.ThrowIfCancellationRequested();
                         if (RetryHelper.IsRetriableRequestFailure(exception))
+                        {
                             retryFailure ??= exception;
+                        }
                         else
+                        {
                             foreach (var group in batch.Value)
+                            {
                                 StopUnsentGroup(group, exception);
+                            }
+                        }
                         continue;
                     }
                     using var lease = acquiredLease;
@@ -110,8 +136,10 @@ public sealed partial class AdminClient : IDetailedConsumerGroupMutationAdminCli
                     {
                         var failure = MutationFailure(exception, deadline, timeoutMs, operation, cancellationToken);
                         foreach (var group in batch.Value)
+                        {
                             results[group] = AdminMutationResult.Unconfirmed(AdminMutationOutcome.Unknown,
                                 "The mutation may have applied; no definitive response was received.", failure);
+                        }
                         continue;
                     }
 
@@ -123,10 +151,15 @@ public sealed partial class AdminClient : IDetailedConsumerGroupMutationAdminCli
                             : AdminMutationResult.Unconfirmed(AdminMutationOutcome.Unknown, "The response omitted this requested entity.");
                         results[group] = result;
                         if (AdminMutationResult.IsSafeCoordinatorRetry(result))
+                        {
                             retryFailure ??= new KafkaException(result.ErrorCode!.Value, "The coordinator rejected the mutation.");
+                        }
                     }
                 }
-                if (retryFailure is not null) throw retryFailure;
+                if (retryFailure is not null)
+                {
+                    throw retryFailure;
+                }
             }, token, Timeout.Infinite, operation).ConfigureAwait(false);
         }
         catch (Exception exception) when (IsDetailedMutationFailure(exception) || exception is InvalidOperationException or MalformedProtocolDataException)
@@ -157,9 +190,17 @@ public sealed partial class AdminClient : IDetailedConsumerGroupMutationAdminCli
                 var topics = new Dictionary<string, List<OffsetCommitRequestPartition>>(StringComparer.Ordinal);
                 foreach (var item in pending)
                 {
-                    if (!topics.TryGetValue(item.Topic, out var partitions)) topics.Add(item.Topic, partitions = []);
-                    partitions.Add(new() { PartitionIndex = item.Partition, CommittedOffset = item.Offset,
-                        CommittedLeaderEpoch = item.LeaderEpoch, CommittedMetadata = item.Metadata });
+                    if (!topics.TryGetValue(item.Topic, out var partitions))
+                    {
+                        topics.Add(item.Topic, partitions = []);
+                    }
+                    partitions.Add(new()
+                    {
+                        PartitionIndex = item.Partition,
+                        CommittedOffset = item.Offset,
+                        CommittedLeaderEpoch = item.LeaderEpoch,
+                        CommittedMetadata = item.Metadata
+                    });
                 }
                 var requests = new List<OffsetCommitRequestTopic>(topics.Count);
                 var snapshot = version >= OffsetCommitRequest.TopicIdVersion ? _metadataManager.Metadata.CaptureSnapshot() : null;
@@ -186,7 +227,10 @@ public sealed partial class AdminClient : IDetailedConsumerGroupMutationAdminCli
                         identitiesById[id] = (null, false);
                         var exception = new KafkaException(ErrorCode.UnknownTopicId,
                             $"AlterConsumerGroupOffsetsDetailed metadata maps more than one requested topic to ID '{id}'");
-                        if (previousName is not null) ExcludeTopic(previousName, exception);
+                        if (previousName is not null)
+                        {
+                            ExcludeTopic(previousName, exception);
+                        }
                         ExcludeTopic(topic.Key, exception);
                         continue;
                     }
@@ -197,13 +241,21 @@ public sealed partial class AdminClient : IDetailedConsumerGroupMutationAdminCli
                     // A collision invalidates the first topic's already-built request too.
                     var retained = 0;
                     for (var index = 0; index < requests.Count; index++)
+                    {
                         if (!excludedTopics.Contains(requests[index].Name))
+                        {
                             requests[retained++] = requests[index];
+                        }
+                    }
                     requests.RemoveRange(retained, requests.Count - retained);
                     retained = 0;
                     for (var index = 0; index < pending.Count; index++)
+                    {
                         if (!excludedTopics.Contains(pending[index].Topic))
+                        {
                             pending[retained++] = pending[index];
+                        }
+                    }
                     pending.RemoveRange(retained, pending.Count - retained);
                 }
                 return new() { GroupId = groupId, GenerationIdOrMemberEpoch = -1, MemberId = string.Empty, Topics = requests };
@@ -215,8 +267,10 @@ public sealed partial class AdminClient : IDetailedConsumerGroupMutationAdminCli
                     {
                         var key = new TopicPartition(name, partition.PartitionIndex);
                         if (!localResults.ContainsKey(key))
+                        {
                             localResults.Add(key, AdminMutationResult.Unconfirmed(AdminMutationOutcome.NotAttempted,
                                 "No mutation was sent because the topic ID could not be mapped uniquely.", exception));
+                        }
                     }
                 }
             },
@@ -230,7 +284,9 @@ public sealed partial class AdminClient : IDetailedConsumerGroupMutationAdminCli
                     if (identitiesById is not null)
                     {
                         if (!identitiesById.TryGetValue(topic.TopicId, out var identity) || identity.Topic is not { } requestedTopic)
+                        {
                             continue;
+                        }
                         name = requestedTopic.Name;
                         if (identity.Matched)
                         {
@@ -238,18 +294,24 @@ public sealed partial class AdminClient : IDetailedConsumerGroupMutationAdminCli
                             // Duplicate blocks invalidate the whole topic, even with disjoint partitions.
                             // Replacing earlier rejections with Unknown also prevents unsafe retries.
                             foreach (var partition in requestedTopic.Partitions)
+                            {
                                 results[new(name, partition.PartitionIndex)] = AdminMutationResult.Unconfirmed(
                                     AdminMutationOutcome.Unknown, "The response contained duplicate topic identities.");
+                            }
                             continue;
                         }
                         identitiesById[topic.TopicId] = (requestedTopic, true);
                         if (!current!.Topics.TryGetValue(name, out var metadata) || metadata.TopicId != topic.TopicId ||
                             !current.TopicsById.TryGetValue(topic.TopicId, out var currentById) ||
                             !string.Equals(currentById.Name, name, StringComparison.Ordinal))
+                        {
                             continue; // The original identity is no longer current; omitted entries remain unknown.
+                        }
                     }
                     foreach (var partition in topic.Partitions)
+                    {
                         AddMutationResult(results, new(name, partition.PartitionIndex), AdminMutationResult.FromResponse(partition.ErrorCode, null));
+                    }
                 }
                 return results;
             }, cancellationToken);
@@ -274,11 +336,17 @@ public sealed partial class AdminClient : IDetailedConsumerGroupMutationAdminCli
                 var topics = new Dictionary<string, List<OffsetDeleteRequestPartition>>(StringComparer.Ordinal);
                 foreach (var item in pending)
                 {
-                    if (!topics.TryGetValue(item.Topic, out var topicPartitions)) topics.Add(item.Topic, topicPartitions = []);
+                    if (!topics.TryGetValue(item.Topic, out var topicPartitions))
+                    {
+                        topics.Add(item.Topic, topicPartitions = []);
+                    }
                     topicPartitions.Add(new() { PartitionIndex = item.Partition });
                 }
                 var requests = new List<OffsetDeleteRequestTopic>(topics.Count);
-                foreach (var topic in topics) requests.Add(new() { Name = topic.Key, Partitions = topic.Value });
+                foreach (var topic in topics)
+                {
+                    requests.Add(new() { Name = topic.Key, Partitions = topic.Value });
+                }
                 return new() { GroupId = groupId, Topics = requests };
             },
             static (pending, response) =>
@@ -286,12 +354,19 @@ public sealed partial class AdminClient : IDetailedConsumerGroupMutationAdminCli
                 var results = new Dictionary<TopicPartition, AdminMutationResult>();
                 if (response.ErrorCode != ErrorCode.None)
                 {
-                    foreach (var item in pending) results.Add(item, AdminMutationResult.FromResponse(response.ErrorCode, null));
+                    foreach (var item in pending)
+                    {
+                        results.Add(item, AdminMutationResult.FromResponse(response.ErrorCode, null));
+                    }
                     return results;
                 }
                 foreach (var topic in response.Topics)
+                {
                     foreach (var partition in topic.Partitions)
+                    {
                         AddMutationResult(results, new(topic.Name, partition.PartitionIndex), AdminMutationResult.FromResponse(partition.ErrorCode, null));
+                    }
+                }
                 return results;
             }, cancellationToken);
     }
@@ -305,7 +380,10 @@ public sealed partial class AdminClient : IDetailedConsumerGroupMutationAdminCli
         {
             var partition = new TopicPartition(offset.Topic, offset.Partition);
             ValidateDetailedConsumerPartition(partition);
-            if (!seen.Add(partition)) throw new ArgumentException("Offsets must contain distinct topic partitions.", nameof(offsets));
+            if (!seen.Add(partition))
+            {
+                throw new ArgumentException("Offsets must contain distinct topic partitions.", nameof(offsets));
+            }
             items.Add(offset);
         }
         return items;

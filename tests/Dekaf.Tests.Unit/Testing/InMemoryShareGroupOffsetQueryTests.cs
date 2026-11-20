@@ -56,8 +56,11 @@ public sealed class InMemoryShareGroupOffsetQueryTests
         IAdminClient client = admin;
         var results = await client.ListShareGroupOffsetsAsync(new Dictionary<string, ListShareGroupOffsetsSpec>
         {
-            ["all"] = new(), ["selected"] = new() { TopicPartitions = [new("input", 0), new("unknown", 0)] },
-            ["none"] = new() { TopicPartitions = [] }, ["missing"] = new(), ["denied"] = new()
+            ["all"] = new(),
+            ["selected"] = new() { TopicPartitions = [new("input", 0), new("unknown", 0)] },
+            ["none"] = new() { TopicPartitions = [] },
+            ["missing"] = new(),
+            ["denied"] = new()
         });
         await Assert.That(results["all"].Offsets[new("input", 0)].StartOffset).IsEqualTo(42);
         await Assert.That(results["selected"].Offsets[new("input", 0)].ErrorCode).IsEqualTo(ErrorCode.TopicAuthorizationFailed);
@@ -115,9 +118,13 @@ public sealed class InMemoryShareGroupOffsetQueryTests
         cluster.FaultPlan.FaultConsumed += _ =>
         {
             if (timeout)
+            {
                 deadline!.Cancel();
+            }
             else
+            {
                 caller.Cancel();
+            }
         };
         var specs = new Dictionary<string, ListShareGroupOffsetsSpec>
         {
@@ -125,11 +132,15 @@ public sealed class InMemoryShareGroupOffsetQueryTests
         };
 
         if (timeout)
+        {
             await Assert.That(async () => await admin.ListShareGroupOffsetsAsync(specs, cancellationToken: caller.Token))
                 .Throws<KafkaTimeoutException>();
+        }
         else
+        {
             await Assert.That(async () => await admin.ListShareGroupOffsetsAsync(specs, cancellationToken: caller.Token))
                 .Throws<OperationCanceledException>();
+        }
     }
 
     [Test]
@@ -140,7 +151,7 @@ public sealed class InMemoryShareGroupOffsetQueryTests
         cluster.FaultPlan.Fail(new KafkaFaultScope(KafkaFaultOperation.Admin, groupId: "group"),
             new GroupException(ErrorCode.GroupAuthorizationFailed, "queued"));
         await Assert.That(async () => await admin.ListShareGroupOffsetsAsync(new Dictionary<string, ListShareGroupOffsetsSpec>
-            { ["group"] = new() { TopicPartitions = [new("input", 0), new("input", 0)] } })).Throws<ArgumentException>();
+        { ["group"] = new() { TopicPartitions = [new("input", 0), new("input", 0)] } })).Throws<ArgumentException>();
         var results = await admin.ListShareGroupOffsetsAsync(new Dictionary<string, ListShareGroupOffsetsSpec> { ["group"] = new() });
         await Assert.That(results["group"].ErrorCode).IsEqualTo(ErrorCode.GroupAuthorizationFailed);
     }

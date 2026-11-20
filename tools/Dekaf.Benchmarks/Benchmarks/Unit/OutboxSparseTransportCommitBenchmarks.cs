@@ -13,10 +13,16 @@ namespace Dekaf.Benchmarks.Benchmarks.Unit;
 public class OutboxSparseTransportCommitBenchmarks
 {
     [Params(8, 1000001)]
-    public int BucketCount { get; set; }
+    public int BucketCount
+    {
+        get; set;
+    }
 
     [Params("HashSet", "SortedSet", "CustomSet")]
-    public string SetType { get; set; } = "HashSet";
+    public string SetType
+    {
+        get; set;
+    } = "HashSet";
 
     private IReadOnlySet<int> _committed = null!;
     private Action<IReadOnlySet<int>> _notify = null!;

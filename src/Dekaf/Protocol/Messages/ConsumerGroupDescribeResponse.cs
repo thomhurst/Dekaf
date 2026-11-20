@@ -13,12 +13,18 @@ public sealed class ConsumerGroupDescribeResponse : IKafkaResponse
     /// <summary>
     /// The duration in milliseconds for which the request was throttled due to quota violation.
     /// </summary>
-    public int ThrottleTimeMs { get; init; }
+    public int ThrottleTimeMs
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The described consumer groups.
     /// </summary>
-    public required IReadOnlyList<ConsumerGroupDescribeGroup> Groups { get; init; }
+    public required IReadOnlyList<ConsumerGroupDescribeGroup> Groups
+    {
+        get; init;
+    }
 
     public static IKafkaResponse Read(ref KafkaProtocolReader reader, short version)
     {
@@ -45,15 +51,42 @@ public sealed class ConsumerGroupDescribeResponse : IKafkaResponse
 /// </summary>
 public sealed class ConsumerGroupDescribeGroup
 {
-    public ErrorCode ErrorCode { get; init; }
-    public string? ErrorMessage { get; init; }
-    public required string GroupId { get; init; }
-    public required string GroupState { get; init; }
-    public int GroupEpoch { get; init; }
-    public int AssignmentEpoch { get; init; }
-    public required string AssignorName { get; init; }
-    public required IReadOnlyList<ConsumerGroupDescribeMember> Members { get; init; }
-    public int AuthorizedOperations { get; init; }
+    public ErrorCode ErrorCode
+    {
+        get; init;
+    }
+    public string? ErrorMessage
+    {
+        get; init;
+    }
+    public required string GroupId
+    {
+        get; init;
+    }
+    public required string GroupState
+    {
+        get; init;
+    }
+    public int GroupEpoch
+    {
+        get; init;
+    }
+    public int AssignmentEpoch
+    {
+        get; init;
+    }
+    public required string AssignorName
+    {
+        get; init;
+    }
+    public required IReadOnlyList<ConsumerGroupDescribeMember> Members
+    {
+        get; init;
+    }
+    public int AuthorizedOperations
+    {
+        get; init;
+    }
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {
@@ -112,17 +145,50 @@ public sealed class ConsumerGroupDescribeGroup
 /// </summary>
 public sealed class ConsumerGroupDescribeMember
 {
-    public required string MemberId { get; init; }
-    public string? InstanceId { get; init; }
-    public string? RackId { get; init; }
-    public int MemberEpoch { get; init; }
-    public required string ClientId { get; init; }
-    public required string ClientHost { get; init; }
-    public required IReadOnlyList<string> SubscribedTopicNames { get; init; }
-    public string? SubscribedTopicRegex { get; init; }
-    public required ConsumerGroupDescribeAssignment Assignment { get; init; }
-    public required ConsumerGroupDescribeAssignment TargetAssignment { get; init; }
-    public sbyte? MemberType { get; init; }
+    public required string MemberId
+    {
+        get; init;
+    }
+    public string? InstanceId
+    {
+        get; init;
+    }
+    public string? RackId
+    {
+        get; init;
+    }
+    public int MemberEpoch
+    {
+        get; init;
+    }
+    public required string ClientId
+    {
+        get; init;
+    }
+    public required string ClientHost
+    {
+        get; init;
+    }
+    public required IReadOnlyList<string> SubscribedTopicNames
+    {
+        get; init;
+    }
+    public string? SubscribedTopicRegex
+    {
+        get; init;
+    }
+    public required ConsumerGroupDescribeAssignment Assignment
+    {
+        get; init;
+    }
+    public required ConsumerGroupDescribeAssignment TargetAssignment
+    {
+        get; init;
+    }
+    public sbyte? MemberType
+    {
+        get; init;
+    }
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {
@@ -192,7 +258,10 @@ public sealed class ConsumerGroupDescribeMember
 /// </summary>
 public sealed class ConsumerGroupDescribeAssignment
 {
-    public required IReadOnlyList<ConsumerGroupDescribeTopicPartitions> TopicPartitions { get; init; }
+    public required IReadOnlyList<ConsumerGroupDescribeTopicPartitions> TopicPartitions
+    {
+        get; init;
+    }
 
     public void Write(ref KafkaProtocolWriter writer)
     {
@@ -224,9 +293,18 @@ public sealed class ConsumerGroupDescribeAssignment
 /// </summary>
 public sealed class ConsumerGroupDescribeTopicPartitions
 {
-    public required Guid TopicId { get; init; }
-    public required string TopicName { get; init; }
-    public required IReadOnlyList<int> Partitions { get; init; }
+    public required Guid TopicId
+    {
+        get; init;
+    }
+    public required string TopicName
+    {
+        get; init;
+    }
+    public required IReadOnlyList<int> Partitions
+    {
+        get; init;
+    }
 
     public void Write(ref KafkaProtocolWriter writer)
     {

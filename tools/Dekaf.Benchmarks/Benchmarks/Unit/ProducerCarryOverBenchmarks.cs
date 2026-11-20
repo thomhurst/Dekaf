@@ -59,7 +59,9 @@ public class ProducerCarryOverBenchmarks
             new CompressionCodecRegistry(),
             new PartitionInflightTracker(),
             getProduceApiVersion: static () => 9,
-            setProduceApiVersion: static _ => { },
+            setProduceApiVersion: static _ =>
+            {
+            },
             isTransactional: static () => false,
             tryEnsurePartitionsInTransaction: null,
             bumpEpoch: null,
@@ -127,7 +129,9 @@ public class ProducerCarryOverBenchmarks
         {
             ref var bucket = ref _buckets[c];
             if (bucket.Dispatch)
+            {
                 dispatched++;
+            }
             bucket.Dispatch = false;
             bucket.Count = 0;
         }
@@ -161,7 +165,9 @@ public class ProducerCarryOverBenchmarks
         public ValueTask<IKafkaConnection> GetConnectionAsync(int brokerId, CancellationToken token = default) => throw new NotSupportedException();
         public ValueTask<IKafkaConnection> GetConnectionAsync(string host, int port, CancellationToken token = default) => throw new NotSupportedException();
         public ValueTask<IKafkaConnection> GetConnectionByIndexAsync(int brokerId, int index, CancellationToken token = default) => throw new NotSupportedException();
-        public void RegisterBroker(int id, string host, int port) { }
+        public void RegisterBroker(int id, string host, int port)
+        {
+        }
         public ValueTask<int> ScaleConnectionGroupAsync(int id, int count, CancellationToken token = default) => ValueTask.FromResult(count);
         public ValueTask<IKafkaConnection?> ShrinkConnectionGroupAsync(int id, int count, CancellationToken token = default) => ValueTask.FromResult<IKafkaConnection?>(null);
         public ValueTask RemoveConnectionAsync(int id) => ValueTask.CompletedTask;

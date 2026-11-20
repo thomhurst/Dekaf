@@ -25,8 +25,14 @@ public sealed class OutboxPendingMetrics
     }
 
     /// <summary>Number of pending messages, never negative.</summary>
-    public long PendingCount { get; }
+    public long PendingCount
+    {
+        get;
+    }
 
     /// <summary>Earliest creation timestamp, or null when empty or unavailable.</summary>
-    public DateTimeOffset? OldestCreatedAtUtc { get; }
+    public DateTimeOffset? OldestCreatedAtUtc
+    {
+        get;
+    }
 }

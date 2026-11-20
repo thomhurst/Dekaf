@@ -222,7 +222,14 @@ public sealed class SaslReauthenticationSchedulingTests
         await Assert.That(state.ReauthenticationDeadline)
             .IsEqualTo(authTime.AddMilliseconds(SaslSessionState.MaxReauthenticationDelayMs));
 
-        using var timer = new Timer(static _ => { }, null, state.ReauthenticationDelayMs, Timeout.Infinite);
+        using var timer = new Timer(
+            static _ =>
+            {
+            },
+            null,
+            state.ReauthenticationDelayMs,
+            Timeout.Infinite
+        );
     }
 
     [Test]

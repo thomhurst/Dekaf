@@ -11,5 +11,8 @@ namespace Dekaf.Extensions.DependencyInjection;
 /// </remarks>
 internal sealed class HostedServiceOwnedClient(object client)
 {
-    public object Client { get; } = client;
+    public object Client
+    {
+        get;
+    } = client;
 }

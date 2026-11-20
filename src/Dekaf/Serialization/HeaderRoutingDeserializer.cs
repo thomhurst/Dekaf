@@ -11,8 +11,14 @@ public readonly struct HeaderDeserializerRoute<T>
         Deserializer = deserializer ?? throw new ArgumentNullException(nameof(deserializer));
     }
 
-    public ReadOnlyMemory<byte> HeaderValue { get; }
-    public IDeserializer<T> Deserializer { get; }
+    public ReadOnlyMemory<byte> HeaderValue
+    {
+        get;
+    }
+    public IDeserializer<T> Deserializer
+    {
+        get;
+    }
 }
 
 /// <summary>Routes deserialization to a cached child deserializer using a Kafka header value.</summary>
@@ -49,7 +55,9 @@ public sealed class HeaderRoutingDeserializer<T> :
         {
             var route = routes[i];
             if (route.Deserializer is null)
+            {
                 throw new ArgumentException("Header routes must specify a deserializer.", nameof(routes));
+            }
 
             var value = route.HeaderValue.ToArray();
             _routes[i] = new RouteEntry(
@@ -65,7 +73,9 @@ public sealed class HeaderRoutingDeserializer<T> :
             for (var j = i + 1; j < _routes.Length && _routes[j].Hash == candidate.Hash; j++)
             {
                 if (candidate.Value.AsSpan().SequenceEqual(_routes[j].Value))
+                {
                     throw new ArgumentException("Header route values must be unique.", nameof(routes));
+                }
             }
         }
     }
@@ -80,10 +90,14 @@ public sealed class HeaderRoutingDeserializer<T> :
             {
                 var header = headers[i];
                 if (!string.Equals(header.Key, _headerName, StringComparison.Ordinal))
+                {
                     continue;
+                }
 
                 if (!header.IsValueNull && TryGetDeserializer(header.Value.Span, out var deserializer))
+                {
                     return DeserializeChild(deserializer, data, context);
+                }
 
                 break;
             }
@@ -153,7 +167,9 @@ public sealed class HeaderRoutingDeserializer<T> :
         AddHeaderName(names, _headerName);
         CollectChildHeaderNames(names, _fallbackDeserializer);
         for (var index = 0; index < _routes.Length; index++)
+        {
             CollectChildHeaderNames(names, _routes[index].Deserializer);
+        }
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -182,10 +198,14 @@ public sealed class HeaderRoutingDeserializer<T> :
             {
                 var header = headers[index];
                 if (!string.Equals(header.Key, _headerName, StringComparison.Ordinal))
+                {
                     continue;
+                }
 
                 if (!header.IsValueNull && TryGetDeserializer(header.Value.Span, out var deserializer))
+                {
                     return deserializer;
+                }
 
                 break;
             }
@@ -205,12 +225,16 @@ public sealed class HeaderRoutingDeserializer<T> :
     private bool RequiresPreparation()
     {
         if (DeserializerPreparation.RequiresPreparation(_fallbackDeserializer))
+        {
             return true;
+        }
 
         for (var i = 0; i < _routes.Length; i++)
         {
             if (DeserializerPreparation.RequiresPreparation(_routes[i].Deserializer))
+            {
                 return true;
+            }
         }
 
         return false;
@@ -226,12 +250,16 @@ public sealed class HeaderRoutingDeserializer<T> :
         {
             ref readonly var header = ref headers[i];
             if (!string.Equals(header.Key, _headerName, StringComparison.Ordinal))
+            {
                 continue;
+            }
 
             if (!header.IsValueNull && TryGetDeserializer(header.Value.Span, out var deserializer))
+            {
                 return deserializer is HeaderRoutingDeserializer<T> nested
                     ? nested.DeserializeWithHeaders(data, context, headers)
                     : deserializer.Deserialize(data, context);
+            }
 
             break;
         }
@@ -261,7 +289,9 @@ public sealed class HeaderRoutingDeserializer<T> :
         IDeserializer<T> deserializer)
     {
         if (deserializer is IRecordHeaderRoutingProvider provider)
+        {
             provider.CollectHeaderNames(names);
+        }
     }
 
     private static void AddHeaderName(List<string> names, string headerName)
@@ -269,7 +299,9 @@ public sealed class HeaderRoutingDeserializer<T> :
         for (var index = 0; index < names.Count; index++)
         {
             if (string.Equals(names[index], headerName, StringComparison.Ordinal))
+            {
                 return;
+            }
         }
 
         names.Add(headerName);

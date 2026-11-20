@@ -9,5 +9,8 @@ public sealed class DekafBrokerHealthCheckOptions
     /// The timeout for the broker connectivity check.
     /// Default is 5 seconds.
     /// </summary>
-    public TimeSpan Timeout { get; init; } = TimeSpan.FromSeconds(5);
+    public TimeSpan Timeout
+    {
+        get; init;
+    } = TimeSpan.FromSeconds(5);
 }

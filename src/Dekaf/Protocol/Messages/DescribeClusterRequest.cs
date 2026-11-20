@@ -10,17 +10,30 @@ public sealed class DescribeClusterRequest : IKafkaRequest<DescribeClusterRespon
     public static short LowestSupportedVersion => 0;
     public static short HighestSupportedVersion => 2;
 
-    public bool IncludeClusterAuthorizedOperations { get; init; }
-    public DescribeClusterEndpointType EndpointType { get; init; } = DescribeClusterEndpointType.Broker;
-    public bool IncludeFencedBrokers { get; init; }
+    public bool IncludeClusterAuthorizedOperations
+    {
+        get; init;
+    }
+    public DescribeClusterEndpointType EndpointType
+    {
+        get; init;
+    } = DescribeClusterEndpointType.Broker;
+    public bool IncludeFencedBrokers
+    {
+        get; init;
+    }
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {
         writer.WriteBoolean(IncludeClusterAuthorizedOperations);
         if (version >= 1)
+        {
             writer.WriteInt8((sbyte)EndpointType);
+        }
         if (version >= 2)
+        {
             writer.WriteBoolean(IncludeFencedBrokers);
+        }
         writer.WriteEmptyTaggedFields();
     }
 }

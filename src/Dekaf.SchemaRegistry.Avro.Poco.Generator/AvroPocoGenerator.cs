@@ -200,7 +200,9 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
         var builder = new ModelBuilder(context);
         var model = builder.BuildRecord(symbol);
         if (model is null || builder.HasErrors)
+        {
             return;
+        }
 
         var emitter = new CodecEmitter(model);
         var source = emitter.Emit();
@@ -236,7 +238,9 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
     {
         var builder = new StringBuilder(value.Length);
         foreach (var character in value)
+        {
             builder.Append(char.IsLetterOrDigit(character) ? character : '_');
+        }
         return builder.ToString();
     }
 
@@ -251,12 +255,17 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
 
         internal ModelBuilder(SourceProductionContext context) => _context = context;
 
-        internal bool HasErrors { get; private set; }
+        internal bool HasErrors
+        {
+            get; private set;
+        }
 
         internal RecordModel? BuildRecord(INamedTypeSymbol symbol)
         {
             if (_records.TryGetValue(symbol, out var existing))
+            {
                 return existing;
+            }
             if (!_building.Add(symbol))
             {
                 Error(RecursiveShape, symbol.Locations.FirstOrDefault(), symbol.ToDisplayString());
@@ -305,7 +314,9 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
             foreach (var member in symbol.GetMembers())
             {
                 if (member.IsStatic || GetAttribute(member, IgnoreAttribute) is not null)
+                {
                     continue;
+                }
                 if (member is IPropertySymbol or IFieldSymbol &&
                     member.DeclaredAccessibility != Accessibility.Public)
                 {
@@ -343,7 +354,9 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
                 }
 
                 if (memberType is null)
+                {
                     continue;
+                }
 
                 var attribute = GetAttribute(member, FieldAttribute);
                 var unionTypes = GetNamedTypes(attribute, "UnionTypes");
@@ -352,7 +365,9 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
                 var logicalType = GetNamedString(attribute, "LogicalType");
                 var type = BuildType(memberType, unionTypes, logicalType, precision, scale, member, avroNamespace);
                 if (type is null)
+                {
                     continue;
+                }
 
                 var defaultJson = GetNamedString(attribute, "DefaultJson");
                 if (defaultJson is not null)
@@ -384,12 +399,16 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
                 foreach (var alias in aliases)
                 {
                     if (IsAvroName(alias))
+                    {
                         continue;
+                    }
                     Error(InvalidAvroName, member.Locations.FirstOrDefault(), alias ?? "<null>", "field alias");
                     hasInvalidAlias = true;
                 }
                 if (hasInvalidAlias)
+                {
                     continue;
+                }
 
                 members.Add(new MemberModel(
                     member.Name,
@@ -415,13 +434,19 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
             foreach (var member in members)
             {
                 if (member.Order >= 0 && !explicitOrders.Add(member.Order))
+                {
                     Error(DuplicateOrder, symbol.Locations.FirstOrDefault(), symbol.ToDisplayString(), member.Order);
+                }
                 if (!avroNames.Add(member.AvroName))
+                {
                     Error(DuplicateFieldName, symbol.Locations.FirstOrDefault(), symbol.ToDisplayString(), member.AvroName);
+                }
                 foreach (var alias in member.Aliases)
                 {
                     if (!avroNames.Add(alias))
+                    {
                         Error(DuplicateFieldName, symbol.Locations.FirstOrDefault(), symbol.ToDisplayString(), alias);
+                    }
                 }
             }
 
@@ -431,7 +456,9 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
                 var rightOrder = right.Order >= 0 ? right.Order : int.MaxValue;
                 var order = leftOrder.CompareTo(rightOrder);
                 if (order != 0)
+                {
                     return order;
+                }
                 var sourceOrder = left.SourceOrder.CompareTo(right.SourceOrder);
                 return sourceOrder != 0
                     ? sourceOrder
@@ -453,16 +480,22 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
         private static bool HasBoundedConstructionAllocations(INamedTypeSymbol symbol)
         {
             if (!symbol.Locations.Any(static location => location.IsInSource))
+            {
                 return false;
+            }
 
             var constructor = symbol.InstanceConstructors.FirstOrDefault(static candidate => candidate.Parameters.Length == 0);
             if (constructor is null || !HasBoundedConstructor(constructor))
+            {
                 return false;
+            }
 
             foreach (var member in symbol.GetMembers())
             {
                 if (member.IsStatic)
+                {
                     continue;
+                }
 
                 foreach (var syntaxReference in member.DeclaringSyntaxReferences)
                 {
@@ -473,7 +506,9 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
                         _ => null
                     };
                     if (initializer is not null && !IsAllocationFreeInitializer(initializer))
+                    {
                         return false;
+                    }
                 }
             }
             return true;
@@ -482,7 +517,9 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
         private static bool HasBoundedConstructor(IMethodSymbol constructor)
         {
             if (constructor.IsImplicitlyDeclared)
+            {
                 return true;
+            }
 
             return constructor.DeclaringSyntaxReferences.Length == 1 &&
                    constructor.DeclaringSyntaxReferences[0].GetSyntax() is ConstructorDeclarationSyntax
@@ -545,7 +582,9 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
                 }
                 var branches = ImmutableArray.CreateBuilder<TypeModel>();
                 if (symbol.NullableAnnotation == NullableAnnotation.Annotated)
+                {
                     branches.Add(TypeModel.Primitive(TypeKindModel.Null));
+                }
                 foreach (var unionType in unionTypes)
                 {
                     if (unionType is null)
@@ -585,7 +624,9 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
                     }
                     var branch = BuildType(unionType, default, null, 0, 0, member, enclosingNamespace);
                     if (branch is null)
+                    {
                         return null;
+                    }
                     branches.Add(branch.WithoutNullable());
                 }
                 var identities = new HashSet<string>(StringComparer.Ordinal);
@@ -602,7 +643,9 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
                 foreach (var unionType in unionTypes)
                 {
                     if (!symbol.IsReferenceType || unionType is null || !unionType.IsValueType)
+                    {
                         continue;
+                    }
                     Error(
                         UnsupportedType,
                         member.Locations.FirstOrDefault(),
@@ -645,12 +688,16 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
                 }
 
                 if (array.ElementType.SpecialType == SpecialType.System_Byte)
+                {
                     model = TypeModel.Primitive(TypeKindModel.Bytes, display);
+                }
                 else
                 {
                     var item = BuildType(array.ElementType, default, null, 0, 0, member, enclosingNamespace);
                     if (item is not null)
+                    {
                         model = TypeModel.Collection(TypeKindModel.Array, display, item);
+                    }
                 }
             }
 
@@ -661,14 +708,18 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
                 {
                     var item = BuildType(generic.TypeArguments[0], default, null, 0, 0, member, enclosingNamespace);
                     if (item is not null)
+                    {
                         model = TypeModel.Collection(TypeKindModel.List, display, item);
+                    }
                 }
                 else if (genericName == "System.Collections.Generic.Dictionary<TKey, TValue>" &&
                          generic.TypeArguments[0].SpecialType == SpecialType.System_String)
                 {
                     var item = BuildType(generic.TypeArguments[1], default, null, 0, 0, member, enclosingNamespace);
                     if (item is not null)
+                    {
                         model = TypeModel.Collection(TypeKindModel.Map, display, item);
+                    }
                 }
             }
 
@@ -706,7 +757,9 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
                     for (var right = left + 1; right < enumFields.Length; right++)
                     {
                         if (!Equals(enumFields[left].ConstantValue, enumFields[right].ConstantValue))
+                        {
                             continue;
+                        }
                         Error(
                             DuplicateEnumValue,
                             member.Locations.FirstOrDefault(),
@@ -721,14 +774,18 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
                 foreach (var enumValue in symbols)
                 {
                     if (IsAvroName(enumValue))
+                    {
                         continue;
+                    }
                     Error(InvalidAvroName, member.Locations.FirstOrDefault(), enumValue, "enum symbol");
                     return null;
                 }
 
                 var fullName = GetFullName(enumSymbol);
                 if (!TryRegisterNamedType(fullName, enumSymbol, member.Locations.FirstOrDefault()))
+                {
                     return null;
+                }
                 model = TypeModel.Enum(display, fullName, symbols);
             }
 
@@ -737,7 +794,9 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
             {
                 var nested = BuildRecord(recordSymbol);
                 if (nested is not null)
+                {
                     model = TypeModel.CreateRecord(display, nested, recordSymbol.IsValueType);
+                }
             }
 
             if (model is null)
@@ -791,7 +850,9 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
             }
 
             if (symbol.NullableAnnotation == NullableAnnotation.Annotated && symbol.IsReferenceType)
+            {
                 return TypeModel.Nullable(display, model);
+            }
             return model;
         }
 
@@ -809,7 +870,9 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
             if (_namedTypesByFullName.TryGetValue(fullName, out var existingSymbol))
             {
                 if (SymbolEqualityComparer.Default.Equals(existingSymbol, symbol))
+                {
                     return true;
+                }
                 Error(
                     DuplicateFullName,
                     location,
@@ -826,9 +889,13 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
         private static bool IsAssignableTo(ITypeSymbol source, ITypeSymbol target)
         {
             if (SymbolEqualityComparer.Default.Equals(source, target))
+            {
                 return true;
+            }
             if (source is not INamedTypeSymbol namedSource)
+            {
                 return false;
+            }
             if (target.TypeKind == TypeKind.Interface && namedSource.AllInterfaces.Any(candidate =>
                     SymbolEqualityComparer.Default.Equals(candidate, target)))
             {
@@ -838,7 +905,9 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
             for (var baseType = namedSource.BaseType; baseType is not null; baseType = baseType.BaseType)
             {
                 if (SymbolEqualityComparer.Default.Equals(baseType, target))
+                {
                     return true;
+                }
             }
 
             return false;
@@ -848,14 +917,18 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
         {
             var syntax = symbol.DeclaringSyntaxReferences.FirstOrDefault();
             if (syntax is null || symbol.ContainingType is null)
+            {
                 return long.MaxValue;
+            }
 
             var declarations = symbol.ContainingType.DeclaringSyntaxReferences;
             var treeOrder = declarations.Length;
             for (var index = 0; index < declarations.Length; index++)
             {
                 if (!ReferenceEquals(declarations[index].SyntaxTree, syntax.SyntaxTree))
+                {
                     continue;
+                }
                 treeOrder = index;
                 break;
             }
@@ -866,12 +939,16 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
         private static bool IsAvroNamespace(string value)
         {
             if (value.Length == 0)
+            {
                 return true;
+            }
             var segments = value.Split('.');
             for (var index = 0; index < segments.Length; index++)
             {
                 if (!IsAvroName(segments[index]))
+                {
                     return false;
+                }
             }
             return true;
         }
@@ -879,12 +956,16 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
         private static bool IsAvroName(string? value)
         {
             if (value is null || value.Length == 0 || !IsAvroNameStart(value[0]))
+            {
                 return false;
+            }
             for (var index = 1; index < value.Length; index++)
             {
                 var character = value[index];
                 if (!IsAvroNameStart(character) && character is not (>= '0' and <= '9'))
+                {
                     return false;
+                }
             }
             return true;
         }
@@ -919,7 +1000,9 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
         private static bool TryValidateDefault(TypeModel type, JsonElement value, out string error)
         {
             if (type.Kind is TypeKindModel.Nullable or TypeKindModel.Union)
+            {
                 return TryValidateDefault(type.Branches[0], value, out error);
+            }
 
             var valid = type.Kind switch
             {
@@ -948,7 +1031,9 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
             for (var index = 0; index < value.Length; index++)
             {
                 if (value[index] > byte.MaxValue)
+                {
                     return false;
+                }
             }
             return true;
         }
@@ -1034,7 +1119,9 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
                 .Append(_record.TypeName).AppendLine(" value)");
             code.AppendLine("        {");
             if (_record.Symbol.IsReferenceType)
+            {
                 code.AppendLine("            global::System.ArgumentNullException.ThrowIfNull(value);");
+            }
             for (var index = 0; index < _record.Members.Length; index++)
             {
                 var member = _record.Members[index];
@@ -1056,7 +1143,9 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
         private static bool NeedsOverflowShortCircuit(TypeModel type)
         {
             if (type.Kind is TypeKindModel.Nullable or TypeKindModel.Union)
+            {
                 return type.Branches.Any(NeedsOverflowShortCircuit);
+            }
 
             return type.Kind is TypeKindModel.String or TypeKindModel.Bytes or TypeKindModel.Record or
                 TypeKindModel.Array or TypeKindModel.List or TypeKindModel.Map or TypeKindModel.Uuid or
@@ -1086,7 +1175,9 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
             EmitReadCore(code, "ReadWithWriterUnions", resolveWriterUnions: true, trackDecodedReferences: false);
 
             if (!hasVariableDecodedAllocation)
+            {
                 return;
+            }
 
             code.AppendLine();
             code.AppendLine("        [global::System.ComponentModel.EditorBrowsable(global::System.ComponentModel.EditorBrowsableState.Never)]");
@@ -1117,7 +1208,9 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
                 code.Append("            ").Append(_record.Members[index].ClrType)
                     .Append(" __field").Append(index).AppendLine(" = default!;");
                 if (_record.Members[index].DefaultJson is not null)
+                {
                     code.Append("            var __seen").Append(index).AppendLine(" = false;");
+                }
             }
             code.AppendLine("            for (var __writerIndex = 0; __writerIndex < plan.WriterFieldCount; __writerIndex++)");
             code.AppendLine("            {");
@@ -1130,7 +1223,9 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
                 EmitReadValue(code, _record.Members[index].Type, "__operation.WriterType", "__field" + index,
                     "                        ", resolveWriterUnions, trackDecodedReferences);
                 if (_record.Members[index].DefaultJson is not null)
+                {
                     code.Append("                        __seen").Append(index).AppendLine(" = true;");
+                }
                 code.AppendLine("                        break;");
             }
             code.AppendLine("                    default:");
@@ -1142,7 +1237,9 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
             {
                 var member = _record.Members[index];
                 if (member.DefaultJson is null)
+                {
                     continue;
+                }
                 code.Append("            if (!__seen").Append(index).AppendLine(")");
                 code.Append("                __field").Append(index).Append(" = ")
                     .Append(EmitDefault(member.Type, member.DefaultJson)).AppendLine(";");
@@ -1217,10 +1314,14 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
                 code.Append(indent).Append("if (").Append(value).AppendLine(" is null)");
                 code.Append(indent).AppendLine("{");
                 if (nullIndex >= 0)
+                {
                     code.Append(indent).Append(stopOnOverflow ? "    if (!writer.TryWriteIndex(" : "    writer.WriteIndex(")
                         .Append(nullIndex).AppendLine(stopOnOverflow ? ")) return;" : ");");
+                }
                 else
+                {
                     code.Append(indent).AppendLine("    throw new global::System.InvalidOperationException(\"Non-nullable POCO union value cannot be null.\");");
+                }
                 code.Append(indent).AppendLine("}");
                 code.Append(indent).AppendLine("else");
                 code.Append(indent).AppendLine("{");
@@ -1240,7 +1341,9 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
                     for (var index = 0; index < branches.Length; index++)
                     {
                         if (branches[index].Kind == TypeKindModel.Null)
+                        {
                             continue;
+                        }
                         code.Append(indent).Append(index == (nullIndex == 0 ? 1 : 0) ? "    if" : "    else if")
                             .Append(" (").Append(value).Append(" is ").Append(branches[index].SymbolType)
                             .Append(" __union").Append(_localId).AppendLine(")");
@@ -1383,7 +1486,9 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
                     foreach (var unionBranch in type.Branches)
                     {
                         if (unionBranch.Kind == TypeKindModel.Null)
+                        {
                             continue;
+                        }
                         var readerBranchIndex = FindBranchIndex(type.Branches, unionBranch);
                         code.Append(indent).Append(first ? "    if" : "    else if").Append(" (")
                             .Append(branch).Append(".ReaderUnionBranchIndex == ").Append(readerBranchIndex).AppendLine(")");
@@ -1507,9 +1612,13 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
         {
             code.Append(indent);
             if (stopOnOverflow)
+            {
                 code.Append("if (!writer.TryWrite").Append(method).Append('(').Append(value).AppendLine(")) return;");
+            }
             else
+            {
                 code.Append("writer.Write").Append(method).Append('(').Append(value).AppendLine(");");
+            }
         }
 
         private void EmitTimestampMicrosecondsWrite(
@@ -1544,9 +1653,13 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
             var enumIndex = stopOnOverflow ? "__enumIndex" + _localId++ : null;
             code.Append(indent);
             if (enumIndex is not null)
+            {
                 code.Append("var ").Append(enumIndex).Append(" = ");
+            }
             else
+            {
                 code.Append("writer.WriteIndex(");
+            }
             code.AppendLine(value + " switch");
             code.Append(indent).AppendLine("{");
             for (var index = 0; index < type.Symbols.Length; index++)
@@ -1557,7 +1670,9 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
             code.Append(indent).AppendLine("    _ => throw new global::System.InvalidOperationException(\"Enum value is not declared in the generated Avro schema.\")");
             code.Append(indent).AppendLine(enumIndex is not null ? "};" : "});");
             if (enumIndex is not null)
+            {
                 code.Append(indent).Append("if (!writer.TryWriteIndex(").Append(enumIndex).AppendLine(")) return;");
+            }
         }
 
         private void EmitReadEnum(StringBuilder code, TypeModel type, string node, string target, string indent)
@@ -1660,7 +1775,9 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
                     : "new " + type.SymbolType + "(" + count + ")")
                 .AppendLine(";");
             if (type.Kind == TypeKindModel.Array)
+            {
                 code.Append(indent).Append("var ").Append(offset).AppendLine(" = 0;");
+            }
             code.Append(indent).Append("while (").Append(block).AppendLine(" != 0)");
             code.Append(indent).AppendLine("{");
             if (type.Kind == TypeKindModel.Array)
@@ -1730,10 +1847,14 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
             EmitReadValue(code, type.Item, node + ".Item!", item, indent + "    ", resolveWriterUnions,
                 trackDecodedReferences);
             if (type.Kind == TypeKindModel.Array)
+            {
                 code.Append(indent).Append("    ").Append(result).Append('[').Append(offset).Append("++] = ")
                     .Append(item).AppendLine(";");
+            }
             else
+            {
                 code.Append(indent).Append("    ").Append(result).Append(".Add(").Append(item).AppendLine(");");
+            }
             code.Append(indent).AppendLine("}");
         }
 
@@ -1812,13 +1933,19 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
         private static bool HasVariableDecodedAllocation(TypeModel type)
         {
             if (type.Kind is TypeKindModel.String or TypeKindModel.Bytes or TypeKindModel.Map)
+            {
                 return true;
+            }
 
             if (type.Kind is TypeKindModel.Nullable or TypeKindModel.Union)
+            {
                 return type.Branches.Any(HasVariableDecodedAllocation);
+            }
 
             if (type.Kind is TypeKindModel.Array or TypeKindModel.List)
+            {
                 return HasVariableDecodedAllocation(type.Item!);
+            }
 
             return type.Kind == TypeKindModel.Record &&
                    type.Record!.Members.Any(static member => HasVariableDecodedAllocation(member.Type));
@@ -1827,13 +1954,17 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
         private static int GetMinimumDecodedAllocationSize(TypeModel type)
         {
             if (type.Kind == TypeKindModel.Nullable)
+            {
                 return GetMinimumDecodedAllocationSize(type.WithoutNullable());
+            }
 
             if (type.Kind == TypeKindModel.Union)
             {
                 var maximum = 0;
                 foreach (var branch in type.Branches)
+                {
                     maximum = Math.Max(maximum, GetMinimumDecodedAllocationSize(branch));
+                }
                 return maximum;
             }
 
@@ -1851,7 +1982,9 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
             }
 
             if (!type.Record!.HasBoundedConstructionAllocations)
+            {
                 return UnboundedDecodedAllocationSize;
+            }
 
             var allocation = type.IsValueType ? 0 : GetMinimumRecordObjectSize(type.Record);
             foreach (var member in type.Record!.Members)
@@ -1874,7 +2007,9 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
             const int ObjectHeaderSize = 16;
             var size = ObjectHeaderSize;
             foreach (var member in record.Members)
+            {
                 size = checked(size + GetMinimumFieldStorageSize(member.Type));
+            }
             return (size + 7) & ~7;
         }
 
@@ -1884,7 +2019,9 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
             {
                 var maximum = 0;
                 foreach (var branch in type.Branches)
+                {
                     maximum = Math.Max(maximum, GetMinimumFieldStorageSize(branch));
+                }
                 return maximum;
             }
 
@@ -1892,7 +2029,9 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
             {
                 var size = 0;
                 foreach (var member in type.Record!.Members)
+                {
                     size = checked(size + GetMinimumFieldStorageSize(member.Type));
+                }
                 return Math.Max(8, size);
             }
 
@@ -1904,7 +2043,9 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
         private static int GetMinimumDefaultAllocationSize(MemberModel member)
         {
             if (member.DefaultJson is null)
+            {
                 return 0;
+            }
 
             using var document = JsonDocument.Parse(member.DefaultJson);
             return GetMinimumDefaultAllocationSize(member.Type, document.RootElement);
@@ -1913,11 +2054,17 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
         private static int GetMinimumDefaultAllocationSize(TypeModel type, JsonElement value)
         {
             if (value.ValueKind == JsonValueKind.Null)
+            {
                 return 0;
+            }
             if (type.Kind is TypeKindModel.Nullable or TypeKindModel.Union)
+            {
                 return GetMinimumDefaultAllocationSize(type.Branches[0], value);
+            }
             if (type.Kind != TypeKindModel.Bytes)
+            {
                 return 0;
+            }
 
             return checked(MinimumReferenceObjectSize + ((value.GetString()!.Length + 7) & ~7));
         }
@@ -1930,7 +2077,9 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
             for (var index = 0; index < branches.Length; index++)
             {
                 if (branches[index].Kind == kind)
+                {
                     return index;
+                }
             }
             return -1;
         }
@@ -1940,7 +2089,9 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
             for (var index = 0; index < branches.Length; index++)
             {
                 if (ReferenceEquals(branches[index], branch))
+                {
                     return index;
+                }
             }
 
             return -1;
@@ -1976,7 +2127,9 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
             for (var index = 0; index < record.Members.Length; index++)
             {
                 if (index != 0)
+                {
                     builder.Append(',');
+                }
                 builder.Append("{\"name\":");
                 AppendJsonString(builder, record.Members[index].AvroName);
                 builder.Append(",\"type\":");
@@ -1990,19 +2143,35 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
         {
             switch (type.Kind)
             {
-                case TypeKindModel.Null: builder.Append("\"null\""); return;
-                case TypeKindModel.Boolean: builder.Append("\"boolean\""); return;
+                case TypeKindModel.Null:
+                    builder.Append("\"null\"");
+                    return;
+                case TypeKindModel.Boolean:
+                    builder.Append("\"boolean\"");
+                    return;
                 case TypeKindModel.Int:
-                case TypeKindModel.Date: builder.Append("\"int\""); return;
+                case TypeKindModel.Date:
+                    builder.Append("\"int\"");
+                    return;
                 case TypeKindModel.Long:
                 case TypeKindModel.TimeMicroseconds:
-                case TypeKindModel.TimestampMicroseconds: builder.Append("\"long\""); return;
-                case TypeKindModel.Float: builder.Append("\"float\""); return;
-                case TypeKindModel.Double: builder.Append("\"double\""); return;
+                case TypeKindModel.TimestampMicroseconds:
+                    builder.Append("\"long\"");
+                    return;
+                case TypeKindModel.Float:
+                    builder.Append("\"float\"");
+                    return;
+                case TypeKindModel.Double:
+                    builder.Append("\"double\"");
+                    return;
                 case TypeKindModel.Bytes:
-                case TypeKindModel.Decimal: builder.Append("\"bytes\""); return;
+                case TypeKindModel.Decimal:
+                    builder.Append("\"bytes\"");
+                    return;
                 case TypeKindModel.String:
-                case TypeKindModel.Uuid: builder.Append("\"string\""); return;
+                case TypeKindModel.Uuid:
+                    builder.Append("\"string\"");
+                    return;
                 case TypeKindModel.Array:
                 case TypeKindModel.List:
                     builder.Append("{\"type\":\"array\",\"items\":");
@@ -2020,7 +2189,9 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
                     for (var index = 0; index < type.Branches.Length; index++)
                     {
                         if (index != 0)
+                        {
                             builder.Append(',');
+                        }
                         AppendCanonicalType(builder, type.Branches[index], emitted);
                     }
                     builder.Append(']');
@@ -2040,7 +2211,9 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
                     for (var index = 0; index < type.Symbols.Length; index++)
                     {
                         if (index != 0)
+                        {
                             builder.Append(',');
+                        }
                         AppendJsonString(builder, type.Symbols[index]);
                     }
                     builder.Append("]}");
@@ -2058,13 +2231,17 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
             {
                 var value = (ulong)index;
                 for (var bit = 0; bit < 8; bit++)
+                {
                     value = (value >> 1) ^ (empty & unchecked(0UL - (value & 1)));
+                }
                 table[index] = value;
             }
 
             var fingerprint = empty;
             foreach (var value in Encoding.UTF8.GetBytes(parsingCanonicalForm))
+            {
                 fingerprint = (fingerprint >> 8) ^ table[(byte)(fingerprint ^ value)];
+            }
             return unchecked((long)fingerprint);
         }
 
@@ -2087,7 +2264,9 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
             for (var index = 0; index < record.Members.Length; index++)
             {
                 if (index != 0)
+                {
                     builder.Append(',');
+                }
                 var member = record.Members[index];
                 builder.Append("{\"name\":");
                 AppendJsonString(builder, member.AvroName);
@@ -2099,13 +2278,17 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
                     for (var aliasIndex = 0; aliasIndex < member.Aliases.Length; aliasIndex++)
                     {
                         if (aliasIndex != 0)
+                        {
                             builder.Append(',');
+                        }
                         AppendJsonString(builder, member.Aliases[aliasIndex]);
                     }
                     builder.Append(']');
                 }
                 if (member.DefaultJson is not null)
+                {
                     builder.Append(",\"default\":").Append(member.DefaultJson);
+                }
                 builder.Append('}');
             }
             builder.Append("]}");
@@ -2115,14 +2298,30 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
         {
             switch (type.Kind)
             {
-                case TypeKindModel.Boolean: builder.Append("\"boolean\""); return;
-                case TypeKindModel.Int: builder.Append("\"int\""); return;
-                case TypeKindModel.Long: builder.Append("\"long\""); return;
-                case TypeKindModel.Float: builder.Append("\"float\""); return;
-                case TypeKindModel.Double: builder.Append("\"double\""); return;
-                case TypeKindModel.Bytes: builder.Append("\"bytes\""); return;
-                case TypeKindModel.String: builder.Append("\"string\""); return;
-                case TypeKindModel.Null: builder.Append("\"null\""); return;
+                case TypeKindModel.Boolean:
+                    builder.Append("\"boolean\"");
+                    return;
+                case TypeKindModel.Int:
+                    builder.Append("\"int\"");
+                    return;
+                case TypeKindModel.Long:
+                    builder.Append("\"long\"");
+                    return;
+                case TypeKindModel.Float:
+                    builder.Append("\"float\"");
+                    return;
+                case TypeKindModel.Double:
+                    builder.Append("\"double\"");
+                    return;
+                case TypeKindModel.Bytes:
+                    builder.Append("\"bytes\"");
+                    return;
+                case TypeKindModel.String:
+                    builder.Append("\"string\"");
+                    return;
+                case TypeKindModel.Null:
+                    builder.Append("\"null\"");
+                    return;
                 case TypeKindModel.Array:
                 case TypeKindModel.List:
                     builder.Append("{\"type\":\"array\",\"items\":");
@@ -2140,7 +2339,9 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
                     for (var index = 0; index < type.Branches.Length; index++)
                     {
                         if (index != 0)
+                        {
                             builder.Append(',');
+                        }
                         AppendTypeSchema(builder, type.Branches[index], emitted);
                     }
                     builder.Append(']');
@@ -2168,19 +2369,25 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
                     for (var index = 0; index < type.Symbols.Length; index++)
                     {
                         if (index != 0)
+                        {
                             builder.Append(',');
+                        }
                         AppendJsonString(builder, type.Symbols[index]);
                     }
                     builder.Append("]}");
                     return;
                 case TypeKindModel.Date:
-                    builder.Append("{\"type\":\"int\",\"logicalType\":\"date\"}"); return;
+                    builder.Append("{\"type\":\"int\",\"logicalType\":\"date\"}");
+                    return;
                 case TypeKindModel.TimeMicroseconds:
-                    builder.Append("{\"type\":\"long\",\"logicalType\":\"time-micros\"}"); return;
+                    builder.Append("{\"type\":\"long\",\"logicalType\":\"time-micros\"}");
+                    return;
                 case TypeKindModel.TimestampMicroseconds:
-                    builder.Append("{\"type\":\"long\",\"logicalType\":\"timestamp-micros\"}"); return;
+                    builder.Append("{\"type\":\"long\",\"logicalType\":\"timestamp-micros\"}");
+                    return;
                 case TypeKindModel.Uuid:
-                    builder.Append("{\"type\":\"string\",\"logicalType\":\"uuid\"}"); return;
+                    builder.Append("{\"type\":\"string\",\"logicalType\":\"uuid\"}");
+                    return;
                 case TypeKindModel.Decimal:
                     builder.Append("{\"type\":\"bytes\",\"logicalType\":\"decimal\",\"precision\":")
                         .Append(type.Precision).Append(",\"scale\":").Append(type.Scale).Append('}');
@@ -2196,22 +2403,34 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
             builder.Append("new global::Dekaf.SchemaRegistry.Avro.Poco.AvroPocoType(")
                 .Append(KindExpression(type.Kind));
             if (type.Item is not null)
+            {
                 builder.Append(", item: ").Append(EmitTypeMetadata(type.Item));
+            }
             if (!type.Branches.IsDefaultOrEmpty)
             {
                 builder.Append(", branches: new global::Dekaf.SchemaRegistry.Avro.Poco.AvroPocoType[] { ");
                 foreach (var branch in type.Branches)
+                {
                     builder.Append(EmitTypeMetadata(branch)).Append(", ");
+                }
                 builder.Append('}');
             }
             if (type.FullName is not null)
+            {
                 builder.Append(", fullName: ").Append(Literal(type.FullName));
+            }
             if (type.Record is not null)
+            {
                 builder.Append(", fields: ").Append(type.SymbolType).Append(".AvroCodec.Fields");
+            }
             if (!type.Symbols.IsDefaultOrEmpty)
+            {
                 builder.Append(", symbols: ").Append(EmitStringArray(type.Symbols));
+            }
             if (type.Kind == TypeKindModel.Decimal)
+            {
                 builder.Append(", precision: ").Append(type.Precision).Append(", scale: ").Append(type.Scale);
+            }
             builder.Append(')');
             return builder.ToString();
         }
@@ -2236,9 +2455,13 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
         private static string EmitDefault(TypeModel type, JsonElement value)
         {
             if (value.ValueKind == JsonValueKind.Null)
+            {
                 return "default!";
+            }
             if (type.Kind is TypeKindModel.Nullable or TypeKindModel.Union)
+            {
                 return EmitDefault(type.Branches[0], value);
+            }
             return type.Kind switch
             {
                 TypeKindModel.Boolean => value.GetBoolean() ? "true" : "false",
@@ -2259,9 +2482,13 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
             for (var index = 0; index < value.Length; index++)
             {
                 if (value[index] > byte.MaxValue)
+                {
                     throw new InvalidOperationException("Avro bytes defaults must contain only Unicode code points 0 through 255.");
+                }
                 if (index != 0)
+                {
                     builder.Append(", ");
+                }
                 builder.Append("(byte)").Append((int)value[index]);
             }
             return builder.Append(" }").ToString();
@@ -2274,18 +2501,36 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
             {
                 switch (character)
                 {
-                    case '"': builder.Append("\\\""); break;
-                    case '\\': builder.Append("\\\\"); break;
-                    case '\b': builder.Append("\\b"); break;
-                    case '\f': builder.Append("\\f"); break;
-                    case '\n': builder.Append("\\n"); break;
-                    case '\r': builder.Append("\\r"); break;
-                    case '\t': builder.Append("\\t"); break;
+                    case '"':
+                        builder.Append("\\\"");
+                        break;
+                    case '\\':
+                        builder.Append("\\\\");
+                        break;
+                    case '\b':
+                        builder.Append("\\b");
+                        break;
+                    case '\f':
+                        builder.Append("\\f");
+                        break;
+                    case '\n':
+                        builder.Append("\\n");
+                        break;
+                    case '\r':
+                        builder.Append("\\r");
+                        break;
+                    case '\t':
+                        builder.Append("\\t");
+                        break;
                     default:
                         if (character < ' ')
+                        {
                             builder.Append("\\u").Append(((int)character).ToString("x4", CultureInfo.InvariantCulture));
+                        }
                         else
+                        {
                             builder.Append(character);
+                        }
                         break;
                 }
             }
@@ -2311,11 +2556,15 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
             if (symbol.IsRecord)
             {
                 if (symbol.TypeKind != TypeKind.Struct)
+                {
                     return "partial record";
+                }
                 return symbol.IsReadOnly ? "readonly partial record struct" : "partial record struct";
             }
             if (symbol.TypeKind == TypeKind.Struct)
+            {
                 return symbol.IsReadOnly ? "readonly partial struct" : "partial struct";
+            }
             return "partial class";
         }
 
@@ -2341,13 +2590,34 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
             TypeName = symbol.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
         }
 
-        internal INamedTypeSymbol Symbol { get; }
-        internal string AvroName { get; }
-        internal string AvroNamespace { get; }
-        internal string FullName { get; }
-        internal ImmutableArray<MemberModel> Members { get; }
-        internal bool HasBoundedConstructionAllocations { get; }
-        internal string TypeName { get; }
+        internal INamedTypeSymbol Symbol
+        {
+            get;
+        }
+        internal string AvroName
+        {
+            get;
+        }
+        internal string AvroNamespace
+        {
+            get;
+        }
+        internal string FullName
+        {
+            get;
+        }
+        internal ImmutableArray<MemberModel> Members
+        {
+            get;
+        }
+        internal bool HasBoundedConstructionAllocations
+        {
+            get;
+        }
+        internal string TypeName
+        {
+            get;
+        }
     }
 
     private sealed class MemberModel
@@ -2372,14 +2642,38 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
             Type = type;
         }
 
-        internal string ClrName { get; }
-        internal string AvroName { get; }
-        internal ImmutableArray<string> Aliases { get; }
-        internal string? DefaultJson { get; }
-        internal int Order { get; }
-        internal long SourceOrder { get; }
-        internal string ClrType { get; }
-        internal TypeModel Type { get; }
+        internal string ClrName
+        {
+            get;
+        }
+        internal string AvroName
+        {
+            get;
+        }
+        internal ImmutableArray<string> Aliases
+        {
+            get;
+        }
+        internal string? DefaultJson
+        {
+            get;
+        }
+        internal int Order
+        {
+            get;
+        }
+        internal long SourceOrder
+        {
+            get;
+        }
+        internal string ClrType
+        {
+            get;
+        }
+        internal TypeModel Type
+        {
+            get;
+        }
     }
 
     private sealed class TypeModel
@@ -2390,18 +2684,48 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
             SymbolType = symbolType;
         }
 
-        internal TypeKindModel Kind { get; private set; }
-        internal string SymbolType { get; }
-        internal TypeModel? Item { get; private set; }
-        internal ImmutableArray<TypeModel> Branches { get; private set; }
-        internal RecordModel? Record { get; private set; }
-        internal string? FullName { get; private set; }
-        internal ImmutableArray<string> Symbols { get; private set; }
-        internal int Precision { get; private set; }
-        internal int Scale { get; private set; }
+        internal TypeKindModel Kind
+        {
+            get; private set;
+        }
+        internal string SymbolType
+        {
+            get;
+        }
+        internal TypeModel? Item
+        {
+            get; private set;
+        }
+        internal ImmutableArray<TypeModel> Branches
+        {
+            get; private set;
+        }
+        internal RecordModel? Record
+        {
+            get; private set;
+        }
+        internal string? FullName
+        {
+            get; private set;
+        }
+        internal ImmutableArray<string> Symbols
+        {
+            get; private set;
+        }
+        internal int Precision
+        {
+            get; private set;
+        }
+        internal int Scale
+        {
+            get; private set;
+        }
         internal bool IsValueType => IsValueTypeOverride ??
             Kind is not (TypeKindModel.String or TypeKindModel.Bytes or TypeKindModel.Record or TypeKindModel.Array or TypeKindModel.List or TypeKindModel.Map or TypeKindModel.Union);
-        private bool? IsValueTypeOverride { get; set; }
+        private bool? IsValueTypeOverride
+        {
+            get; set;
+        }
         internal string? LogicalTypeName => Kind switch
         {
             TypeKindModel.Date => "date",
@@ -2479,11 +2803,15 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
     private static int GetNamedInt(AttributeData? attribute, string name, int fallback = 0)
     {
         if (attribute is null)
+        {
             return fallback;
+        }
         foreach (var pair in attribute.NamedArguments)
         {
             if (pair.Key == name && pair.Value.Value is int value)
+            {
                 return value;
+            }
         }
         return fallback;
     }
@@ -2491,11 +2819,15 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
     private static ImmutableArray<string> GetNamedStrings(AttributeData? attribute, string name)
     {
         if (attribute is null)
+        {
             return ImmutableArray<string>.Empty;
+        }
         foreach (var pair in attribute.NamedArguments)
         {
             if (pair.Key != name || pair.Value.Kind != TypedConstantKind.Array)
+            {
                 continue;
+            }
             return pair.Value.Values.Select(static value => (string)value.Value!).ToImmutableArray();
         }
         return ImmutableArray<string>.Empty;
@@ -2504,11 +2836,15 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
     private static ImmutableArray<ITypeSymbol> GetNamedTypes(AttributeData? attribute, string name)
     {
         if (attribute is null)
+        {
             return ImmutableArray<ITypeSymbol>.Empty;
+        }
         foreach (var pair in attribute.NamedArguments)
         {
             if (pair.Key != name || pair.Value.Kind != TypedConstantKind.Array)
+            {
                 continue;
+            }
             return pair.Value.Values.Select(static value => (ITypeSymbol)value.Value!).ToImmutableArray();
         }
         return ImmutableArray<ITypeSymbol>.Empty;

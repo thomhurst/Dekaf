@@ -69,17 +69,25 @@ public static class AspireDekafClientExtensions
         {
             var client = new KafkaClientBuilder();
             if (services.GetService<ILoggerFactory>() is { } loggerFactory)
+            {
                 client.WithLoggerFactory(loggerFactory);
+            }
             if (settings.ConnectionString is not null)
+            {
                 client.WithBootstrapServers(settings.ConnectionString);
+            }
             configureBuilder?.Invoke(services, client);
             return client.Build();
         }
 
         if (serviceKey is null)
+        {
             builder.Services.AddSingleton(Create);
+        }
         else
+        {
             builder.Services.AddKeyedSingleton(serviceKey, (services, _) => Create(services));
+        }
 
         DekafAspireRegistration.AddTelemetry(builder, settings);
 

@@ -32,7 +32,9 @@ public class OutboxBucketNotificationBenchmarks
         _notifySingle = ((IOutboxBucketNotifier)notifier).NotifyCommitted;
         var capability = typeof(IOutboxNotifier).Assembly.GetType("Dekaf.Outbox.IOutboxBucketNotifier");
         if (capability is null)
+        {
             _notify = _ => notifier.NotifyCommitted();
+        }
         else
         {
             capability.GetMethod("SetOwnedBuckets")!.Invoke(notifier, new object[] { OwnedBuckets });
@@ -42,7 +44,9 @@ public class OutboxBucketNotificationBenchmarks
         _reader = ((Channel<byte>)notifier.GetType().GetField("_notifications", BindingFlags.NonPublic | BindingFlags.Instance)!
             .GetValue(notifier)!).Reader;
         if (!LocalCommit())
+        {
             throw new InvalidOperationException("A local commit must signal the relay.");
+        }
     }
 
     [Benchmark]

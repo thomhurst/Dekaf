@@ -91,7 +91,10 @@ public sealed class RetiredConnectionDisposerTests
         private int _value = initialValue;
         private int _nonZeroReads;
 
-        public TaskCompletionSource SecondNonZeroRead { get; } = new(
+        public TaskCompletionSource SecondNonZeroRead
+        {
+            get;
+        } = new(
             TaskCreationOptions.RunContinuationsAsynchronously);
 
         public int Value
@@ -104,7 +107,9 @@ public sealed class RetiredConnectionDisposerTests
         {
             var value = Value;
             if (value > 0 && Interlocked.Increment(ref _nonZeroReads) == 2)
+            {
                 SecondNonZeroRead.TrySetResult();
+            }
 
             return value;
         }

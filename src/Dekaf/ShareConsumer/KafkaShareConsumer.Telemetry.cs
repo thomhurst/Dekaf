@@ -8,8 +8,13 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue>
 {
     // Value-type specializations let the JIT remove disabled record accounting.
     // Select once per parsing window; record loops do not read subscription state.
-    private readonly struct RecordTelemetryEnabled { }
-    private readonly struct RecordTelemetryDisabled { }
+    private readonly struct RecordTelemetryEnabled
+    {
+    }
+
+    private readonly struct RecordTelemetryDisabled
+    {
+    }
 
     /// <inheritdoc />
     public void RegisterMetricForSubscription(ApplicationTelemetryMetric metric)
@@ -33,7 +38,9 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue>
         var metrics = ShareMetrics;
         if (acknowledgements is null || metrics is null
             || !metrics.Enabled(ShareConsumerTelemetryMetrics.Groups.Acknowledgements))
+        {
             return;
+        }
 
         long count = 0;
         foreach (var batches in acknowledgements.Values)
@@ -53,7 +60,9 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue>
         var metrics = ShareMetrics;
         if (metrics is null || !metrics.Enabled(ShareConsumerTelemetryMetrics.Groups.Fetch
             | ShareConsumerTelemetryMetrics.Groups.Acknowledgements))
+        {
             return _hostedRequestCancellationToken.CanBeCanceled ? context : null;
+        }
         if (context is null)
         {
             context = metrics.GetRequestWriteContext(brokerId);
@@ -76,7 +85,10 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue>
                     continue;
                 }
                 var batches = partitions[partitionIndex].AcknowledgementBatches;
-                if (batches is null) continue;
+                if (batches is null)
+                {
+                    continue;
+                }
                 for (var index = 0; index < batches.Count; index++)
                 {
                     var batch = batches[index];
@@ -93,7 +105,9 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue>
     {
         var metrics = ShareMetrics;
         if (metrics is null || !metrics.Enabled(ShareConsumerTelemetryMetrics.Groups.Acknowledgements))
+        {
             return _hostedRequestCancellationToken.CanBeCanceled ? context : null;
+        }
         if (context is null)
         {
             context = metrics.GetRequestWriteContext(brokerId);
@@ -120,7 +134,10 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue>
     private KafkaRequestWriteContext? PrepareSessionCloseTelemetry(int brokerId)
     {
         var metrics = ShareMetrics;
-        if (metrics is null || !metrics.Enabled(ShareConsumerTelemetryMetrics.Groups.Fetch)) return null;
+        if (metrics is null || !metrics.Enabled(ShareConsumerTelemetryMetrics.Groups.Fetch))
+        {
+            return null;
+        }
         var context = metrics.GetRequestWriteContext(brokerId);
         context.Reset();
         metrics.StartFetch(brokerId, 0, resetRecords: false);
@@ -130,7 +147,9 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue>
     private static long CountAcknowledgedRecords(long firstOffset, long lastOffset, IReadOnlyList<byte> types)
     {
         if (types.Count == 1)
+        {
             return types[0] == (byte)AcknowledgeType.Gap ? 0 : lastOffset - firstOffset + 1;
+        }
         long count = types.Count;
         if (types is byte[] array)
         {
@@ -147,7 +166,12 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue>
         else
         {
             for (var index = 0; index < types.Count; index++)
-                if (types[index] == (byte)AcknowledgeType.Gap) count--;
+            {
+                if (types[index] == (byte)AcknowledgeType.Gap)
+                {
+                    count--;
+                }
+            }
         }
         return count;
     }

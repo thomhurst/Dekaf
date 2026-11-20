@@ -127,8 +127,14 @@ internal sealed class PendingFetchData : IDisposable
     // break that ordering — keep the invariant if one is ever added.
     private ConsumeException? _error;
 
-    public string Topic { get; private set; } = null!;
-    public int PartitionIndex { get; private set; }
+    public string Topic
+    {
+        get; private set;
+    } = null!;
+    public int PartitionIndex
+    {
+        get; private set;
+    }
 
     /// <summary>
     /// Cached activity name for tracing. Lazily created so no-listener consume paths avoid
@@ -149,7 +155,10 @@ internal sealed class PendingFetchData : IDisposable
     /// <summary>
     /// Cached TopicPartition to avoid per-message allocation in consume loop.
     /// </summary>
-    public TopicPartition TopicPartition { get; private set; }
+    public TopicPartition TopicPartition
+    {
+        get; private set;
+    }
 
     /// <summary>
     /// Tracks the last offset yielded for batch position updates.
@@ -160,8 +169,14 @@ internal sealed class PendingFetchData : IDisposable
     /// Thread-safety: Not required. PendingFetchData is consumed sequentially by the single
     /// consumer poll loop thread. Each instance handles one partition's fetch response.
     /// </remarks>
-    public long LastYieldedOffset { get; private set; } = -1;
-    public int LastYieldedLeaderEpoch { get; private set; } = -1;
+    public long LastYieldedOffset
+    {
+        get; private set;
+    } = -1;
+    public int LastYieldedLeaderEpoch
+    {
+        get; private set;
+    } = -1;
 
     /// <summary>
     /// Highest yielded offset the application has demonstrably moved past — set when the
@@ -170,10 +185,19 @@ internal sealed class PendingFetchData : IDisposable
     /// <see cref="ProvenOffset"/> and <see cref="LastYieldedOffset"/> is the in-doubt record
     /// whose processing may have failed, and must not be staged on unwind.
     /// </summary>
-    public long ProvenOffset { get; private set; } = -1;
-    public int ProvenLeaderEpoch { get; private set; } = -1;
+    public long ProvenOffset
+    {
+        get; private set;
+    } = -1;
+    public int ProvenLeaderEpoch
+    {
+        get; private set;
+    } = -1;
 
-    internal long CheckpointInitialMessageCount { get; private set; }
+    internal long CheckpointInitialMessageCount
+    {
+        get; private set;
+    }
     internal long CheckpointStartOffset => _skipRecordsBelowOffset;
 
     internal void BeginCheckpointWindow(object owner)
@@ -191,7 +215,9 @@ internal sealed class PendingFetchData : IDisposable
         // A suspended iterator can outlive this pooled instance's original rental.
         // End only its own window, even if a newer owner begins between checks.
         if (owner is not null)
+        {
             Interlocked.CompareExchange(ref _checkpointOwner, null, owner);
+        }
     }
 
     /// <summary>
@@ -209,19 +235,28 @@ internal sealed class PendingFetchData : IDisposable
     /// <summary>
     /// Tracks total bytes consumed in this pending fetch.
     /// </summary>
-    public long TotalBytesConsumed { get; private set; }
+    public long TotalBytesConsumed
+    {
+        get; private set;
+    }
 
     /// <summary>
     /// Tracks the number of messages yielded from this pending fetch.
     /// Using long to prevent overflow in long-running scenarios with large fetches.
     /// </summary>
-    public long MessageCount { get; private set; }
+    public long MessageCount
+    {
+        get; private set;
+    }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal int GetMaximumRecordCount(int limit)
         => Math.Min(limit, _maximumRecordCount);
 
-    internal bool IsExhausted { get; private set; }
+    internal bool IsExhausted
+    {
+        get; private set;
+    }
 
     // Iteration cursor captured when this fetch is yielded as a batch. Kept on the pooled
     // instance so the batch iterators' state machines carry no extra per-stream state.
@@ -312,7 +347,9 @@ internal sealed class PendingFetchData : IDisposable
         }
     }
 
-    private PendingFetchData() { }
+    private PendingFetchData()
+    {
+    }
 
     /// <summary>
     /// Rents a PendingFetchData from the pool and initializes it with the given parameters.
@@ -394,7 +431,9 @@ internal sealed class PendingFetchData : IDisposable
         long actualEndOffset)
     {
         if (fetchEndOffsetExclusive == actualEndOffset)
+        {
             return lastBatch.PartitionLeaderEpoch;
+        }
 
         // Find the last batch beginning before the exclusive boundary. Fetch responses are
         // offset-ordered; binary search avoids adding a second O(n) pass to fetch processing.
@@ -457,12 +496,16 @@ internal sealed class PendingFetchData : IDisposable
         {
             var recordCount = batches[i].UnparsedLazyRecordCount;
             if (recordCount < 0 || recordCount > RecordBatch.MaxReasonableLazyRecordCount - totalRecordCount)
+            {
                 return;
+            }
             totalRecordCount += recordCount;
         }
 
         if (totalRecordCount == 0)
+        {
             return;
+        }
 
         var slabPool = Volatile.Read(ref s_parsedRecordSlabPool);
         // No rent-side clear: ReleaseReference scrubs the used range before every return.
@@ -594,9 +637,13 @@ internal sealed class PendingFetchData : IDisposable
     private static void WriteGeneration(ref long field, long value)
     {
         if (IntPtr.Size == 8)
+        {
             Volatile.Write(ref field, value);
+        }
         else
+        {
             Interlocked.Exchange(ref field, value);
+        }
     }
 
     /// <summary>
@@ -612,7 +659,9 @@ internal sealed class PendingFetchData : IDisposable
         {
             var generation = Interlocked.Increment(ref s_fetchGeneration);
             if ((int)generation != 0)
+            {
                 return generation;
+            }
         }
     }
 
@@ -639,7 +688,9 @@ internal sealed class PendingFetchData : IDisposable
         {
             var observed = Interlocked.CompareExchange(ref s_fetchGeneration, generation, current);
             if (observed == current)
+            {
                 return;
+            }
             current = observed;
         }
     }
@@ -662,7 +713,9 @@ internal sealed class PendingFetchData : IDisposable
         {
             var array = _currentRecordsArray;
             if (array is not null)
+            {
                 return ref array[_currentRecordsArrayOffset + _recordIndex];
+            }
 
             _fallbackCurrentRecord = _currentRecords![_recordIndex];
             return ref _fallbackCurrentRecord;
@@ -687,14 +740,26 @@ internal sealed class PendingFetchData : IDisposable
     /// Cached batch properties for the current batch.
     /// Updated only on batch transitions to avoid per-message property access overhead.
     /// </summary>
-    internal long CurrentBaseOffset { get; private set; }
-    internal int CurrentPartitionLeaderEpoch { get; private set; } = -1;
-    internal long CurrentBaseTimestamp { get; private set; }
+    internal long CurrentBaseOffset
+    {
+        get; private set;
+    }
+    internal int CurrentPartitionLeaderEpoch
+    {
+        get; private set;
+    } = -1;
+    internal long CurrentBaseTimestamp
+    {
+        get; private set;
+    }
     /// <summary>
     /// Cached timestamp type for the current batch.
     /// Computed once per batch transition instead of per-message.
     /// </summary>
-    internal TimestampType CurrentTimestampType { get; private set; }
+    internal TimestampType CurrentTimestampType
+    {
+        get; private set;
+    }
 
     /// <summary>
     /// Updates tracking for batch-level position.
@@ -744,12 +809,16 @@ internal sealed class PendingFetchData : IDisposable
         if (_eagerParsed)
         {
             if (headerRoutingPlan is not null)
+            {
                 ConfigureHeaderRouting(headerRoutingPlan);
+            }
             return;
         }
 
         if (Interlocked.Exchange(ref _error, null) is { } error)
+        {
             throw error;
+        }
 
         var batchCount = _batches.Count;
         if (_stopAtOffsetExclusive >= 0)
@@ -757,7 +826,9 @@ internal sealed class PendingFetchData : IDisposable
             for (var i = 0; i < batchCount; i++)
             {
                 if (_batches[i].BaseOffset < _stopAtOffsetExclusive)
+                {
                     continue;
+                }
 
                 batchCount = i;
                 break;
@@ -774,13 +845,17 @@ internal sealed class PendingFetchData : IDisposable
                 batch.ConfigureHeaderRouting(headerRoutingPlan);
                 batch.EnsureAllRecordsParsed();
                 if (batch.Records is Protocol.Records.LazyRecordList lazyList)
+                {
                     lazyList.EnsureAllParsed();
+                }
 
                 // A batch frame is complete here (ReadCore rejects partial frames), so fewer
                 // records than declared is corruption. The fetch end covers the missing
                 // offsets; delivering the prefix would let commits skip them (#4027).
                 if (batch.HasTruncatedRecordTail)
+                {
                     ThrowTruncatedRecordTail(batch);
+                }
             }
         }
         catch (Exception ex) when (ex is InsufficientDataException or MalformedProtocolDataException)
@@ -800,7 +875,9 @@ internal sealed class PendingFetchData : IDisposable
     internal void ConfigureHeaderRouting(RecordHeaderRoutingPlan headerRoutingPlan)
     {
         for (var index = 0; index < _batches.Count; index++)
+        {
             _batches[index].ConfigureHeaderRouting(headerRoutingPlan);
+        }
     }
 
     /// <summary>
@@ -842,7 +919,9 @@ internal sealed class PendingFetchData : IDisposable
     private int FindSnapshotRecordCount(IReadOnlyList<Record> records)
     {
         if (CurrentBaseOffset >= _stopAtOffsetExclusive)
+        {
             return 0;
+        }
 
         var low = 0;
         var high = _currentRecordsCount;
@@ -855,9 +934,13 @@ internal sealed class PendingFetchData : IDisposable
                 ? recordsArray[_currentRecordsArrayOffset + middle].OffsetDelta
                 : records[middle].OffsetDelta;
             if (CurrentBaseOffset + offsetDelta < _stopAtOffsetExclusive)
+            {
                 low = middle + 1;
+            }
             else
+            {
                 high = middle;
+            }
         }
 
         return low;
@@ -873,7 +956,9 @@ internal sealed class PendingFetchData : IDisposable
         Debug.Assert(Volatile.Read(ref _disposed) == 0, "MoveNext() called after Dispose()");
 
         if (IsExhausted)
+        {
             return false;
+        }
 
         if (_hasBufferedCurrent)
         {
@@ -887,7 +972,9 @@ internal sealed class PendingFetchData : IDisposable
             _batchIndex = 0;
             _recordIndex = 0;
             if (!HasCurrentRecordOrMarkExhausted())
+            {
                 return false;
+            }
 
             return _skipRecordsBelowOffset < 0 || SkipRecordsBelowStartOffset();
         }
@@ -895,7 +982,9 @@ internal sealed class PendingFetchData : IDisposable
         // Try next record in current batch (uses cached count to avoid Records property access)
         _recordIndex++;
         if (_recordIndex < _currentRecordsCount)
+        {
             return true;
+        }
 
         // Move to next batch
         _batchIndex++;
@@ -911,13 +1000,19 @@ internal sealed class PendingFetchData : IDisposable
     internal bool TryBufferNext()
     {
         if (IsExhausted)
+        {
             return false;
+        }
 
         if (_hasBufferedCurrent)
+        {
             return true;
+        }
 
         if (!MoveNext())
+        {
             return false;
+        }
 
         _hasBufferedCurrent = true;
         return true;
@@ -937,7 +1032,9 @@ internal sealed class PendingFetchData : IDisposable
     private bool HasCurrentRecordOrMarkExhausted()
     {
         if (HasCurrentRecord())
+        {
             return true;
+        }
 
         IsExhausted = true;
         return false;
@@ -964,9 +1061,13 @@ internal sealed class PendingFetchData : IDisposable
                 {
                     var middle = low + ((high - low) >> 1);
                     if (CurrentBaseOffset + records[_currentRecordsArrayOffset + middle].OffsetDelta < _skipRecordsBelowOffset)
+                    {
                         low = middle + 1;
+                    }
                     else
+                    {
                         high = middle;
+                    }
                 }
                 _recordIndex = low;
             }
@@ -977,12 +1078,16 @@ internal sealed class PendingFetchData : IDisposable
                 _recordIndex++;
             }
             if (_recordIndex < _currentRecordsCount)
+            {
                 continue;
+            }
 
             _batchIndex++;
             _recordIndex = 0;
             if (!HasCurrentRecordOrMarkExhausted())
+            {
                 return false;
+            }
         }
 
         return true;
@@ -1006,7 +1111,9 @@ internal sealed class PendingFetchData : IDisposable
             CacheCurrentBatchState();
 
             if (_recordIndex < _currentRecordsCount)
+            {
                 return true;
+            }
             // Empty batch, try next
             _batchIndex++;
             _recordIndex = 0;
@@ -1039,7 +1146,9 @@ internal sealed class PendingFetchData : IDisposable
             {
                 queue.Dequeue();
                 if (queue.Count == 0)
+                {
                     _abortedProducers.Remove(batch.ProducerId);
+                }
             }
             return true;
         }
@@ -1064,7 +1173,9 @@ internal sealed class PendingFetchData : IDisposable
     public void Dispose()
     {
         if (Interlocked.Exchange(ref _disposed, 1) != 0)
+        {
             return;
+        }
 
         ReleaseReference();
     }
@@ -1075,7 +1186,9 @@ internal sealed class PendingFetchData : IDisposable
         var remaining = Interlocked.Decrement(ref _referenceCount);
         Debug.Assert(remaining >= 0, "PendingFetchData reference count underflow.");
         if (remaining == 0)
+        {
             ReleaseStorage();
+        }
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
@@ -1138,7 +1251,9 @@ internal sealed class PendingFetchData : IDisposable
         {
             _headerGeneration++;
             if (_headerGeneration == 0)
+            {
                 _headerGeneration = 1;
+            }
         }
         CurrentBaseOffset = 0;
         CurrentPartitionLeaderEpoch = -1;
@@ -1208,10 +1323,14 @@ internal sealed class PendingFetchData : IDisposable
         {
             var target = Volatile.Read(ref state.MigrationTarget);
             if (target is null)
+            {
                 return;
+            }
 
             while (Volatile.Read(ref target.MigrationTarget) is { } next)
+            {
                 target = next;
+            }
 
             target.Pool.Return(item);
         }
@@ -1254,7 +1373,9 @@ internal sealed class SnapshotConsumeState
     public bool IsPartitionComplete(TopicPartition partition)
     {
         lock (_gate)
+        {
             return _completed.Contains(partition);
+        }
     }
 
     public bool Complete(TopicPartition partition)
@@ -1262,7 +1383,9 @@ internal sealed class SnapshotConsumeState
         lock (_gate)
         {
             if (!_endOffsets.ContainsKey(partition) || !_completed.Add(partition))
+            {
                 return false;
+            }
 
             Volatile.Write(ref _remaining, _remaining - 1);
             return true;
@@ -1272,7 +1395,9 @@ internal sealed class SnapshotConsumeState
     public bool TryQueueEndMarker(TopicPartition partition, long visibleEndOffset, out long endOffset)
     {
         if (!_endOffsets.TryGetValue(partition, out endOffset) || visibleEndOffset < endOffset)
+        {
             return false;
+        }
 
         lock (_gate)
         {
@@ -1283,7 +1408,9 @@ internal sealed class SnapshotConsumeState
     public void ReleaseEndMarker(TopicPartition partition)
     {
         lock (_gate)
+        {
             _queuedEndMarkers.Remove(partition);
+        }
     }
 
     public void InvalidateConsumerState() => Volatile.Write(ref _consumerStateInvalidated, 1);
@@ -1343,7 +1470,9 @@ internal static class ConsumerFetchPools
         for (var i = 0; i < topics.Count; i++)
         {
             if (topics[i].Partitions is List<FetchRequestPartition> partitions)
+            {
                 s_fetchRequestPartitionLists.Return(partitions);
+            }
         }
 
         s_fetchRequestTopicLists.Return(topics);
@@ -1495,7 +1624,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             // A retried operation reports the failure it was still hitting as the cancellation's
             // cause (RetryHelper deadline mode); that failure is what the caller needs to see.
             if (innerException is OperationCanceledException { InnerException: { } cause })
+            {
                 innerException = cause;
+            }
 
             var configured = TimeSpan.FromMilliseconds(_timeoutMs);
             return new KafkaTimeoutException(
@@ -1965,16 +2096,28 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     // call (ClearFetchBuffer adds the fetches it discards); null otherwise.
     private LeaveCommitSnapshot? _leaveFetchCapture;
     // Deterministic test seam for assignment/revocation snapshot races.
-    internal Action? BeforeCoordinatorAssignmentSnapshotForTest { get; set; }
+    internal Action? BeforeCoordinatorAssignmentSnapshotForTest
+    {
+        get; set;
+    }
 
     // Runs after a sync pass's last version check, just before it acknowledges the sync.
-    internal Action? BeforeAssignmentSyncAcknowledgedForTest { get; set; }
+    internal Action? BeforeAssignmentSyncAcknowledgedForTest
+    {
+        get; set;
+    }
 
     // Runs after EnsureAssignmentAsync captured the subscription, before it ensures group membership.
-    internal Action? BeforeEnsureActiveGroupForTest { get; set; }
+    internal Action? BeforeEnsureActiveGroupForTest
+    {
+        get; set;
+    }
 
     // Runs once the coordinator confirmed a sync pass, before the consumer completes it.
-    internal Action? AfterAssignmentSyncAcknowledgedForTest { get; set; }
+    internal Action? AfterAssignmentSyncAcknowledgedForTest
+    {
+        get; set;
+    }
     // Deterministic test seam: runs in assignment sync after the partitions assigned again are
     // identified and before revoked-partition state is cleaned up. It receives the consumer, so
     // a static keeps the instance layout unchanged and parallel tests can filter by it.
@@ -2133,11 +2276,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     {
     }
 
-    private static (
-        IConnectionPool,
-        MetadataManager,
-        ClientTelemetryMetricCollector,
-        FetchBufferMemoryPool) CreateInfrastructure(
+    private static (IConnectionPool, MetadataManager, ClientTelemetryMetricCollector, FetchBufferMemoryPool) CreateInfrastructure(
         ConsumerOptions options, ILoggerFactory? loggerFactory, MetadataOptions? metadataOptions)
     {
         var reconnectBackoffMaxMs = ReconnectBackoffValidation.ResolveMaximumMilliseconds(
@@ -2286,11 +2425,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         ConsumerOptions options,
         IDeserializer<TKey> keyDeserializer,
         IDeserializer<TValue> valueDeserializer,
-        (
-            IConnectionPool Pool,
-            MetadataManager Metadata,
-            ClientTelemetryMetricCollector TelemetryMetricCollector,
-            FetchBufferMemoryPool FetchBufferMemoryPool) infrastructure,
+        (IConnectionPool Pool, MetadataManager Metadata, ClientTelemetryMetricCollector TelemetryMetricCollector, FetchBufferMemoryPool FetchBufferMemoryPool) infrastructure,
         ILoggerFactory? loggerFactory,
         bool ownsInfrastructure,
         IDekafMemoryBudget memoryBudget,
@@ -2299,7 +2434,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(options.ConnectionsPerBroker, 1);
         if (options.EnableAdaptiveConnections)
+        {
             ArgumentOutOfRangeException.ThrowIfGreaterThan(options.ConnectionsPerBroker, options.MaxConnectionsPerBroker);
+        }
         ArgumentOutOfRangeException.ThrowIfLessThan(options.MaxPollRecords, 1);
         ArgumentOutOfRangeException.ThrowIfLessThan(options.MaxPollIntervalMs, 1);
         ValidateFetchBufferMemory(options);
@@ -2391,11 +2528,15 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         _memoryBudget = memoryBudget;
         _telemetryMetricCollector = infrastructure.TelemetryMetricCollector;
         if (!ownsInfrastructure && _connectionPool is ConnectionPool sharedPool)
+        {
             _telemetryMetricCollector.ConnectionCreationTotalProvider = sharedPool.GetConnectionCreationTotal;
+        }
         _telemetryMetricCollector.RegisterMetricsForSubscription(options.ApplicationMetrics);
         _telemetryMetricCollector.ResourceAttributesProvider = CaptureTelemetryResourceAttributes;
         if (_telemetryMetricCollector.StandardMetrics is { } standardMetrics)
+        {
             standardMetrics.AssignedPartitionCountProvider = () => _assignmentSnapshot.Count;
+        }
         _loggerFactory = loggerFactory;
         _telemetryManager = new ClientTelemetryManager(
             _connectionPool,
@@ -2492,7 +2633,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             .DrainAllSafelyAsync(LogPrefetchLoopError, IsFatalPrefetchError)
             .ConfigureAwait(false);
         if (drainError is not null)
+        {
             ExceptionDispatchInfo.Capture(drainError).Throw();
+        }
 
         cancellationToken.ThrowIfCancellationRequested();
         if (scaleDown)
@@ -2502,7 +2645,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             // routing pointed at a connection index another broker already retired.
             Volatile.Write(ref _appliedConnectionCount, targetCount);
             if (_ownsInfrastructure)
+            {
                 await ScaleDownOwnedConnectionGroupsAsync(targetCount, cancellationToken).ConfigureAwait(false);
+            }
         }
         else
         {
@@ -2535,10 +2680,12 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         var brokers = _metadataManager.Metadata.GetBrokers();
         var scaleDownTasks = new Task[brokers.Count];
         for (var i = 0; i < brokers.Count; i++)
+        {
             scaleDownTasks[i] = ScaleDownOwnedConnectionGroupAsync(
                 brokers[i].NodeId,
                 targetCount,
                 cancellationToken).AsTask();
+        }
 
         await Task.WhenAll(scaleDownTasks).ConfigureAwait(false);
     }
@@ -2553,7 +2700,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             newCount,
             cancellationToken).ConfigureAwait(false);
         if (removedConnection is null)
+        {
             return;
+        }
 
         // Pool detachment completes the routing transition. Drain leases and operations in
         // the background so a slow retired socket cannot pause all consumer prefetch.
@@ -2736,7 +2885,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     public void RegisterMetricForSubscription(ApplicationTelemetryMetric metric)
     {
         if (Volatile.Read(ref _consumerDisposed) != 0)
+        {
             throw new ObjectDisposedException(nameof(KafkaConsumer<TKey, TValue>));
+        }
 
         _telemetryMetricCollector.RegisterMetricForSubscription(metric);
     }
@@ -2745,7 +2896,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     public void UnregisterMetricFromSubscription(string name)
     {
         if (Volatile.Read(ref _consumerDisposed) != 0)
+        {
             throw new ObjectDisposedException(nameof(KafkaConsumer<TKey, TValue>));
+        }
 
         _telemetryMetricCollector.UnregisterMetricFromSubscription(name);
     }
@@ -2767,16 +2920,22 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             // Return null if not part of a consumer group
             var groupId = _options.GroupId;
             if (_coordinator is null || string.IsNullOrEmpty(groupId))
+            {
                 return null;
+            }
 
             // Return null if not yet joined (no member ID assigned)
             var memberId = _coordinator.MemberId;
             if (string.IsNullOrEmpty(memberId))
+            {
                 return null;
+            }
 
             // Return null if generation ID is invalid (not yet in a stable group)
             if (_coordinator.GenerationId < 0)
+            {
                 return null;
+            }
 
             return new ConsumerGroupMetadata
             {
@@ -2868,7 +3027,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     private void EndGroupMembership()
     {
         if (_coordinator is not { } coordinator)
+        {
             return;
+        }
 
         var groupSubscribed = IsGroupSubscribed;
 
@@ -2901,7 +3062,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         }
 
         lock (_coordinatorRevokedPartitionsPendingFetchClearLock)
+        {
             _pendingRebalanceSeeks.Clear();
+        }
     }
 
     /// <summary>
@@ -2928,27 +3091,45 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         Dictionary<TopicPartition, long>? storedRecordCounts)
     {
         /// <summary>The membership the offsets belong to; they are never sent under another.</summary>
-        public int MembershipVersion { get; } = membershipVersion;
+        public int MembershipVersion
+        {
+            get;
+        } = membershipVersion;
 
         /// <summary>The partitions the consumer held when it ended its membership. Read-only.</summary>
-        public HashSet<TopicPartition> Held { get; } = held;
+        public HashSet<TopicPartition> Held
+        {
+            get;
+        } = held;
 
         /// <summary>
         /// Serializes reading, committing and removing these offsets, so a commit never sends an
         /// offset lower than one another commit of them already sent.
         /// </summary>
-        public SemaphoreSlim CommitLock { get; } = new(1, 1);
+        public SemaphoreSlim CommitLock
+        {
+            get;
+        } = new(1, 1);
 
-        public ConcurrentDictionary<TopicPartition, TopicPartitionOffset> Proven { get; } = proven;
+        public ConcurrentDictionary<TopicPartition, TopicPartitionOffset> Proven
+        {
+            get;
+        } = proven;
 
-        public ConcurrentDictionary<TopicPartition, TopicPartitionOffset> Explicit { get; } = vouched;
+        public ConcurrentDictionary<TopicPartition, TopicPartitionOffset> Explicit
+        {
+            get;
+        } = vouched;
 
         /// <summary>
         /// For the commit observer: how many offsets the application stored for each partition
         /// since its last commit, or null with automatic offset storage. Read and changed only
         /// under <see cref="CommitLock"/>; a partition's count leaves once a commit covered it.
         /// </summary>
-        public Dictionary<TopicPartition, long>? StoredRecordCounts { get; } = storedRecordCounts;
+        public Dictionary<TopicPartition, long>? StoredRecordCounts
+        {
+            get;
+        } = storedRecordCounts;
     }
 
     /// <remarks>
@@ -2962,7 +3143,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         var proven = new ConcurrentDictionary<TopicPartition, TopicPartitionOffset>();
         var storedRecordCounts = ReportsStoredRecordCount ? new Dictionary<TopicPartition, long>() : null;
         foreach (var offset in SnapshotStoredOffsets(held, storedRecordCounts))
+        {
             proven[new TopicPartition(offset.Topic, offset.Partition)] = offset;
+        }
 
         var vouched = new ConcurrentDictionary<TopicPartition, TopicPartitionOffset>(proven);
 
@@ -2988,7 +3171,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     private void CaptureDepartingFetchPositions(LeaveCommitSnapshot capture, PendingFetchData pending)
     {
         if (!_options.EnableAutoOffsetStore || !capture.Held.Contains(pending.TopicPartition))
+        {
             return;
+        }
 
         if (pending.ProvenOffset >= 0)
         {
@@ -2997,7 +3182,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         }
 
         if (TryGetConsumedPosition(pending, out var partition, out var position, out var leaderEpoch, includeFilteredProgress: false))
+        {
             AddDepartingPosition(capture.Explicit, partition, position, leaderEpoch);
+        }
     }
 
     private static void AddDepartingPosition(
@@ -3012,13 +3199,17 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             if (!offsets.TryGetValue(partition, out var existing))
             {
                 if (offsets.TryAdd(partition, offset))
+                {
                     return;
+                }
 
                 continue;
             }
 
             if (existing.Offset >= position || offsets.TryUpdate(partition, offset, existing))
+            {
                 return;
+            }
         }
     }
 
@@ -3030,10 +3221,14 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     {
         var state = Volatile.Read(ref _departingOffsets);
         if (state is null || _coordinator is not { } coordinator)
+        {
             return null;
+        }
 
         if (state.MembershipVersion == coordinator.MembershipVersion)
+        {
             return state;
+        }
 
         Interlocked.CompareExchange(ref _departingOffsets, null, state);
         return null;
@@ -3054,14 +3249,18 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         if (partitions is null)
         {
             foreach (var entry in source)
+            {
                 (offsets ??= []).Add(entry.Value);
+            }
         }
         else
         {
             for (var i = 0; i < partitions.Count; i++)
             {
                 if (source.TryGetValue(partitions[i], out var offset))
+                {
                     (offsets ??= []).Add(offset);
+                }
             }
         }
 
@@ -3112,7 +3311,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             {
                 (offsets ??= []).Add(new TopicPartitionOffset(partition.Topic, partition.Partition, offset, leaderEpoch));
                 if (storedRecordCounts is not null)
+                {
                     storedRecordCounts[partition] = unsettledStoreCount;
+                }
             }
         }
 
@@ -3135,7 +3336,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         OffsetCommitReason? observedReason = null)
     {
         if (GetCurrentDepartingOffsets() is not { } state)
+        {
             return false;
+        }
 
         await state.CommitLock.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
@@ -3150,7 +3353,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             if (state.StoredRecordCounts is { } storedRecordCounts)
             {
                 foreach (var offset in offsets)
+                {
                     storedRecordCount += storedRecordCounts.GetValueOrDefault(new TopicPartition(offset.Topic, offset.Partition));
+                }
             }
 
             await CommitObservedOffsetsAsync(
@@ -3167,7 +3372,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             if (state.StoredRecordCounts is { } committedRecordCounts)
             {
                 foreach (var offset in offsets)
+                {
                     committedRecordCounts.Remove(new TopicPartition(offset.Topic, offset.Partition));
+                }
             }
             InvokeOnCommitInterceptors(offsets);
             return true;
@@ -3208,10 +3415,14 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         ClearFetchBuffer();
 
         if (hadPaused)
+        {
             PublishPausedSnapshot();
+        }
 
         if (invalidatePartitionCache)
+        {
             InvalidatePartitionCache();
+        }
 
         InvalidateFetchRequestCache();
     }
@@ -3254,12 +3465,16 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 foreach (var partition in previousAssignment)
                 {
                     if (!_assignment.Contains(partition))
+                    {
                         (removedPartitions ??= []).Add(partition);
+                    }
                 }
 
                 PublishAssignmentSnapshot();
                 if (removedPartitions is not null)
+                {
                     hadPaused = RemovePartitionState(removedPartitions);
+                }
                 hadPaused |= DiscardUnsynchronizedRebalanceState(_acknowledgedCoordinatorAssignment);
             }
         }
@@ -3276,7 +3491,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         ClearFetchBuffer();
 
         if (hadPaused)
+        {
             PublishPausedSnapshot();
+        }
 
         InvalidatePartitionCache();
         InvalidateFetchRequestCache();
@@ -3313,7 +3530,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         ClearFetchBuffer();
 
         if (hadPaused)
+        {
             PublishPausedSnapshot();
+        }
 
         InvalidatePartitionCache();
         InvalidateFetchRequestCache();
@@ -3358,9 +3577,13 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     {
                         SetPosition(tp, tpo.Offset, dirty: false);
                         if (tpo.LeaderEpoch >= 0)
+                        {
                             SetLastConsumedLeaderEpoch(tp, tpo.LeaderEpoch);
+                        }
                         else
+                        {
                             ClearLastConsumedLeaderEpoch(tp);
+                        }
                         SetFetchPosition(tp, tpo.Offset);
                     }
                     // Otherwise the position initializes lazily: from the group's committed
@@ -3376,7 +3599,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         }
 
         if (hadPaused)
+        {
             PublishPausedSnapshot();
+        }
 
         InvalidatePartitionCache();
         InvalidateFetchRequestCache();
@@ -3417,7 +3642,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         bool stagePendingClear = false)
     {
         if (partitions.Count == 0)
+        {
             return;
+        }
 
         var hadPaused = false;
         SemaphoreHelper.AcquireOrThrowDisposed(_assignmentLock, nameof(KafkaConsumer<TKey, TValue>));
@@ -3442,7 +3669,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
                 // Close: nothing is synchronized any more, so callback state goes too.
                 if (clearAll)
+                {
                     hadPaused |= DiscardUnsynchronizedRebalanceState(synchronizedAssignment: []);
+                }
             }
         }
         finally
@@ -3457,7 +3686,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             stagePendingClear: stagePendingClear);
 
         if (hadPaused)
+        {
             PublishPausedSnapshot();
+        }
         InvalidatePartitionCache();
         InvalidateFetchRequestCache();
     }
@@ -3466,7 +3697,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
         if (Volatile.Read(ref _consumerDisposed) != 0)
+        {
             throw new ObjectDisposedException(nameof(KafkaConsumer<TKey, TValue>));
+        }
 
         ThrowIfNotInitialized();
         lock (_coordinatorRevokedPartitionsPendingFetchClearLock)
@@ -3486,7 +3719,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             ProvePriorDeliveryForSnapshot();
             snapshot = await CaptureSnapshotStateAsync(cancellationToken).ConfigureAwait(false);
             if (snapshot.IsComplete)
+            {
                 yield break;
+            }
 
             Volatile.Write(ref _activeSnapshot, snapshot);
             ResetFetchBufferForSnapshot(snapshot);
@@ -3515,7 +3750,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     }
 
                     if (snapshot.IsComplete)
+                    {
                         yield break;
+                    }
                     continue;
                 }
 
@@ -3527,7 +3764,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                         endOffset,
                         result.LeaderEpoch ?? -1);
                     if (snapshot.IsComplete)
+                    {
                         yield break;
+                    }
                     continue;
                 }
 
@@ -3541,7 +3780,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                         endOffset,
                         result.LeaderEpoch ?? -1);
                     if (snapshot.IsComplete)
+                    {
                         yield break;
+                    }
                 }
             }
         }
@@ -3555,7 +3796,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                         snapshot))
                 {
                     if (!snapshot.IsComplete)
+                    {
                         ResetFetchBufferAfterAbortedSnapshot(snapshot);
+                    }
 
                     InvalidatePartitionCache();
                 }
@@ -3573,7 +3816,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         CancellationToken cancellationToken = default)
     {
         if (offsetCount < 0)
+        {
             throw new ArgumentOutOfRangeException(nameof(offsetCount), "Offset count cannot be negative.");
+        }
 
         var watermarks = await QueryWatermarkOffsetsAsync(partition, cancellationToken).ConfigureAwait(false);
         var offset = Math.Max(watermarks.Low, watermarks.High - offsetCount);
@@ -3653,7 +3898,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         lock (_coordinatorRevokedPartitionsPendingFetchClearLock)
         {
             if (_pendingFetches.Count == 0)
+            {
                 return;
+            }
 
             var priorPending = _pendingFetches.Peek();
             priorPending.MarkYieldedProcessed();
@@ -3667,11 +3914,15 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         {
             // Assignment changes own their buffer reset and position initialization.
             if (!ReferenceEquals(snapshot.Assignment, _assignmentSnapshot))
+            {
                 return;
+            }
 
             var resumeOffsets = new Dictionary<TopicPartition, long>(snapshot.StartOffsets.Count);
             foreach (var (partition, startOffset) in snapshot.StartOffsets)
+            {
                 resumeOffsets[partition] = GetRawPosition(partition) ?? startOffset;
+            }
 
             ClearFetchBufferForPartitions(snapshot.Assignment, stagePendingClear: true);
             foreach (var (partition, offset) in resumeOffsets)
@@ -3692,7 +3943,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         {
             ThrowIfSnapshotStateChanged(snapshot);
             if (!snapshot.Complete(partition))
+            {
                 return;
+            }
 
             LogSeek(partition.Topic, partition.Partition, endOffset);
             lock (_coordinatorRevokedPartitionsPendingFetchClearLock)
@@ -3753,7 +4006,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         where TProofMode : struct
     {
         if (Volatile.Read(ref _consumerDisposed) != 0)
+        {
             throw new ObjectDisposedException(nameof(KafkaConsumer<TKey, TValue>));
+        }
 
         ThrowIfNotInitialized();
 
@@ -3781,12 +4036,16 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             // A later publication changes the captured epoch and reaches the same slow path.
             var recordIterationEpochSeed = Volatile.Read(ref _batchIterationEpoch.Version);
             if (Volatile.Read(ref _coordinatorRevokedPartitionsPendingFetchClearMarkerPresent) != 0)
+            {
                 recordIterationEpochSeed |= 1;
+            }
             _recordIterationEpochSeed = recordIterationEpochSeed;
 
             var activeSnapshot = Volatile.Read(ref _activeSnapshot);
             if (activeSnapshot is not null)
+            {
                 ThrowIfSnapshotStateChanged(activeSnapshot);
+            }
 
             if (_assignmentSnapshot.Count == 0)
             {
@@ -3875,7 +4134,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     var recordIterationVersion = _recordIterationEpochSeed;
                     PreparePendingFetchesForDelivery();
                     if (_pendingFetches.Count == 0)
+                    {
                         break;
+                    }
 
                     var pending = _pendingFetches.Peek();
                     // Retain once per fetch, not per record. A deserializer can synchronously
@@ -3884,7 +4145,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     // A fresh ConsumeAsync stream is another pull and therefore proves any
                     // record retained when a previous stream was disposed at its yield point.
                     if (typeof(TProofMode) == typeof(RecordProofMode))
+                    {
                         pending.MarkYieldedProcessed();
+                    }
                     var hasUnprovenBufferedRecords = typeof(TProofMode) == typeof(BufferedBatchProofMode)
                         && BeginBufferedBatchFetch(pending);
                     var pendingFetchesVersion = Volatile.Read(ref _pendingFetchesVersion);
@@ -3931,7 +4194,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                         try
                         {
                             if (!pending.MoveNext())
+                            {
                                 break;
+                            }
 
                             // Dispose previous message's activity (captures user processing time)
                             previousActivity?.Dispose();
@@ -3990,7 +4255,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                                     pausedDuringDelivery = iterationStatus == RecordIterationStatus.Paused;
                                     HandleStoppedRecordIteration(topicPartition, pausedDuringDelivery);
                                     if (pausedDuringDelivery)
+                                    {
                                         pending.BufferCurrentForRedelivery();
+                                    }
                                     break;
                                 }
 
@@ -4012,7 +4279,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                                             pausedDuringDelivery = iterationStatus == RecordIterationStatus.Paused;
                                             HandleStoppedRecordIteration(topicPartition, pausedDuringDelivery);
                                             if (pausedDuringDelivery)
+                                            {
                                                 pending.BufferCurrentForRedelivery();
+                                            }
                                             break;
                                         }
                                     }
@@ -4021,7 +4290,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                                         TrackConsumedPosition(pending, offset, messageBytes);
                                     }
                                     if (proveRejectedRecord)
+                                    {
                                         pending.MarkYieldedProcessed();
+                                    }
                                     filteredRecordRejected = true;
                                     goto FilteredRecordComplete;
                                 }
@@ -4190,7 +4461,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                                 pausedDuringDelivery = iterationStatus == RecordIterationStatus.Paused;
                                 HandleStoppedRecordIteration(topicPartition, pausedDuringDelivery);
                                 if (pausedDuringDelivery)
+                                {
                                     pending.BufferCurrentForRedelivery();
+                                }
                                 break;
                             }
 
@@ -4212,7 +4485,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                                     pausedDuringDelivery = iterationStatus == RecordIterationStatus.Paused;
                                     HandleStoppedRecordIteration(topicPartition, pausedDuringDelivery);
                                     if (pausedDuringDelivery)
+                                    {
                                         pending.BufferCurrentForRedelivery();
+                                    }
                                     break;
                                 }
                             }
@@ -4230,7 +4505,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                                     pausedDuringDelivery = iterationStatus == RecordIterationStatus.Paused;
                                     HandleStoppedRecordIteration(topicPartition, pausedDuringDelivery);
                                     if (pausedDuringDelivery)
+                                    {
                                         pending.BufferCurrentForRedelivery();
+                                    }
                                     break;
                                 }
                             }
@@ -4252,8 +4529,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                         {
                             throw;
                         }
-                        catch (Exception ex) when (
-                            readingProtocolData && ProtocolDataErrorClassifier.IsProtocolDataError(ex))
+                        catch (Exception ex) when (readingProtocolData && ProtocolDataErrorClassifier.IsProtocolDataError(ex))
                         {
                             // Protocol-layer data errors from corrupted/truncated wire data should not
                             // kill the consumer. User-facing exceptions (deserializer errors, etc.)
@@ -4294,16 +4570,22 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                         // being iterated here; touching it again would read disposed
                         // pooled buffers.
                         if (Volatile.Read(ref _pendingFetchesVersion) != pendingFetchesVersion)
+                        {
                             break;
+                        }
 
                         // Reaching this line means the caller requested the next record, which
                         // proves the record yielded above was processed. Enumerator disposal
                         // (loop-body exception, break) resumes directly into finally blocks and
                         // never executes this, leaving the in-doubt record unproven.
                         if (typeof(TProofMode) == typeof(RecordProofMode))
+                        {
                             pending.MarkYieldedProcessed();
+                        }
                         else
+                        {
                             hasUnprovenBufferedRecords = pending.ProvenOffset != pending.LastYieldedOffset;
+                        }
 
                         if (--recordsUntilPollRefresh == 0)
                         {
@@ -4320,7 +4602,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     // point); skip position/metric flushes that would read it and
                     // re-evaluate the (rebuilt) queue.
                     if (Volatile.Read(ref _pendingFetchesVersion) != pendingFetchesVersion)
+                    {
                         break;
+                    }
 
                     // Batch-level position flush. _positions and _fetchPositions are updated
                     // once per partition-fetch (in prefetch mode it is managed by UpdateFetchPositionsFromPrefetch).
@@ -4338,7 +4622,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     // so we batch the Counter<T>.Add calls (virtual dispatch + bucket lookup)
                     // into a single pair per partition-fetch instead of per message.
                     if (metricsEnabled && pending.MessageCount > 0)
+                    {
                         EmitFetchMetrics(pending);
+                    }
 
                     // Report batch processing time to the adaptive fetch sizer (per-batch, not per-message)
                     if (batchProcessingStarted.HasValue)
@@ -4372,7 +4658,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     FlushConsumedPositions(current);
 
                     if (metricsEnabled && current.MessageCount > 0)
+                    {
                         EmitFetchMetrics(current);
+                    }
                 }
             }
 
@@ -4501,10 +4789,14 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 {
                     PreparePendingFetchesForDelivery();
                     if (_pendingFetches.Count == 0)
+                    {
                         break;
+                    }
 
                     if (ClearFetchBufferForPendingCoordinatorRevocations())
+                    {
                         continue;
+                    }
 
                     if (TryDiscardExhaustedPendingFetch()
                         || TryDiscardReleasedPendingFetch()
@@ -4560,7 +4852,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     finally
                     {
                         if (!resumedAfterYield)
+                        {
                             pending.EndCheckpointWindow(batch);
+                        }
                         _batchLoopExitRequested = CompleteBatchPoll(
                             pending,
                             pendingFetchesVersion,
@@ -4574,7 +4868,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     // pause parking, revocation handling or the held-fetch wait run before any
                     // further delivery instead of spinning on the same queued fetch.
                     if (_batchLoopExitRequested)
+                    {
                         break;
+                    }
                 }
             }
             finally
@@ -4704,10 +5000,14 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 {
                     PreparePendingFetchesForDelivery();
                     if (_pendingFetches.Count == 0)
+                    {
                         break;
+                    }
 
                     if (ClearFetchBufferForPendingCoordinatorRevocations())
+                    {
                         continue;
+                    }
 
                     if (TryDiscardExhaustedPendingFetch()
                         || TryDiscardReleasedPendingFetch()
@@ -4751,7 +5051,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     finally
                     {
                         if (!resumedAfterYield)
+                        {
                             pending.EndCheckpointWindow(batch);
+                        }
                         _batchLoopExitRequested = CompleteBatchPoll(
                             pending,
                             pendingFetchesVersion,
@@ -4765,7 +5067,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     // pause parking, revocation handling or the held-fetch wait run before any
                     // further delivery instead of spinning on the same queued fetch.
                     if (_batchLoopExitRequested)
+                    {
                         break;
+                    }
                 }
             }
             finally
@@ -4806,21 +5110,31 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             0) != 0;
 
         if (Volatile.Read(ref _pendingFetchesVersion) != pendingFetchesVersion)
+        {
             return false;
+        }
 
         if (_pendingFetches.Count == 0 || !ReferenceEquals(_pendingFetches.Peek(), pending))
+        {
             return false;
+        }
 
         if (exhaustionProbePending)
+        {
             pending.TryBufferNext();
+        }
 
         if (yieldedBatchProcessed)
+        {
             pending.MarkYieldedProcessed();
+        }
 
         FlushConsumedPositions(pending);
 
         if (metricsEnabled && pending.MessageCount > 0)
+        {
             EmitFetchMetrics(pending);
+        }
 
         if (batchProcessingStarted.HasValue)
         {
@@ -4842,7 +5156,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         // record: it skipped the batch. Iteration the consumer itself stopped after a read
         // (pause during delivery) moved the cursor and keeps its buffered redelivery path.
         if (!yieldedBatchProcessed || !pending.IsAtYieldCursor)
+        {
             return false;
+        }
 
         return !TryReleaseSkippedBatch(pending);
     }
@@ -4866,7 +5182,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
         // Paused data stays parked for Resume; the next delivery boundary moves it aside.
         if (_paused.ContainsKey(partition))
+        {
             return false;
+        }
 
         // Snapshot reads own their bounded positions, and Seek rejects changes during them.
         if (pending.IsSnapshotEnd || Volatile.Read(ref _snapshotOperationActive) != 0)
@@ -4879,7 +5197,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         {
             // A staged seek or revocation owns this partition's queued data.
             if (HasPendingFetchClear(partition))
+            {
                 return false;
+            }
 
             // Prefetch runs ahead of the consumed position. Without a known position the
             // queued data cannot be refetched safely, so it stays queued for redelivery.
@@ -4924,7 +5244,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     private void ReleaseSkippedPartitions()
     {
         if (_skippedBatchPartitions.Count == 0)
+        {
             return;
+        }
 
         var partitions = _skippedBatchPartitions;
         try
@@ -4937,11 +5259,15 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 {
                     // A seek or revocation staged since the skip owns the replacement position.
                     if (HasPendingFetchClear(partition) || !IsCurrentlyAssigned(partition))
+                    {
                         continue;
+                    }
 
                     // Direct fetches already resume from the consumed position.
                     if (_positions.TryGetValue(partition, out var position) && position >= 0)
+                    {
                         SetFetchPosition(partition, position);
+                    }
                     _eofEmitted.TryRemove(partition, out _);
                 }
             }
@@ -4962,7 +5288,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     private void PrepareEofDelivery()
     {
         if (_eofHoldPartitions.Count > 0)
+        {
             _eofHoldPartitions.Clear();
+        }
 
         if (_pendingEofEvents.IsEmpty)
         {
@@ -4973,7 +5301,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         if (_pendingFetches.Count > 0)
         {
             foreach (var queued in _pendingFetches)
+            {
                 _eofHoldPartitions.Add(queued.TopicPartition);
+            }
         }
 
         _eofDrainRemaining = _pendingEofEvents.Count;
@@ -4999,7 +5329,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         while (_pendingEofEvents.TryDequeue(out eofEvent))
         {
             if (!IsSupersededEof(eofEvent.Partition, eofEvent.Offset))
+            {
                 return true;
+            }
         }
 
         return false;
@@ -5019,7 +5351,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             {
                 // Superseded while queued: records past this EOF were published or consumed.
                 if (IsSupersededEof(eofEvent.Partition, eofEvent.Offset))
+                {
                     continue;
+                }
 
                 return true;
             }
@@ -5028,7 +5362,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         }
 
         if (_eofHoldPartitions.Count > 0)
+        {
             _eofHoldPartitions.Clear();
+        }
         eofEvent = default;
         return false;
     }
@@ -5072,7 +5408,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     private void RestoreHeldSkippedFetches()
     {
         if (_heldSkippedFetches.Count == 0)
+        {
             return;
+        }
 
         if (_pendingFetches.Count > 0)
         {
@@ -5081,14 +5419,20 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             {
                 var queued = _pendingFetches.Dequeue();
                 if (_heldSkippedPartitions.Contains(queued.TopicPartition))
+                {
                     _heldSkippedFetches.Enqueue(queued);
+                }
                 else
+                {
                     _pendingFetches.Enqueue(queued);
+                }
             }
         }
 
         while (_heldSkippedFetches.TryDequeue(out var held))
+        {
             _pendingFetches.Enqueue(held);
+        }
     }
 
     /// <summary>
@@ -5106,7 +5450,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         // New data for other partitions queues behind the held fetches and is offered first
         // once the held partition is skipped again.
         if (prefetchEnabled)
+        {
             DrainPrefetchBuffer();
+        }
 
         _heldSkippedPartitions.Clear();
     }
@@ -5127,11 +5473,15 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     private bool TryDiscardExhaustedPendingFetch()
     {
         if (_pendingFetches.Count == 0)
+        {
             return false;
+        }
 
         var pending = _pendingFetches.Peek();
         if (!pending.IsExhausted)
+        {
             return false;
+        }
 
         pending.MarkYieldedProcessed();
         FlushConsumedPositions(pending);
@@ -5142,20 +5492,28 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     private void StartPrefetch()
     {
         if (Volatile.Read(ref _consumerDisposed) != 0 || Volatile.Read(ref _closed) != 0)
+        {
             return;
+        }
 
         // Prefetch is a lifetime loop. A non-null terminal task represents a stopped
         // consumer path and must not be silently restarted, unlike the auto-commit loop.
         if (HasPrefetchStarted())
+        {
             return;
+        }
 
         lock (_prefetchStartLock)
         {
             if (Volatile.Read(ref _consumerDisposed) != 0 || Volatile.Read(ref _closed) != 0)
+            {
                 return;
+            }
 
             if (HasPrefetchStarted())
+            {
                 return;
+            }
 
             _prefetchCts = new CancellationTokenSource();
             _prefetchTask = PrefetchLoopAsync(_prefetchCts.Token);
@@ -5184,11 +5542,15 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     }
 
                     if (await WaitForConnectionRoutingTransitionAsync().ConfigureAwait(false))
+                    {
                         continue;
+                    }
 
                     var drained = await _brokerPrefetchScheduler.DrainCompletedAsync().ConfigureAwait(false);
                     if (PrefetchLoopControl.ShouldResetConsecutiveErrors(drained))
+                    {
                         consecutiveErrors = 0;
+                    }
 
                     if (_assignmentSnapshot.Count == 0)
                     {
@@ -5196,7 +5558,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                             .DrainAllSafelyAsync(LogPrefetchLoopError, IsFatalPrefetchError)
                             .ConfigureAwait(false);
                         if (drainError is not null)
+                        {
                             ExceptionDispatchInfo.Capture(drainError).Throw();
+                        }
 
                         await Task.Delay(AllPartitionsPausedDelayMs, cancellationToken).ConfigureAwait(false);
                         continue;
@@ -5223,10 +5587,14 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     {
                         ReportBrokerPrefetchBacklog(decision.ReportBacklog);
                         if (decision.RecordFetchWait)
+                        {
                             _adaptiveFetchSizer?.RecordFetchStart();
+                        }
                         await _brokerPrefetchScheduler.WaitForAnyAsync(cancellationToken).ConfigureAwait(false);
                         if (decision.RecordFetchWait)
+                        {
                             _adaptiveFetchSizer?.RecordFetchEnd();
+                        }
                         ReportBrokerPrefetchBacklog(decision.ReportBacklog);
                     }
                     else if (decision.Action == PrefetchLoopAction.DelayNoWork)
@@ -5272,13 +5640,17 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         finally
         {
             if (completionError is not null)
+            {
                 _prefetchCts?.Cancel();
+            }
 
             var drainError = await _brokerPrefetchScheduler
                 .DrainAllSafelyAsync(LogPrefetchLoopError, IsFatalPrefetchError)
                 .ConfigureAwait(false);
             if (completionError is null && drainError is not null && IsFatalPrefetchError(drainError))
+            {
                 completionError = drainError;
+            }
 
             _prefetchBuffer.Complete(completionError);
         }
@@ -5288,7 +5660,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     {
         var transition = Volatile.Read(ref _connectionRoutingTransitionTask);
         if (transition is null)
+        {
             return false;
+        }
 
         try
         {
@@ -5318,7 +5692,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         {
             var key = entry.Key;
             if (key.ConnectionIndex >= fetchConnectionCount)
+            {
                 _prefetchPendingItemsByBroker.TryRemove(key, out _);
+            }
         }
 
         var started = 0;
@@ -5404,7 +5780,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     {
         TryRecoverMissingPendingFetchClearMarkers();
         if (Volatile.Read(ref _coordinatorRevokedPartitionsPendingFetchClearMarkerPresent) == 0)
+        {
             return partitionsByBroker;
+        }
 
         var filtered = new Dictionary<int, List<TopicPartition>>(partitionsByBroker.Count);
         foreach (var (brokerId, partitions) in partitionsByBroker)
@@ -5413,11 +5791,15 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             foreach (var partition in partitions)
             {
                 if (!_coordinatorRevokedPartitionsPendingFetchClear.ContainsKey(partition))
+                {
                     (retained ??= []).Add(partition);
+                }
             }
 
             if (retained is { Count: > 0 })
+            {
                 filtered[brokerId] = retained;
+            }
         }
 
         return filtered;
@@ -5465,7 +5847,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 : default;
 
             if (cancellationToken.IsCancellationRequested)
+            {
                 consumeCts.Cancel();
+            }
 
             await PrefetchFromBrokerWithErrorHandlingAsync(
                 brokerId,
@@ -5487,7 +5871,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     private void ReportBrokerPrefetchBacklog(bool isBacklogged)
     {
         if (_connectionScaler is null)
+        {
             return;
+        }
 
         _connectionScaler.ReportPipelineUtilization(
             isBacklogged ? 1 : 0,
@@ -5750,7 +6136,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                         requestMetadataSnapshot,
                         fetchSessionHandler);
                     if (string.IsNullOrEmpty(topic))
+                    {
                         continue;
+                    }
 
                     var activityName = _activityNameCache.GetOrAdd(topic, static t => Diagnostics.DekafDiagnostics.ProcessSpanName(t));
 
@@ -5758,7 +6146,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     {
                         var tp = new TopicPartition(topic, partitionResponse.PartitionIndex);
                         if (ShouldDropStaleFetchPartition(tp, fetchBufferEpoch))
+                        {
                             continue;
+                        }
 
                         // Update watermark cache from fetch response (even on errors, watermarks may be valid)
                         UpdateWatermarksFromFetchResponse(
@@ -5863,7 +6253,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                             }
 
                             if (TryCreateSnapshotEndMarker(tp, partitionResponse) is { } marker)
+                            {
                                 pendingItems.Add(marker);
+                            }
                         }
                     }
                 }
@@ -5886,7 +6278,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             finally
             {
                 if (queuedDivergingEpochReset)
+                {
                     CompleteDivergingEpochResets();
+                }
 
                 // Return the response and its nested objects to their pools.
                 // Data has been transferred to PendingFetchData; the response wrappers are no longer needed.
@@ -5930,7 +6324,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 out var nextOffset,
                 out var leaderEpoch,
                 includeFilteredProgress))
+        {
             return false;
+        }
 
         // Positions always advance past everything yielded (delivery semantics), but the
         // committable stored offset advances only past records the application has
@@ -5955,7 +6351,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             else
             {
                 if (pending.ProvenOffset >= 0)
+                {
                     StoreOffsetCore(pending, pending.ProvenOffset + 1, pending.ProvenLeaderEpoch);
+                }
                 stagedFullRange = pending.ProvenOffset + 1 >= nextOffset;
             }
         }
@@ -5970,7 +6368,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         // Keep the active consumed position alive while an in-doubt record remains unstaged so a
         // later explicit CommitAsync can still vouch for it (break → CommitAsync → close).
         if (stagedFullRange)
+        {
             ClearActiveConsumedPosition(tp);
+        }
 
         return true;
     }
@@ -5990,7 +6390,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         // revocation and reassignment since the position was read must not make it the new
         // ownership's offset. 0 for a consumer that is not group-managed.
         if (_options.EnableAutoOffsetStore)
+        {
             StoreOffsetCore(partition, IsGroupManagedSubscription() ? ownership : 0, nextOffset, leaderEpoch);
+        }
 
         if (!_prefetchEnabled)
         {
@@ -6028,7 +6430,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         }
 
         if (_pendingFetches.Count == 0)
+        {
             return false;
+        }
 
         // Explicit commit: the caller vouches for everything yielded so far, including a
         // record still being processed. Mark it proven so the flush stages it.
@@ -6156,7 +6560,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
             var status = GetRecordIterationStatus(pending.TopicPartition, ref recordIterationVersion);
             if (status != RecordIterationStatus.Continue)
+            {
                 return status;
+            }
         }
     }
 
@@ -6178,7 +6584,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             Volatile.Write(ref _activeConsumedPosition, position);
 
             if (Volatile.Read(ref _activeConsumedPositionVersion) == observedVersion)
+            {
                 return;
+            }
         }
 
         var version = BeginActiveConsumedPositionWrite();
@@ -6203,7 +6611,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             }
 
             if (Interlocked.CompareExchange(ref _activeConsumedPositionVersion, version + 1, version) == version)
+            {
                 return version;
+            }
 
             spin.SpinOnce();
         }
@@ -6311,7 +6721,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     private void ClearActiveConsumedPosition(TopicPartition partition, long position, int version)
     {
         if (Interlocked.CompareExchange(ref _activeConsumedPositionVersion, version + 1, version) != version)
+        {
             return;
+        }
 
         if (string.Equals(_activeConsumedTopic, partition.Topic, StringComparison.Ordinal)
             && _activeConsumedPartition == partition.Partition
@@ -6363,14 +6775,20 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         if (dirty)
         {
             if (!_options.EnableAutoOffsetStore)
+            {
                 return;
+            }
 
             // A seek to the beginning or end stages a sentinel that the next fetch resolves; it is
             // not an offset to commit, and the earlier store it replaces is not one either.
             if (position >= 0)
+            {
                 StoreOffsetCore(partition, position, GetLastConsumedLeaderEpoch(partition));
+            }
             else
+            {
                 ClearStoredOffset(partition);
+            }
         }
         else
         {
@@ -6390,7 +6808,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         {
             ownership = _ownershipStartGenerations.GetValueOrDefault(partition);
             if (ownership == 0)
+            {
                 return;
+            }
         }
 
         StoreOffsetCore(partition, ownership, offset, leaderEpoch);
@@ -6412,7 +6832,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     private void StoreOffsetCore(TopicPartition partition, long ownership, long offset, int leaderEpoch)
     {
         if (!_storedOffsetSlots.TryGetValue(partition, out var slot) || !slot.TryStore(ownership, offset, leaderEpoch))
+        {
             StoreOffsetInAddedSlot(partition, ownership, offset, leaderEpoch);
+        }
     }
 
     /// <summary>
@@ -6458,7 +6880,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     private void ClearStoredOffset(TopicPartition partition)
     {
         if (_storedOffsetSlots.TryGetValue(partition, out var slot))
+        {
             slot.Clear();
+        }
     }
 
     /// <summary>
@@ -6527,7 +6951,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             {
                 // The stores of an ownership that ended never commit.
                 if (ownership != _ownership)
+                {
                     _settledStoreCount = _storeCount;
+                }
                 _storeCount++;
                 _ownership = ownership;
                 _offset = offset;
@@ -6548,7 +6974,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             var sequence = Enter();
             var retire = _ownership == ownership;
             if (retire)
+            {
                 _retired = true;
+            }
             Exit(sequence);
             return retire;
         }
@@ -6576,11 +7004,15 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             {
                 _dirty = false;
                 if (storeCount < 0)
+                {
                     storeCount = _storeCount;
+                }
             }
 
             if (storeCount > _settledStoreCount)
+            {
                 _settledStoreCount = storeCount;
+            }
 
             Exit(sequence);
         }
@@ -6611,7 +7043,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     unsettledStoreCount = storeCount - _settledStoreCount;
                     Interlocked.MemoryBarrier();
                     if (Volatile.Read(ref _sequence) == sequence)
+                    {
                         return dirty;
+                    }
                 }
 
                 spinner.SpinOnce();
@@ -6625,7 +7059,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             {
                 var sequence = Volatile.Read(ref _sequence);
                 if ((sequence & 1) == 0 && Interlocked.CompareExchange(ref _sequence, sequence + 1, sequence) == sequence)
+                {
                     return sequence + 1;
+                }
                 spinner.SpinOnce();
             }
         }
@@ -6659,7 +7095,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     {
         _fetchPositions[partition] = offset;
         if (_lastFetchedLeaderEpochs.TryGetValue(partition, out var fetched))
+        {
             fetched.Clear();
+        }
     }
 
     /// <summary>
@@ -6727,7 +7165,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         IReadOnlyList<TopicPartitionOffset> offsets)
     {
         if (!ReportsStoredRecordCount)
+        {
             return null;
+        }
 
         var covered = ArrayPool<(StoredOffsetSlot? Slot, long StoreCount)>.Shared.Rent(offsets.Count);
         for (var i = 0; i < offsets.Count; i++)
@@ -6748,7 +7188,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     private static void ReturnCoveredStoreCounts((StoredOffsetSlot? Slot, long StoreCount)[]? covered)
     {
         if (covered is not null)
+        {
             ArrayPool<(StoredOffsetSlot? Slot, long StoreCount)>.Shared.Return(covered, clearArray: true);
+        }
     }
 
     internal void UpdateFetchPositionsFromPrefetch(
@@ -6758,7 +7200,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         int fetchBufferEpoch)
     {
         if (nextOffset < 0)
+        {
             return;
+        }
 
         // Thread-safe update using ConcurrentDictionary — must use AddOrUpdate (not TryGetValue
         // + indexer) because seek/reset operations on other threads can write to _fetchPositions
@@ -6799,7 +7243,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         {
             _stuckFetchPositionTracker.Reset(partition);
             if (!_options.EnablePartitionEof)
+            {
                 return null;
+            }
 
             fetchPosition = _fetchPositions.GetValueOrDefault(partition, 0);
         }
@@ -6809,7 +7255,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         }
 
         if (_options.EnablePartitionEof && fetchPosition >= visibleEndOffset)
+        {
             TryQueuePartitionEof(partition, visibleEndOffset, fetchBufferEpoch);
+        }
 
         return null;
     }
@@ -6844,7 +7292,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         }
 
         if (!_eofSupersededBelow.TryGetValue(partition, out var below) || below < publishedEndExclusive)
+        {
             _eofSupersededBelow[partition] = publishedEndExclusive;
+        }
         _hasEofSupersededBounds = true;
     }
 
@@ -6864,7 +7314,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         // release) that races this read only defers the EOF to the next empty response, which
         // derives it again; once the marker is gone the locked path below runs.
         if (_eofEmitted.ContainsKey(partition))
+        {
             return;
+        }
 
         lock (_coordinatorRevokedPartitionsPendingFetchClearLock)
         {
@@ -6896,7 +7348,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     {
         var snapshot = Volatile.Read(ref _activeSnapshot);
         if (snapshot is null)
+        {
             return null;
+        }
 
         return snapshot.TryQueueEndMarker(partition, GetVisibleEndOffset(response), out var endOffset)
             ? PendingFetchData.CreateSnapshotEnd(
@@ -6945,7 +7399,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             cancellationToken.ThrowIfCancellationRequested();
 
             if (_prefetchBuffer.HasDataAvailable())
+            {
                 return true;
+            }
 
             var observedPausedSnapshotVersion = _observedPausedSnapshotVersion;
             var wait = _prefetchBuffer.WaitToReadAsync(_options.FetchMaxWaitMs, cancellationToken);
@@ -6976,7 +7432,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             Interlocked.Add(ref _prefetchedBytes, -bytes);
             // Signal prefetch loop that memory is now available (skip for empty responses to avoid spurious signals)
             if (bytes > 0)
+            {
                 SignalPrefetchMemoryAvailable();
+            }
         }
         else
         {
@@ -6987,7 +7445,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     private void SignalPrefetchMemoryAvailable()
     {
         if (_prefetchMemoryAvailable.CurrentCount != 0)
+        {
             return;
+        }
 
         try
         {
@@ -7063,7 +7523,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                         bufferedDrainDeadline,
                         cancellationToken);
                 if (consumedBufferedRecord)
+                {
                     return new ValueTask<ConsumeResult<TKey, TValue>?>(bufferedResult);
+                }
 
                 if (requiresAsyncPreparation)
                 {
@@ -7076,14 +7538,18 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 }
 
                 if (TryDequeuePendingEofResult(out var eofResult))
+                {
                     return new ValueTask<ConsumeResult<TKey, TValue>?>(eofResult);
+                }
             }
         }
 
         // Preserve non-blocking poll semantics: an immediately buffered accepted record may
         // win above, but a zero-timeout miss must not enter a CancelAfter(0) scheduling race.
         if (IsNonBlockingConsumeOneTimeout(timeout))
+        {
             return new ValueTask<ConsumeResult<TKey, TValue>?>((ConsumeResult<TKey, TValue>?)null);
+        }
 
         return ConsumeOneWithTimeoutAsync(
             timeout,
@@ -7166,7 +7632,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         const long MaxSupportedTimeoutMilliseconds = 0xfffffffe;
         var timeoutMilliseconds = (long)timeout.TotalMilliseconds;
         if (timeoutMilliseconds < -1 || timeoutMilliseconds > MaxSupportedTimeoutMilliseconds)
+        {
             throw new ArgumentOutOfRangeException(nameof(timeout));
+        }
 
         return timeoutMilliseconds;
     }
@@ -7190,7 +7658,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     internal static TimeSpan CalculateRemainingConsumeOneTimeout(TimeSpan timeout, long? bufferedDrainStarted)
     {
         if (bufferedDrainStarted is not { } startedAt || timeout < TimeSpan.Zero)
+        {
             return timeout;
+        }
 
         var remaining = timeout - Stopwatch.GetElapsedTime(startedAt);
         return remaining > TimeSpan.Zero ? remaining : TimeSpan.Zero;
@@ -7214,7 +7684,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         }
 
         if (IsTopicFilterRefreshDue())
+        {
             return false;
+        }
 
         if (_options.OffsetCommitMode == OffsetCommitMode.Auto
             && _coordinator is not null
@@ -7224,11 +7696,15 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         }
 
         if (_options.QueuedMinMessages > 1 && !HasPrefetchStarted())
+        {
             return false;
+        }
 
         var pending = _pendingFetches.Peek();
         if (!IsCurrentlyAssigned(pending.TopicPartition))
+        {
             return false;
+        }
 
         var coordinator = _coordinator;
         if ((_subscriptionSnapshot.Count != 0 || _topicPattern is not null) && coordinator is not null)
@@ -7290,7 +7766,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         CancellationToken cancellationToken)
     {
         if (Volatile.Read(ref _consumerDisposed) != 0)
+        {
             throw new ObjectDisposedException(nameof(KafkaConsumer<TKey, TValue>));
+        }
 
         ThrowIfNotInitialized();
 
@@ -7340,7 +7818,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 var asyncResult = await ConsumeOneFromPendingFetchesAsync(preparedKey, cancellationToken)
                     .ConfigureAwait(false);
                 if (asyncResult is not null)
+                {
                     return asyncResult;
+                }
             }
             else if (TryConsumeOneFromPendingFetchesCancellable(
                          out var result,
@@ -7351,7 +7831,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             }
 
             if (TryDequeuePendingEofResult(out var eofResult))
+            {
                 return eofResult;
+            }
         }
 
         return null;
@@ -7436,9 +7918,13 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 && ReferenceEquals(_pendingFetches.Peek(), pending))
             {
                 if (pending.FirstDeliverableOffset is var rewindOffset and >= 0)
+                {
                     RewindAfterDeliveryFailure(pending, rewindOffset);
+                }
                 else
+                {
                     DisposeQueuedFetch(_pendingFetches.Dequeue());
+                }
             }
 
             throw;
@@ -7446,12 +7932,19 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     }
 
     private readonly struct SynchronousDeserializerMode;
+
     private readonly struct PreparedDeserializerMode;
+
     private readonly struct DeserializeKeyMode;
+
     private readonly struct RetainedKeyMode;
+
     private readonly struct NoRecordFilterMode;
+
     private readonly struct RecordFilterMode;
+
     private readonly struct NoRecordHeaderMode;
+
     private readonly struct RecordHeaderMode;
 
     private sealed class PreparedDeserializerKey
@@ -7480,7 +7973,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             Value = value;
         }
 
-        internal TKey? Value { get; }
+        internal TKey? Value
+        {
+            get;
+        }
 
         internal bool Matches(PendingFetchData pending, long offset) =>
             ReferenceEquals(_pending, pending)
@@ -7632,12 +8128,16 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         // A new consume call proves the record returned by the previous call was processed
         // (poll contract), so everything yielded from the head fetch becomes committable.
         if (_pendingFetches.Count > 0)
+        {
             _pendingFetches.Peek().MarkYieldedProcessed();
+        }
 
         while (_pendingFetches.Count > 0)
         {
             if (ClearFetchBufferForPendingCoordinatorRevocations())
+            {
                 continue;
+            }
 
             var pending = _pendingFetches.Peek();
             long? batchProcessingStarted = _adaptiveFetchSizer is not null
@@ -7659,7 +8159,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     try
                     {
                         if (!pending.MoveNext())
+                        {
                             break;
+                        }
 
                         ref readonly var record = ref pending.CurrentRecord;
                         offset = pending.CurrentBaseOffset + record.OffsetDelta;
@@ -7704,7 +8206,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                             pendingDisposed |= EndConsumeOneFetchUse(pending);
                             cancellationToken.ThrowIfCancellationRequested();
                             if (pendingDisposed)
+                            {
                                 break;
+                            }
 
                             var filterIterationStatus = GetConsumeOneDeliveryStatus(pending.TopicPartition);
                             if (filterIterationStatus != RecordIterationStatus.Continue)
@@ -7741,7 +8245,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                                 out pendingDisposed);
 
                             if (pendingDisposed)
+                            {
                                 break;
+                            }
                         }
 
                         // User deserialization begins in this constructor. Its exceptions
@@ -7770,16 +8276,22 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                             {
                                 pendingDisposed |= EndConsumeOneFetchUse(pending);
                                 if (pendingDisposed)
+                                {
                                     break;
+                                }
 
                                 pending.BufferCurrentForRedelivery();
                                 requiresAsyncPreparation = true;
                                 if (activity is not null)
                                 {
                                     if (preparedKey is null)
+                                    {
                                         preparedKey = new PreparedDeserializerKey(pending, offset, activity);
+                                    }
                                     else
+                                    {
                                         preparedKey.RetainPreparationActivity(activity);
+                                    }
                                     activity = null;
                                 }
                                 return false;
@@ -7833,7 +8345,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                         pendingDisposed |= EndConsumeOneFetchUse(pending);
 
                         if (pendingDisposed)
+                        {
                             break;
+                        }
 
                         var iterationStatus = GetConsumeOneDeliveryStatus(pending.TopicPartition);
                         if (iterationStatus != RecordIterationStatus.Continue)
@@ -7852,7 +8366,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                             pendingDisposed |= EndConsumeOneFetchUse(pending);
 
                             if (pendingDisposed)
+                            {
                                 break;
+                            }
 
                             iterationStatus = GetConsumeOneDeliveryStatus(pending.TopicPartition);
                             if (iterationStatus != RecordIterationStatus.Continue)
@@ -7877,8 +8393,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     {
                         throw;
                     }
-                    catch (Exception ex) when (
-                        readingProtocolData && ProtocolDataErrorClassifier.IsProtocolDataError(ex))
+                    catch (Exception ex) when (readingProtocolData && ProtocolDataErrorClassifier.IsProtocolDataError(ex))
                     {
                         LogRecordParsingError(ex, pending.Topic, pending.PartitionIndex);
                         break;
@@ -7897,12 +8412,16 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             }
 
             if (pendingDisposed || pendingRemoved)
+            {
                 continue;
+            }
 
             FlushConsumedPositions(pending);
 
             if (metricsEnabled && pending.MessageCount > 0)
+            {
                 EmitFetchMetrics(pending);
+            }
 
             if (batchProcessingStarted.HasValue)
             {
@@ -7954,12 +8473,16 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         // A new consume call proves the record returned by the previous call was processed
         // (poll contract), so everything yielded from the head fetch becomes committable.
         if (_pendingFetches.Count > 0)
+        {
             _pendingFetches.Peek().MarkYieldedProcessed();
+        }
 
         while (_pendingFetches.Count > 0)
         {
             if (ClearFetchBufferForPendingCoordinatorRevocations())
+            {
                 continue;
+            }
 
             var pending = _pendingFetches.Peek();
             long? batchProcessingStarted = _adaptiveFetchSizer is not null
@@ -7980,12 +8503,16 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     try
                     {
                         if (!pending.MoveNext())
+                        {
                             break;
+                        }
 
                         var record = pending.CurrentRecord;
                         offset = pending.CurrentBaseOffset + record.OffsetDelta;
                         if (preparedKey is not null && activity is null)
+                        {
                             activity = preparedKey.TakePreparationActivity(pending, offset);
+                        }
                         var timestampMs = pending.CurrentBaseTimestamp + record.TimestampDelta;
                         var timestampType = pending.CurrentTimestampType;
                         // Hoist every record field used below into locals before the await:
@@ -8024,7 +8551,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                             pendingDisposed |= EndConsumeOneFetchUse(pending);
                             cancellationToken.ThrowIfCancellationRequested();
                             if (pendingDisposed)
+                            {
                                 break;
+                            }
 
                             var filterIterationStatus = GetConsumeOneDeliveryStatus(pending.TopicPartition);
                             if (filterIterationStatus != RecordIterationStatus.Continue)
@@ -8061,7 +8590,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                                 out pendingDisposed);
 
                             if (pendingDisposed)
+                            {
                                 break;
+                            }
                         }
 
                         // User deserialization begins in this await. Its exceptions must
@@ -8144,7 +8675,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                         pendingDisposed |= EndConsumeOneFetchUse(pending);
 
                         if (pendingDisposed)
+                        {
                             break;
+                        }
 
                         var iterationStatus = GetConsumeOneDeliveryStatus(pending.TopicPartition);
                         if (iterationStatus != RecordIterationStatus.Continue)
@@ -8161,7 +8694,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                             pendingDisposed |= EndConsumeOneFetchUse(pending);
 
                             if (pendingDisposed)
+                            {
                                 break;
+                            }
 
                             iterationStatus = GetConsumeOneDeliveryStatus(pending.TopicPartition);
                             if (iterationStatus != RecordIterationStatus.Continue)
@@ -8186,8 +8721,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     {
                         throw;
                     }
-                    catch (Exception ex) when (
-                        readingProtocolData && ProtocolDataErrorClassifier.IsProtocolDataError(ex))
+                    catch (Exception ex) when (readingProtocolData && ProtocolDataErrorClassifier.IsProtocolDataError(ex))
                     {
                         LogRecordParsingError(ex, pending.Topic, pending.PartitionIndex);
                         break;
@@ -8197,7 +8731,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                         try
                         {
                             if (!HasPendingFetchClear(pending.TopicPartition))
+                            {
                                 RewindAfterDeliveryFailure(pending, offset);
+                            }
                         }
                         finally
                         {
@@ -8213,12 +8749,16 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             }
 
             if (pendingDisposed || pendingRemoved)
+            {
                 continue;
+            }
 
             FlushConsumedPositions(pending);
 
             if (metricsEnabled && pending.MessageCount > 0)
+            {
                 EmitFetchMetrics(pending);
+            }
 
             if (batchProcessingStarted.HasValue)
             {
@@ -8284,7 +8824,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             }
 
             if (!HasPendingFetchClear(pending.TopicPartition))
+            {
                 RewindAfterDeliveryFailure(pending, offset);
+            }
         }
         finally
         {
@@ -8366,7 +8908,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         var topic = pending.Topic;
         var materializedHeaders = _recordHeaderDeserializationHeaders;
         if (materializedHeaders is not null)
+        {
             headerRouting.CopyTo(materializedHeaders);
+        }
         TKey? key = default;
         if (!isKeyNull)
         {
@@ -8455,7 +8999,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                         out value))
                 {
                     if (!isKeyNull && typeof(TPreparedKeyMode) == typeof(DeserializeKeyMode))
+                    {
                         preparedKey = new PreparedDeserializerKey(pending, offset, key);
+                    }
 
                     result = default!;
                     return false;
@@ -8681,7 +9227,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             ? _asyncDeserializationHeaders!
             : null;
         if (materializedHeaders is not null)
+        {
             headerRouting.CopyTo(materializedHeaders);
+        }
 
         TKey? key = default;
         if (!isKeyNull)
@@ -8920,7 +9468,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 // The leave stopped waiting for this callback and completed: its offsets were
                 // discarded with the membership, whose partitions may have moved on.
                 if (!coordinator.IsLeaveInProgress)
+                {
                     LogLeaveCallbackCommitAfterLeave(_options.RebalanceTimeoutMs);
+                }
                 return;
             }
 
@@ -8980,12 +9530,16 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         OffsetCommitReason? observedReason = null)
     {
         if (_coordinator is null)
+        {
             return false;
+        }
 
         // Auto-commit and close commits of the consumer's own offsets run after a leave in
         // progress (see WaitForLeaveBeforeCommitAsync); a revocation's commit does not wait.
         if (membershipVersion is null)
+        {
             await _coordinator.WaitForLeaveBeforeCommitAsync(cancellationToken).ConfigureAwait(false);
+        }
 
         TopicPartitionOffset[]? offsetsArray = null;
         int offsetCount;
@@ -9011,7 +9565,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 // up under, so the assignment, positions and ownership starts read are consistent.
                 // Commit path only.
                 lock (_snapshotStateGate)
+                {
                     dirtyOffsetsSnapshot = SnapshotCommittableStoredOffsets(partitions);
+                }
             }
             else
             {
@@ -9019,7 +9575,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             }
             offsetCount = dirtyOffsetsSnapshot.Count;
             if (offsetCount == 0)
+            {
                 return false;
+            }
 
             LogCommitStarted(offsetCount);
 
@@ -9130,7 +9688,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         // not be able to change what gets committed.
         var copy = new TopicPartitionOffset[offsets.Count];
         for (var i = 0; i < copy.Length; i++)
+        {
             copy[i] = offsets[i];
+        }
         var observation = new OffsetCommitObservation(
             observedReason,
             new System.Collections.ObjectModel.ReadOnlyCollection<TopicPartitionOffset>(copy),
@@ -9202,7 +9762,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         foreach (var (partition, slot) in _storedOffsetSlots)
         {
             if (partitions is not null && !partitions.Contains(partition))
+            {
                 continue;
+            }
             if (!slot.TryReadDirty(
                     out var ownership,
                     out var offset,
@@ -9268,7 +9830,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         CancellationToken cancellationToken)
     {
         if (_options.OffsetCommitMode != OffsetCommitMode.Auto)
+        {
             return;
+        }
 
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         timeout.CancelAfter(_options.RebalanceTimeoutMs);
@@ -9301,7 +9865,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             if (GetCommitCoordinator().IsLeaveInProgress)
             {
                 if (committed)
+                {
                     LogCommittedRevokedOffsets();
+                }
                 return;
             }
 
@@ -9315,7 +9881,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                         observedReason: OffsetCommitReason.Revoke)
                     .ConfigureAwait(false)
                 || committed)
+            {
                 LogCommittedRevokedOffsets();
+            }
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
@@ -9410,7 +9978,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     public void StoreOffset(ConsumeResult<TKey, TValue> result)
     {
         if (result.IsPartitionEof)
+        {
             return;
+        }
 
         var partition = new TopicPartition(result.Topic, result.Partition);
         long ownership = 0;
@@ -9536,7 +10106,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             {
                 // Raised, never lowered: a concurrent later revocation wins.
                 if (!pending.TryGetValue(partition, out var current) || current < generation)
+                {
                     pending[partition] = generation;
+                }
             }
 
             // Before the map: records fetched before this R stop taking the fast path no later.
@@ -9571,11 +10143,15 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             foreach (var (partition, drainedGeneration) in drained)
             {
                 if (_pendingRevocations.TryGetValue(partition, out var pending) && pending <= drainedGeneration)
+                {
                     (remaining ??= new Dictionary<TopicPartition, long>(_pendingRevocations)).Remove(partition);
+                }
             }
 
             if (remaining is not null)
+            {
                 _pendingRevocations = remaining.Count == 0 ? s_noPendingRevocations : remaining;
+            }
         }
     }
 
@@ -9587,7 +10163,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         {
             var observed = Interlocked.CompareExchange(ref _latestOwnershipChangeFetchGeneration, generation, current);
             if (observed == current)
+            {
                 return;
+            }
             current = observed;
         }
     }
@@ -9603,11 +10181,15 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         where TOffsets : IReadOnlyList<TopicPartitionOffset>
     {
         if (offsets is null)
+        {
             throw new ArgumentNullException(nameof(offsets));
+        }
 
         var count = offsets.Count;
         for (var index = 0; index < count; index++)
+        {
             TopicPartitionOffsetValidator.Validate(offsets[index], nameof(offsets));
+        }
 
         for (var index = 0; index < count; index++)
         {
@@ -9619,7 +10201,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     public void StoreOffsets(ReadOnlySpan<TopicPartitionOffset> offsets)
     {
         for (var index = 0; index < offsets.Length; index++)
+        {
             TopicPartitionOffsetValidator.Validate(offsets[index], nameof(offsets));
+        }
 
         for (var index = 0; index < offsets.Length; index++)
         {
@@ -9631,10 +10215,14 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     public async ValueTask<long?> GetCommittedOffsetAsync(TopicPartition partition, CancellationToken cancellationToken = default)
     {
         if (_committed.TryGetValue(partition, out var cached))
+        {
             return cached.Offset;
+        }
 
         if (_coordinator is null)
+        {
             return null;
+        }
 
         var cacheGeneration = Interlocked.Increment(ref _committedOffsetGeneration);
         using var apiTimeout = new ApiTimeoutScope(_options.DefaultApiTimeoutMs, cancellationToken);
@@ -9644,7 +10232,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             if (offsets.TryGetValue(partition, out var committedOffset))
             {
                 if (TryCacheCommittedOffset(partition, committedOffset.Offset, cacheGeneration))
+                {
                     TrySeedLeaderEpochFromCommittedLookup(partition, committedOffset.LeaderEpoch);
+                }
                 return committedOffset.Offset;
             }
         }
@@ -9663,7 +10253,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         ArgumentNullException.ThrowIfNull(partitions);
 
         if (partitions.Count == 0 || _coordinator is null)
+        {
             return new Dictionary<TopicPartition, TopicPartitionOffset>();
+        }
 
         var cacheGeneration = Interlocked.Increment(ref _committedOffsetGeneration);
         using var apiTimeout = new ApiTimeoutScope(_options.DefaultApiTimeoutMs, cancellationToken);
@@ -9675,10 +10267,14 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 if (offsets.TryGetValue(partition, out var committedOffset))
                 {
                     if (TryCacheCommittedOffset(partition, committedOffset.Offset, cacheGeneration))
+                    {
                         TrySeedLeaderEpochFromCommittedLookup(partition, committedOffset.LeaderEpoch);
+                    }
                 }
                 else
+                {
                     RemoveCachedCommittedOffset(partition, cacheGeneration);
+                }
             }
 
             return offsets;
@@ -9709,7 +10305,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     private void TrySeedLeaderEpochFromCommittedLookup(TopicPartition partition, int leaderEpoch)
     {
         if (leaderEpoch < 0 || _fetchPositions.ContainsKey(partition))
+        {
             return;
+        }
 
         _lastConsumedLeaderEpochs.TryAdd(partition, leaderEpoch);
     }
@@ -9773,7 +10371,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     private long? GetAssignedCallbackPosition(ConsumerCoordinator coordinator, TopicPartition partition)
     {
         if (_pendingRebalanceSeeks.TryGetValue(partition, out var pending))
+        {
             return pending.Offset;
+        }
 
         // A callback that polls synchronizes its own assignment (the poll does not wait for the
         // callback it runs in); the position is then the new ownership's.
@@ -9806,7 +10406,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     {
         var partition = new TopicPartition(offset.Topic, offset.Partition);
         if (fromAssignedCallback)
+        {
             BeforeStageRebalanceSeekLockForTest?.Invoke();
+        }
         SemaphoreHelper.AcquireOrThrowDisposed(
             _assignmentLock,
             nameof(KafkaConsumer<TKey, TValue>));
@@ -9848,12 +10450,17 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     }
 
     // Runs when a callback's seek is about to wait for the assignment lock.
-    internal Action? BeforeStageRebalanceSeekLockForTest { get; set; }
+    internal Action? BeforeStageRebalanceSeekLockForTest
+    {
+        get; set;
+    }
 
     private void EmitFetchMetrics(PendingFetchData fetch)
     {
         if (!fetch.TryConsumeMetricDelta(out var messageCount, out var bytesConsumed))
+        {
             return;
+        }
 
         if (!_metricTagsCache.TryGetValue(fetch.Topic, out var metricTags))
         {
@@ -9868,7 +10475,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     private void RecordFetchDuration(long fetchStarted, int brokerId)
     {
         if (!Diagnostics.DekafMetrics.FetchDuration.Enabled)
+        {
             return;
+        }
 
         Diagnostics.DekafMetrics.FetchDuration.Record(
             Stopwatch.GetElapsedTime(fetchStarted).TotalSeconds,
@@ -9892,7 +10501,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             // position would be replaced when assignment sync initializes the partition. Unless the
             // assignment was abandoned meanwhile: then the seek applies directly, below.
             if (StageRebalanceSeek(offset, revocationSequence, fromAssignedCallback: true))
+            {
                 return;
+            }
         }
 
         // Keep invalidation, buffer drain, and position replacement atomic with prefetch publication.
@@ -9909,9 +10520,13 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         ClearFetchBufferForPartitions([partition], stagePendingClear: true);
 
         if (offset.LeaderEpoch >= 0)
+        {
             SetLastConsumedLeaderEpoch(partition, offset.LeaderEpoch);
+        }
         else
+        {
             ClearLastConsumedLeaderEpoch(partition);
+        }
         SetPosition(partition, offset.Offset, dirty: true);
         SetFetchPosition(partition, offset.Offset);
         _eofEmitted.TryRemove(partition, out _);
@@ -9941,7 +10556,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     private void SeekToListOffsetsSentinel(TopicPartition[] partitions, long sentinel)
     {
         if (!TryStageAssignedCallbackSeeks(ref partitions, sentinel))
+        {
             return;
+        }
 
         lock (_coordinatorRevokedPartitionsPendingFetchClearLock)
         {
@@ -9966,7 +10583,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     private bool TryStageAssignedCallbackSeeks(ref TopicPartition[] partitions, long offset)
     {
         if (_coordinator is not { IsDeliveringAssignedCallback: true } coordinator || partitions is null)
+        {
             return true;
+        }
 
         List<TopicPartition>? remaining = null;
         for (var i = 0; i < partitions.Length; i++)
@@ -9982,7 +10601,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 {
                     remaining = new List<TopicPartition>(partitions.Length);
                     for (var j = 0; j < i; j++)
+                    {
                         remaining.Add(partitions[j]);
+                    }
                 }
             }
             else
@@ -9992,7 +10613,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         }
 
         if (remaining is null)
+        {
             return true;
+        }
 
         partitions = remaining.ToArray();
         return partitions.Length != 0;
@@ -10079,7 +10702,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             RemoveStoredOffset(partition);
             _fetchPositions.TryRemove(partition, out _);
             if (!reassigned)
+            {
                 _pendingRebalanceSeeks.TryRemove(partition, out _);
+            }
             _minimumFetchBufferEpochsByPartition.TryRemove(partition, out _);
             _lastConsumedLeaderEpochs.TryRemove(partition, out _);
             _lastFetchedLeaderEpochs.TryRemove(partition, out _);
@@ -10153,7 +10778,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         _activeConsumeOneFetch = null;
 
         if (!ReferenceEquals(_deferredConsumeOneFetchDisposal, pending))
+        {
             return false;
+        }
 
         return CompleteDeferredConsumeOneFetchDisposal(pending);
     }
@@ -10177,9 +10804,13 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         // A publication that splits a multi-item drain is reconciled afterward as one ordered
         // queue transition, preserving per-partition FIFO across the pause boundary.
         if (_deliveryPausedSnapshot.Contains(pending.TopicPartition))
+        {
             _pausedPendingFetches.Enqueue(pending);
+        }
         else
+        {
             _pendingFetches.Enqueue(pending);
+        }
         Interlocked.Increment(ref _pendingFetchDepth);
     }
 
@@ -10200,7 +10831,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         // batch. The outer iterator will observe the queue-version change and return
         // without touching the parked fetch.
         if (Interlocked.Exchange(ref _batchIterationEpoch.BatchExhaustionProbePending, 0) != 0)
+        {
             pending.TryBufferNext();
+        }
 
         FlushConsumedPositions(pending);
         _pausedPendingFetches.Enqueue(_pendingFetches.Dequeue());
@@ -10215,7 +10848,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     {
         var pausedSnapshotVersion = Volatile.Read(ref _pausedSnapshotVersion);
         if (pausedSnapshotVersion != _observedPausedSnapshotVersion)
+        {
             ApplyPausedSnapshotToPendingFetches(pausedSnapshotVersion);
+        }
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
@@ -10232,7 +10867,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         // move its fetch out of the active queue. Generic queue reconciliation must not
         // infer processing for streaming APIs, whose continuation owns that proof.
         if (_pendingFetches.Count > 0)
+        {
             _pendingFetches.Peek().MarkYieldedProcessed();
+        }
 
         while (true)
         {
@@ -10240,7 +10877,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             RecoverAndClearFetchBufferForPendingCoordinatorRevocations();
             PreparePendingFetchesForDelivery();
             if (_batchIterationEpoch.TryAcknowledgeConsumeOneDeliveryChanges(expectedVersion))
+            {
                 return;
+            }
         }
     }
 
@@ -10253,7 +10892,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         // Cross-partition order is unspecified, so temporarily move the active queue aside,
         // restore resumed data first, then append the active queue without allocating.
         while (_pendingFetches.TryDequeue(out var activePending))
+        {
             _pendingFetchScratch.Enqueue(activePending);
+        }
 
         var count = _pausedPendingFetches.Count;
         // Fetches set aside by a held skip during this batch loop are older than any of their
@@ -10264,16 +10905,24 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         {
             var pending = _pausedPendingFetches.Dequeue();
             if (paused.Contains(pending.TopicPartition))
+            {
                 _pausedPendingFetches.Enqueue(pending);
+            }
             else
+            {
                 _pendingFetches.Enqueue(pending);
+            }
         }
 
         for (var i = 0; i < heldCount; i++)
+        {
             _pendingFetches.Enqueue(_heldSkippedFetches.Dequeue());
+        }
 
         while (_pendingFetchScratch.TryDequeue(out var retainedPending))
+        {
             _pendingFetches.Enqueue(retainedPending);
+        }
 
         // Pause changes are infrequent control-plane operations. Scan once here so all
         // already-queued fetches for newly paused partitions retain their original order.
@@ -10282,9 +10931,13 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         {
             var pending = _pendingFetches.Peek();
             if (paused.Contains(pending.TopicPartition))
+            {
                 MovePendingFetchToPaused(pending);
+            }
             else
+            {
                 _pendingFetches.Enqueue(_pendingFetches.Dequeue());
+            }
         }
 
         _deliveryPausedSnapshot = paused;
@@ -10298,7 +10951,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     {
         var currentVersion = Volatile.Read(ref _batchIterationEpoch.Version);
         if ((currentVersion & 1) == 0 && currentVersion == observedVersion)
+        {
             return RecordIterationStatus.Continue;
+        }
 
         return GetRecordIterationStatusSlow(partition, ref observedVersion);
     }
@@ -10307,7 +10962,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     private RecordIterationStatus GetConsumeOneDeliveryStatus(TopicPartition partition)
     {
         if (Volatile.Read(ref _batchIterationEpoch.ConsumeOneDeliveryChangesPending) == 0)
+        {
             return RecordIterationStatus.Continue;
+        }
 
         return GetConsumeOneDeliveryStatusSlow(partition);
     }
@@ -10362,7 +11019,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     private void HandleStoppedRecordIteration(TopicPartition partition, bool paused)
     {
         if (paused || !HasPendingFetchClear(partition))
+        {
             return;
+        }
 
         // Preserve the existing revocation/divergence recovery path. It owns discard;
         // Pause owns preservation only while the partition remains assigned.
@@ -10411,7 +11070,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     {
         var version = Interlocked.Increment(ref _pendingFetchClearVersion);
         if (version == NoPendingFetchClearVersion)
+        {
             version = Interlocked.Increment(ref _pendingFetchClearVersion);
+        }
 
         _bufferedBatchProof?.Invalidate(partition);
         _coordinatorRevokedPartitionsPendingFetchClear[partition] = version;
@@ -10438,7 +11099,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         {
             Interlocked.Decrement(ref _pendingFetchDepth);
             if (leaveCapture is not null)
+            {
                 CaptureDepartingFetchPositions(leaveCapture, pending);
+            }
             StagePendingFetchClear(pending.TopicPartition);
             DisposeQueuedFetch(pending);
         }
@@ -10446,7 +11109,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         {
             Interlocked.Decrement(ref _pendingFetchDepth);
             if (leaveCapture is not null)
+            {
                 CaptureDepartingFetchPositions(leaveCapture, pausedPending);
+            }
             StagePendingFetchClear(pausedPending.TopicPartition);
             DisposeQueuedFetch(pausedPending);
         }
@@ -10484,7 +11149,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             : new HashSet<TopicPartition>(partitionsToRemove);
 
         if (removeSet.Count == 0)
+        {
             return;
+        }
 
         // Freeze pause routing for this ordered drain. A concurrent Pause/Resume is
         // reconciled at the next delivery boundary instead of splitting retained
@@ -10502,14 +11169,20 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         lock (_coordinatorRevokedPartitionsPendingFetchClearLock)
         {
             if (invalidateAllFetches)
+            {
                 InvalidateAllFetchesLocked();
+            }
             else
+            {
                 InvalidateFetchesForPartitionSetLocked(removeSet);
+            }
 
             if (!preserveDivergingEpochResets)
             {
                 foreach (var partition in removeSet)
+                {
                     _pendingDivergingEpochResets.TryRemove(partition, out _);
+                }
             }
         }
 
@@ -10532,7 +11205,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             {
                 // Dispose removed items to release pooled memory
                 if (stagePendingClear)
+                {
                     StagePendingFetchClear(pending.TopicPartition);
+                }
                 DisposeQueuedFetch(pending);
             }
         }
@@ -10549,7 +11224,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             {
                 Interlocked.Decrement(ref _pendingFetchDepth);
                 if (stagePendingClear)
+                {
                     StagePendingFetchClear(pending.TopicPartition);
+                }
                 DisposeQueuedFetch(pending);
             }
         }
@@ -10566,7 +11243,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             {
                 Interlocked.Decrement(ref _pendingFetchDepth);
                 if (stagePendingClear)
+                {
                     StagePendingFetchClear(pending.TopicPartition);
+                }
                 DisposeQueuedFetch(pending);
             }
         }
@@ -10586,20 +11265,26 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         if (_hasEofSupersededBounds)
         {
             foreach (var partition in partitionsToRemove)
+            {
                 _eofSupersededBelow.TryRemove(partition, out _);
+            }
         }
 
         // Seek, revocation and every skipped-batch release land here: once per control operation
         // or batch loop, never per publication. With no queued EOF this is one read; otherwise
         // rotate the queue once in place instead of copying it out.
         if (_pendingEofEvents.IsEmpty)
+        {
             return;
+        }
 
         var count = _pendingEofEvents.Count;
         for (var i = 0; i < count && _pendingEofEvents.TryDequeue(out var eofEvent); i++)
         {
             if (!partitionsToRemove.Contains(eofEvent.Partition))
+            {
                 _pendingEofEvents.Enqueue(eofEvent);
+            }
         }
     }
 
@@ -10663,12 +11348,14 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         bool startsBatch)
     {
         lock (_coordinatorRevokedPartitionsPendingFetchClearLock)
+        {
             return TryQueueDivergingEpochResetLocked(
                 partition,
                 endOffset,
                 epoch,
                 fetchBufferEpoch,
                 startsBatch);
+        }
     }
 
     private bool TryQueueDivergingEpochResetLocked(
@@ -10679,12 +11366,16 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         bool startsBatch)
     {
         if (ShouldDropStaleFetchPartition(partition, fetchBufferEpoch))
+        {
             return false;
+        }
 
         _pendingDivergingEpochResets[partition] = (endOffset, epoch);
         SetPendingFetchClearMarkerLocked(partition, PendingFetchClearMarkerSource.DivergingEpoch);
         if (startsBatch)
+        {
             _stagedDivergingEpochResetBatches++;
+        }
         _batchIterationEpoch.BeginPublication();
         try
         {
@@ -10703,26 +11394,36 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         lock (_coordinatorRevokedPartitionsPendingFetchClearLock)
         {
             if (_stagedDivergingEpochResetBatches > 0)
+            {
                 _stagedDivergingEpochResetBatches--;
+            }
 
             if (_stagedDivergingEpochResetBatches == 0)
+            {
                 Volatile.Write(ref _coordinatorRevokedPartitionsPendingFetchClearPending, 1);
+            }
         }
     }
 
     private bool ClearFetchBufferForPendingCoordinatorRevocations()
     {
         if (!HasPendingCoordinatorRevocations())
+        {
             return false;
+        }
 
         lock (_coordinatorRevokedPartitionsPendingFetchClearLock)
+        {
             return ClearFetchBufferForPendingCoordinatorRevocationsLocked();
+        }
     }
 
     private bool ClearFetchBufferForPendingCoordinatorRevocationsLocked()
     {
         if (!HasPendingCoordinatorRevocations())
+        {
             return false;
+        }
 
         if (_coordinatorRevokedPartitionsPendingFetchClear.IsEmpty)
         {
@@ -10736,7 +11437,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         foreach (var partition in _topicIdentityResetPartitions)
         {
             if (partitionsToRemove.Remove(partition))
+            {
                 (reservedPartitions ??= []).Add(partition);
+            }
         }
 
         // A newer marker on a reserved partition must remain available to reject the
@@ -10749,7 +11452,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         }
 
         if (partitionsToRemove.Count == 0)
+        {
             return reservedPartitions is not null;
+        }
 
         // Keep partitions marked while clearing. Background prefetches use this
         // marker to avoid advancing positions for data that will be discarded.
@@ -10771,7 +11476,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             markersRemain ? 1 : 0);
 
         if (logTruncationException is not null)
+        {
             throw logTruncationException;
+        }
 
         return true;
     }
@@ -10780,7 +11487,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     {
         if (!HasPendingCoordinatorRevocations()
             && _coordinatorRevokedPartitionsPendingFetchClear.IsEmpty)
+        {
             return false;
+        }
 
         bool recovered;
         bool cleared;
@@ -10791,7 +11500,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         }
 
         if (recovered)
+        {
             LogRecoveredPendingFetchClearInvariant();
+        }
 
         return cleared;
     }
@@ -10803,7 +11514,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         foreach (var partition in partitions)
         {
             if (!_pendingDivergingEpochResets.TryRemove(partition, out var reset))
+            {
                 continue;
+            }
 
             if (_options.AutoOffsetReset == AutoOffsetReset.None)
             {
@@ -10912,17 +11625,25 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     {
         if (Volatile.Read(ref _coordinatorRevokedPartitionsPendingFetchClearMarkerPresent) != 0
             && Volatile.Read(ref _coordinatorRevokedPartitionsPendingFetchClearPending) != 0)
+        {
             return false;
+        }
 
         if (_coordinatorRevokedPartitionsPendingFetchClear.IsEmpty)
+        {
             return false;
+        }
 
         bool recovered;
         lock (_coordinatorRevokedPartitionsPendingFetchClearLock)
+        {
             recovered = TryRecoverMissingPendingFetchClearMarkersLocked();
+        }
 
         if (!recovered)
+        {
             return false;
+        }
 
         LogRecoveredPendingFetchClearInvariant();
         return true;
@@ -10931,7 +11652,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     private bool TryRecoverMissingPendingFetchClearMarkersLocked()
     {
         if (_coordinatorRevokedPartitionsPendingFetchClear.IsEmpty)
+        {
             return false;
+        }
 
         var recovered = false;
         if (Volatile.Read(ref _coordinatorRevokedPartitionsPendingFetchClearMarkerPresent) == 0)
@@ -11058,7 +11781,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                         if (ShouldDropStaleFetchPartition(pending.TopicPartition, fetchBufferEpoch))
                         {
                             if (tracked)
+                            {
                                 TrackPrefetchedBytes(pending, release: true);
+                            }
                             pending.Dispose();
                             break;
                         }
@@ -11094,10 +11819,14 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             catch
             {
                 if (tracked)
+                {
                     TrackPrefetchedBytes(pending, release: true);
+                }
 
                 for (var j = i; j < pendingItems.Count; j++)
+                {
                     pendingItems[j].Dispose();
+                }
 
                 throw;
             }
@@ -11117,9 +11846,13 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         {
             TrackPrefetchedBytes(prefetched, release: true);
             if (partitionsToRemove.Contains(prefetched.TopicPartition))
+            {
                 prefetched.Dispose();
+            }
             else
+            {
                 EnqueuePendingFetch(prefetched);
+            }
         }
     }
 
@@ -11163,13 +11896,17 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     // Also when already paused: that pause may be the previous ownership's, which
                     // sync clears.
                     if (isCallbackPartition)
+                    {
                         _rebalancePausedPartitions[partition] = true;
+                    }
                 }
             }
         }
 
         if (changedPartitions is null)
+        {
             return;
+        }
 
         PublishPausedSnapshot();
         UpdateCachesForPausedPartitions(changedPartitions);
@@ -11189,7 +11926,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     // A callback whose ownership has ended must not resume the new ownership.
                     bool stale;
                     lock (_coordinatorRevokedPartitionsPendingFetchClearLock)
+                    {
                         stale = IsStaleAssignedCallbackPartitionLocked(partition, out _);
+                    }
                     if (stale)
                     {
                         LogStaleRebalanceCallbackCallIgnored(nameof(Resume), partition.Topic, partition.Partition);
@@ -11206,7 +11945,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         }
 
         if (changedPartitions is null)
+        {
             return;
+        }
 
         PublishPausedSnapshot();
         UpdateCachesForResumedPartitions(changedPartitions);
@@ -11226,7 +11967,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     {
         foreach (var cts in _activeConsumeCancellationSources.Keys)
         {
-            try { cts.Cancel(); }
+            try
+            {
+                cts.Cancel();
+            }
             catch (ObjectDisposedException) { continue; }
         }
     }
@@ -11241,7 +11985,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     public long? GetCurrentLag(TopicPartition partition)
     {
         if (Volatile.Read(ref _consumerDisposed) != 0)
+        {
             throw new ObjectDisposedException(nameof(KafkaConsumer<TKey, TValue>));
+        }
 
         var assignmentVersion = Volatile.Read(ref _assignmentEnsureVersion);
         if (!_assignmentSnapshot.Contains(partition)
@@ -11270,7 +12016,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         CancellationToken cancellationToken = default)
     {
         if (Volatile.Read(ref _consumerDisposed) != 0)
+        {
             throw new ObjectDisposedException(nameof(KafkaConsumer<TKey, TValue>));
+        }
 
         ThrowIfNotInitialized();
         cancellationToken.ThrowIfCancellationRequested();
@@ -11349,12 +12097,16 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         foreach (var topic in response.Topics)
         {
             if (topic.Name != topicPartition.Topic)
+            {
                 continue;
+            }
 
             foreach (var partition in topic.Partitions)
             {
                 if (partition.PartitionIndex == topicPartition.Partition)
+                {
                     return partition;
+                }
             }
 
             return null;
@@ -11406,7 +12158,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                         apiTimeout.Token)
                     .ConfigureAwait(false);
                 if (connectionLease is null)
+                {
                     throw new KafkaException(ErrorCode.LeaderNotAvailable, $"No leader found for partition {topicPartition}");
+                }
                 using var lease = connectionLease.Value;
                 var connection = lease.Connection;
 
@@ -11475,7 +12229,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         CancellationToken cancellationToken)
     {
         if (Volatile.Read(ref _consumerDisposed) != 0)
+        {
             throw new ObjectDisposedException(nameof(KafkaConsumer<TKey, TValue>));
+        }
 
         ThrowIfNotInitialized();
 
@@ -11487,7 +12243,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 var connectionLease = await GetPartitionLeaderControlConnectionAsync(topicPartition, apiTimeout.Token)
                     .ConfigureAwait(false);
                 if (connectionLease is null)
+                {
                     throw new KafkaException(ErrorCode.LeaderNotAvailable, $"No leader found for partition {topicPartition}");
+                }
                 using var lease = connectionLease.Value;
                 var connection = lease.Connection;
                 var topicId = GetTopicId(
@@ -11529,8 +12287,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 var earliestPartitionResponse = FindListOffsetsPartition(earliestResponseTask.Result, topicPartition);
 
                 if (earliestPartitionResponse is null)
+                {
                     throw new KafkaException(ErrorCode.UnknownServerError,
                         $"Failed to query earliest offset for {topicPartition}: missing partition response");
+                }
 
                 if (earliestPartitionResponse.ErrorCode != ErrorCode.None)
                 {
@@ -11543,8 +12303,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 var latestPartitionResponse = FindListOffsetsPartition(latestResponseTask.Result, topicPartition);
 
                 if (latestPartitionResponse is null)
+                {
                     throw new KafkaException(ErrorCode.UnknownServerError,
                         $"Failed to query latest offset for {topicPartition}: missing partition response");
+                }
 
                 if (latestPartitionResponse.ErrorCode != ErrorCode.None)
                 {
@@ -11727,11 +12489,15 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     public async ValueTask InitializeAsync(CancellationToken cancellationToken = default)
     {
         if (Volatile.Read(ref _consumerDisposed) != 0)
+        {
             throw new ObjectDisposedException(nameof(KafkaConsumer<TKey, TValue>));
+        }
 
         // Fast path: already initialized (volatile read provides acquire semantics)
         if (_initialized)
+        {
             return;
+        }
 
         using var apiTimeout = new ApiTimeoutScope(_options.DefaultApiTimeoutMs, cancellationToken);
         try
@@ -11744,7 +12510,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             {
                 // Double-check after acquiring lock
                 if (_initialized)
+                {
                     return;
+                }
 
                 await _metadataManager.InitializeAsync(apiTimeout.Token).ConfigureAwait(false);
                 await _telemetryManager.StartAsync(apiTimeout.Token).ConfigureAwait(false);
@@ -11768,7 +12536,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     private void ThrowIfNotInitialized()
     {
         if (!_initialized)
+        {
             ThrowNotInitialized();
+        }
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
@@ -11786,7 +12556,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     private async ValueTask<bool> RefreshFilteredTopicsAsync(Func<string, bool> filter, CancellationToken cancellationToken)
     {
         if (!IsFilterRefreshDue())
+        {
             return false;
+        }
 
         var now = Dekaf.MonotonicClock.GetMilliseconds();
 
@@ -11977,7 +12749,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             // seek the callback stages is applied before fetching starts. Waited for before the
             // assignment lock: the callback's seek takes that lock.
             if (coordinator is not null)
+            {
                 await coordinator.WaitForAssignmentCallbacksAsync(cancellationToken).ConfigureAwait(false);
+            }
 
             await SemaphoreHelper.AcquireOrThrowDisposedAsync(_assignmentLock, nameof(KafkaConsumer<TKey, TValue>), cancellationToken).ConfigureAwait(false);
             (ConsumerCoordinator Coordinator, HashSet<TopicPartition> Partitions)? unacknowledgedCoordinatorRevocations = null;
@@ -11989,15 +12763,12 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     // A newer assignment was published after the wait above: wait for its
                     // callbacks too before taking the snapshot.
                     if (coordinator.HasPendingAssignmentCallbacks())
+                    {
                         continue;
+                    }
 
                     BeforeCoordinatorAssignmentSnapshotForTest?.Invoke();
-                    var (
-                        coordinatorAssignment,
-                        coordinatorAssignmentVersion,
-                        coordinatorRevocations,
-                        newlyExpandedPartitions,
-                        coordinatorRevocationSequences) =
+                    var (coordinatorAssignment, coordinatorAssignmentVersion, coordinatorRevocations, newlyExpandedPartitions, coordinatorRevocationSequences) =
                         await coordinator.GetAssignmentSnapshotAndDrainRevocationsAsync(cancellationToken)
                             .ConfigureAwait(false);
                     if (coordinatorRevocationSequences is not null)
@@ -12037,14 +12808,18 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                         && HasInitializedFetchPositions(coordinatorAssignment))
                     {
                         if (coordinator.AssignmentVersion != coordinatorAssignmentVersion)
+                        {
                             continue;
+                        }
 
                         // A seek or revocation gave every deferred partition a position meanwhile.
                         ClearDeferredPositionRetry();
 
                         Volatile.Write(ref _lastCoordinatorAssignmentVersion, coordinatorAssignmentVersion);
                         if (coordinator.AcknowledgeAssignmentSync(coordinatorAssignmentVersion))
+                        {
                             CompleteAcknowledgedSync();
+                        }
                         return;
                     }
 
@@ -12085,20 +12860,30 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                         foreach (var partition in coordinatorRevocations)
                         {
                             if (removedPartitions is null || !removedPartitions.Contains(partition))
+                            {
                                 (removedPartitions ??= []).Add(partition);
+                            }
 
                             if (!coordinatorAssignment.Contains(partition))
+                            {
                                 continue;
+                            }
 
                             if (newPartitions is null || !newPartitions.Contains(partition))
+                            {
                                 (newPartitions ??= []).Add(partition);
+                            }
                         }
                     }
 
                     if (newPartitions is { Count: > 0 })
+                    {
                         LogPartitionsAdded(newPartitions.Count);
+                    }
                     if (removedPartitions is { Count: > 0 })
+                    {
                         LogPartitionsRemoved(removedPartitions.Count);
+                    }
 
                     // A seek staged for a partition that was revoked and then assigned again
                     // came from the new assignment's OnPartitionsAssigned: publishing the
@@ -12112,7 +12897,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                         foreach (var partition in coordinatorRevocations)
                         {
                             if (coordinatorAssignment.Contains(partition))
+                            {
                                 (reassignedPartitions ??= []).Add(partition);
+                            }
                         }
                     }
 
@@ -12121,13 +12908,17 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     // Invalidate in-flight fetches before publishing an ABA reassignment or
                     // reinitializing its position. The consume loop owns the actual buffer drain.
                     if (removedPartitions is not null)
+                    {
                         QueueCoordinatorRevokedPartitionsForFetchClear(removedPartitions, reassignedPartitions);
+                    }
                     if (reclassifiedPartitions is not null)
                     {
                         // Reclassification keeps ownership: its staged seek and pause marker stay.
                         var retained = new HashSet<TopicPartition>(reclassifiedPartitions);
                         if (reassignedPartitions is not null)
+                        {
                             retained.UnionWith(reassignedPartitions);
+                        }
                         QueueCoordinatorRevokedPartitionsForFetchClear(reclassifiedPartitions, retained);
                     }
 
@@ -12148,21 +12939,27 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                         if (newPartitions is not null)
                         {
                             foreach (var partition in newPartitions)
+                            {
                                 ClearStoredOffset(partition);
+                            }
                         }
 
                         // Clean up state for removed partitions while lag-query cache publication
                         // is excluded from the assignment transition.
                         if (removedPartitions is not null
                             && RemovePartitionState(removedPartitions, reassignedPartitions))
+                        {
                             PublishPausedSnapshot();
+                        }
 
                         // Last: the drained revocations stay pending until the old ownership's
                         // stored offsets and positions are gone. Stored-offset commits decide
                         // ownership under this same gate, so they see either the revocation
                         // pending or the cleaned state, never the stale state as owned.
                         if (drainedRevocations is not null)
+                        {
                             ForgetDrainedRevocations(drainedRevocations);
+                        }
                     }
 
                     InvalidatePartitionCache();
@@ -12196,7 +12993,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     // A heartbeat can publish a newer assignment while positions initialize.
                     // Synchronize the latest snapshot before publishing this pass as current.
                     if (coordinator.AssignmentVersion != coordinatorAssignmentVersion)
+                    {
                         continue;
+                    }
 
                     BeforeAssignmentSyncAcknowledgedForTest?.Invoke();
                     Volatile.Write(ref _lastCoordinatorAssignmentVersion, coordinatorAssignmentVersion);
@@ -12241,7 +13040,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 // Position initialization and assignment-version publication acknowledge the drain.
                 // Restore on failure so the next sync repeats revocation cleanup and initialization.
                 if (unacknowledgedCoordinatorRevocations is { } revocations)
+                {
                     revocations.Coordinator.RestoreRevokedPartitionsSinceLastSync(revocations.Partitions);
+                }
 
                 SemaphoreHelper.ReleaseSafely(_assignmentLock);
             }
@@ -12258,7 +13059,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         // subscription mutation, and CanUseBufferedConsumeOneFastPath already keys its
         // subscription-vs-manual routing off the same snapshot.
         if (_topicFilter is not null || _topicPattern is not null || _subscriptionSnapshot.Count != 0)
+        {
             return false;
+        }
 
         var assignmentEnsureVersion = Volatile.Read(ref _assignmentEnsureVersion);
         return Volatile.Read(ref _lastManualAssignmentEnsureVersion) == assignmentEnsureVersion;
@@ -12269,7 +13072,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         foreach (var partition in partitions)
         {
             if (!_fetchPositions.ContainsKey(partition))
+            {
                 return false;
+            }
         }
 
         return true;
@@ -12302,7 +13107,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     || !committedOffsets.TryGetValue(partition, out var committed)
                     || committed.Offset < 0)
                 && !_fetchPositions.ContainsKey(partition))
+            {
                 resets.Add(partition, CreateAutoResetResolution(partition));
+            }
         }
         await ResolveOffsetsAsync(resets, cancellationToken).ConfigureAwait(false);
 
@@ -12329,7 +13136,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             {
                 // A position present when resets were collected can disappear during the lookup.
                 if (!resets.TryGetValue(partition, out var reset))
+                {
                     continue;
+                }
                 if (reset.Error is not null)
                 {
                     resetFailure ??= reset.Error;
@@ -12343,18 +13152,26 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             lock (_coordinatorRevokedPartitionsPendingFetchClearLock)
             {
                 if (_fetchPositions.ContainsKey(partition))
+                {
                     continue;
+                }
 
                 SetPosition(partition, offset, dirty: false);
                 if (leaderEpoch >= 0)
+                {
                     SetLastConsumedLeaderEpoch(partition, leaderEpoch);
+                }
                 else
+                {
                     ClearLastConsumedLeaderEpoch(partition);
+                }
                 SetFetchPosition(partition, offset);
             }
         }
         if (resetFailure is not null)
+        {
             ExceptionDispatchInfo.Capture(resetFailure).Throw();
+        }
     }
 
     private async ValueTask InitializePositionsAsync(
@@ -12389,8 +13206,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                         cancellationToken)
                     .ConfigureAwait(false);
             }
-            catch (Exception ex) when (
-                ex is KafkaTimeoutException || TransportFailureClassifier.IsRetriable(
+            catch (Exception ex) when (ex is KafkaTimeoutException || TransportFailureClassifier.IsRetriable(
                     ex, TransportRetryPolicy.Request, ownerDisposed: Volatile.Read(ref _consumerDisposed) != 0))
             {
                 cancellationToken.ThrowIfCancellationRequested();
@@ -12407,7 +13223,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 {
                     if (!unstablePartitions.Contains(partition)
                         && (!committedOffsets.TryGetValue(partition, out var committed) || committed.Offset < 0))
+                    {
                         resets.Add(partition, CreateAutoResetResolution(partition, newlyExpandedPartitions.Contains(partition)));
+                    }
                 }
             }
             await ResolveOffsetsAsync(resets, cancellationToken).ConfigureAwait(false);
@@ -12426,7 +13244,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     && committedOffset.Offset >= 0;
                 // Cache broker knowledge even when an explicit seek wins the position race.
                 if (hasCommittedOffset)
+                {
                     _ = TryCacheCommittedOffset(partition, committedOffset.Offset, cacheGeneration);
+                }
 
                 // Seek changes this partition's fetch epoch under the same lock. Do not replace
                 // a seek made during either the committed-offset fetch or the batched resets.
@@ -12438,9 +13258,13 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                         {
                             SetPosition(partition, committedOffset.Offset, dirty: false);
                             if (committedOffset.LeaderEpoch >= 0)
+                            {
                                 SetLastConsumedLeaderEpoch(partition, committedOffset.LeaderEpoch);
+                            }
                             else
+                            {
                                 ClearLastConsumedLeaderEpoch(partition);
+                            }
                             SetFetchPosition(partition, committedOffset.Offset);
                         }
                         else if (!deferred)
@@ -12471,11 +13295,15 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 }
 
                 if (isNewlyExpanded)
+                {
                     (initializedNewPartitions ??= []).Add(partition);
+                }
             }
 
             if (resetFailure is not null)
+            {
                 ExceptionDispatchInfo.Capture(resetFailure).Throw();
+            }
 
             if (deferredCount == 0)
             {
@@ -12504,7 +13332,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         finally
         {
             if (initializedNewPartitions is not null)
+            {
                 coordinator.AcknowledgeInitializedPartitions(initializedNewPartitions, assignmentVersion);
+            }
         }
     }
 
@@ -12525,7 +13355,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         if (untilSyncAcknowledged)
         {
             if (!_pendingRebalanceSeeks.TryGetValue(partition, out offset))
+            {
                 return;
+            }
             _unacknowledgedAppliedRebalanceSeeks[partition] = offset;
         }
         else if (!_pendingRebalanceSeeks.TryRemove(partition, out offset))
@@ -12540,9 +13372,13 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             ClearFetchBufferForPartitions([partition]);
 
             if (offset.LeaderEpoch >= 0)
+            {
                 SetLastConsumedLeaderEpoch(partition, offset.LeaderEpoch);
+            }
             else
+            {
                 ClearLastConsumedLeaderEpoch(partition);
+            }
             SetPosition(partition, offset.Offset, dirty: true);
             SetFetchPosition(partition, offset.Offset);
             _eofEmitted.TryRemove(partition, out _);
@@ -12559,9 +13395,13 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         if (_coordinator is { } coordinator)
         {
             foreach (var drained in _drainedRevocationSequences)
+            {
                 coordinator.PruneRevocationSequence(drained.Key, drained.Value);
+            }
             foreach (var acknowledged in _acknowledgedRevocationSequences)
+            {
                 coordinator.PruneRevocationSequence(acknowledged.Key, acknowledged.Value);
+            }
             coordinator.ForgetQueuedRevocationSequences();
         }
 
@@ -12602,11 +13442,15 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
         _drainedRevocationSequences.Clear();
         if (_unacknowledgedAppliedRebalanceSeeks.Count == 0)
+        {
             return;
+        }
 
         var pending = (ICollection<KeyValuePair<TopicPartition, TopicPartitionOffset>>)_pendingRebalanceSeeks;
         foreach (var applied in _unacknowledgedAppliedRebalanceSeeks)
+        {
             pending.Remove(applied);
+        }
 
         _unacknowledgedAppliedRebalanceSeeks.Clear();
     }
@@ -12639,7 +13483,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         await ResolveOffsetsAsync(new Dictionary<TopicPartition, OffsetResolution> { [partition] = resolution }, cancellationToken)
             .ConfigureAwait(false);
         if (resolution.Error is not null)
+        {
             ExceptionDispatchInfo.Capture(resolution.Error).Throw();
+        }
         return resolution.Offset!.Value;
     }
 
@@ -12652,11 +13498,15 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         {
             var partition = partitions[i];
             if (_fetchPositions.TryGetValue(partition, out var position) && position is -1 or -2)
+            {
                 (resolutions ??= []).Add(partition, new OffsetResolution(position));
+            }
         }
 
         if (resolutions is null)
+        {
             return;
+        }
 
         await ResolveOffsetsAsync(resolutions, cancellationToken).ConfigureAwait(false);
         Exception? failure = null;
@@ -12666,7 +13516,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             lock (_coordinatorRevokedPartitionsPendingFetchClearLock)
             {
                 if (!_fetchPositions.TryGetValue(partition, out var current) || current != resolution.Timestamp)
+                {
                     continue;
+                }
                 if (resolution.Error is not null)
                 {
                     failure ??= resolution.Error;
@@ -12680,7 +13532,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             }
         }
         if (failure is not null)
+        {
             ExceptionDispatchInfo.Capture(failure).Throw();
+        }
     }
 
     // Deadline-mode retry (see RetryDeadline) for idempotent offset lookups.
@@ -12700,7 +13554,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             .ConfigureAwait(false);
 
         if (leader is null)
+        {
             return null;
+        }
 
         // Keep offset-control requests off fetch connections. A delayed fetch response must not
         // block assignment position initialization or watermark queries during a rebalance.
@@ -12729,7 +13585,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
             // Close any race window: if token was cancelled between method entry and registration
             if (cancellationToken.IsCancellationRequested)
+            {
                 consumeCts.Cancel();
+            }
 
             var pausedSnapshotVersion = Volatile.Read(ref _pausedSnapshotVersion);
             var partitionsByBroker = await GroupPartitionsByBrokerAsync(cancellationToken).ConfigureAwait(false);
@@ -12783,7 +13641,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     }
 
                     if (scheduledFetchSessionBrokers is not null && scheduledFetchSessionBrokers.Contains(key.BrokerId))
+                    {
                         continue;
+                    }
 
                     fetchTasks[taskCount++] = FetchFromBrokerWithErrorHandlingAsync(
                         key.BrokerId,
@@ -12868,7 +13728,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             lock (_pausedDirectFetchCancellationSourceLock)
             {
                 if (ReferenceEquals(_pausedDirectFetchCancellationSource, consumeCts))
+                {
                     _pausedDirectFetchCancellationSource = null;
+                }
 
                 consumeCts.Dispose();
             }
@@ -12890,7 +13752,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         // Resume may publish before the waiter is visible. The version check closes
         // that race; a later Resume cancels consumeCts through the published field.
         if (Volatile.Read(ref _pausedSnapshotVersion) != pausedSnapshotVersion)
+        {
             return;
+        }
 
 #if NET
         var delay = Task.Delay(AllPartitionsPausedDelayMs, consumeCts.Token);
@@ -12909,8 +13773,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         {
             await Task.Delay(AllPartitionsPausedDelayMs, consumeCts.Token).ConfigureAwait(false);
         }
-        catch (OperationCanceledException) when (
-            !cancellationToken.IsCancellationRequested
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested
             && Volatile.Read(ref _pausedSnapshotVersion) != pausedSnapshotVersion)
         {
             // Resume is a control-plane wake, not caller cancellation.
@@ -12926,7 +13789,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         {
             var task = fetchTasks[i];
             if (task.Status != TaskStatus.RanToCompletion || task.Result is not { } pendingItems)
+            {
                 continue;
+            }
 
             DisposePendingFetches(pendingItems);
             ConsumerFetchPools.ReturnPendingFetchDataList(pendingItems);
@@ -12990,18 +13855,24 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             foreach (var partition in previousAssignment)
             {
                 if (assignmentSnapshot.Contains(partition))
+                {
                     continue;
+                }
 
                 EndOwnership(partition, ownershipStart);
                 _watermarkAssignmentVersions.TryRemove(partition, out _);
                 if (_watermarks.TryGetValue(partition, out var entry))
+                {
                     RetainUnassignedWatermarkSnapshot(partition, entry, assignmentSnapshot);
+                }
             }
 
             foreach (var partition in assignmentSnapshot)
             {
                 if (previousAssignment.Contains(partition))
+                {
                     continue;
+                }
 
                 StartOwnership(partition, ownershipStart);
                 _watermarkAssignmentVersions[partition] = assignmentVersion;
@@ -13013,7 +13884,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 foreach (var partition in reassignedPartitions)
                 {
                     if (!assignmentSnapshot.Contains(partition))
+                    {
                         continue;
+                    }
 
                     StartOwnership(partition, ownershipStart);
                     _watermarkAssignmentVersions[partition] = assignmentVersion;
@@ -13101,7 +13974,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         {
             var cachedEntry = _cachedPartitionsByBroker;
             if (cachedEntry is null)
+            {
                 return;
+            }
 
             var cached = cachedEntry.Value;
             var partitionsByBroker = cached.PartitionsByBroker;
@@ -13126,10 +14001,12 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             }
 
             if (changed)
+            {
                 _cachedPartitionsByBroker = new PartitionBrokerCacheEntry(
                     updated,
                     cached.ExpiresAtTimestamp,
                     cached.MetadataLastRefreshed);
+            }
         }
     }
 
@@ -13139,7 +14016,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         {
             var cachedEntry = _cachedPartitionsByBroker;
             if (cachedEntry is null)
+            {
                 return;
+            }
 
             var cached = cachedEntry.Value;
             if (!_preferredReadReplicas.IsEmpty || _partitionFetchBackoffs.Count > 0)
@@ -13153,7 +14032,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             foreach (var partition in partitions)
             {
                 if (_paused.ContainsKey(partition) || !ContainsPartition(assignment, partition))
+                {
                     continue;
+                }
 
                 var leader = _metadataManager.TryGetCachedPartitionLeader(partition.Topic, partition.Partition);
                 if (leader is null)
@@ -13170,7 +14051,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 }
 
                 if (ContainsPartition(brokerPartitions, partition))
+                {
                     continue;
+                }
 
                 var replacement = new List<TopicPartition>(brokerPartitions.Count + 1);
                 replacement.AddRange(brokerPartitions);
@@ -13179,10 +14062,12 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             }
 
             if (updated is not null)
+            {
                 _cachedPartitionsByBroker = new PartitionBrokerCacheEntry(
                     updated,
                     cached.ExpiresAtTimestamp,
                     cached.MetadataLastRefreshed);
+            }
         }
     }
 
@@ -13202,7 +14087,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             if (_cachedPartitionsByBroker is { } cached)
             {
                 if (IsPartitionBrokerCacheValid(cached, now))
+                {
                     return cached.PartitionsByBroker;
+                }
 
                 _cachedPartitionsByBroker = null;
             }
@@ -13275,7 +14162,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         {
             ArrayPool<TopicPartition>.Shared.Return(assignmentArray, clearArray: true);
             if (brokerTasks is not null)
+            {
                 ArrayPool<Task<PartitionFetchBrokerResolution>>.Shared.Return(brokerTasks, clearArray: true);
+            }
         }
 
         // Cache the result - will be reused until assignment/paused changes.
@@ -13311,7 +14200,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     {
         var metadataSnapshot = _metadataManager.Metadata.CaptureSnapshot();
         if (ReferenceEquals(metadataSnapshot, Volatile.Read(ref _observedTopicIdentityMarker)))
+        {
             return ValueTask.CompletedTask;
+        }
 
         return HandleTopicIdentityChangesSlowAsync(
             rejectedTopic,
@@ -13346,7 +14237,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             if (rejectedTopics is null
                 && rejectedTopic is not { Length: > 0 }
                 && ReferenceEquals(metadataSnapshot, observedTopicIdentityMarker))
+            {
                 return;
+            }
 
             if (rejectedTopic is { Length: > 0 } &&
                 rejectedTopicId != Guid.Empty &&
@@ -13360,7 +14253,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 foreach (var (topic, topicId) in rejectedTopics)
                 {
                     if (topicId != Guid.Empty && !_observedTopicIds.ContainsKey(topic))
+                    {
                         _observedTopicIds[topic] = topicId;
+                    }
                 }
             }
 
@@ -13397,7 +14292,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 foreach (var partition in assignment)
                 {
                     if (changedTopics.ContainsKey(partition.Topic))
+                    {
                         recreatedPartitions.Add(partition);
+                    }
                 }
 
                 InvalidateWatermarkCacheGenerations(recreatedPartitions);
@@ -13440,8 +14337,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                             partition,
                             fetchBufferEpoch,
                             cancellationToken,
-                            allowedPendingFetchClearVersion:
-                                preexistingPendingFetchClearVersions?.GetValueOrDefault(partition)
+                            allowedPendingFetchClearVersion: preexistingPendingFetchClearVersions?.GetValueOrDefault(partition)
                                 ?? NoPendingFetchClearVersion);
                         if (reset.IsCompletedSuccessfully)
                         {
@@ -13459,7 +14355,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
 #if NETSTANDARD2_0
                     if (resetTaskCount > 0)
+                    {
                         await Task.WhenAll(resetTasks!.Take(resetTaskCount)).ConfigureAwait(false);
+                    }
 #else
                     if (resetTaskCount > 0)
                     {
@@ -13473,13 +14371,17 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 finally
                 {
                     if (resetTasks is not null)
+                    {
                         ArrayPool<Task>.Shared.Return(resetTasks, clearArray: true);
+                    }
 
                     ReleaseTopicIdentityResetReservations(recreatedPartitions);
                 }
 
                 foreach (var (topic, identities) in changedTopics)
+                {
                     _observedTopicIds[topic] = identities.Current;
+                }
 
                 // Publish recreated-topic state before allowing a background poll to rejoin.
                 // Rejoining first can stage a temporary revocation; the reset's stale-fetch
@@ -13507,7 +14409,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             foreach (var partition in recreatedPartitions)
             {
                 if (!_assignmentSnapshot.Contains(partition))
+                {
                     continue;
+                }
 
                 _watermarkAssignmentVersions[partition] = assignmentVersion;
                 _watermarks.TryRemove(partition, out _);
@@ -13523,7 +14427,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             foreach (var partition in recreatedPartitions)
             {
                 if (!_assignmentSnapshot.Contains(partition))
+                {
                     continue;
+                }
 
                 _watermarkAssignmentVersions.TryRemove(partition, out _);
                 _watermarks.TryRemove(partition, out _);
@@ -13538,7 +14444,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         lock (_coordinatorRevokedPartitionsPendingFetchClearLock)
         {
             foreach (var partition in partitions)
+            {
                 _topicIdentityResetPartitions.Add(partition);
+            }
 
             foreach (var partition in partitions)
             {
@@ -13584,7 +14492,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         lock (_coordinatorRevokedPartitionsPendingFetchClearLock)
         {
             foreach (var partition in partitions)
+            {
                 _topicIdentityResetPartitions.Remove(partition);
+            }
         }
     }
 
@@ -13594,17 +14504,23 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         foreach (var topic in _observedTopicIds.Keys)
         {
             if (assignedTopics.Contains(topic))
+            {
                 continue;
+            }
 
             removedTopics ??= [];
             removedTopics.Add(topic);
         }
 
         if (removedTopics is null)
+        {
             return;
+        }
 
         foreach (var topic in removedTopics)
+        {
             _observedTopicIds.Remove(topic);
+        }
     }
 
     private async Task CompleteTopicIdentityResetAsync(
@@ -13632,7 +14548,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     private bool IsPartitionBrokerCacheValid(PartitionBrokerCacheEntry cached, long now)
     {
         if (cached.ExpiresAtTimestamp == NoExpiry)
+        {
             return true;
+        }
 
         return cached.ExpiresAtTimestamp > now
             && cached.MetadataLastRefreshed == _metadataManager.Metadata.LastRefreshed;
@@ -13644,10 +14562,14 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         ref long preferredReplicaExpiresAtTimestamp)
     {
         if (resolution.Broker is null)
+        {
             return;
+        }
 
         if (resolution.PreferredReplicaExpiresAtTimestamp < preferredReplicaExpiresAtTimestamp)
+        {
             preferredReplicaExpiresAtTimestamp = resolution.PreferredReplicaExpiresAtTimestamp;
+        }
 
         if (!result.TryGetValue(resolution.Broker.NodeId, out var list))
         {
@@ -13683,7 +14605,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         var leader = await _metadataManager.GetPartitionLeaderAsync(
             partition.Topic, partition.Partition, cancellationToken).ConfigureAwait(false);
         if (leader is null)
+        {
             return new PartitionFetchBrokerResolution(partition, null, NoExpiry);
+        }
 
         var broker = GetPreferredReadReplicaBrokerOrLeader(
             partition,
@@ -13834,7 +14758,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     requestMetadataSnapshot,
                     fetchSessionHandler);
                 if (string.IsNullOrEmpty(topic))
+                {
                     continue;
+                }
 
                 var activityName = _activityNameCache.GetOrAdd(topic, static t => Diagnostics.DekafDiagnostics.ProcessSpanName(t));
 
@@ -13842,7 +14768,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 {
                     var tp = new TopicPartition(topic, partitionResponse.PartitionIndex);
                     if (ShouldDropStaleFetchPartition(tp, fetchBufferEpoch))
+                    {
                         continue;
+                    }
 
                     // Update watermark cache from fetch response (even on errors, watermarks may be valid)
                     UpdateWatermarksFromFetchResponse(
@@ -13984,7 +14912,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         finally
         {
             if (queuedDivergingEpochReset)
+            {
                 CompleteDivergingEpochResets();
+            }
 
             // Return the response and its nested objects to their pools.
             // Data has been transferred to PendingFetchData; the response wrappers are no longer needed.
@@ -14099,14 +15029,22 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             // messaging.message.body.size is Opt-In in the OTel messaging conventions.
             // Dekaf does not expose that opt-in, so avoid its tag node and per-record int box.
             if (isTombstone)
+            {
                 activity.SetTag(Diagnostics.DekafDiagnostics.MessagingKafkaTombstone, Diagnostics.DekafDiagnostics.BoxedTrue);
+            }
             var clusterId = _metadataManager.ClusterId;
             if (clusterId is not null)
+            {
                 activity.SetTag(Diagnostics.DekafDiagnostics.MessagingKafkaClusterId, clusterId);
+            }
             if (_options.ClientId is not null)
+            {
                 activity.SetTag(Diagnostics.DekafDiagnostics.MessagingClientId, _options.ClientId);
+            }
             if (_options.GroupId is not null)
+            {
                 activity.SetTag(Diagnostics.DekafDiagnostics.MessagingConsumerGroupName, _options.GroupId);
+            }
         }
 
         return activity;
@@ -14120,7 +15058,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     private ConsumeResult<TKey, TValue> ApplyOnConsumeInterceptors(ConsumeResult<TKey, TValue> result)
     {
         if (_interceptors is null)
+        {
             return result;
+        }
 
         return ApplyOnConsumeInterceptorsSlow(result);
     }
@@ -14154,7 +15094,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     private void InvokeOnCommitInterceptors(IReadOnlyList<TopicPartitionOffset> offsets)
     {
         if (_interceptors is null)
+        {
             return;
+        }
 
         foreach (var interceptor in _interceptors)
         {
@@ -14275,10 +15217,14 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 if (IsFetchBufferEpochStale(partition, fetchBufferEpoch)
                     || (_assignmentSnapshot.Contains(partition)
                         && !_watermarkAssignmentVersions.ContainsKey(partition)))
+                {
                     return;
+                }
 
                 if (_watermarks.TryGetValue(partition, out entry!))
+                {
                     break;
+                }
 
                 if (_watermarks.TryAdd(
                     partition,
@@ -14396,7 +15342,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     if (leaderEpoch != UnknownLeaderEpoch)
                     {
                         if (low < _low || high < _high || lagEndOffset < _lagEndOffset)
+                        {
                             UpdateSameLeaderEpoch(low, high, lagEndOffset);
+                        }
                         else
                         {
                             Volatile.Write(ref _low, low);
@@ -14438,11 +15386,17 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         private void UpdateSameLeaderEpoch(long low, long high, long lagEndOffset)
         {
             if (low > _low)
+            {
                 Volatile.Write(ref _low, low);
+            }
             if (high > _high)
+            {
                 Volatile.Write(ref _high, high);
+            }
             if (lagEndOffset > _lagEndOffset)
+            {
                 Volatile.Write(ref _lagEndOffset, lagEndOffset);
+            }
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -14500,7 +15454,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 if (watermarkUpdateSequence >= lagEndOffsetUpdateSequence)
                 {
                     if (updateState >= 0)
+                    {
                         _watermarkOffsetsUpdateSequenceLow = (int)lagEndOffsetUpdateSequence;
+                    }
 
                     Volatile.Write(ref _lagEndOffset, lagEndOffset);
                     _leaderEpoch = leaderEpoch;
@@ -14525,7 +15481,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 }
 
                 if (minimumFetchBufferEpoch > _minimumFetchBufferEpoch)
+                {
                     _minimumFetchBufferEpoch = minimumFetchBufferEpoch;
+                }
                 Volatile.Write(ref _version, version + 2);
                 return;
             }
@@ -14540,7 +15498,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         {
             var updateState = _watermarkUpdateState;
             if (updateState >= 0)
+            {
                 return;
+            }
 
             var lagEndOffsetUpdateSequence = updateState & long.MaxValue;
             if (watermarkUpdateSequence >= lagEndOffsetUpdateSequence)
@@ -14555,7 +15515,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             var watermarkOffsetsUpdateSequence = (lagEndOffsetUpdateSequence & ~uint.MaxValue)
                 | (uint)_watermarkOffsetsUpdateSequenceLow;
             if (watermarkOffsetsUpdateSequence > lagEndOffsetUpdateSequence)
+            {
                 watermarkOffsetsUpdateSequence -= 1L << 32;
+            }
 
             if (_low != UnknownWatermarkOffset
                 && watermarkUpdateSequence < watermarkOffsetsUpdateSequence)
@@ -14605,7 +15567,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             if (currentLeaderEpoch != UnknownLeaderEpoch)
             {
                 if (replacementLeaderEpoch == UnknownLeaderEpoch)
+                {
                     return false;
+                }
 
                 return replacementLeaderEpoch > currentLeaderEpoch
                        || (replacementLeaderEpoch == currentLeaderEpoch
@@ -14662,7 +15626,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
                 var lagEndOffset = Volatile.Read(ref _lagEndOffset);
                 if (version == Volatile.Read(ref _version))
+                {
                     return lagEndOffset;
+                }
 
                 spinner.SpinOnce();
             }
@@ -14684,11 +15650,15 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         bool startsBatch)
     {
         if (partitionResponse.DivergingEpoch is not { } divergingEpoch)
+        {
             return false;
+        }
 
         var partition = new TopicPartition(topic, partitionResponse.PartitionIndex);
         if (ShouldDropStaleFetchPartition(partition, fetchBufferEpoch))
+        {
             return false;
+        }
 
         return StageDivergingEpochReset(
             partition,
@@ -14774,12 +15744,16 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 fetchBufferEpoch,
                 allowedPendingFetchClearVersion,
                 expectedLeader))
+        {
             return;
+        }
 
         var resetTimestamp = AutoOffsetResetStrategy.GetListOffsetsTimestamp(_options, DateTimeOffset.UtcNow, partition);
         var resetOffset = resetTimestamp;
         if (resetTimestamp != LatestOffsetTimestamp && resetTimestamp != EarliestOffsetTimestamp)
+        {
             resetOffset = await ResolveAutoResetOffsetAsync(partition, resetTimestamp, cancellationToken).ConfigureAwait(false);
+        }
 
         if (!TryApplyOffsetReset(
                 partition,
@@ -14787,7 +15761,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 allowedPendingFetchClearVersion,
                 resetOffset,
                 expectedLeader))
+        {
             return;
+        }
 
         LogOffsetOutOfRangeReset(partition.Topic, partition.Partition, GetAutoOffsetResetName());
     }
@@ -14811,13 +15787,17 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             try
             {
                 if (metadataLock is not null)
+                {
                     Monitor.Enter(metadataLock, ref metadataLockTaken);
+                }
                 if (ShouldDropOffsetReset(
                         partition,
                         fetchBufferEpoch,
                         allowedPendingFetchClearVersion,
                         expectedLeader, expectedMetadataSnapshot))
+                {
                     return false;
+                }
 
                 BeforeOffsetResetCommitForTest?.Invoke();
                 var offset = resetOffset ?? AutoOffsetResetStrategy.GetListOffsetsTimestamp(
@@ -14830,7 +15810,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             finally
             {
                 if (metadataLockTaken)
+                {
                     Monitor.Exit(metadataLock!);
+                }
             }
         }
     }
@@ -14845,7 +15827,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         if (IsFetchBufferEpochStale(partition, fetchBufferEpoch)
             || PendingFetchClearVersionChanged(partition, allowedPendingFetchClearVersion)
             || !IsCurrentlyAssigned(partition))
+        {
             return true;
+        }
 
         if (expectedLeader is not null
             && (expectedMetadataSnapshot is null
@@ -14917,7 +15901,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     {
         var leader = _metadataManager.TryGetCachedPartitionLeader(partition.Topic, partition.Partition);
         if (leader is not null && leader.NodeId != brokerId)
+        {
             return;
+        }
 
         var expiresAtTimestamp = Stopwatch.GetTimestamp()
             + _options.RetryBackoffMs * Stopwatch.Frequency / 1000;
@@ -14942,19 +15928,25 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     private bool PruneExpiredFetchBackoffs(long now)
     {
         if (_partitionFetchBackoffs.Count == 0)
+        {
             return false;
+        }
 
         List<TopicPartition>? expired = null;
         foreach (var entry in _partitionFetchBackoffs)
         {
             if (entry.Value <= now)
+            {
                 (expired ??= []).Add(entry.Key);
+            }
         }
 
         if (expired is not null)
         {
             foreach (var partition in expired)
+            {
                 _partitionFetchBackoffs.Remove(partition);
+            }
         }
 
         return _partitionFetchBackoffs.Count > 0;
@@ -14966,10 +15958,14 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     private bool IsFetchBackingOff(TopicPartition partition, ref long earliestExpiresAtTimestamp)
     {
         if (!_partitionFetchBackoffs.TryGetValue(partition, out var expiresAtTimestamp))
+        {
             return false;
+        }
 
         if (expiresAtTimestamp < earliestExpiresAtTimestamp)
+        {
             earliestExpiresAtTimestamp = expiresAtTimestamp;
+        }
 
         return true;
     }
@@ -15026,7 +16022,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         LogLeaderEpochRefresh(topic, partitionResponse.PartitionIndex, partitionResponse.ErrorCode);
 
         if (!updated)
+        {
             ScheduleLeaderRefresh(topic);
+        }
 
         return default;
     }
@@ -15112,7 +16110,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     private void ScheduleLeaderRefresh(string topic)
     {
         if (Volatile.Read(ref _consumerDisposed) != 0 || Volatile.Read(ref _closed) != 0)
+        {
             return;
+        }
 
         TaskCompletionSource refreshCompletion;
         CancellationToken cancellationToken;
@@ -15120,10 +16120,14 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         lock (_leaderRefreshTasksLock)
         {
             if (Volatile.Read(ref _consumerDisposed) != 0 || Volatile.Read(ref _closed) != 0)
+            {
                 return;
+            }
 
             if (_pendingLeaderRefreshTasks.ContainsKey(topic))
+            {
                 return;
+            }
 
             try
             {
@@ -15176,7 +16180,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         lock (_leaderRefreshTasksLock)
         {
             if (_pendingLeaderRefreshTasks.IsEmpty)
+            {
                 return;
+            }
 
             refreshTasks = [.. _pendingLeaderRefreshTasks.Values];
         }
@@ -15253,7 +16259,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         ClusterMetadataSnapshot metadataSnapshot)
     {
         if (count == 0)
+        {
             return ConsumerFetchPools.RentFetchRequestTopicList(0);
+        }
 
         var orderState = _fetchPartitionOrderStates.GetOrAdd(
             (brokerId, connectionIndex),
@@ -15380,14 +16388,25 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         List<string> topicOrder,
         List<(int TopicIndex, int PartitionIndex)> rotationStarts)
     {
-        public List<TopicPartition> Partitions { get; } = partitions;
+        public List<TopicPartition> Partitions
+        {
+            get;
+        } = partitions;
 
-        public Dictionary<string, List<(FetchRequestPartition Partition, TopicPartition TopicPartition)>> TopicPartitions { get; }
-            = topicPartitions;
+        public Dictionary<string, List<(FetchRequestPartition Partition, TopicPartition TopicPartition)>> TopicPartitions
+        {
+            get;
+        } = topicPartitions;
 
-        public List<string> TopicOrder { get; } = topicOrder;
+        public List<string> TopicOrder
+        {
+            get;
+        } = topicOrder;
 
-        public List<(int TopicIndex, int PartitionIndex)> RotationStarts { get; } = rotationStarts;
+        public List<(int TopicIndex, int PartitionIndex)> RotationStarts
+        {
+            get;
+        } = rotationStarts;
     }
 
     private sealed class FetchPartitionOrderState
@@ -15455,7 +16474,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             foreach (var (template, tp) in cachedPartitions)
             {
                 if (!fetchPositions.TryGetValue(tp, out var fetchOffset))
+                {
                     continue;
+                }
 
                 var currentLeaderEpoch = GetLeaderEpoch(metadataSnapshot, tp);
                 partitionList.Add(new FetchRequestPartition
@@ -15537,6 +16558,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         var partitionStart = (int)((uint)partitionRotation % (uint)partitionCount);
 
         for (var partitionIndex = partitionStart; partitionIndex < partitionCount; partitionIndex++)
+        {
             AddFetchRequestPartition(
                 partitionList,
                 cachedPartitions[partitionIndex],
@@ -15545,8 +16567,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 metadataSnapshot,
                 lastConsumedLeaderEpochs,
                 lastFetchedLeaderEpochs);
+        }
 
         for (var partitionIndex = 0; partitionIndex < partitionStart; partitionIndex++)
+        {
             AddFetchRequestPartition(
                 partitionList,
                 cachedPartitions[partitionIndex],
@@ -15555,6 +16579,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 metadataSnapshot,
                 lastConsumedLeaderEpochs,
                 lastFetchedLeaderEpochs);
+        }
 
         if (partitionList.Count == 0)
         {
@@ -15582,7 +16607,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     {
         var (template, tp) = cachedPartition;
         if (!fetchPositions.TryGetValue(tp, out var fetchOffset))
+        {
             return;
+        }
 
         var currentLeaderEpoch = GetLeaderEpoch(metadataSnapshot, tp);
         partitionList.Add(new FetchRequestPartition
@@ -15643,7 +16670,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         List<TopicPartition> cached)
     {
         if (count != cached.Count)
+        {
             return false;
+        }
 
         // For small lists, use O(n²) comparison to avoid HashSet allocation
         if (count <= 16)
@@ -15662,7 +16691,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     }
                 }
                 if (!found)
+                {
                     return false;
+                }
             }
             return true;
         }
@@ -15673,7 +16704,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         for (var i = startIndex; i < rangeEndIndex; i++)
         {
             if (!cachedSet.Contains(partitions[i]))
+            {
                 return false;
+            }
         }
         return true;
     }
@@ -15704,7 +16737,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 {
                     updated = new List<TopicPartition>(source.Count - 1);
                     for (var j = 0; j < i; j++)
+                    {
                         updated.Add(source[j]);
+                    }
                 }
 
                 continue;
@@ -15721,7 +16756,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         foreach (var candidate in partitions)
         {
             if (candidate == partition)
+            {
                 return true;
+            }
         }
 
         return false;
@@ -15753,7 +16790,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     {
         var sizer = _adaptiveFetchSizer;
         if (sizer is null)
+        {
             return;
+        }
 
         var previousPartitionFetchBytes = sizer.CurrentPartitionFetchBytes;
         var previousFetchMaxBytes = sizer.CurrentFetchMaxBytes;
@@ -15766,7 +16805,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         else
         {
             for (var i = 0; i < pressureSignals; i++)
+            {
                 sizer.ReportMemoryPressure();
+            }
         }
 
         if (sizer.CurrentPartitionFetchBytes > previousPartitionFetchBytes
@@ -15779,21 +16820,29 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     private async Task StartAutoCommitAsync(CancellationToken cancellationToken)
     {
         if (Volatile.Read(ref _consumerDisposed) != 0 || Volatile.Read(ref _closed) != 0)
+        {
             return;
+        }
 
         if (IsAutoCommitRunning())
+        {
             return;
+        }
 
         Task? oldTask;
         CancellationTokenSource? oldCts;
         lock (_autoCommitStartLock)
         {
             if (Volatile.Read(ref _consumerDisposed) != 0 || Volatile.Read(ref _closed) != 0)
+            {
                 return;
+            }
 
             var currentTask = _autoCommitTask;
             if (IsAutoCommitRunning())
+            {
                 return;
+            }
 
             oldTask = currentTask;
             oldCts = _autoCommitCts;
@@ -15847,7 +16896,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     {
         // Only commit if coordinator is stable (fully joined)
         if (_coordinator is null || _coordinator.State != CoordinatorState.Stable)
+        {
             return;
+        }
 
         try
         {
@@ -15893,7 +16944,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
         // Idempotent - return early if already closed/disposed
         if (Interlocked.Exchange(ref _closed, 1) != 0 || Volatile.Read(ref _consumerDisposed) != 0)
+        {
             return;
+        }
 
         using var apiTimeout = new ApiTimeoutScope(_options.DefaultApiTimeoutMs, cancellationToken);
         try
@@ -16005,11 +17058,15 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         if (_coordinator?.PeekPartitionsRevokedSinceLastSync() is { } revokedSinceSync)
         {
             foreach (var partition in revokedSinceSync)
+            {
                 ClearStoredOffset(partition);
+            }
 
             revokedSinceSync.ExceptWith(_coordinator.Assignment);
             if (revokedSinceSync.Count > 0)
+            {
                 noLongerOwned = revokedSinceSync;
+            }
         }
 
         // Step 5: Notify partition-scoped resources of normal stop before final commit/leave.
@@ -16039,7 +17096,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
             await CommitPendingOffsetsOnCloseAsync(commitTimeout.Token).ConfigureAwait(false);
             if (commitTimeout.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+            {
                 LogCloseCommitStoppedForLeave(leaveReserveMs);
+            }
         }
 
         // Step 7: Send LeaveGroup request to coordinator. Once the request is on the wire the
@@ -16109,7 +17168,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         LogConsumerClosed();
 
         if (partitionStopCancellation is not null)
+        {
             ExceptionDispatchInfo.Capture(partitionStopCancellation).Throw();
+        }
     }
 
     // The part of the close budget kept for LeaveGroup (see CloseAsyncCore step 6). At most half
@@ -16151,7 +17212,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             {
                 LogCommitOffsetsDuringCloseFailed(ex, attempt);
                 if (attempt == maxAttempts)
+                {
                     return;
+                }
             }
 
             try
@@ -16174,13 +17237,17 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         CancellationToken cancellationToken)
     {
         if (_options.RebalanceListener is not IPartitionStopListener listener)
+        {
             return null;
+        }
 
         var partitions = noLongerOwned is null
             ? _assignmentSnapshot.ToArray()
             : _assignmentSnapshot.Where(partition => !noLongerOwned.Contains(partition)).ToArray();
         if (partitions.Length == 0)
+        {
             return null;
+        }
 
         LogPartitionStopListenerCall(partitions.Length);
         using var listenerTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -16191,8 +17258,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             await listenerTask.WaitAsync(listenerTimeout.Token).ConfigureAwait(false);
             return null;
         }
-        catch (OperationCanceledException)
-            when (!cancellationToken.IsCancellationRequested && listenerTimeout.IsCancellationRequested)
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested && listenerTimeout.IsCancellationRequested)
         {
             LogPartitionStopListenerTimedOut(_options.PartitionStopTimeout);
             return null;
@@ -16224,7 +17290,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         try
         {
             lock (_snapshotStateGate)
+            {
                 hadPaused = DiscardUnsynchronizedRebalanceState(synchronizedAssignment: []);
+            }
         }
         finally
         {
@@ -16246,7 +17314,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         ArgumentNullException.ThrowIfNull(timestampsToSearch);
 
         if (Volatile.Read(ref _consumerDisposed) != 0)
+        {
             throw new ObjectDisposedException(nameof(KafkaConsumer<TKey, TValue>));
+        }
 
         ThrowIfNotInitialized();
 
@@ -16394,12 +17464,18 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     public async ValueTask DisposeAsync()
     {
         if (Interlocked.Exchange(ref _consumerDisposed, 1) != 0)
+        {
             return;
+        }
 
         if (_options.IsAutoTuned)
+        {
             _memoryBudget.UnregisterConsumer(this);
+        }
         else
+        {
             _memoryBudget.ReleaseExplicit((ulong)_options.QueuedMaxMessagesKbytes * 1024);
+        }
 
         var disposeStart = Stopwatch.GetTimestamp();
         LogConsumerDisposing();
@@ -16478,9 +17554,13 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         if (_connectionScaler is not null)
         {
             if (_ownsInfrastructure)
+            {
                 await _connectionScaler.StopAndDrainAsync().ConfigureAwait(false);
+            }
             else
+            {
                 await _connectionScaler.StopAndDrainAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+            }
 
             _connectionScaler.Dispose();
         }
@@ -16540,7 +17620,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         _prefetchMemoryAvailable.Dispose();
 
         if (_coordinator is not null)
+        {
             await _coordinator.DisposeAsync().ConfigureAwait(false);
+        }
 
         await _telemetryManager.DisposeAsync().ConfigureAwait(false);
         if (_ownsInfrastructure)
@@ -16755,7 +17837,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     private static ReadOnlyMemory<byte> NormalizeRawRecordBytes(ReadOnlyMemory<byte> bytes, bool isNull)
     {
         if (isNull)
+        {
             return default;
+        }
         return bytes.IsEmpty ? Array.Empty<byte>() : bytes;
     }
 

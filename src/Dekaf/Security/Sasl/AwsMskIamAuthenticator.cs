@@ -48,7 +48,9 @@ public sealed class AwsMskIamAuthenticator : ISaslAuthenticator
     public byte[] GetInitialResponse()
     {
         if (_initialResponseSent)
+        {
             throw new InvalidOperationException("GetInitialResponse can only be called once");
+        }
 
         var credentials = _credentials
             ?? throw new InvalidOperationException("AWS credentials are not available. Call GetCredentialsAsync before authentication.");
@@ -71,14 +73,18 @@ public sealed class AwsMskIamAuthenticator : ISaslAuthenticator
     public byte[]? EvaluateChallenge(byte[] challenge)
     {
         if (challenge.Length == 0)
+        {
             throw new AuthenticationException("AWS_MSK_IAM authentication failed: broker returned an empty response");
+        }
 
         var response = Encoding.UTF8.GetString(challenge);
         try
         {
             using var document = JsonDocument.Parse(response);
             if (document.RootElement.ValueKind != JsonValueKind.Object)
+            {
                 throw new AuthenticationException("AWS_MSK_IAM authentication failed: broker response was not a JSON object");
+            }
         }
         catch (JsonException ex)
         {
@@ -98,8 +104,10 @@ public sealed class AwsMskIamAuthenticator : ISaslAuthenticator
             Environment.GetEnvironmentVariable("AWS_DEFAULT_REGION");
 
         if (string.IsNullOrWhiteSpace(region))
+        {
             throw new InvalidOperationException(
                 "AWS_MSK_IAM authentication requires an AWS region. Set AwsMskIamConfig.Region or use an MSK broker hostname containing the region.");
+        }
 
         return AwsMskIamRegionResolver.ValidateRegion(region);
     }
@@ -116,12 +124,16 @@ internal static class AwsMskIamRegionResolver
         for (var i = 0; i < labels.Length; i++)
         {
             if (!IsAmazonAwsSuffix(labels, i) || i < 2)
+            {
                 continue;
+            }
 
             var serviceLabel = labels[i - 2];
             var region = labels[i - 1];
             if (IsKafkaServiceLabel(serviceLabel) && LooksLikeRegion(region))
+            {
                 return region;
+            }
         }
 
         return null;
@@ -134,7 +146,9 @@ internal static class AwsMskIamRegionResolver
     private static bool IsAmazonAwsSuffix(string[] labels, int index)
     {
         if (!string.Equals(labels[index], "amazonaws", StringComparison.OrdinalIgnoreCase))
+        {
             return false;
+        }
 
         return (index == labels.Length - 2 &&
                 string.Equals(labels[index + 1], "com", StringComparison.OrdinalIgnoreCase)) ||
@@ -146,12 +160,16 @@ internal static class AwsMskIamRegionResolver
     public static string ValidateRegion(string region)
     {
         if (string.IsNullOrWhiteSpace(region))
+        {
             throw new InvalidOperationException("AWS_MSK_IAM region cannot be empty.");
+        }
 
         var value = region.Trim();
         if (value.Any(static c => !IsRegionCharacter(c)))
+        {
             throw new InvalidOperationException(
                 $"AWS_MSK_IAM region '{region}' is invalid. Region names may only contain lowercase letters, digits, and hyphens.");
+        }
 
         return value;
     }
@@ -160,7 +178,9 @@ internal static class AwsMskIamRegionResolver
     {
         var parts = value.Split('-', StringSplitOptions.RemoveEmptyEntries);
         if (parts.Length < 3)
+        {
             return false;
+        }
 
         return parts[0].Length == 2 &&
                parts[^1].Length == 1 &&

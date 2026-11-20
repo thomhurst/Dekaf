@@ -16,7 +16,9 @@ public class PooledReadOnlyListTests
             using var messages = PooledReadOnlyList<int>.Rent(Enumerate(MultipleItemCount));
             count = messages.Count;
             for (var i = 0; i < messages.Count; i++)
+            {
                 preservesOrder &= messages[i] == i;
+            }
         }
 
         await Assert.That(count).IsEqualTo(MultipleItemCount);
@@ -33,7 +35,9 @@ public class PooledReadOnlyListTests
             using var messages = PooledReadOnlyList<int>.Rent(new Queue<int>(Enumerable.Range(0, MultipleItemCount)));
             count = messages.Count;
             for (var i = 0; i < messages.Count; i++)
+            {
                 preservesOrder &= messages[i] == i;
+            }
         }
 
         await Assert.That(count).IsEqualTo(MultipleItemCount);
@@ -51,7 +55,9 @@ public class PooledReadOnlyListTests
             using var messages = PooledReadOnlyList<int>.Rent(stack);
             count = messages.Count;
             for (var i = 0; i < messages.Count; i++)
+            {
                 preservesOrder &= messages[i] == i;
+            }
         }
 
         await Assert.That(count).IsEqualTo(MultipleItemCount);
@@ -70,7 +76,9 @@ public class PooledReadOnlyListTests
             using var messages = PooledReadOnlyList<int>.Rent(source);
             count = messages.Count;
             for (var i = 0; i < messages.Count; i++)
+            {
                 preservesOrder &= messages[i] == expected[i];
+            }
         }
 
         await Assert.That(count).IsEqualTo(MultipleItemCount);
@@ -88,7 +96,9 @@ public class PooledReadOnlyListTests
             using var messages = PooledReadOnlyList<int>.Rent(linkedList);
             count = messages.Count;
             for (var i = 0; i < messages.Count; i++)
+            {
                 preservesOrder &= messages[i] == i;
+            }
         }
 
         await Assert.That(count).IsEqualTo(MultipleItemCount);
@@ -104,7 +114,9 @@ public class PooledReadOnlyListTests
         {
             using var messages = PooledReadOnlyList<int>.Rent(source);
             for (var i = 0; i < messages.Count; i++)
+            {
                 preservesOrder &= messages[i] == i;
+            }
         }
 
         await Assert.That(preservesOrder).IsTrue();
@@ -135,7 +147,9 @@ public class PooledReadOnlyListTests
             using var messages = PooledReadOnlyList<int>.Rent(source);
             count = messages.Count;
             for (var i = 0; i < messages.Count; i++)
+            {
                 preservesOrder &= messages[i] == i;
+            }
         }
 
         await Assert.That(count).IsEqualTo(MultipleItemCount);
@@ -169,14 +183,19 @@ public class PooledReadOnlyListTests
     private static IEnumerable<int> Enumerate(int count)
     {
         for (var i = 0; i < count; i++)
+        {
             yield return i;
+        }
     }
 
     private sealed class ReverseCopyCollection(IEnumerable<int> items) : ICollection<int>
     {
         private readonly List<int> _items = [.. items];
 
-        public bool CopyToCalled { get; private set; }
+        public bool CopyToCalled
+        {
+            get; private set;
+        }
 
         public int Count => _items.Count;
 
@@ -190,7 +209,9 @@ public class PooledReadOnlyListTests
         {
             CopyToCalled = true;
             for (var i = 0; i < _items.Count; i++)
+            {
                 array[arrayIndex + i] = _items[_items.Count - i - 1];
+            }
         }
 
         public bool Contains(int item) => _items.Contains(item);
@@ -241,7 +262,9 @@ public class PooledReadOnlyListTests
             public bool MoveNext()
             {
                 if (++_current < 2)
+                {
                     return true;
+                }
 
                 throw new ArgumentException("enumeration failed");
             }

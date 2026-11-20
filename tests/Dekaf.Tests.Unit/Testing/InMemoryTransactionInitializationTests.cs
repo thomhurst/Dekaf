@@ -146,7 +146,9 @@ public sealed class InMemoryTransactionInitializationTests
         await using var producer = new InMemoryProducer<string, string>(cluster,
             new InMemoryProducerOptions { TransactionalId = explicitIdentity ? "writer" : null });
         if (explicitIdentity)
+        {
             await AssertProducerSendsRejectedAsync(producer, cluster);
+        }
         await producer.InitTransactionsAsync();
         await AssertProducerSendsRejectedAsync(producer, cluster);
         await using (var transaction = producer.BeginTransaction())

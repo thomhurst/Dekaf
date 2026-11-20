@@ -1,5 +1,5 @@
-using Dekaf.ShareConsumer;
 using Dekaf.Consumer;
+using Dekaf.ShareConsumer;
 
 namespace Dekaf.Extensions.DependencyInjection;
 
@@ -12,18 +12,31 @@ internal static partial class DekafOptionsBinding
         if (options.AutoOffsetReset == AutoOffsetReset.ByDuration)
         {
             if (options.AutoOffsetResetDuration is not { } duration)
+            {
                 throw new ArgumentException("AutoOffsetResetDuration must be set for AutoOffsetReset.ByDuration.", nameof(options));
+            }
             builder.WithAutoOffsetResetByDuration(duration);
         }
         else
         {
             if (options.AutoOffsetResetDuration is not null)
+            {
                 throw new ArgumentException("AutoOffsetResetDuration requires AutoOffsetReset.ByDuration.", nameof(options));
-            if (options.AutoOffsetReset is { } reset) builder.WithAutoOffsetReset(reset);
+            }
+            if (options.AutoOffsetReset is { } reset)
+            {
+                builder.WithAutoOffsetReset(reset);
+            }
         }
         builder.WithDeadLetterQueueOptions(options.DeadLetterQueueTopic, options.DeadLetterQueueCopyRecord);
-        if (options.ClientId is not null) builder.WithClientId(options.ClientId);
-        if (options.RackId is not null) builder.WithRackId(options.RackId);
+        if (options.ClientId is not null)
+        {
+            builder.WithClientId(options.ClientId);
+        }
+        if (options.RackId is not null)
+        {
+            builder.WithRackId(options.RackId);
+        }
         builder.WithFetchMinBytes(options.FetchMinBytes);
         builder.WithFetchMaxBytes(options.FetchMaxBytes);
         builder.WithMaxPartitionFetchBytes(options.MaxPartitionFetchBytes);
@@ -57,8 +70,16 @@ internal static partial class DekafOptionsBinding
             options.GssapiConfig, options.OAuthBearerConfig, options.OAuthBearerTokenProvider,
             options.AwsMskIamConfig, options.SaslCredentialProvider, builder.WithSaslOptions, builder.WithOAuthBearerTokenProvider);
         if (options.AcknowledgementCommitCallback is not null)
+        {
             builder.WithAcknowledgementCommitCallback(options.AcknowledgementCommitCallback);
-        if (options.RetryPolicy is not null) builder.WithRetryPolicy(options.RetryPolicy);
-        foreach (var metric in options.ApplicationMetrics) builder.RegisterMetricForSubscription(metric);
+        }
+        if (options.RetryPolicy is not null)
+        {
+            builder.WithRetryPolicy(options.RetryPolicy);
+        }
+        foreach (var metric in options.ApplicationMetrics)
+        {
+            builder.RegisterMetricForSubscription(metric);
+        }
     }
 }

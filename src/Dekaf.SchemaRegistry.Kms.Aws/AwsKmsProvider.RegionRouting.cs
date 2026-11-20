@@ -11,7 +11,9 @@ public sealed partial class AwsKmsProvider
     private ClientLease GetClient(string keyId)
     {
         if (_regionalClients is null || !Arn.TryParse(keyId, out var arn) || arn.Service != "kms")
+        {
             return new ClientLease(_client);
+        }
 
         var region = arn.Region;
         if (string.IsNullOrEmpty(region) || region.Length > 64 ||
@@ -27,7 +29,10 @@ public sealed partial class AwsKmsProvider
         IAmazonKeyManagementService client,
         RegionalClientCache? temporaryOwner = null) : IDisposable
     {
-        public IAmazonKeyManagementService Client { get; } = client;
+        public IAmazonKeyManagementService Client
+        {
+            get;
+        } = client;
         public void Dispose() => temporaryOwner?.Return(Client);
     }
 
@@ -45,9 +50,13 @@ public sealed partial class AwsKmsProvider
             {
                 ObjectDisposedException.ThrowIf(_disposed, this);
                 if (region == config.RegionEndpoint?.SystemName)
+                {
                     return new ClientLease(defaultClient);
+                }
                 if (_clients.TryGetValue(region, out var existing))
+                {
                     return new ClientLease(existing);
+                }
 
                 var client = new AmazonKeyManagementServiceClient(CopyConfiguration(config, RegionEndpoint.GetBySystemName(region)));
                 if (_clients.Count < Capacity)
@@ -67,7 +76,9 @@ public sealed partial class AwsKmsProvider
             lock (_gate)
             {
                 if (!_temporaryClients.Remove(client))
+                {
                     return;
+                }
             }
             client.Dispose();
         }
@@ -78,7 +89,9 @@ public sealed partial class AwsKmsProvider
             lock (_gate)
             {
                 if (_disposed)
+                {
                     return;
+                }
                 _disposed = true;
                 clients = new List<IAmazonKeyManagementService>(_clients.Values);
                 clients.AddRange(_temporaryClients);
@@ -86,7 +99,9 @@ public sealed partial class AwsKmsProvider
                 _temporaryClients.Clear();
             }
             foreach (var client in clients)
+            {
                 client.Dispose();
+            }
         }
     }
 
@@ -146,13 +161,21 @@ public sealed partial class AwsKmsProvider
             UseHttp = source.UseHttp
         };
         if (source.IsMaxErrorRetrySet)
+        {
             copy.MaxErrorRetry = source.MaxErrorRetry;
+        }
         if (source.ConnectTimeout.HasValue)
+        {
             copy.ConnectTimeout = source.ConnectTimeout;
+        }
         if (source.Timeout.HasValue)
+        {
             copy.Timeout = source.Timeout;
+        }
         if (source.GetWebProxy() is { } proxy)
+        {
             copy.SetWebProxy(proxy);
+        }
         return copy;
     }
 }

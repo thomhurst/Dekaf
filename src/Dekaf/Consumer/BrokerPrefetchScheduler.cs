@@ -16,7 +16,9 @@ internal sealed class BrokerPrefetchScheduler
         Func<Task> taskFactory)
     {
         if (_inFlight.ContainsKey(key))
+        {
             return false;
+        }
 
         var task = taskFactory();
         _inFlight.Add(key, task);
@@ -29,7 +31,9 @@ internal sealed class BrokerPrefetchScheduler
         foreach (var entry in _inFlight)
         {
             if (entry.Value.IsCompleted)
+            {
                 _completed.Add(entry);
+            }
         }
 
         try
@@ -38,7 +42,9 @@ internal sealed class BrokerPrefetchScheduler
             {
                 var (key, task) = _completed[i];
                 if (_inFlight.Remove(key))
+                {
                     await task.ConfigureAwait(false);
+                }
             }
 
             return _completed.Count;
@@ -52,7 +58,9 @@ internal sealed class BrokerPrefetchScheduler
     public async ValueTask WaitForAnyAsync(CancellationToken cancellationToken)
     {
         if (_inFlight.Count == 0)
+        {
             return;
+        }
 
         if (_inFlight.Count == 1 && _singleInFlightTask is { } task)
         {
@@ -62,7 +70,9 @@ internal sealed class BrokerPrefetchScheduler
                 await waitTask.ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
 
                 if (waitTask.IsCanceled && cancellationToken.IsCancellationRequested)
+                {
                     cancellationToken.ThrowIfCancellationRequested();
+                }
             }
 
             return;
@@ -77,7 +87,9 @@ internal sealed class BrokerPrefetchScheduler
         Func<Exception, bool> shouldReturn)
     {
         if (_inFlight.Count == 0)
+        {
             return null;
+        }
 
         var tasks = _inFlight.Values.ToArray();
         _inFlight.Clear();
@@ -97,7 +109,9 @@ internal sealed class BrokerPrefetchScheduler
             {
                 logError(ex);
                 if (firstFailure is null && shouldReturn(ex))
+                {
                     firstFailure = ex;
+                }
             }
         }
 

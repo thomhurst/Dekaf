@@ -19,7 +19,10 @@ internal static class InterlockedHelper
         do
         {
             current = Volatile.Read(ref location);
-            if (newValue <= current) return;
+            if (newValue <= current)
+            {
+                return;
+            }
         }
         while (Interlocked.CompareExchange(ref location, newValue, current) != current);
     }
@@ -36,7 +39,10 @@ internal static class InterlockedHelper
         do
         {
             current = Volatile.Read(ref location);
-            if (newValue <= current) return;
+            if (newValue <= current)
+            {
+                return;
+            }
         }
         while (Interlocked.CompareExchange(ref location, newValue, current) != current);
     }

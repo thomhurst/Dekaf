@@ -20,17 +20,24 @@ public class ShareBatchScalingBenchmarks
     private long[] _offsets = null!;
 
     [Params(64, 1024)]
-    public int RecordCount { get; set; }
+    public int RecordCount
+    {
+        get; set;
+    }
 
     [Params(ShareAcquisitionShape.Contiguous, ShareAcquisitionShape.SparseRanges, ShareAcquisitionShape.InterleavedRanges)]
-    public ShareAcquisitionShape AcquisitionShape { get; set; }
+    public ShareAcquisitionShape AcquisitionShape
+    {
+        get; set;
+    }
 
     [GlobalSetup]
     public void Setup()
     {
         _consumer = new KafkaShareConsumer<int, int>(new ShareConsumerOptions
         {
-            BootstrapServers = ["127.0.0.1:9092"], GroupId = "share-scaling",
+            BootstrapServers = ["127.0.0.1:9092"],
+            GroupId = "share-scaling",
             AcknowledgementMode = ShareAcknowledgementMode.Explicit
         }, Serializers.Int32, Serializers.Int32);
         _singleRecord = Encode(1);
@@ -38,7 +45,9 @@ public class ShareBatchScalingBenchmarks
         _acquired = ShareAcquisitionFixture.Create(0, RecordCount, AcquisitionShape);
         _offsets = ShareAcquisitionFixture.Offsets(_acquired);
         if (RegisterResponse() != _offsets.Length || ReplayInChunks() != _offsets.Length)
+        {
             throw new InvalidOperationException("The scaling fixture lost records.");
+        }
     }
 
     [Benchmark]
@@ -52,13 +61,17 @@ public class ShareBatchScalingBenchmarks
                 using var batch = Parse(_singleRecord, offset, 1);
                 tracker.Register(batch);
                 foreach (var record in batch)
+                {
                     batch.Acknowledge(record);
+                }
             }
         }
         var retained = tracker.RetainedBatchCount;
         tracker.ApplySuccessfulAcknowledgements(tracker.Flush());
         if (tracker.RetainedBatchCount != 0)
+        {
             throw new InvalidOperationException("Completed response storage was retained.");
+        }
         return retained;
     }
 
@@ -69,7 +82,9 @@ public class ShareBatchScalingBenchmarks
         using var batch = Parse(_records, 0, RecordCount);
         tracker.Register(batch);
         foreach (var record in batch)
+        {
             batch.Acknowledge(record, AcknowledgeType.Renew);
+        }
         tracker.ApplySuccessfulAcknowledgements(tracker.Flush());
         var completed = 0;
         while (tracker.GetReplays(16) is { } replays)
@@ -83,7 +98,9 @@ public class ShareBatchScalingBenchmarks
                         foreach (var record in replay)
                         {
                             if (completed >= _offsets.Length || record.Offset != _offsets[completed++])
+                            {
                                 throw new InvalidOperationException("Replay order or cardinality changed.");
+                            }
                             replay.Acknowledge(record);
                         }
                     }
@@ -92,7 +109,9 @@ public class ShareBatchScalingBenchmarks
         }
         tracker.ApplySuccessfulAcknowledgements(tracker.Flush());
         if (tracker.RetainedBatchCount != 0)
+        {
             throw new InvalidOperationException("Completed replay storage was retained.");
+        }
         return completed;
     }
 
@@ -103,7 +122,9 @@ public class ShareBatchScalingBenchmarks
         source.BaseOffset = offset;
         var parsed = _consumer.ParseRecordBatchAsync(_partition, source, _acquired, count, default);
         if (!parsed.IsCompletedSuccessfully)
+        {
             throw new InvalidOperationException("The scaling fixture must parse synchronously.");
+        }
         return parsed.GetAwaiter().GetResult();
     }
 
@@ -113,7 +134,9 @@ public class ShareBatchScalingBenchmarks
         Serializers.Int32.Serialize(42, ref value, default);
         var records = new Record[count];
         for (var index = 0; index < count; index++)
+        {
             records[index] = new Record { OffsetDelta = index, IsKeyNull = true, Value = value.WrittenMemory };
+        }
         var buffer = new ArrayBufferWriter<byte>();
         using var batch = new RecordBatch { Records = records };
         batch.Write(buffer);

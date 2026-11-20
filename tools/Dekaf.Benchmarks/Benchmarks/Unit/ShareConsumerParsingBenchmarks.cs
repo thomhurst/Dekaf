@@ -36,13 +36,22 @@ public class ShareConsumerParsingBenchmarks
     private Action _releaseCold = null!;
 
     [Params(64, 1024)]
-    public int RecordCount { get; set; }
+    public int RecordCount
+    {
+        get; set;
+    }
 
     [Params(0, 2)]
-    public int HeaderCount { get; set; }
+    public int HeaderCount
+    {
+        get; set;
+    }
 
     // The separate context fixture exercises serializers that consume topic/key metadata.
-    public bool ContextDependentDeserialization { get; set; }
+    public bool ContextDependentDeserialization
+    {
+        get; set;
+    }
 
     [GlobalSetup]
     public async ValueTask Setup()
@@ -129,9 +138,14 @@ public class ShareConsumerParsingBenchmarks
             }
             _retained.Add(new ShareConsumeResult<int, int>
             {
-                Topic = record.Topic, Partition = record.Partition, Offset = record.Offset,
-                Key = record.Key, Value = record.Value, Headers = headers,
-                TimestampMs = record.TimestampMs, DeliveryCount = record.DeliveryCount
+                Topic = record.Topic,
+                Partition = record.Partition,
+                Offset = record.Offset,
+                Key = record.Key,
+                Value = record.Value,
+                Headers = headers,
+                TimestampMs = record.TimestampMs,
+                DeliveryCount = record.DeliveryCount
             });
         }
         _releaseSynchronous();
@@ -191,7 +205,9 @@ public class ShareConsumerParsingBenchmarks
     private static Action BindPollRelease(KafkaShareConsumer<int, int> consumer) =>
         typeof(KafkaShareConsumer<int, int>)
             .GetMethod("ReleasePolledBatchOwners", BindingFlags.Instance | BindingFlags.NonPublic)?
-            .CreateDelegate<Action>(consumer) ?? (static () => { });
+            .CreateDelegate<Action>(consumer) ?? (static () =>
+        {
+        });
     public ValueTask<long> ParseBorrowedSynchronousBatch() => ParseBorrowedBatch(_synchronousConsumer);
 
     public ValueTask<long> ParseBorrowedWarmPreparedBatch() => ParseBorrowedBatch(_preparedConsumer);
@@ -223,7 +239,9 @@ public class ShareConsumerParsingBenchmarks
                 var pending = _coldConsumer.ParsePartitionRecordsWithPreparation(
                     _topic, _partition, RecordCount, records, ref state, hasRetainedKey, retainedKey);
                 if (pending is null)
+                {
                     break;
+                }
                 await _coldConsumer.PrepareDeserializerAsync(pending, CancellationToken.None);
                 hasRetainedKey = pending.HasRetainedKey;
                 retainedKey = pending.RetainedKey;
@@ -250,7 +268,9 @@ public class ShareConsumerParsingBenchmarks
             {
                 checksum += header.KeyUtf8.Length;
                 if (!header.IsValueNull)
+                {
                     checksum += header.Value.Span[0];
+                }
             }
         }
         return checksum;
@@ -268,7 +288,9 @@ public class ShareConsumerParsingBenchmarks
                 || record.Offset != BaseOffset + index || record.Key != index || record.Value != index + 1
                 || record.DeliveryCount != 3 || record.TimestampMs != BaseTimestamp + index
                 || record.Headers.Count != HeaderCount)
+            {
                 throw new InvalidOperationException("Borrowed parsing changed record data, metadata or order.");
+            }
             var headerIndex = 0;
             foreach (var header in record.Headers)
             {
@@ -280,15 +302,21 @@ public class ShareConsumerParsingBenchmarks
                     _ => false
                 };
                 if (!valid)
+                {
                     throw new InvalidOperationException("Borrowed parsing changed header bytes, nullability or order.");
+                }
                 headerIndex++;
             }
             if (headerIndex != HeaderCount)
+            {
                 throw new InvalidOperationException("Borrowed parsing changed header cardinality.");
+            }
             index++;
         }
         if (index != RecordCount)
+        {
             throw new InvalidOperationException("Borrowed parsing changed acquisition cardinality.");
+        }
     }
 
     private async ValueTask ValidateColdPreparedBatch()
@@ -305,7 +333,9 @@ public class ShareConsumerParsingBenchmarks
                 var pending = _coldConsumer.ParsePartitionRecordsWithPreparation(
                     _topic, _partition, RecordCount, records, ref state, hasRetainedKey, retainedKey);
                 if (pending is null)
+                {
                     break;
+                }
                 await _coldConsumer.PrepareDeserializerAsync(pending, CancellationToken.None);
                 hasRetainedKey = pending.HasRetainedKey;
                 retainedKey = pending.RetainedKey;
@@ -335,7 +365,9 @@ public class ShareConsumerParsingBenchmarks
             var pending = _preparedConsumer.ParsePartitionRecordsWithPreparation(
                 _topic, _partition, RecordCount, records, ref state, false, default);
             if (pending is not null)
+            {
                 throw new InvalidOperationException("The warm deserializer unexpectedly requested preparation.");
+            }
             return records;
         }
         finally
@@ -355,7 +387,9 @@ public class ShareConsumerParsingBenchmarks
                 var header = record.Headers[index];
                 checksum += header.Key.Length;
                 if (!header.IsValueNull)
+                {
                     checksum += header.Value.Span[0];
+                }
             }
         }
         return checksum;
@@ -364,19 +398,25 @@ public class ShareConsumerParsingBenchmarks
     private void Validate(List<ShareConsumeResult<int, int>> records)
     {
         if (records.Count != RecordCount)
+        {
             throw new InvalidOperationException("The parser did not return the full acquired batch.");
+        }
         for (var index = 0; index < records.Count; index++)
         {
             var record = records[index];
             if (record.Topic != _topic.Name || record.Partition != 0 || record.Offset != BaseOffset + index
                 || record.Key != index || record.Value != index + 1 || record.DeliveryCount != 3
                 || record.TimestampMs != BaseTimestamp + index || record.Headers.Count != HeaderCount)
+            {
                 throw new InvalidOperationException("The parser changed record data or metadata.");
+            }
             if (HeaderCount != 0
                 && (record.Headers[0].Key != "kind" || record.Headers[0].IsValueNull
                     || (record.Headers[0].Value.Length != 1 || record.Headers[0].Value.Span[0] != 42)
                     || record.Headers[1].Key != "nullable" || !record.Headers[1].IsValueNull))
+            {
                 throw new InvalidOperationException("The parser changed header data or nullability.");
+            }
         }
     }
 
@@ -390,7 +430,9 @@ public class ShareConsumerParsingBenchmarks
                 || (context.Component == SerializationComponent.Key
                     ? !context.KeyData.IsEmpty
                     : context.KeyData.Length != 4 || Serializers.Int32.Deserialize(context.KeyData, default) + 1 != value))
+            {
                 throw new InvalidOperationException("Deserializer context does not match its record.");
+            }
             return value;
         }
 

@@ -68,7 +68,9 @@ public sealed class Kip126BatchSplittingTests
         var children = accumulator.SplitForSenderRetry(
             ready,
             ready.Generation,
-            static () => { })!;
+            static () =>
+            {
+            })!;
         await Assert.That(children.Sum(static child => child.CompletionSourcesCount)).IsEqualTo(1);
 
         var baseOffset = 100L;
@@ -99,7 +101,9 @@ public sealed class Kip126BatchSplittingTests
         var sourcePool = new ValueTaskSourcePool<RecordMetadata>();
 
         for (var i = 0; i < 100; i++)
+        {
             Append(batch, i, completionSource: null, callback: null);
+        }
 
         var source = sourcePool.Rent();
         var task = source.Task;
@@ -137,7 +141,9 @@ public sealed class Kip126BatchSplittingTests
         var estimator = new CompressionRatioEstimator();
 
         for (var i = 0; i < 100; i++)
+        {
             estimator.Update("compressible", CompressionType.Gzip, 0.1);
+        }
 
         await Assert.That(estimator.Get("compressible", CompressionType.Gzip)).IsLessThan(1.0);
         await Assert.That(estimator.Get("other", CompressionType.Gzip)).IsEqualTo(1.0);
@@ -160,7 +166,9 @@ public sealed class Kip126BatchSplittingTests
         await Assert.That(trainedTopicBatch.Arena!.Capacity).IsEqualTo(normalArenaCapacity);
 
         for (var i = 0; i < 10; i++)
+        {
             Append(trainedTopicBatch, i, completionSource: null, callback: null);
+        }
         await Assert.That(trainedTopicBatch.Arena!.Capacity).IsGreaterThan(normalArenaCapacity);
 
         trainedTopicBatch.Complete();
@@ -204,7 +212,9 @@ public sealed class Kip126BatchSplittingTests
         var staleCallbackCount = 0;
         var staleCallbacks = ProducerContainerPools.Callbacks.Rent(128);
         for (var i = 0; i <= 100; i++)
+        {
             staleCallbacks[i] = (_, _) => staleCallbackCount++;
+        }
         ProducerContainerPools.Callbacks.Return(staleCallbacks, clearArray: false);
 
         var options = new ProducerOptions
@@ -217,7 +227,9 @@ public sealed class Kip126BatchSplittingTests
         RecordMetadata callbackMetadata = default;
 
         for (var i = 0; i < 100; i++)
+        {
             Append(batch, i, completionSource: null, callback: null);
+        }
         Append(batch, 100, completionSource: null, (metadata, _) => callbackMetadata = metadata);
 
         var ready = batch.Complete()!;
@@ -299,7 +311,9 @@ public sealed class Kip126BatchSplittingTests
         try
         {
             for (var i = 0; i < 4; i++)
+            {
                 await Assert.That(await AccumulatorTestHelpers.AppendNullRecordAsync(accumulator, topic)).IsTrue();
+            }
 
             // The flush seals the source, so its checkpoint covers the source (#3386).
             var checkpointCaptured = new TaskCompletionSource<long>(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -384,7 +398,9 @@ public sealed class Kip126BatchSplittingTests
             await Assert.That(accumulator.SplitAndReenqueue(rejectedSplit, rejectedSplit.Generation)).IsTrue();
 
             while (drained.Sum(static batch => batch.RecordCount) < tasks.Length)
+            {
                 drained.Add(await DrainOneAsync(accumulator, metadataManager));
+            }
 
             await Assert.That(drained.Count).IsGreaterThan(1);
             await Assert.That(drained.Select(static batch => batch.RecordBatch.BaseSequence))
@@ -431,7 +447,9 @@ public sealed class Kip126BatchSplittingTests
         var sourceBuilder = new PartitionBatch(new TopicPartition(topic, 0), options);
         sourceBuilder.SetSplitBatchSizeLimit(4096);
         for (var i = 0; i < 8; i++)
+        {
             Append(sourceBuilder, i, completionSource: null, callback: null);
+        }
 
         var source = sourceBuilder.Complete()!;
         source.RecordBatch.BaseSequence = 40;
@@ -449,7 +467,9 @@ public sealed class Kip126BatchSplittingTests
         try
         {
             foreach (var child in children)
+            {
                 child.WaitForPreSerializationIfStarted();
+            }
 
             await Assert.That(children).Count().IsGreaterThan(1);
             await Assert.That(children.All(static child => child.IsPreSerialized)).IsTrue();
@@ -493,7 +513,9 @@ public sealed class Kip126BatchSplittingTests
         var sourceBuilder = new PartitionBatch(new TopicPartition(topic, 0), options);
         sourceBuilder.SetSplitBatchSizeLimit(4096);
         for (var i = 0; i < 8; i++)
+        {
             Append(sourceBuilder, i, completionSource: null, callback: null);
+        }
 
         var source = sourceBuilder.Complete()!;
         // The split reads its records from this list: the first child is built from readable
@@ -511,7 +533,9 @@ public sealed class Kip126BatchSplittingTests
             var splitTask = Task.Run(() => accumulator.SplitForSenderRetry(
                 source,
                 source.Generation,
-                static () => { }));
+                static () =>
+                {
+                }));
 
             await Assert.That(async () => await splitTask.WaitAsync(TimeSpan.FromSeconds(5)))
                 .ThrowsExactly<InvalidOperationException>();
@@ -549,10 +573,14 @@ public sealed class Kip126BatchSplittingTests
             accumulator,
             "_compressionRatioEstimator");
         for (var i = 0; i < 200; i++)
+        {
             estimator.Update(topic, CompressionType.Gzip, observedRatio: 0.1);
+        }
 
         for (var i = 0; i < recordCount; i++)
+        {
             await Assert.That(await AccumulatorTestHelpers.AppendNullRecordAsync(accumulator, topic)).IsTrue();
+        }
         await AccumulatorTestHelpers.SealAllAsync(accumulator);
 
         var readyNodes = await WaitForReadyNodeAsync(accumulator, metadataManager);
@@ -604,7 +632,9 @@ public sealed class Kip126BatchSplittingTests
             callback,
             estimatedSize: PartitionBatch.EstimateRecordSize(0, value.Length, null, 0));
         if (!result.Success)
+        {
             throw new InvalidOperationException("Test record did not fit.");
+        }
     }
 
     private static async Task<ReadyBatch> DrainOneAsync(
@@ -665,7 +695,9 @@ public sealed class Kip126BatchSplittingTests
         public void Decompress(ReadOnlySequence<byte> source, IBufferWriter<byte> destination)
         {
             foreach (var segment in source)
+            {
                 destination.Write(segment.Span);
+            }
         }
     }
 

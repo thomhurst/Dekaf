@@ -65,7 +65,10 @@ public class KafkaException : Exception
     /// <summary>
     /// The Kafka error code, if available.
     /// </summary>
-    public ErrorCode? ErrorCode { get; }
+    public ErrorCode? ErrorCode
+    {
+        get;
+    }
 
     /// <summary>
     /// Whether this exception is retriable.
@@ -111,13 +114,18 @@ public sealed class LogTruncationException : KafkaException
     /// <summary>
     /// The first divergent offset and last common leader epoch for each truncated partition.
     /// </summary>
-    public IReadOnlyList<TopicPartitionOffset> TruncationOffsets { get; }
+    public IReadOnlyList<TopicPartitionOffset> TruncationOffsets
+    {
+        get;
+    }
 
     private static string CreateMessage(IReadOnlyList<TopicPartitionOffset> truncationOffsets)
     {
         ArgumentNullException.ThrowIfNull(truncationOffsets);
         if (truncationOffsets.Count == 0)
+        {
             throw new ArgumentException("At least one truncation offset is required.", nameof(truncationOffsets));
+        }
 
         return truncationOffsets.Count == 1
             ? $"Log truncation detected for {truncationOffsets[0].Topic}-{truncationOffsets[0].Partition} " +
@@ -220,12 +228,18 @@ public sealed class BootstrapResolutionException : KafkaException
     /// <summary>
     /// Bootstrap server endpoints that remained unresolved.
     /// </summary>
-    public IReadOnlyList<string> UnresolvedBootstrapServers { get; }
+    public IReadOnlyList<string> UnresolvedBootstrapServers
+    {
+        get;
+    }
 
     /// <summary>
     /// Configured bootstrap DNS resolution timeout.
     /// </summary>
-    public TimeSpan Timeout { get; }
+    public TimeSpan Timeout
+    {
+        get;
+    }
 
     private static ReadOnlyCollection<string> CopyServers(IReadOnlyList<string> unresolvedBootstrapServers)
         => new(unresolvedBootstrapServers.ToArray());
@@ -234,9 +248,13 @@ public sealed class BootstrapResolutionException : KafkaException
     {
         ArgumentNullException.ThrowIfNull(unresolvedBootstrapServers);
         if (unresolvedBootstrapServers.Count == 0)
+        {
             throw new ArgumentException("At least one unresolved bootstrap server is required.", nameof(unresolvedBootstrapServers));
+        }
         if (timeout < TimeSpan.Zero)
+        {
             throw new ArgumentOutOfRangeException(nameof(timeout), "Bootstrap resolution timeout cannot be negative.");
+        }
 
         return $"Could not resolve bootstrap server DNS within {timeout.TotalMilliseconds}ms: " +
                string.Join(", ", unresolvedBootstrapServers);
@@ -305,17 +323,26 @@ public sealed class KafkaTimeoutException : KafkaException
     /// <summary>
     /// The kind of timeout that occurred.
     /// </summary>
-    public TimeoutKind TimeoutKind { get; init; }
+    public TimeoutKind TimeoutKind
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The amount of time that elapsed before the timeout.
     /// </summary>
-    public TimeSpan Elapsed { get; init; }
+    public TimeSpan Elapsed
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The configured timeout duration that was exceeded.
     /// </summary>
-    public TimeSpan Configured { get; init; }
+    public TimeSpan Configured
+    {
+        get; init;
+    }
 }
 
 /// <summary>
@@ -353,17 +380,26 @@ public sealed class ProduceException : KafkaException
     /// <summary>
     /// The local producer failure kind, when the failure was not represented by a Kafka protocol error code.
     /// </summary>
-    public ProduceErrorKind Kind { get; init; }
+    public ProduceErrorKind Kind
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The topic the produce was for.
     /// </summary>
-    public string? Topic { get; init; }
+    public string? Topic
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The partition the produce was for.
     /// </summary>
-    public int? Partition { get; init; }
+    public int? Partition
+    {
+        get; init;
+    }
 }
 
 /// <summary>
@@ -461,7 +497,10 @@ public sealed class GroupException : KafkaException
     /// <summary>
     /// The group ID.
     /// </summary>
-    public string? GroupId { get; init; }
+    public string? GroupId
+    {
+        get; init;
+    }
 }
 
 /// <summary>
@@ -501,7 +540,10 @@ public class TransactionException : KafkaException
     /// <summary>
     /// The transactional ID.
     /// </summary>
-    public string? TransactionalId { get; init; }
+    public string? TransactionalId
+    {
+        get; init;
+    }
 }
 
 /// <summary>
@@ -590,7 +632,10 @@ public sealed class BrokerVersionException : KafkaException
 /// </summary>
 public sealed class AuthenticationException : KafkaException
 {
-    internal bool IsTlsHandshakeFailure { get; }
+    internal bool IsTlsHandshakeFailure
+    {
+        get;
+    }
 
     public AuthenticationException() : base()
     {
@@ -642,12 +687,18 @@ public sealed class AuthorizationException : KafkaException
     /// <summary>
     /// The operation that was denied.
     /// </summary>
-    public string? Operation { get; init; }
+    public string? Operation
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The resource that was denied.
     /// </summary>
-    public string? Resource { get; init; }
+    public string? Resource
+    {
+        get; init;
+    }
 }
 
 /// <summary>
@@ -684,12 +735,18 @@ public class SerializationException : KafkaException
     /// <summary>
     /// The topic involved in the serialization operation.
     /// </summary>
-    public string? Topic { get; init; }
+    public string? Topic
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The component (key or value) that failed to serialize.
     /// </summary>
-    public SerializationComponent Component { get; init; }
+    public SerializationComponent Component
+    {
+        get; init;
+    }
 }
 
 /// <summary>
@@ -776,37 +833,61 @@ public sealed class RecordDeserializationException : SerializationException
     }
 
     /// <summary>The record component whose deserializer failed.</summary>
-    public DeserializationExceptionOrigin Origin { get; }
+    public DeserializationExceptionOrigin Origin
+    {
+        get;
+    }
 
     /// <summary>The topic and partition containing the failed record.</summary>
-    public TopicPartition TopicPartition { get; }
+    public TopicPartition TopicPartition
+    {
+        get;
+    }
 
     /// <summary>The failed record offset.</summary>
-    public long Offset { get; }
+    public long Offset
+    {
+        get;
+    }
 
     /// <summary>The failed record timestamp as raw Unix milliseconds.</summary>
-    public long TimestampMs { get; }
+    public long TimestampMs
+    {
+        get;
+    }
 
     /// <summary>The failed record timestamp.</summary>
     public DateTimeOffset Timestamp => DateTimeOffset.FromUnixTimeMilliseconds(TimestampMs);
 
     /// <summary>The failed record timestamp type.</summary>
-    public Consumer.TimestampType TimestampType { get; }
+    public Consumer.TimestampType TimestampType
+    {
+        get;
+    }
 
     /// <summary>
     /// Owned raw key bytes, or <see langword="null"/> when the Kafka record key was null.
     /// </summary>
-    public byte[]? KeyData { get; }
+    public byte[]? KeyData
+    {
+        get;
+    }
 
     /// <summary>
     /// Owned raw value bytes, or <see langword="null"/> when the Kafka record value was null.
     /// </summary>
-    public byte[]? ValueData { get; }
+    public byte[]? ValueData
+    {
+        get;
+    }
 
     /// <summary>
     /// Owned record headers in wire order. Duplicate keys and null values are preserved.
     /// </summary>
-    public IReadOnlyList<Header> Headers { get; }
+    public IReadOnlyList<Header> Headers
+    {
+        get;
+    }
 
     private static string CreateMessage(
         DeserializationExceptionOrigin origin,
@@ -824,11 +905,11 @@ public sealed class RecordDeserializationException : SerializationException
 
     private static SerializationComponent ToSerializationComponent(
         DeserializationExceptionOrigin origin) => origin switch
-    {
-        DeserializationExceptionOrigin.Key => SerializationComponent.Key,
-        DeserializationExceptionOrigin.Value => SerializationComponent.Value,
-        _ => throw new ArgumentOutOfRangeException(nameof(origin), origin, null)
-    };
+        {
+            DeserializationExceptionOrigin.Key => SerializationComponent.Key,
+            DeserializationExceptionOrigin.Value => SerializationComponent.Value,
+            _ => throw new ArgumentOutOfRangeException(nameof(origin), origin, null)
+        };
 
     private static byte[]? CopyData(ReadOnlyMemory<byte>? data)
         => data?.ToArray();
@@ -836,11 +917,15 @@ public sealed class RecordDeserializationException : SerializationException
     private static IReadOnlyList<Header> CopyHeaders(IReadOnlyList<Header>? headers)
     {
         if (headers is null || headers.Count == 0)
+        {
             return Array.Empty<Header>();
+        }
 
         var copy = new Header[headers.Count];
         for (var i = 0; i < headers.Count; i++)
+        {
             copy[i] = CopyHeader(headers[i]);
+        }
 
         return new ReadOnlyCollection<Header>(copy);
     }
@@ -848,11 +933,15 @@ public sealed class RecordDeserializationException : SerializationException
     private static IReadOnlyList<Header> CopyHeaders(Header[]? headers, int headerCount)
     {
         if (headers is null || headerCount == 0)
+        {
             return Array.Empty<Header>();
+        }
 
         var copy = new Header[headerCount];
         for (var i = 0; i < headerCount; i++)
+        {
             copy[i] = CopyHeader(headers[i]);
+        }
 
         return new ReadOnlyCollection<Header>(copy);
     }

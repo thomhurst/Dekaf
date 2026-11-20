@@ -162,7 +162,9 @@ public sealed class ProducerNetworkFaultTests(TransactionFaultKafkaContainer kaf
             await producer.InitTransactionsAsync(cancellationToken);
             await using var transaction = producer.BeginTransaction();
             foreach (var value in firstTransaction)
+            {
                 _ = await transaction.ProduceAsync(topic, "key", value, cancellationToken);
+            }
 
             try
             {
@@ -195,7 +197,9 @@ public sealed class ProducerNetworkFaultTests(TransactionFaultKafkaContainer kaf
             await successor.InitTransactionsAsync(cancellationToken);
             await using var transaction = successor.BeginTransaction();
             foreach (var value in secondTransaction)
+            {
                 _ = await transaction.ProduceAsync(topic, "key", value, cancellationToken);
+            }
             await transaction.CommitAsync(cancellationToken);
         }
 
@@ -207,7 +211,9 @@ public sealed class ProducerNetworkFaultTests(TransactionFaultKafkaContainer kaf
 
         await Assert.That(string.Join(',', visibleSecond)).IsEqualTo(string.Join(',', secondTransaction));
         if (visibleFirst.Length != 0)
+        {
             await Assert.That(string.Join(',', visibleFirst)).IsEqualTo(string.Join(',', firstTransaction));
+        }
         await Assert.That(visible.Count).IsEqualTo(visibleFirst.Length + visibleSecond.Length);
     }
 
@@ -325,7 +331,9 @@ public sealed class ProducerNetworkFaultTests(TransactionFaultKafkaContainer kaf
         {
             var result = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(60), cancellationToken);
             if (result is null)
+            {
                 break;
+            }
 
             values.Add(result.Value.Value);
         }
@@ -333,7 +341,9 @@ public sealed class ProducerNetworkFaultTests(TransactionFaultKafkaContainer kaf
         // One more poll: a duplicate appended after the expected tail would arrive here.
         var extra = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(3), cancellationToken);
         if (extra is not null)
+        {
             values.Add(extra.Value.Value);
+        }
 
         return values;
     }

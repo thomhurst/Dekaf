@@ -26,7 +26,10 @@ public sealed class ConsumerFollowerOffsetRetryIntegrationTests(RackAwareKafkaCo
             .WithAcks(Acks.All).BuildAsync();
         await producer.ProduceAsync(new ProducerMessage<string, string>
         {
-            Topic = topic, Partition = 0, Key = "key", Value = "0"
+            Topic = topic,
+            Partition = 0,
+            Key = "key",
+            Value = "0"
         });
 
         var clientId = $"follower-offset-{Guid.NewGuid():N}";
@@ -59,7 +62,9 @@ public sealed class ConsumerFollowerOffsetRetryIntegrationTests(RackAwareKafkaCo
             {
                 await producer.ProduceAsync(new ProducerMessage<string, string>
                 {
-                    Topic = topic, Partition = 0, Key = "key",
+                    Topic = topic,
+                    Partition = 0,
+                    Key = "key",
                     Value = offset.ToString(System.Globalization.CultureInfo.InvariantCulture)
                 }, timeout.Token);
             }
@@ -86,9 +91,18 @@ public sealed class ConsumerFollowerOffsetRetryIntegrationTests(RackAwareKafkaCo
     {
         private int _faultStarted;
         private int _faultReturned;
-        public TaskCompletionSource FollowerFetchStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        public TaskCompletionSource ReleaseFollowerError { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        public TaskCompletionSource<long> LeaderRetried { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource FollowerFetchStarted
+        {
+            get;
+        } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource ReleaseFollowerError
+        {
+            get;
+        } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource<long> LeaderRetried
+        {
+            get;
+        } = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         public async ValueTask<IKafkaConnection> GetConnectionAsync(int brokerId, CancellationToken cancellationToken = default) =>
             new FaultingConnection(this, await inner.GetConnectionAsync(brokerId, cancellationToken), brokerId);
@@ -120,11 +134,15 @@ public sealed class ConsumerFollowerOffsetRetryIntegrationTests(RackAwareKafkaCo
                 foreach (var requestedTopic in fetch.Topics)
                 {
                     if (requestedTopic.Topic != topic)
+                    {
                         continue;
+                    }
                     foreach (var partition in requestedTopic.Partitions)
                     {
                         if (partition.Partition != 0)
+                        {
                             continue;
+                        }
                         if (brokerId == 2 && partition.FetchOffset == 1
                             && Interlocked.CompareExchange(ref _faultStarted, 1, 0) == 0)
                         {
@@ -156,7 +174,9 @@ public sealed class ConsumerFollowerOffsetRetryIntegrationTests(RackAwareKafkaCo
                             };
                         }
                         if (brokerId == 1 && Volatile.Read(ref _faultReturned) != 0)
+                        {
                             LeaderRetried.TrySetResult(partition.FetchOffset);
+                        }
                     }
                 }
             }

@@ -42,17 +42,23 @@ internal sealed class AvroInlineRuleValidator
                 ref violations,
                 ref path);
             if (!reader.End)
+            {
                 throw InvalidPayload("trailing bytes remain after the root value");
+            }
         }
         finally
         {
             if (CompiledValidationRule.ValueResolutionDepth != valueResolutionDepth)
+            {
                 CompiledValidationRule.RestoreValueResolutionDepth(valueResolutionDepth);
+            }
             path.Dispose();
         }
 
         if (violations is not null)
+        {
             throw new ValidationRulesFailedException(violations);
+        }
     }
 
     private static SchemaRegistryRuleException InvalidPayload(string reason) =>
@@ -93,14 +99,19 @@ internal sealed class AvroValueRulePlan
             _requiresBoundedValueDecoding;
     }
 
-    internal bool HasAnyRules { get; private set; }
+    internal bool HasAnyRules
+    {
+        get; private set;
+    }
 
     internal static AvroValueRulePlan Create(
         AvroSchema schema,
         Dictionary<AvroSchema, AvroValueRulePlan> plans)
     {
         if (plans.TryGetValue(schema, out var existing))
+        {
             return existing;
+        }
 
         var plan = new AvroValueRulePlan(schema);
         plans.Add(schema, plan);
@@ -139,7 +150,9 @@ internal sealed class AvroValueRulePlan
             case global::Avro.UnionSchema union:
                 _children = new AvroValueRulePlan[union.Count];
                 for (var index = 0; index < union.Count; index++)
+                {
                     _children[index] = Create(union[index], plans);
+                }
                 break;
         }
 
@@ -147,7 +160,9 @@ internal sealed class AvroValueRulePlan
         for (var index = 0; index < _fields.Length; index++)
         {
             if (_fields[index].Rules.IsEmpty)
+            {
                 continue;
+            }
             HasAnyRules = true;
             _hasNestedRules = true;
         }
@@ -166,12 +181,16 @@ internal sealed class AvroValueRulePlan
                     for (var index = 0; index < plan._fields.Length; index++)
                     {
                         if (!plan._fields[index].Child.HasAnyRules)
+                        {
                             continue;
+                        }
                         plan._hasNestedRules = true;
                         break;
                     }
                     for (var index = 0; !plan._hasNestedRules && index < plan._children.Length; index++)
+                    {
                         plan._hasNestedRules = plan._children[index].HasAnyRules;
+                    }
                 }
                 if (!plan.HasAnyRules && plan._hasNestedRules)
                 {
@@ -197,7 +216,9 @@ internal sealed class AvroValueRulePlan
             return ValidationStrategy.AggregateRootAndMembers;
         }
         if (!_hasNestedRules || _schemaRules.IsEmpty)
+        {
             return ValidationStrategy.Standard;
+        }
         if (_schemaRules.UsesRootValue
             && !_schemaRules.HasMembers
             && _schema is global::Avro.RecordSchema or global::Avro.ArraySchema or global::Avro.MapSchema)
@@ -220,18 +241,24 @@ internal sealed class AvroValueRulePlan
     {
         var lastMemberFieldIndex = _schemaRules.LastRecordMemberIndex;
         if (lastMemberFieldIndex <= 0)
+        {
             return;
+        }
 
         List<int>? deferred = null;
         for (var index = 0; index < lastMemberFieldIndex; index++)
         {
             var field = _fields[index];
             if (field.Rules.IsEmpty && !field.Child.HasAnyRules)
+            {
                 continue;
+            }
             (deferred ??= []).Add(index);
         }
         if (deferred is not null)
+        {
             _deferredSchemaRuleFieldIndexes = [.. deferred];
+        }
     }
 
     internal ValidationCelValue Validate(
@@ -242,11 +269,13 @@ internal sealed class AvroValueRulePlan
         scoped ref AvroValidationPath path)
     {
         if (!HasAnyRules)
+        {
             return ReadRuleValue(
                 ref reader,
                 path.RemainingValidationDepth,
                 needsSize: false,
                 out _);
+        }
 
         // Keep the non-recursive dispatch inline: routing it through ValidateCore regresses
         // warmed validation. Recursive schemas alone pay for the guarded helper call.
@@ -360,15 +389,19 @@ internal sealed class AvroValueRulePlan
             case global::Avro.UnionSchema:
                 ValidateUnion(ref reader, now, failFast, ref violations, ref path);
                 break;
-                default:
-                    if (_schemaRules.IsEmpty)
+            default:
+                if (_schemaRules.IsEmpty)
+                {
                     value = ReadRuleValue(
                         ref reader,
                         path.RemainingValidationDepth,
                         needsSize: false,
                         out _);
+                }
                 else
+                {
                     reader = preview;
+                }
                 break;
         }
         return value;
@@ -504,13 +537,17 @@ internal sealed class AvroValueRulePlan
                 break;
             default:
                 if (_schemaRules.IsEmpty)
+                {
                     value = ReadRuleValue(
                         ref reader,
                         CurrentValueDecodingDepth(ref path),
                         needsSize: false,
                         out _);
+                }
                 else
+                {
                     reader = preview;
+                }
                 break;
         }
         return value;
@@ -974,7 +1011,9 @@ internal sealed class AvroValueRulePlan
         var union = (global::Avro.UnionSchema)_schema;
         var branch = reader.ReadLong();
         if ((ulong)branch >= (ulong)union.Count)
+        {
             throw InvalidPayload($"invalid union index {branch}");
+        }
 
         var child = _children[(int)branch];
         var start = reader.Position;
@@ -1014,7 +1053,7 @@ internal sealed class AvroValueRulePlan
                 sizeIndex: 0);
         }
 
-Deferred:
+    Deferred:
         var value = child.ValidateAndCapture(
             ref reader,
             now,
@@ -1088,7 +1127,9 @@ Deferred:
         {
             var branch = reader.ReadLong();
             if ((ulong)branch >= (ulong)union.Count)
+            {
                 throw InvalidPayload($"invalid union index {branch}");
+            }
 
             var child = _children[(int)branch];
             var childStart = reader.Position;
@@ -1134,7 +1175,7 @@ Deferred:
                 return value;
             }
 
-DeferredBranch:
+        DeferredBranch:
             var branchValue = child.ValidateAndCapture(
                 ref reader,
                 now,
@@ -1152,7 +1193,7 @@ DeferredBranch:
             return branchValue;
         }
 
-Deferred:
+    Deferred:
         var capturedValue = ValidateAndCapture(
             ref reader,
             now,
@@ -1209,6 +1250,7 @@ Deferred:
                     out size);
             }
             else
+            {
                 value = ValidateRecordFieldAndCapture(
                     field,
                     ref reader,
@@ -1218,6 +1260,7 @@ Deferred:
                     ref nestedViolations,
                     ref path,
                     out size);
+            }
             memberResolver.ResolveRecordField(
                 index,
                 reader.Source.Slice(start, reader.Position - start),
@@ -1271,6 +1314,7 @@ Deferred:
                 continue;
             }
             else
+            {
                 value = ValidateRecordFieldAndCapture(
                     field,
                     ref reader,
@@ -1280,6 +1324,7 @@ Deferred:
                     ref nestedViolations,
                     ref path,
                     out size);
+            }
             if (fieldResolver.HasTargets)
             {
                 fieldResolver.ResolveCaptured(
@@ -1307,7 +1352,9 @@ Deferred:
         {
             var count = reader.ReadCollectionCount();
             if (count == 0)
+            {
                 return itemCount;
+            }
             for (long index = 0; index < count; index++)
             {
                 itemCount = checked(itemCount + 1);
@@ -1374,7 +1421,9 @@ Deferred:
         var union = (global::Avro.UnionSchema)_schema;
         var branch = reader.ReadLong();
         if ((ulong)branch >= (ulong)union.Count)
+        {
             throw InvalidPayload($"invalid union index {branch}");
+        }
 
         var payloadStart = reader.Position;
         _ = _children[(int)branch].Validate(
@@ -1425,7 +1474,9 @@ Deferred:
         {
             var count = reader.ReadCollectionCount();
             if (count == 0)
+            {
                 return itemCount;
+            }
             for (long index = 0; index < count; index++)
             {
                 itemCount = checked(itemCount + 1);
@@ -1466,7 +1517,9 @@ Deferred:
         {
             var count = reader.ReadCollectionCount();
             if (count == 0)
+            {
                 return itemCount;
+            }
             for (long index = 0; index < count; index++)
             {
                 itemCount = checked(itemCount + 1);
@@ -1509,14 +1562,18 @@ Deferred:
         {
             var count = reader.ReadCollectionCount();
             if (count == 0)
+            {
                 return itemCount;
+            }
             for (long index = 0; index < count; index++)
             {
                 itemCount = checked(itemCount + 1);
                 var key = reader.ReadLengthPrefixed();
                 AvroMemberResolver.AvroMemberNode? memberResolver = null;
                 if (hasSizeDemand)
+                {
                     rules.TryGetMapEntryResolver(key, out memberResolver);
+                }
                 var valueStart = reader.Position;
                 if (nestedViolations is not null)
                 {
@@ -1569,9 +1626,13 @@ Deferred:
         AvroMemberResolution resolution)
     {
         if (hasSizeDemand)
+        {
             memberResolver?.Resolve(payload, resolution.Members, resolution.Sizes);
+        }
         else
+        {
             rules.ResolveMapEntry(key, payload, resolution);
+        }
     }
 
     private static void AppendNestedViolations(
@@ -1580,7 +1641,9 @@ Deferred:
         ref List<ValidationRuleError>? violations)
     {
         if (nestedViolations is null || (failFast && violations is not null))
+        {
             return;
+        }
         violations ??= new List<ValidationRuleError>(failFast ? 1 : nestedViolations.Count);
         if (failFast)
         {
@@ -1588,7 +1651,9 @@ Deferred:
             return;
         }
         for (var index = 0; index < nestedViolations.Count; index++)
+        {
             violations.Add(nestedViolations[index]);
+        }
     }
 
     private ValidationCelValue ValidateAggregateWithRootRules(
@@ -1682,9 +1747,13 @@ Deferred:
                     rootSize);
 
                 if ((failFast && violations is not null) || !field.Child.HasAnyRules)
+                {
                     reader = preview;
+                }
                 else
+                {
                     _ = field.Child.Validate(ref reader, now, failFast, ref violations, ref path);
+                }
             }
             path.Truncate(mark);
             if (failFast && violations is not null)
@@ -1710,7 +1779,9 @@ Deferred:
         var union = (global::Avro.UnionSchema)_schema;
         var branch = reader.ReadLong();
         if ((ulong)branch >= (ulong)union.Count)
+        {
             throw InvalidPayload($"invalid union index {branch}");
+        }
         _ = _children[(int)branch].Validate(
             ref reader,
             now,
@@ -1732,7 +1803,9 @@ Deferred:
         {
             var count = reader.ReadCollectionCount();
             if (count == 0)
+            {
                 return itemIndex;
+            }
             for (long index = 0; index < count; index++)
             {
                 var mark = path.Length;
@@ -1743,7 +1816,9 @@ Deferred:
                 {
                     var remainingInBlock = count - index - 1;
                     for (long remaining = 0; remaining < remainingInBlock; remaining++)
+                    {
                         item.SkipValue(ref reader, path.RemainingValidationDepth);
+                    }
                     itemIndex = checked(itemIndex + (int)remainingInBlock +
                         SkipRemainingCollection(
                             item,
@@ -1768,7 +1843,9 @@ Deferred:
         {
             var count = reader.ReadCollectionCount();
             if (count == 0)
+            {
                 return itemCount;
+            }
             for (long index = 0; index < count; index++)
             {
                 itemCount = checked(itemCount + 1);
@@ -1806,10 +1883,14 @@ Deferred:
         {
             var count = reader.ReadCollectionCount();
             if (count == 0)
+            {
                 return itemCount;
+            }
             itemCount = checked(itemCount + (int)count);
             for (long index = 0; index < count; index++)
+            {
                 item.SkipValue(ref reader, remainingValidationDepth);
+            }
         }
     }
 
@@ -1823,7 +1904,9 @@ Deferred:
         {
             var count = reader.ReadCollectionCount();
             if (count == 0)
+            {
                 return itemCount;
+            }
             itemCount = checked(itemCount + (int)count);
             for (long index = 0; index < count; index++)
             {
@@ -1974,7 +2057,9 @@ Deferred:
         finally
         {
             if (rentedOffsets is not null)
+            {
                 ArrayPool<int>.Shared.Return(rentedOffsets);
+            }
         }
     }
 
@@ -1984,7 +2069,9 @@ Deferred:
         int remainingValidationDepth)
     {
         for (var index = startIndex; index < _fields.Length; index++)
+        {
             _fields[index].Child.SkipValue(ref reader, remainingValidationDepth);
+        }
     }
 
     private static ValidationCelValue ValidateDeferredRecordField(
@@ -2049,9 +2136,13 @@ Deferred:
                     ref path,
                     out var capturedSize);
                 if (capturedValue.Kind != ValidationCelValueKind.Missing)
+                {
                     value = capturedValue;
+                }
                 if (size < 0)
+                {
                     size = capturedSize;
+                }
             }
         }
         path.Truncate(mark);
@@ -2109,7 +2200,9 @@ Deferred:
         {
             var branch = reader.ReadLong();
             if ((ulong)branch >= (ulong)union.Count)
+            {
                 throw InvalidPayload($"invalid union index {branch}");
+            }
             return _children[(int)branch].ReadRuleValue(
                 ref reader,
                 remainingValidationDepth,
@@ -2154,9 +2247,13 @@ internal readonly record struct AvroMemberResolution(
     public void Dispose()
     {
         if (IsolatedIndex < 0)
+        {
             ValueResolution.Dispose();
+        }
         else
+        {
             AvroCompiledRuleSet.EndIsolatedMemberResolution(IsolatedIndex);
+        }
     }
 }
 
@@ -2164,7 +2261,10 @@ internal readonly record struct AvroFieldPayload(int Start, int Length);
 
 internal sealed class AvroCompiledRuleSet
 {
-    internal static AvroCompiledRuleSet Empty { get; } = new(
+    internal static AvroCompiledRuleSet Empty
+    {
+        get;
+    } = new(
         [], null, false, false, false, false, false, 0, null, new AvroAggregateEqualityComparerFactory());
 
     private readonly CompiledValidationRule[] _rules;
@@ -2204,12 +2304,16 @@ internal sealed class AvroCompiledRuleSet
         _memberCount = memberCount;
         _lastRecordMemberIndex = members?.LastRecordMemberIndex ?? -1;
         if (!usesRootAggregateEquality || valueSchema is null)
+        {
             return;
+        }
 
         valueSchema = AvroValueRulePlan.Unwrap(valueSchema);
         _rootAggregateComparer = aggregateComparerFactory.Create(valueSchema);
         if (valueSchema is not global::Avro.UnionSchema union)
+        {
             return;
+        }
 
         _rootUnionComparers = new AvroAggregateEqualityComparer?[union.Count];
         for (var index = 0; index < union.Count; index++)
@@ -2220,9 +2324,18 @@ internal sealed class AvroCompiledRuleSet
     }
 
     internal bool IsEmpty => _rules.Length == 0;
-    internal bool UsesRootValue { get; }
-    internal bool UsesRootSize { get; }
-    internal bool UsesSize { get; }
+    internal bool UsesRootValue
+    {
+        get;
+    }
+    internal bool UsesRootSize
+    {
+        get;
+    }
+    internal bool UsesSize
+    {
+        get;
+    }
     internal bool HasMembers => _members is not null;
     internal AvroMemberResolver MemberResolver => _members!;
     internal int LastRecordMemberIndex => _lastRecordMemberIndex;
@@ -2232,7 +2345,9 @@ internal sealed class AvroCompiledRuleSet
         AvroSchema valueSchema)
     {
         if (rules.Count == 0)
+        {
             return Empty;
+        }
 
         var memberIndexes = new Dictionary<string, int>(StringComparer.Ordinal);
         var memberPaths = new List<byte[][]>();
@@ -2308,7 +2423,9 @@ internal sealed class AvroCompiledRuleSet
                     : CompiledValidationRule.GetSizeValues(_memberCount + 1)
                 : default;
             if (rootSize >= 0)
+            {
                 sizes.Set(0, rootSize);
+            }
             _members?.Resolve(payload, memberValues, sizes);
             var equalityGeneration = _usesCachedEquality
                 ? CompiledValidationRule.BeginEqualityResolution()
@@ -2333,7 +2450,9 @@ internal sealed class AvroCompiledRuleSet
                             equalityGeneration,
                             rootAggregateComparer);
                         if (result.Kind == ValidationResultKind.Boolean ? result.Boolean : result.String!.Length == 0)
+                        {
                             continue;
+                        }
                         (violations ??= []).Add(new ValidationRuleError(
                             rule.Rule,
                             path.ToString(),
@@ -2348,7 +2467,9 @@ internal sealed class AvroCompiledRuleSet
                     }
 
                     if (failFast)
+                    {
                         break;
+                    }
                 }
             }
             finally
@@ -2359,7 +2480,9 @@ internal sealed class AvroCompiledRuleSet
         finally
         {
             if (isNested)
+            {
                 valueResolution.Dispose();
+            }
         }
     }
 
@@ -2397,7 +2520,9 @@ internal sealed class AvroCompiledRuleSet
                         equalityGeneration,
                         rootAggregateComparer);
                     if (result.Kind == ValidationResultKind.Boolean ? result.Boolean : result.String!.Length == 0)
+                    {
                         continue;
+                    }
                     (violations ??= []).Add(new ValidationRuleError(
                         rule.Rule,
                         path.ToString(),
@@ -2412,7 +2537,9 @@ internal sealed class AvroCompiledRuleSet
                 }
 
                 if (failFast)
+                {
                     return;
+                }
             }
         }
         finally
@@ -2433,7 +2560,9 @@ internal sealed class AvroCompiledRuleSet
         using var resolution = BeginMemberResolution();
         var start = reader.Position;
         if (_members is null)
+        {
             valuePlan.SkipValue(ref reader, remainingValidationDepth);
+        }
         else
         {
             _members.Resolve(
@@ -2490,11 +2619,15 @@ internal sealed class AvroCompiledRuleSet
         ref ValidationCelValueResolutionFrame frame)
     {
         if (count == 0)
+        {
             return default;
+        }
 
         var values = frame.MemberValues;
         if (values is null || values.Length < count)
+        {
             frame.MemberValues = values = new ValidationCelMemberSlot[Math.Max(count, 8)];
+        }
         frame.MemberGeneration = unchecked(frame.MemberGeneration + 1);
         if (frame.MemberGeneration == 0)
         {
@@ -2510,7 +2643,9 @@ internal sealed class AvroCompiledRuleSet
     {
         var values = frame.SizeValues;
         if (values is null || values.Length < count)
+        {
             frame.SizeValues = values = new ValidationCelSizeSlot[Math.Max(count, 8)];
+        }
         frame.SizeGeneration = unchecked(frame.SizeGeneration + 1);
         if (frame.SizeGeneration == 0)
         {
@@ -2624,7 +2759,9 @@ internal sealed class AvroCompiledRuleSet
                         equalityGeneration,
                         rootAggregateComparer: null);
                     if (result.Kind == ValidationResultKind.Boolean ? result.Boolean : result.String!.Length == 0)
+                    {
                         continue;
+                    }
                     (violations ??= []).Add(new ValidationRuleError(
                         rule.Rule,
                         path.ToString(),
@@ -2639,7 +2776,9 @@ internal sealed class AvroCompiledRuleSet
                 }
 
                 if (failFast)
+                {
                     return;
+                }
             }
         }
         finally
@@ -2651,13 +2790,17 @@ internal sealed class AvroCompiledRuleSet
     private AvroAggregateEqualityComparer? GetRootAggregateComparer(ReadOnlyMemory<byte> payload)
     {
         if (_rootUnionComparers is null)
+        {
             return _rootAggregateComparer;
+        }
 
         var reader = new AvroValidationReader(payload);
         var branch = reader.ReadLong();
         if ((ulong)branch >= (ulong)_rootUnionComparers.Length)
+        {
             throw new SchemaRegistryRuleException(
                 $"Could not evaluate Avro validation rules: invalid union index {branch}.");
+        }
         return _rootUnionComparers[(int)branch];
     }
 }
@@ -2685,7 +2828,9 @@ internal sealed class AvroMemberResolver
             for (var index = _fields.Length - 1; index >= 0; index--)
             {
                 if (_fields[index]?.HasTargets == true)
+                {
                     return index;
+                }
             }
             return -1;
         }
@@ -2738,11 +2883,17 @@ internal sealed class AvroMemberResolver
     {
         valueSchema = AvroValueRulePlan.Unwrap(valueSchema);
         if (valueSchema is global::Avro.RecordSchema record)
+        {
             return CreateRecord(record, paths, usedIndexes, sizedIndexes, aggregateComparerFactory);
+        }
         if (valueSchema is global::Avro.MapSchema map)
+        {
             return CreateMap(map, paths, usedIndexes, sizedIndexes, aggregateComparerFactory);
+        }
         if (valueSchema is not global::Avro.UnionSchema union)
+        {
             return null;
+        }
 
         var resolver = new AvroMemberResolver(union, aggregateComparerFactory);
         var resolvedIndexes = new bool[paths.Count];
@@ -2750,14 +2901,18 @@ internal sealed class AvroMemberResolver
         {
             var branch = AvroValueRulePlan.Unwrap(union[branchIndex]);
             if (branch is not (global::Avro.RecordSchema or global::Avro.MapSchema))
+            {
                 continue;
+            }
 
             AvroMemberResolver? branchResolver = null;
             foreach (var memberIndex in usedIndexes)
             {
                 var path = paths[memberIndex];
                 if (!CanResolve(branch, path, depth: 0))
+                {
                     continue;
+                }
 
                 if (branch is global::Avro.RecordSchema branchRecord)
                 {
@@ -2805,12 +2960,14 @@ internal sealed class AvroMemberResolver
     {
         var resolver = CreateRecord(record, aggregateComparerFactory);
         foreach (var memberIndex in usedIndexes)
+        {
             resolver.Add(
                 record,
                 paths[memberIndex],
                 memberIndex,
                 sizedIndexes.Contains(memberIndex),
                 depth: 0);
+        }
         return resolver;
     }
 
@@ -2832,12 +2989,14 @@ internal sealed class AvroMemberResolver
     {
         var resolver = CreateMap(map, aggregateComparerFactory);
         foreach (var memberIndex in usedIndexes)
+        {
             resolver.Add(
                 map,
                 paths[memberIndex],
                 memberIndex,
                 sizedIndexes.Contains(memberIndex),
                 depth: 0);
+        }
         return resolver;
     }
 
@@ -2924,8 +3083,10 @@ internal sealed class AvroMemberResolver
             var union = (global::Avro.UnionSchema)_valueSchema;
             var branch = reader.ReadLong();
             if ((ulong)branch >= (ulong)union.Count)
+            {
                 throw new SchemaRegistryRuleException(
                     $"Could not evaluate Avro validation rules: invalid union index {branch}.");
+            }
             var resolver = _unionBranches[(int)branch];
             if (resolver is null)
             {
@@ -2936,7 +3097,9 @@ internal sealed class AvroMemberResolver
                     remainingValidationDepth);
             }
             else
+            {
                 resolver.Resolve(ref reader, values, sizes, remainingValidationDepth);
+            }
             return;
         }
         if (_requiresValidationDepthGuard)
@@ -2949,7 +3112,9 @@ internal sealed class AvroMemberResolver
             var node = _fields[index];
             var schema = node?.Schema;
             if (schema is null)
+            {
                 throw new InvalidOperationException("Avro validation member resolver is incomplete.");
+            }
             if (node!.HasTargets)
             {
                 var start = reader.Position;
@@ -2977,7 +3142,9 @@ internal sealed class AvroMemberResolver
         {
             var count = reader.ReadCollectionCount();
             if (count == 0)
+            {
                 return;
+            }
             for (long index = 0; index < count; index++)
             {
                 var key = reader.ReadLengthPrefixed();
@@ -3032,7 +3199,9 @@ internal sealed class AvroMemberResolver
         ValidationCelSizeValues sizes)
     {
         if (_mapValues!.TryGetValue(key, out var node))
+        {
             node.Resolve(payload, values, sizes);
+        }
     }
 
     internal void ResolveMapEntry(
@@ -3044,7 +3213,9 @@ internal sealed class AvroMemberResolver
         ValidationCelSizeValues sizes)
     {
         if (_mapValues!.TryGetValue(key, out var node))
+        {
             node.ResolveCaptured(payload, value, size, values, sizes);
+        }
     }
 
     internal void ResolveRecordField(
@@ -3058,7 +3229,9 @@ internal sealed class AvroMemberResolver
         var node = _fields[fieldIndex]
             ?? throw new InvalidOperationException("Avro validation member resolver is incomplete.");
         if (node.HasTargets)
+        {
             node.ResolveCaptured(payload, value, size, values, sizes);
+        }
     }
 
     internal AvroMemberNode GetRecordFieldResolver(int fieldIndex) =>
@@ -3076,7 +3249,9 @@ internal sealed class AvroMemberResolver
     {
         var resolver = _unionBranches![branch];
         if (resolver is not null)
+        {
             resolver.Resolve(payload, values, sizes);
+        }
     }
 
     internal AvroFieldPayload ResolveRecordPrefix(
@@ -3128,14 +3303,20 @@ internal sealed class AvroMemberResolver
         {
             var field = schema.Fields[index];
             if (string.Equals(field.Name, name, StringComparison.Ordinal))
+            {
                 return field;
+            }
             var aliases = field.Aliases;
             if (aliases is null)
+            {
                 continue;
+            }
             for (var aliasIndex = 0; aliasIndex < aliases.Count; aliasIndex++)
             {
                 if (string.Equals(aliases[aliasIndex], name, StringComparison.Ordinal))
+                {
                     return field;
+                }
             }
         }
         return null;
@@ -3154,13 +3335,19 @@ internal sealed class AvroMemberResolver
                 (depth == path.Length - 1 || CanResolve(field.Schema, path, depth + 1));
         }
         if (schema is global::Avro.MapSchema map)
+        {
             return depth == path.Length - 1 || CanResolve(map.ValueSchema, path, depth + 1);
+        }
         if (schema is not global::Avro.UnionSchema union)
+        {
             return false;
+        }
         for (var index = 0; index < union.Count; index++)
         {
             if (CanResolve(union[index], path, depth))
+            {
                 return true;
+            }
         }
         return false;
     }
@@ -3168,8 +3355,10 @@ internal sealed class AvroMemberResolver
     internal void SetSchemas(global::Avro.RecordSchema schema)
     {
         for (var index = 0; index < schema.Fields.Count; index++)
+        {
             (_fields[index] ??= new AvroMemberNode(_aggregateComparerFactory)).Schema =
                 schema.Fields[index].Schema;
+        }
     }
 
     internal sealed class AvroMemberNode(
@@ -3198,7 +3387,9 @@ internal sealed class AvroMemberResolver
                 _enumSymbols = AvroValidationValueDecoder.EncodeEnumSymbols(schema);
                 _requiresBoundedValueDecoding = AvroAggregateEqualityComparer.IsRecursive(schema);
                 if (schema is not global::Avro.UnionSchema union)
+                {
                     return;
+                }
                 _unionComparers = new AvroAggregateEqualityComparer?[union.Count];
                 _unionEnumSymbols = new ReadOnlyMemory<byte>[]?[union.Count];
                 _unionRequiresBoundedValueDecoding = new bool[union.Count];
@@ -3212,7 +3403,10 @@ internal sealed class AvroMemberResolver
                 }
             }
         }
-        internal int MemberIndex { get; private set; } = -1;
+        internal int MemberIndex
+        {
+            get; private set;
+        } = -1;
         internal bool HasTargets => MemberIndex >= 0 || _children.Count != 0;
         internal bool HasChildren => _children.Count != 0;
         internal bool NeedsSize => _needsSize;
@@ -3245,7 +3439,9 @@ internal sealed class AvroMemberResolver
                 return;
             }
             if (MemberIndex == memberIndex)
+            {
                 return;
+            }
 
             var indexes = _additionalMemberIndexes;
             if (indexes is null)
@@ -3256,7 +3452,9 @@ internal sealed class AvroMemberResolver
             for (var index = 0; index < indexes.Length; index++)
             {
                 if (indexes[index] == memberIndex)
+                {
                     return;
+                }
             }
             Array.Resize(ref _additionalMemberIndexes, indexes.Length + 1);
             _additionalMemberIndexes[^1] = memberIndex;
@@ -3277,14 +3475,20 @@ internal sealed class AvroMemberResolver
                 {
                     var branch = AvroValueRulePlan.Unwrap(union[index]);
                     if (branch is not (global::Avro.RecordSchema or global::Avro.MapSchema))
+                    {
                         continue;
+                    }
                     if (!CanResolve(branch, path, depth))
+                    {
                         continue;
+                    }
                     AddResolverChild(branch, path, memberIndex, needsSize, depth);
                     found = true;
                 }
                 if (found)
+                {
                     return;
+                }
             }
             else if (schema is global::Avro.RecordSchema or global::Avro.MapSchema)
             {
@@ -3314,9 +3518,13 @@ internal sealed class AvroMemberResolver
                 _children.Add(schema, child);
             }
             if (schema is global::Avro.RecordSchema recordSchema)
+            {
                 child.Add(recordSchema, path, memberIndex, needsSize, depth);
+            }
             else
+            {
                 child.Add((global::Avro.MapSchema)schema, path, memberIndex, needsSize, depth);
+            }
         }
 
         internal void Resolve(
@@ -3339,7 +3547,9 @@ internal sealed class AvroMemberResolver
                 {
                     var sizeIndex = MemberIndex + 1;
                     if (size >= 0)
+                    {
                         sizes.Set(sizeIndex, size);
+                    }
                     if (value.Kind is ValidationCelValueKind.Array or ValidationCelValueKind.Object &&
                         value.SizeIndex == 0)
                     {
@@ -3364,15 +3574,19 @@ internal sealed class AvroMemberResolver
             }
 
             if (_children.Count == 0)
+            {
                 return;
+            }
             var childReader = new AvroValidationReader(payload);
             schema = AvroValueRulePlan.Unwrap(schema);
             if (schema is global::Avro.UnionSchema union)
             {
                 var branch = childReader.ReadLong();
                 if ((ulong)branch >= (ulong)union.Count)
+                {
                     throw new SchemaRegistryRuleException(
                         $"Could not evaluate Avro validation rules: invalid union index {branch}.");
+                }
                 schema = AvroValueRulePlan.Unwrap(union[(int)branch]);
             }
             if (_children.TryGetValue(schema, out var child))
@@ -3404,8 +3618,10 @@ internal sealed class AvroMemberResolver
                 var branchReader = new AvroValidationReader(payload);
                 var branch = branchReader.ReadLong();
                 if ((ulong)branch >= (ulong)union.Count)
+                {
                     throw new SchemaRegistryRuleException(
                         $"Could not evaluate Avro validation rules: invalid union index {branch}.");
+                }
                 schema = AvroValueRulePlan.Unwrap(union[(int)branch]);
                 aggregateComparer = _unionComparers![(int)branch];
                 payload = branchReader.Source.Slice(branchReader.Position);
@@ -3431,9 +3647,13 @@ internal sealed class AvroMemberResolver
             }
 
             if (_children.Count == 0)
+            {
                 return;
+            }
             if (_children.TryGetValue(schema, out var child))
+            {
                 child.Resolve(payload, values, sizes);
+            }
         }
 
         internal void ResolveCapturedValue(
@@ -3444,7 +3664,9 @@ internal sealed class AvroMemberResolver
             ValidationCelSizeValues sizes)
         {
             if (MemberIndex < 0)
+            {
                 return;
+            }
 
             var schema = AvroValueRulePlan.Unwrap(Schema!);
             var aggregateComparer = _aggregateComparer;
@@ -3453,15 +3675,19 @@ internal sealed class AvroMemberResolver
                 var branchReader = new AvroValidationReader(payload);
                 var branch = branchReader.ReadLong();
                 if ((ulong)branch >= (ulong)union.Count)
+                {
                     throw new SchemaRegistryRuleException(
                         $"Could not evaluate Avro validation rules: invalid union index {branch}.");
+                }
                 aggregateComparer = _unionComparers![(int)branch];
             }
 
             SetMemberValue(MemberIndex, value, size, values, sizes, aggregateComparer);
             var additionalIndexes = _additionalMemberIndexes;
             if (additionalIndexes is null)
+            {
                 return;
+            }
             for (var index = 0; index < additionalIndexes.Length; index++)
             {
                 SetMemberValue(
@@ -3484,7 +3710,9 @@ internal sealed class AvroMemberResolver
         {
             var sizeIndex = memberIndex + 1;
             if (size >= 0)
+            {
                 sizes.Set(sizeIndex, size);
+            }
             if (value.Kind is ValidationCelValueKind.Array or ValidationCelValueKind.Object &&
                 value.SizeIndex == 0)
             {
@@ -3522,8 +3750,10 @@ internal sealed class AvroMemberResolver
 
             var branch = reader.ReadLong();
             if ((ulong)branch >= (ulong)union.Count)
+            {
                 throw new SchemaRegistryRuleException(
                     $"Could not evaluate Avro validation rules: invalid union index {branch}.");
+            }
             aggregateComparer = _unionComparers![(int)branch];
             return _unionRequiresBoundedValueDecoding![(int)branch]
                 ? AvroValidationValueDecoder.ReadBounded(
@@ -3547,7 +3777,9 @@ internal sealed class AvroUtf8MemoryComparer : IEqualityComparer<ReadOnlyMemory<
 {
     internal static readonly AvroUtf8MemoryComparer Instance = new();
 
-    private AvroUtf8MemoryComparer() { }
+    private AvroUtf8MemoryComparer()
+    {
+    }
 
     public bool Equals(ReadOnlyMemory<byte> left, ReadOnlyMemory<byte> right) =>
         left.Span.SequenceEqual(right.Span);
@@ -3557,7 +3789,9 @@ internal sealed class AvroUtf8MemoryComparer : IEqualityComparer<ReadOnlyMemory<
         var hash = 2166136261u;
         var span = value.Span;
         for (var index = 0; index < span.Length; index++)
+        {
             hash = (hash ^ span[index]) * 16777619u;
+        }
         return unchecked((int)hash);
     }
 }
@@ -3573,17 +3807,23 @@ internal static class AvroInlineRuleParser
     private static IReadOnlyList<ValidationRule> ReadRules(string? json, string owner)
     {
         if (string.IsNullOrEmpty(json))
+        {
             return [];
+        }
         try
         {
             using var document = JsonDocument.Parse(json);
             if (document.RootElement.ValueKind != JsonValueKind.Array)
+            {
                 throw InvalidDeclaration($"Avro {owner} 'confluent:rules' must be an array");
+            }
             var rules = new List<ValidationRule>();
             foreach (var element in document.RootElement.EnumerateArray())
             {
                 if (element.ValueKind != JsonValueKind.Object)
+                {
                     throw InvalidDeclaration($"Avro {owner} 'confluent:rules' entries must be objects");
+                }
                 rules.Add(new ValidationRule
                 {
                     Name = GetOptionalString(element, "name"),
@@ -3612,14 +3852,22 @@ internal static class AvroInlineRuleParser
 
 internal ref struct AvroValidationReader(ReadOnlyMemory<byte> source)
 {
-    internal ReadOnlyMemory<byte> Source { get; } = source;
-    internal int Position { get; private set; }
+    internal ReadOnlyMemory<byte> Source
+    {
+        get;
+    } = source;
+    internal int Position
+    {
+        get; private set;
+    }
     internal bool End => Position == Source.Length;
 
     internal ReadOnlyMemory<byte> Read(int length)
     {
         if (length < 0 || length > Source.Length - Position)
+        {
             throw InvalidPayload("payload ended before the value completed");
+        }
         var result = Source.Slice(Position, length);
         Position += length;
         return result;
@@ -3630,7 +3878,9 @@ internal ref struct AvroValidationReader(ReadOnlyMemory<byte> source)
     {
         var value = Read(1).Span[0];
         if (value > 1)
+        {
             ThrowInvalidBoolean(value);
+        }
         return value != 0;
     }
 
@@ -3640,13 +3890,19 @@ internal ref struct AvroValidationReader(ReadOnlyMemory<byte> source)
         for (var shift = 0; shift < 70; shift += 7)
         {
             if (Position >= Source.Length)
+            {
                 throw InvalidPayload("payload ended inside a variable-length integer");
+            }
             var current = Source.Span[Position++];
             if (shift == 63 && current > 1)
+            {
                 throw InvalidPayload("variable-length integer is invalid");
+            }
             encoded |= (ulong)(current & 0x7f) << shift;
             if ((current & 0x80) == 0)
+            {
                 return (long)(encoded >> 1) ^ -((long)encoded & 1);
+            }
         }
         throw InvalidPayload("variable-length integer is invalid");
     }
@@ -3655,7 +3911,9 @@ internal ref struct AvroValidationReader(ReadOnlyMemory<byte> source)
     {
         var length = ReadLong();
         if ((ulong)length > int.MaxValue)
+        {
             throw InvalidPayload($"length {length} is invalid");
+        }
         return (int)length;
     }
 
@@ -3665,13 +3923,19 @@ internal ref struct AvroValidationReader(ReadOnlyMemory<byte> source)
     {
         var count = ReadLong();
         if (count >= 0)
+        {
             return count;
+        }
         if (count == long.MinValue)
+        {
             throw InvalidPayload("collection block count is invalid");
+        }
         count = -count;
         var byteCount = ReadLong();
         if (byteCount < 0 || byteCount > Source.Length - Position)
+        {
             throw InvalidPayload("collection block byte count is invalid");
+        }
         return count;
     }
 
@@ -3689,11 +3953,15 @@ internal static class AvroValidationValueDecoder
     {
         schema = AvroValueRulePlan.Unwrap(schema);
         if (schema is not global::Avro.EnumSchema enumeration)
+        {
             return null;
+        }
 
         var symbols = new ReadOnlyMemory<byte>[enumeration.Symbols.Count];
         for (var index = 0; index < symbols.Length; index++)
+        {
             symbols[index] = Encoding.UTF8.GetBytes(enumeration.Symbols[index]);
+        }
         return symbols;
     }
 
@@ -3727,9 +3995,13 @@ internal static class AvroValidationValueDecoder
                 var enumeration = (global::Avro.EnumSchema)schema;
                 var symbolIndex = reader.ReadLong();
                 if ((ulong)symbolIndex >= (ulong)enumeration.Symbols.Count)
+                {
                     throw InvalidPayload($"invalid enum index {symbolIndex}");
+                }
                 if (enumSymbols is null)
+                {
                     throw new InvalidOperationException("Avro enum symbols were not compiled for validation.");
+                }
                 return ValidationCelValue.FromUtf8String(enumSymbols[(int)symbolIndex]);
             case AvroSchema.Type.Float:
                 return ValidationCelValue.FromFloating(
@@ -3748,44 +4020,58 @@ internal static class AvroValidationValueDecoder
                 var recordStart = reader.Position;
                 var record = (global::Avro.RecordSchema)schema;
                 for (var index = 0; index < record.Fields.Count; index++)
+                {
                     Skip(record.Fields[index].Schema, ref reader);
+                }
                 if (needsSize)
+                {
                     size = record.Fields.Count;
+                }
                 return ValidationCelValue.FromCollection(
                     ValidationCelValueKind.Object,
                     reader.Source.Slice(recordStart, reader.Position - recordStart),
                     0);
             case AvroSchema.Type.Array:
-            {
-                var collectionStart = reader.Position;
-                var itemSchema = ((global::Avro.ArraySchema)schema).ItemSchema;
-                if (needsSize)
-                    size = SkipCollectionAndCount(itemSchema, isMap: false, ref reader);
-                else
-                    SkipCollection(itemSchema, isMap: false, ref reader);
-                return ValidationCelValue.FromCollection(
-                    ValidationCelValueKind.Array,
-                    reader.Source.Slice(collectionStart, reader.Position - collectionStart),
-                    0);
-            }
+                {
+                    var collectionStart = reader.Position;
+                    var itemSchema = ((global::Avro.ArraySchema)schema).ItemSchema;
+                    if (needsSize)
+                    {
+                        size = SkipCollectionAndCount(itemSchema, isMap: false, ref reader);
+                    }
+                    else
+                    {
+                        SkipCollection(itemSchema, isMap: false, ref reader);
+                    }
+                    return ValidationCelValue.FromCollection(
+                        ValidationCelValueKind.Array,
+                        reader.Source.Slice(collectionStart, reader.Position - collectionStart),
+                        0);
+                }
             case AvroSchema.Type.Map:
-            {
-                var collectionStart = reader.Position;
-                var valueSchema = ((global::Avro.MapSchema)schema).ValueSchema;
-                if (needsSize)
-                    size = SkipCollectionAndCount(valueSchema, isMap: true, ref reader);
-                else
-                    SkipCollection(valueSchema, isMap: true, ref reader);
-                return ValidationCelValue.FromCollection(
-                    ValidationCelValueKind.Object,
-                    reader.Source.Slice(collectionStart, reader.Position - collectionStart),
-                    0);
-            }
+                {
+                    var collectionStart = reader.Position;
+                    var valueSchema = ((global::Avro.MapSchema)schema).ValueSchema;
+                    if (needsSize)
+                    {
+                        size = SkipCollectionAndCount(valueSchema, isMap: true, ref reader);
+                    }
+                    else
+                    {
+                        SkipCollection(valueSchema, isMap: true, ref reader);
+                    }
+                    return ValidationCelValue.FromCollection(
+                        ValidationCelValueKind.Object,
+                        reader.Source.Slice(collectionStart, reader.Position - collectionStart),
+                        0);
+                }
             case AvroSchema.Type.Union:
                 var union = (global::Avro.UnionSchema)schema;
                 var branch = reader.ReadLong();
                 if ((ulong)branch >= (ulong)union.Count)
+                {
                     throw InvalidPayload($"invalid union index {branch}");
+                }
                 return Read(union[(int)branch], enumSymbols, ref reader, needsSize, out size);
             default:
                 throw InvalidPayload($"unsupported schema type {schema.Tag}");
@@ -3806,72 +4092,84 @@ internal static class AvroValidationValueDecoder
         {
             case AvroSchema.Type.Record:
             case AvroSchema.Type.Error:
-            {
-                var start = reader.Position;
-                SkipBounded(schema, ref reader, remainingValidationDepth);
-                if (needsSize)
-                    size = ((global::Avro.RecordSchema)schema).Fields.Count;
-                return ValidationCelValue.FromCollection(
-                    ValidationCelValueKind.Object,
-                    reader.Source.Slice(start, reader.Position - start),
-                    0);
-            }
+                {
+                    var start = reader.Position;
+                    SkipBounded(schema, ref reader, remainingValidationDepth);
+                    if (needsSize)
+                    {
+                        size = ((global::Avro.RecordSchema)schema).Fields.Count;
+                    }
+                    return ValidationCelValue.FromCollection(
+                        ValidationCelValueKind.Object,
+                        reader.Source.Slice(start, reader.Position - start),
+                        0);
+                }
             case AvroSchema.Type.Array:
-            {
-                var start = reader.Position;
-                var itemSchema = ((global::Avro.ArraySchema)schema).ItemSchema;
-                if (needsSize)
-                    size = SkipBoundedCollectionAndCount(
-                        itemSchema,
-                        isMap: false,
-                        ref reader,
-                        remainingValidationDepth);
-                else
-                    SkipBoundedCollection(
-                        itemSchema,
-                        isMap: false,
-                        ref reader,
-                        remainingValidationDepth);
-                return ValidationCelValue.FromCollection(
-                    ValidationCelValueKind.Array,
-                    reader.Source.Slice(start, reader.Position - start),
-                    0);
-            }
+                {
+                    var start = reader.Position;
+                    var itemSchema = ((global::Avro.ArraySchema)schema).ItemSchema;
+                    if (needsSize)
+                    {
+                        size = SkipBoundedCollectionAndCount(
+                            itemSchema,
+                            isMap: false,
+                            ref reader,
+                            remainingValidationDepth);
+                    }
+                    else
+                    {
+                        SkipBoundedCollection(
+                            itemSchema,
+                            isMap: false,
+                            ref reader,
+                            remainingValidationDepth);
+                    }
+                    return ValidationCelValue.FromCollection(
+                        ValidationCelValueKind.Array,
+                        reader.Source.Slice(start, reader.Position - start),
+                        0);
+                }
             case AvroSchema.Type.Map:
-            {
-                var start = reader.Position;
-                var valueSchema = ((global::Avro.MapSchema)schema).ValueSchema;
-                if (needsSize)
-                    size = SkipBoundedCollectionAndCount(
-                        valueSchema,
-                        isMap: true,
-                        ref reader,
-                        remainingValidationDepth);
-                else
-                    SkipBoundedCollection(
-                        valueSchema,
-                        isMap: true,
-                        ref reader,
-                        remainingValidationDepth);
-                return ValidationCelValue.FromCollection(
-                    ValidationCelValueKind.Object,
-                    reader.Source.Slice(start, reader.Position - start),
-                    0);
-            }
+                {
+                    var start = reader.Position;
+                    var valueSchema = ((global::Avro.MapSchema)schema).ValueSchema;
+                    if (needsSize)
+                    {
+                        size = SkipBoundedCollectionAndCount(
+                            valueSchema,
+                            isMap: true,
+                            ref reader,
+                            remainingValidationDepth);
+                    }
+                    else
+                    {
+                        SkipBoundedCollection(
+                            valueSchema,
+                            isMap: true,
+                            ref reader,
+                            remainingValidationDepth);
+                    }
+                    return ValidationCelValue.FromCollection(
+                        ValidationCelValueKind.Object,
+                        reader.Source.Slice(start, reader.Position - start),
+                        0);
+                }
             case AvroSchema.Type.Union:
-            {
-                var union = (global::Avro.UnionSchema)schema;
-                var branch = reader.ReadLong();
-                if ((ulong)branch >= (ulong)union.Count)
-                    throw InvalidPayload($"invalid union index {branch}");
-                return ReadBounded(
-                    union[(int)branch],
-                    enumSymbols,
-                    ref reader,
-                    remainingValidationDepth,
-                    needsSize,
-                    out size);
-            }
+                {
+                    var union = (global::Avro.UnionSchema)schema;
+                    var branch = reader.ReadLong();
+                    if ((ulong)branch >= (ulong)union.Count)
+                    {
+                        throw InvalidPayload($"invalid union index {branch}");
+                    }
+                    return ReadBounded(
+                        union[(int)branch],
+                        enumSymbols,
+                        ref reader,
+                        remainingValidationDepth,
+                        needsSize,
+                        out size);
+                }
             default:
                 return Read(schema, enumSymbols, ref reader, needsSize, out size);
         }
@@ -3905,7 +4203,9 @@ internal static class AvroValidationValueDecoder
             case AvroSchema.Type.Enumeration:
                 var symbolIndex = reader.ReadLong();
                 if ((ulong)symbolIndex >= (ulong)((global::Avro.EnumSchema)schema).Symbols.Count)
+                {
                     throw InvalidPayload($"invalid enum index {symbolIndex}");
+                }
                 return;
             case AvroSchema.Type.Float:
                 _ = reader.Read(sizeof(float));
@@ -3922,18 +4222,18 @@ internal static class AvroValidationValueDecoder
                 return;
             case AvroSchema.Type.Record:
             case AvroSchema.Type.Error:
-            {
-                remainingValidationDepth = ConsumeRecordDepth(remainingValidationDepth);
-                var record = (global::Avro.RecordSchema)schema;
-                for (var index = 0; index < record.Fields.Count; index++)
                 {
-                    SkipBoundedCore(
-                        record.Fields[index].Schema,
-                        ref reader,
-                        remainingValidationDepth);
+                    remainingValidationDepth = ConsumeRecordDepth(remainingValidationDepth);
+                    var record = (global::Avro.RecordSchema)schema;
+                    for (var index = 0; index < record.Fields.Count; index++)
+                    {
+                        SkipBoundedCore(
+                            record.Fields[index].Schema,
+                            ref reader,
+                            remainingValidationDepth);
+                    }
+                    return;
                 }
-                return;
-            }
             case AvroSchema.Type.Array:
                 SkipBoundedCollection(
                     ((global::Avro.ArraySchema)schema).ItemSchema,
@@ -3952,7 +4252,9 @@ internal static class AvroValidationValueDecoder
                 var union = (global::Avro.UnionSchema)schema;
                 var branch = reader.ReadLong();
                 if ((ulong)branch >= (ulong)union.Count)
+                {
                     throw InvalidPayload($"invalid union index {branch}");
+                }
                 SkipBoundedCore(
                     union[(int)branch],
                     ref reader,
@@ -3967,7 +4269,9 @@ internal static class AvroValidationValueDecoder
     internal static int ConsumeRecordDepth(int remainingValidationDepth)
     {
         if (remainingValidationDepth == 0)
+        {
             ThrowExcessiveValidationDepth();
+        }
         return remainingValidationDepth - 1;
     }
 
@@ -3986,11 +4290,15 @@ internal static class AvroValidationValueDecoder
         {
             var count = reader.ReadCollectionCount();
             if (count == 0)
+            {
                 return;
+            }
             for (long index = 0; index < count; index++)
             {
                 if (isMap)
+                {
                     _ = reader.ReadLengthPrefixed();
+                }
                 SkipBoundedCore(valueSchema, ref reader, remainingValidationDepth);
             }
         }
@@ -4007,12 +4315,16 @@ internal static class AvroValidationValueDecoder
         {
             var count = reader.ReadCollectionCount();
             if (count == 0)
+            {
                 return checked((int)itemCount);
+            }
             itemCount = checked(itemCount + count);
             for (long index = 0; index < count; index++)
             {
                 if (isMap)
+                {
                     _ = reader.ReadLengthPrefixed();
+                }
                 SkipBoundedCore(valueSchema, ref reader, remainingValidationDepth);
             }
         }
@@ -4035,7 +4347,9 @@ internal static class AvroValidationValueDecoder
             case AvroSchema.Type.Enumeration:
                 var symbolIndex = reader.ReadLong();
                 if ((ulong)symbolIndex >= (ulong)((global::Avro.EnumSchema)schema).Symbols.Count)
+                {
                     throw InvalidPayload($"invalid enum index {symbolIndex}");
+                }
                 return;
             case AvroSchema.Type.Float:
                 _ = reader.Read(sizeof(float));
@@ -4054,7 +4368,9 @@ internal static class AvroValidationValueDecoder
             case AvroSchema.Type.Error:
                 var record = (global::Avro.RecordSchema)schema;
                 for (var index = 0; index < record.Fields.Count; index++)
+                {
                     Skip(record.Fields[index].Schema, ref reader);
+                }
                 return;
             case AvroSchema.Type.Array:
                 SkipCollection(((global::Avro.ArraySchema)schema).ItemSchema, isMap: false, ref reader);
@@ -4066,7 +4382,9 @@ internal static class AvroValidationValueDecoder
                 var union = (global::Avro.UnionSchema)schema;
                 var branch = reader.ReadLong();
                 if ((ulong)branch >= (ulong)union.Count)
+                {
                     throw InvalidPayload($"invalid union index {branch}");
+                }
                 Skip(union[(int)branch], ref reader);
                 return;
             default:
@@ -4082,19 +4400,27 @@ internal static class AvroValidationValueDecoder
         {
             var branch = reader.ReadLong();
             if ((ulong)branch >= (ulong)union.Count)
+            {
                 throw InvalidPayload($"invalid union index {branch}");
+            }
             schema = AvroValueRulePlan.Unwrap(union[(int)branch]);
         }
         if (schema is global::Avro.RecordSchema record)
+        {
             return record.Fields.Count;
+        }
         if (schema is not (global::Avro.ArraySchema or global::Avro.MapSchema))
+        {
             return -1;
+        }
         var count = 0L;
         while (true)
         {
             var blockCount = reader.ReadCollectionCount();
             if (blockCount == 0)
+            {
                 return checked((int)count);
+            }
             count = checked(count + blockCount);
             for (long index = 0; index < blockCount; index++)
             {
@@ -4122,11 +4448,15 @@ internal static class AvroValidationValueDecoder
         {
             var branch = reader.ReadLong();
             if ((ulong)branch >= (ulong)union.Count)
+            {
                 throw InvalidPayload($"invalid union index {branch}");
+            }
             schema = AvroValueRulePlan.Unwrap(union[(int)branch]);
         }
         if (schema is global::Avro.RecordSchema record)
+        {
             return record.Fields.Count;
+        }
         if (schema is global::Avro.ArraySchema array)
         {
             return SkipBoundedCollectionAndCount(
@@ -4155,11 +4485,15 @@ internal static class AvroValidationValueDecoder
         {
             var count = reader.ReadCollectionCount();
             if (count == 0)
+            {
                 return;
+            }
             for (long index = 0; index < count; index++)
             {
                 if (isMap)
+                {
                     _ = reader.ReadLengthPrefixed();
+                }
                 Skip(valueSchema, ref reader);
             }
         }
@@ -4175,12 +4509,16 @@ internal static class AvroValidationValueDecoder
         {
             var count = reader.ReadCollectionCount();
             if (count == 0)
+            {
                 return checked((int)itemCount);
+            }
             itemCount = checked(itemCount + count);
             for (long index = 0; index < count; index++)
             {
                 if (isMap)
+                {
                     _ = reader.ReadLengthPrefixed();
+                }
                 Skip(valueSchema, ref reader);
             }
         }
@@ -4205,7 +4543,10 @@ internal ref struct AvroValidationPath
         Length = 1;
     }
 
-    internal int Length { get; private set; }
+    internal int Length
+    {
+        get; private set;
+    }
     internal int RemainingValidationDepth => _remainingValidationDepth;
 
     internal void EnterValidation()
@@ -4224,7 +4565,9 @@ internal ref struct AvroValidationPath
     {
         EnsureCapacity(name.Length + (Length == 0 ? 0 : 1));
         if (Length != 0)
+        {
             _buffer[Length++] = '.';
+        }
         name.AsSpan().CopyTo(_buffer[Length..]);
         Length += name.Length;
     }
@@ -4233,7 +4576,9 @@ internal ref struct AvroValidationPath
     {
         Span<char> digits = stackalloc char[11];
         if (!index.TryFormat(digits, out var written, provider: CultureInfo.InvariantCulture))
+        {
             throw new InvalidOperationException("Could not format Avro validation path index.");
+        }
         EnsureCapacity(written + 2);
         _buffer[Length++] = '[';
         digits[..written].CopyTo(_buffer[Length..]);
@@ -4258,7 +4603,9 @@ internal ref struct AvroValidationPath
         for (var index = 0; index < decoded; index++)
         {
             if (_buffer[start + index] is '"' or '\\')
+            {
                 escapes++;
+            }
         }
         var source = start + decoded - 1;
         var destination = start + decoded + escapes - 1;
@@ -4267,7 +4614,9 @@ internal ref struct AvroValidationPath
             var character = _buffer[source--];
             _buffer[destination--] = character;
             if (character is '"' or '\\')
+            {
                 _buffer[destination--] = '\\';
+            }
         }
         Length = start + decoded + escapes;
         _buffer[Length++] = '"';
@@ -4280,7 +4629,9 @@ internal ref struct AvroValidationPath
     internal void Dispose()
     {
         if (_rented is not null)
+        {
             ArrayPool<char>.Shared.Return(_rented);
+        }
         _rented = null;
         _buffer = default;
     }
@@ -4289,11 +4640,15 @@ internal ref struct AvroValidationPath
     {
         var required = checked(Length + additional);
         if (required <= _buffer.Length)
+        {
             return;
+        }
         var replacement = ArrayPool<char>.Shared.Rent(Math.Max(required, _buffer.Length * 2));
         _buffer[..Length].CopyTo(replacement);
         if (_rented is not null)
+        {
             ArrayPool<char>.Shared.Return(_rented);
+        }
         _rented = replacement;
         _buffer = replacement;
     }

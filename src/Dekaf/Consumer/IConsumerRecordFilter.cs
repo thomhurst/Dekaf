@@ -46,15 +46,48 @@ public readonly ref struct ConsumerRecordFilterContext
         Headers = headers;
     }
 
-    public string Topic { get; }
-    public int Partition { get; }
-    public long Offset { get; }
-    public long TimestampMs { get; }
-    public TimestampType TimestampType { get; }
-    public int? LeaderEpoch { get; }
-    public ReadOnlyMemory<byte> Key { get; }
-    public bool IsKeyNull { get; }
-    public ReadOnlyMemory<byte> Value { get; }
-    public bool IsValueNull { get; }
-    public ReadOnlySpan<Header> Headers { get; }
+    public string Topic
+    {
+        get;
+    }
+    public int Partition
+    {
+        get;
+    }
+    public long Offset
+    {
+        get;
+    }
+    public long TimestampMs
+    {
+        get;
+    }
+    public TimestampType TimestampType
+    {
+        get;
+    }
+    public int? LeaderEpoch
+    {
+        get;
+    }
+    public ReadOnlyMemory<byte> Key
+    {
+        get;
+    }
+    public bool IsKeyNull
+    {
+        get;
+    }
+    public ReadOnlyMemory<byte> Value
+    {
+        get;
+    }
+    public bool IsValueNull
+    {
+        get;
+    }
+    public ReadOnlySpan<Header> Headers
+    {
+        get;
+    }
 }

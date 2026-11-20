@@ -29,13 +29,21 @@ internal sealed class FrozenRouteTable<TKey, TRoute>(IEqualityComparer<TKey>? co
         lock (_gate)
         {
             if (_routes is not null)
+            {
                 throw new InvalidOperationException("Routes cannot be changed after Freeze().");
+            }
             if (!_registrations.TryAdd(key, route))
+            {
                 throw new InvalidOperationException("A route is already registered for the supplied key.");
+            }
             if (route is IRecordHeaderSerializer { ProducesRecordHeaders: true })
+            {
                 Volatile.Write(ref _producesRecordHeaders, true);
+            }
             if (route is IAsyncDeserializerPreparationRequirement { RequiresPreparation: true })
+            {
                 Volatile.Write(ref _requiresDeserializerPreparation, true);
+            }
         }
     }
 
@@ -44,12 +52,18 @@ internal sealed class FrozenRouteTable<TKey, TRoute>(IEqualityComparer<TKey>? co
         lock (_gate)
         {
             if (_routes is not null)
+            {
                 throw new InvalidOperationException("Routes cannot be changed after Freeze().");
+            }
             _fallback = route;
             if (route is IRecordHeaderSerializer { ProducesRecordHeaders: true })
+            {
                 Volatile.Write(ref _producesRecordHeaders, true);
+            }
             if (route is IAsyncDeserializerPreparationRequirement { RequiresPreparation: true })
+            {
                 Volatile.Write(ref _requiresDeserializerPreparation, true);
+            }
         }
     }
 
@@ -118,7 +132,9 @@ internal sealed class FrozenRouteTable<TKey, TRoute>(IEqualityComparer<TKey>? co
         var routes = Volatile.Read(ref _routes)
             ?? throw new InvalidOperationException("Freeze() must be called before routing data.");
         if (routes.TryGetValue(key, out route!))
+        {
             return true;
+        }
 
         route = _fallback!;
         return route is not null;
@@ -129,12 +145,16 @@ internal sealed class FrozenRouteTable<TKey, TRoute>(IEqualityComparer<TKey>? co
         lock (_gate)
         {
             if (_fallback is IRecordHeaderRoutingProvider fallbackProvider)
+            {
                 fallbackProvider.CollectHeaderNames(names);
+            }
 
             foreach (var route in _registrations.Values)
             {
                 if (route is IRecordHeaderRoutingProvider provider)
+                {
                     provider.CollectHeaderNames(names);
+                }
             }
         }
     }

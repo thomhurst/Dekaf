@@ -23,7 +23,10 @@ public class PartitionedBackpressureBenchmarks
     private int _stopped;
 
     [Params(1024, 1)]
-    public int Capacity { get; set; }
+    public int Capacity
+    {
+        get; set;
+    }
 
     [GlobalSetup]
     public void Setup()
@@ -44,14 +47,15 @@ public class PartitionedBackpressureBenchmarks
             .CreateDelegate<Action<PartitionLane<ReadOnlyMemory<byte>, ReadOnlyMemory<byte>>>>(_runtime);
         var partition = new TopicPartition("backpressure", 0);
         _lane = new(partition, Capacity, static (_, _) => default, capacityAvailable, static (_, error) => throw error);
-        var lanes = (Dictionary<TopicPartition, PartitionLane<ReadOnlyMemory<byte>, ReadOnlyMemory<byte>>>)
-            runtimeType.GetField("_lanes", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(_runtime)!;
+        var lanes = (Dictionary<TopicPartition, PartitionLane<ReadOnlyMemory<byte>, ReadOnlyMemory<byte>>>)runtimeType.GetField("_lanes", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(_runtime)!;
         lanes.Add(partition, _lane);
         _route = runtimeType.GetMethod("RouteBatchAsync", BindingFlags.Instance | BindingFlags.NonPublic)!
             .CreateDelegate<Func<ConsumeBatch<ReadOnlyMemory<byte>, ReadOnlyMemory<byte>>, CancellationToken, ValueTask>>(_runtime);
         _records = new Record[Count];
         for (var index = 0; index < Count; index++)
+        {
             _records[index] = new Record { OffsetDelta = index, Key = new byte[8], Value = new byte[128] };
+        }
         _batches = new RecordBatch[1];
         if (Capacity < Count)
         {
@@ -83,7 +87,10 @@ public class PartitionedBackpressureBenchmarks
             _route(batch, _lifetime.Token).GetAwaiter().GetResult();
             for (var index = 0; index < Count; index++)
             {
-                if (!_lane.TryReadMessage(out var record)) throw new InvalidOperationException("Missing record");
+                if (!_lane.TryReadMessage(out var record))
+                {
+                    throw new InvalidOperationException("Missing record");
+                }
                 record.ReleaseStorage();
             }
         }
@@ -99,7 +106,9 @@ public class PartitionedBackpressureBenchmarks
         // each wait and clear it once the record is queued, so a finished route holds none.
         // Bound by reflection so this fixture still compiles against revisions without it.
         if (_lane.GetType().GetProperty("HeldRecordOffset")?.GetValue(_lane) is not null)
+        {
             throw new InvalidOperationException("Held record offset was not cleared");
+        }
         _lifetime.Cancel();
         (_runtime.GetType().GetField("_capacitySignal", BindingFlags.Instance | BindingFlags.NonPublic)?.GetValue(_runtime) as IDisposable)?.Dispose();
         _lifetime.Dispose();
@@ -111,13 +120,19 @@ public class PartitionedBackpressureBenchmarks
     {
         while (_start.WaitOne())
         {
-            if (Volatile.Read(ref _stopped) != 0) return;
+            if (Volatile.Read(ref _stopped) != 0)
+            {
+                return;
+            }
             for (var index = 0; index < Count; index++)
             {
                 ConsumeResult<ReadOnlyMemory<byte>, ReadOnlyMemory<byte>> record;
                 while (!_lane.TryReadMessage(out record))
                 {
-                    if (Volatile.Read(ref _stopped) != 0) return;
+                    if (Volatile.Read(ref _stopped) != 0)
+                    {
+                        return;
+                    }
                     Thread.SpinWait(1);
                 }
                 record.ReleaseStorage();

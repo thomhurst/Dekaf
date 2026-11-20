@@ -59,7 +59,9 @@ public sealed class VaultKmsProvider : ISchemaRegistryKmsProvider
     {
         ArgumentNullException.ThrowIfNull(client);
         if (string.IsNullOrWhiteSpace(type))
+        {
             throw new ArgumentException("KMS provider type cannot be null or whitespace.", nameof(type));
+        }
 
         _client = client;
         _vaultAddress = VaultTransitHttpClient.NormalizeAddress(vaultAddress);
@@ -68,7 +70,10 @@ public sealed class VaultKmsProvider : ISchemaRegistryKmsProvider
     }
 
     /// <inheritdoc />
-    public string Type { get; }
+    public string Type
+    {
+        get;
+    }
 
     /// <inheritdoc />
     public async ValueTask<byte[]> WrapKeyAsync(
@@ -78,7 +83,9 @@ public sealed class VaultKmsProvider : ISchemaRegistryKmsProvider
     {
         cancellationToken.ThrowIfCancellationRequested();
         if (keyMaterial.IsEmpty)
+        {
             throw new SchemaRegistryKmsException("Vault Transit wrap failed. Key material cannot be empty.");
+        }
 
         var key = ResolveKey(keyReference);
         try
@@ -185,7 +192,9 @@ public sealed class VaultKmsProvider : ISchemaRegistryKmsProvider
 
         var keyName = DecodePathSegment(escapedSegments[^1]);
         if (string.IsNullOrWhiteSpace(keyName) || keyName.Contains('/'))
+        {
             throw new SchemaRegistryKmsException("Vault Transit key name is invalid.");
+        }
 
         if (!string.Equals(DecodePathSegment(escapedSegments[^2]), "keys", StringComparison.Ordinal))
         {
@@ -196,7 +205,9 @@ public sealed class VaultKmsProvider : ISchemaRegistryKmsProvider
         var mountSegmentCount = escapedSegments.Length - 3;
         var mountSegments = new string[mountSegmentCount];
         for (var index = 0; index < mountSegments.Length; index++)
+        {
             mountSegments[index] = DecodePathSegment(escapedSegments[index + 1]);
+        }
 
         var mountPoint = string.Join('/', mountSegments);
         try
@@ -215,7 +226,9 @@ public sealed class VaultKmsProvider : ISchemaRegistryKmsProvider
     {
         var decoded = Uri.UnescapeDataString(segment);
         if (decoded.Contains('/'))
+        {
             throw new SchemaRegistryKmsException("Vault key identifier contains an invalid path segment.");
+        }
 
         return decoded;
     }

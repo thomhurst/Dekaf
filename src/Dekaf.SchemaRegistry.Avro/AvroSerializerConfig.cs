@@ -11,33 +11,48 @@ public sealed class AvroSerializerConfig
     /// cache, so repeated schema rotations remain reusable without unbounded serializer retention.
     /// Must be greater than zero. Default is 1000.
     /// </summary>
-    public int MaxCachedSchemas { get; init; } = 1000;
+    public int MaxCachedSchemas
+    {
+        get; init;
+    } = 1000;
 
     /// <summary>
     /// Whether to automatically register schemas with the Schema Registry.
     /// Default is true.
     /// </summary>
-    public bool AutoRegisterSchemas { get; init; } = true;
+    public bool AutoRegisterSchemas
+    {
+        get; init;
+    } = true;
 
     /// <summary>
     /// The strategy for determining the subject name for schema registration.
     /// Default is TopicName. This is ignored if <see cref="CustomSubjectNameStrategy"/> is set.
     /// </summary>
-    public SubjectNameStrategy SubjectNameStrategy { get; init; } = SubjectNameStrategy.TopicName;
+    public SubjectNameStrategy SubjectNameStrategy
+    {
+        get; init;
+    } = SubjectNameStrategy.TopicName;
 
     /// <summary>
     /// A custom subject name strategy implementation. When set, this takes precedence
     /// over the <see cref="SubjectNameStrategy"/> enum value.
     /// Default is null (uses enum-based strategy).
     /// </summary>
-    public ISubjectNameStrategy? CustomSubjectNameStrategy { get; init; }
+    public ISubjectNameStrategy? CustomSubjectNameStrategy
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Custom asynchronous subject-name strategy. Used when
     /// <see cref="CustomSubjectNameStrategy" /> is null and takes precedence over
     /// <see cref="SubjectNameStrategy" />.
     /// </summary>
-    public IAsyncSubjectNameStrategy? AsyncSubjectNameStrategy { get; init; }
+    public IAsyncSubjectNameStrategy? AsyncSubjectNameStrategy
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Whether <see cref="SubjectNameStrategy.RecordName"/> and
@@ -45,7 +60,10 @@ public sealed class AvroSerializerConfig
     /// -key/-value suffix. Enable this temporarily while migrating existing subjects.
     /// Default is false.
     /// </summary>
-    public bool UseLegacySubjectNames { get; init; }
+    public bool UseLegacySubjectNames
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Whether to use the latest schema version from the registry instead of the schema
@@ -53,40 +71,61 @@ public sealed class AvroSerializerConfig
     /// from the registry rather than from code.
     /// Default is false.
     /// </summary>
-    public bool UseLatestVersion { get; init; }
+    public bool UseLatestVersion
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Global Schema Registry ID to use instead of registering, looking up, or selecting the latest schema.
     /// </summary>
-    public int? UseSchemaId { get; init; }
+    public int? UseSchemaId
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Strategy used to carry the selected schema identity. The default writes the Confluent payload prefix.
     /// </summary>
-    public SchemaIdSerializerStrategy SchemaIdStrategy { get; init; } = SchemaIdSerializerStrategy.Prefix;
+    public SchemaIdSerializerStrategy SchemaIdStrategy
+    {
+        get; init;
+    } = SchemaIdSerializerStrategy.Prefix;
 
     /// <summary>
     /// Whether schema registration and lookup requests should include normalize=true.
     /// Default is false.
     /// </summary>
-    public bool NormalizeSchemas { get; init; }
+    public bool NormalizeSchemas
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Optional rule executor applied to Avro payload bytes before the Schema Registry envelope is written.
     /// </summary>
-    public ISchemaRegistryRuleExecutor? RuleExecutor { get; init; }
+    public ISchemaRegistryRuleExecutor? RuleExecutor
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Selects when inline <c>confluent:rules</c> CHECK constraints run.
     /// Default is disabled. When <see cref="RuleExecutor"/> is also configured,
     /// it must be a <see cref="SchemaRegistryRuleExecutor"/> so rule boundaries are known.
     /// </summary>
-    public ValidationRulesExecution ValidationRulesExecution { get; init; }
+    public ValidationRulesExecution ValidationRulesExecution
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Stops Avro inline validation after its first violation when enabled.
     /// </summary>
-    public bool ValidationRulesFailFast { get; init; }
+    public bool ValidationRulesFailFast
+    {
+        get; init;
+    }
 }
 
 /// <summary>
@@ -97,54 +136,84 @@ public sealed class AvroDeserializerConfig
     /// <summary>
     /// Strategy used to read the schema identity. The default accepts a GUID header and falls back to the payload prefix.
     /// </summary>
-    public SchemaIdDeserializerStrategy SchemaIdStrategy { get; init; } = SchemaIdDeserializerStrategy.Dual;
+    public SchemaIdDeserializerStrategy SchemaIdStrategy
+    {
+        get; init;
+    } = SchemaIdDeserializerStrategy.Dual;
 
     /// <summary>
     /// Whether to use the latest registered subject version as the reader schema and execute
     /// any migration rules between the writer and reader versions.
     /// </summary>
-    public bool UseLatestVersion { get; init; }
+    public bool UseLatestVersion
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Subject-name strategy used when deserialization rules execute.
     /// </summary>
-    public SubjectNameStrategy SubjectNameStrategy { get; init; } = SubjectNameStrategy.TopicName;
+    public SubjectNameStrategy SubjectNameStrategy
+    {
+        get; init;
+    } = SubjectNameStrategy.TopicName;
 
     /// <summary>
     /// Custom subject-name strategy used when deserialization rules execute.
     /// </summary>
-    public ISubjectNameStrategy? CustomSubjectNameStrategy { get; init; }
+    public ISubjectNameStrategy? CustomSubjectNameStrategy
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Custom asynchronous subject-name strategy used during deserializer preparation.
     /// </summary>
-    public IAsyncSubjectNameStrategy? AsyncSubjectNameStrategy { get; init; }
+    public IAsyncSubjectNameStrategy? AsyncSubjectNameStrategy
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Whether record-based strategies retain Dekaf's legacy -key/-value suffix.
     /// </summary>
-    public bool UseLegacySubjectNames { get; init; }
+    public bool UseLegacySubjectNames
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Whether to use a specific reader schema instead of inferring it from the .NET type.
     /// When null, the reader schema is derived from the type T.
     /// </summary>
-    public string? ReaderSchema { get; init; }
+    public string? ReaderSchema
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Optional rule executor applied to Avro payload bytes after the Schema Registry envelope is read.
     /// </summary>
-    public ISchemaRegistryRuleExecutor? RuleExecutor { get; init; }
+    public ISchemaRegistryRuleExecutor? RuleExecutor
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Selects when inline <c>confluent:rules</c> CHECK constraints run.
     /// Default is disabled. When <see cref="RuleExecutor"/> is also configured,
     /// it must be a <see cref="SchemaRegistryRuleExecutor"/> so rule boundaries are known.
     /// </summary>
-    public ValidationRulesExecution ValidationRulesExecution { get; init; }
+    public ValidationRulesExecution ValidationRulesExecution
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Stops Avro inline validation after its first violation when enabled.
     /// </summary>
-    public bool ValidationRulesFailFast { get; init; }
+    public bool ValidationRulesFailFast
+    {
+        get; init;
+    }
 }

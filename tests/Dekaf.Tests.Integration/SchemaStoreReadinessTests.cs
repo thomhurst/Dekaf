@@ -36,7 +36,9 @@ public sealed class SchemaStoreReadinessTests
             {
                 var (stdout, _) = await fixture.Registry.GetLogsAsync(ct: requestDeadline.Token);
                 if (stdout.Contains(subject, StringComparison.Ordinal))
+                {
                     break;
+                }
                 await Task.Delay(50, requestDeadline.Token);
             }
 
@@ -48,7 +50,9 @@ public sealed class SchemaStoreReadinessTests
             await docker.Containers.UnpauseContainerAsync(fixture.Kafka.Id, CancellationToken.None);
             // Observe the request even if fault injection or cancellation fails.
             if (registration is not null)
+            {
                 await registration;
+            }
         }
 
         await Assert.That(completedWhilePaused).IsFalse();
@@ -94,8 +98,14 @@ public sealed class SchemaStoreReadinessTests
     {
         protected override string SchemaRegistryImage => "confluentinc/cp-schema-registry:8.2.0";
         protected override string KafkaImage => $"apache/kafka:{KafkaContainerDefault.DefaultTag}";
-        public KafkaContainer Kafka { get; private set; } = null!;
-        public IContainer Registry { get; private set; } = null!;
+        public KafkaContainer Kafka
+        {
+            get; private set;
+        } = null!;
+        public IContainer Registry
+        {
+            get; private set;
+        } = null!;
 
         protected override KafkaBuilder ConfigureKafkaBuilder(KafkaBuilder builder) =>
             KafkaContainerDefault.ConfigureBuilderForVersion(builder, KafkaContainerDefault.DefaultTag);

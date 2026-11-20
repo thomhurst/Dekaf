@@ -19,12 +19,18 @@ public readonly record struct TopicPartitionOffset(string Topic, int Partition, 
     /// <summary>
     /// Leader epoch associated with the offset, or -1 when unknown.
     /// </summary>
-    public int LeaderEpoch { get; init; } = -1;
+    public int LeaderEpoch
+    {
+        get; init;
+    } = -1;
 
     /// <summary>
     /// Optional application metadata stored with the committed offset.
     /// </summary>
-    public string? Metadata { get; init; }
+    public string? Metadata
+    {
+        get; init;
+    }
 }
 
 /// <summary>

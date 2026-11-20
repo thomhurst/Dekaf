@@ -111,17 +111,20 @@ internal sealed class ConfluentTransactionalProducerStressTest : IStressTestScen
                 transactionIndex++;
                 progress.RecordMessage();
             }
-            catch (Exception exception)
-                when (exception is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
+            catch (Exception exception) when (exception is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
             {
                 throughput.RecordError(exception, "Confluent transactional produce loop", throughput.MessageCount);
                 try
                 {
                     producer.AbortTransaction(StressTestHelpers.OperationTimeout);
                     if (shouldCommit)
+                    {
                         failedCommitMessages += transactionAccepted;
+                    }
                     else
+                    {
                         abortedMessages += transactionAccepted;
+                    }
                 }
                 catch (Exception abortException)
                 {
@@ -138,8 +141,16 @@ internal sealed class ConfluentTransactionalProducerStressTest : IStressTestScen
         runCts.Cancel();
         throughput.Stop();
         gcStats.Capture();
-        try { await samplerTask.ConfigureAwait(false); } catch (OperationCanceledException) { }
-        try { await resourceMonitorTask.ConfigureAwait(false); } catch (OperationCanceledException) { }
+        try
+        {
+            await samplerTask.ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) { }
+        try
+        {
+            await resourceMonitorTask.ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) { }
 
         Console.WriteLine(
             $"  Workload complete: accepted={throughput.MessageCount:N0}, committed={committedMessages:N0}, " +
@@ -229,8 +240,7 @@ internal sealed class ConfluentTransactionalProducerStressTest : IStressTestScen
             producer.CommitTransaction(StressTestHelpers.OperationTimeout);
             return true;
         }
-        catch (Exception exception)
-            when (exception is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
+        catch (Exception exception) when (exception is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
         {
             throughput.RecordError(exception, "Commit Confluent partition sentinels", throughput.MessageCount);
             return false;
@@ -254,7 +264,9 @@ internal sealed class ConfluentTransactionalProducerStressTest : IStressTestScen
             options.Partitions,
             failedCommitMessages);
         if (!sentinelsCommitted)
+        {
             return oracle.CreateSnapshot(acceptedMessages, sentinelCommitFailed: true);
+        }
 
         var verificationProgress = new ThroughputTracker();
         verificationProgress.Start();

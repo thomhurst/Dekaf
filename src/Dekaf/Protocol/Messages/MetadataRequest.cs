@@ -16,22 +16,34 @@ public sealed class MetadataRequest : IKafkaRequest<MetadataResponse>
     /// <summary>
     /// Topics to fetch metadata for. Null means all topics.
     /// </summary>
-    public IReadOnlyList<MetadataRequestTopic>? Topics { get; init; }
+    public IReadOnlyList<MetadataRequestTopic>? Topics
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Whether to allow auto topic creation (v4+).
     /// </summary>
-    public bool AllowAutoTopicCreation { get; init; } = true;
+    public bool AllowAutoTopicCreation
+    {
+        get; init;
+    } = true;
 
     /// <summary>
     /// Whether to include cluster authorized operations (v8–v10).
     /// </summary>
-    public bool IncludeClusterAuthorizedOperations { get; init; }
+    public bool IncludeClusterAuthorizedOperations
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Whether to include topic authorized operations (v8+).
     /// </summary>
-    public bool IncludeTopicAuthorizedOperations { get; init; }
+    public bool IncludeTopicAuthorizedOperations
+    {
+        get; init;
+    }
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {
@@ -148,12 +160,18 @@ public sealed class MetadataRequestTopic
     /// <summary>
     /// Topic ID (v10+). Null means use name.
     /// </summary>
-    public Guid? TopicId { get; init; }
+    public Guid? TopicId
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Topic name. Null if using topic ID.
     /// </summary>
-    public string? Name { get; init; }
+    public string? Name
+    {
+        get; init;
+    }
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {

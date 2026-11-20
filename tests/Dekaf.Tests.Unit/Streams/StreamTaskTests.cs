@@ -175,7 +175,10 @@ public sealed class StreamTaskTests
 
     private sealed class RecordingCollector : IRecordCollector
     {
-        public List<Sent> Records { get; } = [];
+        public List<Sent> Records
+        {
+            get;
+        } = [];
 
         public void Send(
             string topic,
@@ -191,9 +194,15 @@ public sealed class StreamTaskTests
 
     private sealed class CountingEngine : IStateStoreEngine
     {
-        public int Opened { get; private set; }
+        public int Opened
+        {
+            get; private set;
+        }
 
-        public int Disposed { get; private set; }
+        public int Disposed
+        {
+            get; private set;
+        }
 
         public IKeyValueBytesStore CreateKeyValueStore(StateStoreContext context)
         {

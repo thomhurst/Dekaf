@@ -10,7 +10,10 @@ public class RetryTopicHeaderBenchmarks
     private IReadOnlyList<Header> _headers = null!;
 
     [Params(-62135596800000L, 1700000000000L, 253402300799999L)]
-    public long Timestamp { get; set; }
+    public long Timestamp
+    {
+        get; set;
+    }
 
     [GlobalSetup]
     public void Setup()
@@ -24,7 +27,9 @@ public class RetryTopicHeaderBenchmarks
     public DateTimeOffset ReadDueTimestamp()
     {
         if (!RetryTopicHeaders.TryGetDueAt(_headers, out var dueAt))
+        {
             throw new InvalidOperationException("Valid retry timestamp was rejected.");
+        }
         return dueAt;
     }
 }

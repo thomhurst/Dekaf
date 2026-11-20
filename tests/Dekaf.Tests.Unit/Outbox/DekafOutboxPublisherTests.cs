@@ -21,7 +21,10 @@ public class DekafOutboxPublisherTests
         CreatedAtUtc = new DateTimeOffset(2026, 7, 22, 0, 0, 0, TimeSpan.Zero)
     };
 
-    private static RecordMetadata Metadata { get; } = new()
+    private static RecordMetadata Metadata
+    {
+        get;
+    } = new()
     {
         Topic = "topic",
         Partition = 0,

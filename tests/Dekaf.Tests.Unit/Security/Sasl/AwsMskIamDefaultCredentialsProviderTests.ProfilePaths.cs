@@ -107,7 +107,10 @@ public sealed partial class AwsMskIamDefaultCredentialsProviderTests
 
     private sealed class ProfileHome : IDisposable
     {
-        public string DirectoryPath { get; } = Directory.CreateTempSubdirectory("dekaf-aws-profile-").FullName;
+        public string DirectoryPath
+        {
+            get;
+        } = Directory.CreateTempSubdirectory("dekaf-aws-profile-").FullName;
 
         public ProfileHome()
         {

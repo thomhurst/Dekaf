@@ -51,7 +51,9 @@ public sealed class OAuthBearerTokenProvider : IDisposable
                 lifetimeProperty.SetValue(handler, PooledConnectionLifetime);
                 var useProxyProperty = handlerType.GetProperty("UseProxy");
                 if (useProxyProperty is not null && useProxyProperty.CanWrite)
+                {
                     useProxyProperty.SetValue(handler, useProxy);
+                }
 
                 return handler;
             }
@@ -166,7 +168,9 @@ public sealed class OAuthBearerTokenProvider : IDisposable
     private static string FormUrlEncode(string value)
     {
         if (value.Length == 0)
+        {
             return string.Empty;
+        }
 
         const string Hex = "0123456789ABCDEF";
         var bytes = Encoding.UTF8.GetBytes(value);
@@ -226,7 +230,9 @@ public sealed class OAuthBearerTokenProvider : IDisposable
             .Append("&resource=").Append(Uri.EscapeDataString(options.Resource));
 
         if (!string.IsNullOrWhiteSpace(options.ClientId))
+        {
             uri.Append("&client_id=").Append(Uri.EscapeDataString(options.ClientId!));
+        }
 
         return new Uri(uri.ToString(), UriKind.Absolute);
     }
@@ -361,7 +367,9 @@ public sealed class OAuthBearerTokenProvider : IDisposable
             {
                 var value = responseClaimElement.GetString();
                 if (!string.IsNullOrEmpty(value))
+                {
                     return value!;
+                }
             }
         }
 
@@ -395,7 +403,9 @@ public sealed class OAuthBearerTokenProvider : IDisposable
                     {
                         var value = claimElement.GetString();
                         if (!string.IsNullOrEmpty(value))
+                        {
                             return value!;
+                        }
                     }
                 }
             }

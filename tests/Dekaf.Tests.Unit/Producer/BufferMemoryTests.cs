@@ -599,7 +599,9 @@ public class BufferMemoryTests
                         accumulator.ReturnReadyBatch(batch);
 
                         if (Volatile.Read(ref receivedCount) >= batchCount)
+                        {
                             break;
+                        }
                     }
                     else
                     {
@@ -690,8 +692,16 @@ public class BufferMemoryTests
 
             // Await background tasks to observe their cancellation exceptions,
             // preventing unobserved task exceptions after CTS disposal.
-            try { await lingerTask; } catch (OperationCanceledException) { }
-            try { await drainTask; } catch (OperationCanceledException) { }
+            try
+            {
+                await lingerTask;
+            }
+            catch (OperationCanceledException) { }
+            try
+            {
+                await drainTask;
+            }
+            catch (OperationCanceledException) { }
         }
         finally
         {
@@ -741,7 +751,9 @@ public class BufferMemoryTests
                         batch.CompleteSend(0, DateTimeOffset.UtcNow);
                         accumulator.ReturnReadyBatch(batch);
                         if (receivedBatches >= batchCount)
+                        {
                             break;
+                        }
                     }
                     else
                     {

@@ -47,7 +47,10 @@ public sealed class ConsumerLagTests(KafkaTestContainer kafka) : KafkaIntegratio
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))
         {
             messages.Add(msg);
-            if (messages.Count >= consumeCount) break;
+            if (messages.Count >= consumeCount)
+            {
+                break;
+            }
         }
 
         // Check position (next offset to consume)
@@ -101,7 +104,10 @@ public sealed class ConsumerLagTests(KafkaTestContainer kafka) : KafkaIntegratio
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))
         {
             messages.Add(msg);
-            if (messages.Count >= totalMessages) break;
+            if (messages.Count >= totalMessages)
+            {
+                break;
+            }
         }
 
         var position = consumer.GetPosition(tp);

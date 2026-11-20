@@ -12,22 +12,34 @@ public sealed class EndTxnResponse : IKafkaResponse
     /// <summary>
     /// Throttle time in milliseconds.
     /// </summary>
-    public int ThrottleTimeMs { get; init; }
+    public int ThrottleTimeMs
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The error code, or 0 if there was no error.
     /// </summary>
-    public required ErrorCode ErrorCode { get; init; }
+    public required ErrorCode ErrorCode
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The bumped producer ID (v5+, KIP-890). -1 if not present.
     /// </summary>
-    public long ProducerId { get; init; } = -1;
+    public long ProducerId
+    {
+        get; init;
+    } = -1;
 
     /// <summary>
     /// The bumped producer epoch (v5+, KIP-890). -1 if not present.
     /// </summary>
-    public short ProducerEpoch { get; init; } = -1;
+    public short ProducerEpoch
+    {
+        get; init;
+    } = -1;
 
     public static IKafkaResponse Read(ref KafkaProtocolReader reader, short version)
     {

@@ -24,9 +24,18 @@ public sealed class PartitionedDispatchCoordinatorTests
             new PartitionProcessorContext<int, int>(lane), 1, 2, 3,
             (records, _) =>
             {
-                if (records[0].Offset == 0) return new ValueTask(releaseFirst.Task);
-                if (records[0].Offset == 1) equalStarted.TrySetResult();
-                else differentStarted.TrySetResult();
+                if (records[0].Offset == 0)
+                {
+                    return new ValueTask(releaseFirst.Task);
+                }
+                if (records[0].Offset == 1)
+                {
+                    equalStarted.TrySetResult();
+                }
+                else
+                {
+                    differentStarted.TrySetResult();
+                }
                 return default;
             }, new KeyOrderedStorageTests.ModuloTenComparer());
         var processing = dispatcher.RunAsync(timeout.Token).AsTask();
@@ -84,7 +93,9 @@ public sealed class PartitionedDispatchCoordinatorTests
         var count = bufferedRecords + 1;
         var lane = CreateLane(count);
         for (var offset = 0; offset < count; offset++)
+        {
             await Assert.That(lane.TryEnqueueForTest(CreateRecord(offset, keyOverride: 0))).IsTrue();
+        }
         await lane.StopAsync(PartitionStopPolicy.Drain, Timeout.InfiniteTimeSpan);
         var releaseFirst = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var handled = 0;
@@ -98,7 +109,9 @@ public sealed class PartitionedDispatchCoordinatorTests
                 foreach (var record in records)
                 {
                     if (record.Offset != handled++)
+                    {
                         throw new InvalidOperationException("Batch budgeting lost or reordered a record.");
+                    }
                 }
                 // Let the coordinator buffer a full window behind the first handler,
                 // so the next invocation can reach the documented cap for this key.
@@ -125,7 +138,9 @@ public sealed class PartitionedDispatchCoordinatorTests
         const int count = 257;
         var lane = CreateLane(count);
         for (var offset = 0; offset < count; offset++)
+        {
             await Assert.That(lane.TryEnqueueForTest(CreateRecord(offset, keyOverride: 0))).IsTrue();
+        }
         await lane.StopAsync(PartitionStopPolicy.Drain, Timeout.InfiniteTimeSpan);
         var releaseFirst = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var handled = 0;
@@ -139,7 +154,9 @@ public sealed class PartitionedDispatchCoordinatorTests
                 foreach (var record in records)
                 {
                     if (record.Offset != handled++)
+                    {
                         throw new InvalidOperationException("Storage growth lost or reordered a record.");
+                    }
                 }
                 return first ? new ValueTask(releaseFirst.Task) : default;
             }, automaticCompletion: true);
@@ -184,7 +201,9 @@ public sealed class PartitionedDispatchCoordinatorTests
     {
         var lane = CreateLane(8);
         for (var index = 0; index < 8; index++)
+        {
             await Assert.That(lane.TryEnqueueForTest(CreateRecord(index))).IsTrue();
+        }
         await lane.StopAsync(PartitionStopPolicy.Drain, Timeout.InfiniteTimeSpan);
         var first = new TaskCompletionSource();
         var failure = new InvalidOperationException("asynchronous handler failed");
@@ -196,9 +215,13 @@ public sealed class PartitionedDispatchCoordinatorTests
                 var offset = records[0].Offset;
                 handled.Add(offset);
                 if (offset == 0)
+                {
                     return new ValueTask(first.Task);
+                }
                 if (offset == 1)
+                {
                     first.SetException(failure);
+                }
                 return default;
             }, automaticCompletion: true);
 
@@ -219,7 +242,9 @@ public sealed class PartitionedDispatchCoordinatorTests
         {
             start.Wait();
             for (var offset = 1; offset <= 100000; offset++)
+            {
                 progress.Publish(offset, offset, offset);
+            }
             Volatile.Write(ref finished, 1);
         });
         var reader = Task.Run(() =>
@@ -229,7 +254,9 @@ public sealed class PartitionedDispatchCoordinatorTests
             {
                 if (lane.GetCommitOffset(out var completedRecords) is { } checkpoint
                     && (checkpoint.Offset != checkpoint.LeaderEpoch || checkpoint.Offset != completedRecords))
+                {
                     throw new InvalidOperationException("Checkpoint mixed two publications.");
+                }
             } while (Volatile.Read(ref finished) == 0);
         });
         await Task.WhenAll(writer, reader).WaitAsync(TimeSpan.FromSeconds(10));
@@ -250,7 +277,9 @@ public sealed class PartitionedDispatchCoordinatorTests
             await Assert.That(lane.TryEnqueueForTest(CreateRecord(index))).IsTrue();
         }
         for (var index = 0; index < started.Length; index++)
+        {
             started[index] = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        }
         await lane.StopAsync(PartitionStopPolicy.Drain, Timeout.InfiniteTimeSpan);
 
         var handled = 0;
@@ -260,7 +289,9 @@ public sealed class PartitionedDispatchCoordinatorTests
             {
                 var offset = checked((int)records[0].Offset);
                 if (++handled % concurrency == 0)
+                {
                     started[handled / concurrency - 1].TrySetResult();
+                }
                 return new ValueTask(releases[offset].Task);
             }, automaticCompletion: true);
         var processing = dispatcher.RunAsync(CancellationToken.None).AsTask();
@@ -273,13 +304,17 @@ public sealed class PartitionedDispatchCoordinatorTests
                 // Complete in reverse order. Task continuations run independently and
                 // publish to the shared stack while the coordinator can drain it.
                 for (var index = concurrency - 1; index >= 0; index--)
+                {
                     releases[first + index].TrySetResult();
+                }
             }
         }
         finally
         {
             foreach (var release in releases)
+            {
                 release.TrySetResult();
+            }
             await processing.WaitAsync(TimeSpan.FromSeconds(10));
         }
 
@@ -295,7 +330,9 @@ public sealed class PartitionedDispatchCoordinatorTests
         var lane = CreateLane(8);
         long[] offsets = [10, 12, 20, 21, 30, 31];
         foreach (var offset in offsets)
+        {
             await Assert.That(lane.TryEnqueueForTest(CreateRecord(offset))).IsTrue();
+        }
         await lane.StopAsync(PartitionStopPolicy.Drain, Timeout.InfiniteTimeSpan);
 
         var releaseFirst = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -334,7 +371,9 @@ public sealed class PartitionedDispatchCoordinatorTests
     {
         var lane = CreateLane(4);
         for (var offset = 0; offset < 4; offset++)
+        {
             await Assert.That(lane.TryEnqueueForTest(CreateRecord(offset))).IsTrue();
+        }
         await lane.StopAsync(PartitionStopPolicy.Drain, Timeout.InfiniteTimeSpan);
 
         var failFirst = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -391,7 +430,9 @@ public sealed class PartitionedDispatchCoordinatorTests
         const int count = 513;
         var lane = CreateLane(count);
         for (var offset = 0; offset < count; offset++)
+        {
             await Assert.That(lane.TryEnqueueForTest(CreateRecord(offset))).IsTrue();
+        }
         await lane.StopAsync(PartitionStopPolicy.Drain, Timeout.InfiniteTimeSpan);
         var handled = 0;
         var dispatcher = new KeyOrderedPartitionDispatcher<int, int>(
@@ -399,7 +440,9 @@ public sealed class PartitionedDispatchCoordinatorTests
             (records, _) =>
             {
                 if (records.Count != 1 || records[0].Offset != handled++)
+                {
                     throw new InvalidOperationException("A record was lost or reordered.");
+                }
                 return default;
             }, automaticCompletion: true);
 
@@ -422,7 +465,11 @@ public sealed class PartitionedDispatchCoordinatorTests
         var keys = new[] { new ThrowingHashKey(0), new ThrowingHashKey(1), new ThrowingHashKey(2) };
         var lane = new PartitionLane<ThrowingHashKey, int>(
             new TopicPartition("dispatch", 0), 3,
-            static (_, _) => default, static _ => { }, static (_, _) => { });
+            static (_, _) => default, static _ =>
+            {
+            }, static (_, _) =>
+            {
+            });
         for (var offset = 0; offset < keys.Length; offset++)
         {
             var record = new ConsumeResult<ThrowingHashKey, int>("dispatch", 0, offset,
@@ -446,15 +493,23 @@ public sealed class PartitionedDispatchCoordinatorTests
                         // Both callbacks run inline while the coordinator is inside
                         // this handler. The failing key is first in the detached stack.
                         if (changeHash)
+                        {
                             keys[0].HashCode = 100;
+                        }
                         else
+                        {
                             keys[0].Failure = failure;
+                        }
                         if (multipleFailures)
                         {
                             if (changeHash)
+                            {
                                 keys[1].HashCode = 101;
+                            }
                             else
+                            {
                                 keys[1].Failure = new InvalidOperationException("second key cleanup failed");
+                            }
                         }
                         second.Complete();
                         first.Complete();
@@ -466,9 +521,13 @@ public sealed class PartitionedDispatchCoordinatorTests
         var thrown = await Assert.ThrowsAsync<InvalidOperationException>(
             async () => await processing.WaitAsync(TimeSpan.FromSeconds(5)));
         if (changeHash)
+        {
             await Assert.That(thrown!.Message).IsEqualTo("A partition key changed its hash code or equality while being processed.");
+        }
         else
+        {
             await Assert.That(thrown).IsSameReferenceAs(failure);
+        }
         await Assert.That(first.Observed).IsEqualTo(1);
         await Assert.That(second.Observed).IsEqualTo(1);
         await Assert.That(dispatcher.LaneCount).IsEqualTo(0);
@@ -482,7 +541,9 @@ public sealed class PartitionedDispatchCoordinatorTests
         const int count = 16;
         var lane = CreateLane(count);
         for (var offset = 0; offset < count; offset++)
+        {
             await Assert.That(lane.TryEnqueueForTest(CreateRecord(offset, keyOverride: offset % 4))).IsTrue();
+        }
         await lane.StopAsync(PartitionStopPolicy.Drain, Timeout.InfiniteTimeSpan);
         using var cancellation = new CancellationTokenSource();
         var first = new ObservedCompletion();
@@ -494,9 +555,13 @@ public sealed class PartitionedDispatchCoordinatorTests
             {
                 calls++;
                 foreach (var record in records)
+                {
                     completed.Add(record.Offset);
+                }
                 if (calls == 1)
+                {
                     return first.Task;
+                }
                 // Cancel inside a synchronous handler while other keys are already
                 // ready. No handler may start after this invocation returns.
                 cancellation.Cancel();
@@ -550,14 +615,19 @@ public sealed class PartitionedDispatchCoordinatorTests
     {
         var keys = new[] { new MutableKey(0), new MutableKey(1), new MutableKey(2), new MutableKey(3) };
         var lane = new PartitionLane<MutableKey, int>(new TopicPartition("dispatch", 0), 4,
-            static (_, _) => default, static _ => { }, static (_, _) => { });
+            static (_, _) => default, static _ =>
+            {
+            }, static (_, _) =>
+            {
+            });
         var storage = new TrackedMemory[keys.Length];
         for (var offset = 0; offset < keys.Length; offset++)
         {
             var memory = storage[offset] = new TrackedMemory();
             var batch = new RecordBatch
             {
-                BaseOffset = offset, LastOffsetDelta = 0,
+                BaseOffset = offset,
+                LastOffsetDelta = 0,
                 Records = [new Record { Key = memory.Memory, Value = memory.Memory }]
             };
             using var pending = PendingFetchData.Create("dispatch", 0, [batch], memoryOwner: memory);
@@ -577,9 +647,13 @@ public sealed class PartitionedDispatchCoordinatorTests
                 var offset = records[0].Offset;
                 handled.Add(offset);
                 if (offset == 0)
+                {
                     return first.Task;
+                }
                 if (offset == 1)
+                {
                     return second.Task;
+                }
                 if (offset == 2)
                 {
                     keys[0].Value = keys[1].Value;
@@ -593,7 +667,9 @@ public sealed class PartitionedDispatchCoordinatorTests
             async () => await processing.WaitAsync(TimeSpan.FromSeconds(2)));
         await Assert.That(thrown!.Message).IsEqualTo("A partition key changed its hash code or equality while being processed.");
         foreach (var memory in storage)
+        {
             await Assert.That(memory.DisposeCount).IsEqualTo(1);
+        }
         await Assert.That(handled).IsEquivalentTo(new long[] { 0, 1, 2 });
         await Assert.That(first.Observed).IsEqualTo(1);
         await Assert.That(second.Observed).IsEqualTo(1);
@@ -614,8 +690,14 @@ public sealed class PartitionedDispatchCoordinatorTests
             {
                 var offset = records[0].Offset;
                 handled.Add(offset);
-                if (offset == 0) return first.Task;
-                if (offset == 1) return second.Task;
+                if (offset == 0)
+                {
+                    return first.Task;
+                }
+                if (offset == 1)
+                {
+                    return second.Task;
+                }
                 if (offset == 2)
                 {
                     comparer.AliasZeroToOne = true;
@@ -629,7 +711,9 @@ public sealed class PartitionedDispatchCoordinatorTests
             async () => await processing.WaitAsync(TimeSpan.FromSeconds(2)));
         await Assert.That(thrown!.Message).IsEqualTo("A partition key changed its hash code or equality while being processed.");
         foreach (var memory in storage)
+        {
             await Assert.That(memory.DisposeCount).IsEqualTo(1);
+        }
         await Assert.That(handled).IsEquivalentTo(new long[] { 0, 1, 2 });
         await Assert.That(first.Observed).IsEqualTo(1);
         await Assert.That(second.Observed).IsEqualTo(1);
@@ -653,7 +737,12 @@ public sealed class PartitionedDispatchCoordinatorTests
             {
                 var offset = records[0].Offset;
                 handled.Add(offset);
-                return offset switch { 0 => first.Task, 1 => second.Task, _ => default };
+                return offset switch
+                {
+                    0 => first.Task,
+                    1 => second.Task,
+                    _ => default
+                };
             }, customComparer ? new MutatingInt32Comparer() : null, automaticCompletion: true);
         var processing = dispatcher.RunAsync(cancellationToken).AsTask();
         try
@@ -670,7 +759,9 @@ public sealed class PartitionedDispatchCoordinatorTests
         }
         await Assert.That(handled).IsEquivalentTo(new long[] { 0, 1, 2, 3, 4, 5, 6, 7 });
         foreach (var memory in storage)
+        {
             await Assert.That(memory.DisposeCount).IsEqualTo(1);
+        }
         await Assert.That(first.Observed).IsEqualTo(1);
         await Assert.That(second.Observed).IsEqualTo(1);
         await Assert.That(dispatcher.LaneCount).IsEqualTo(0);
@@ -686,7 +777,8 @@ public sealed class PartitionedDispatchCoordinatorTests
             System.Buffers.Binary.BinaryPrimitives.WriteInt32BigEndian(memory.Bytes, offset);
             var batch = new RecordBatch
             {
-                BaseOffset = offset, LastOffsetDelta = 0,
+                BaseOffset = offset,
+                LastOffsetDelta = 0,
                 Records = [new Record { Key = memory.Memory, Value = memory.Memory }]
             };
             using var pending = PendingFetchData.Create("dispatch", 0, [batch], memoryOwner: memory);
@@ -701,7 +793,10 @@ public sealed class PartitionedDispatchCoordinatorTests
 
     private sealed class MutatingInt32Comparer : IEqualityComparer<int>
     {
-        internal bool AliasZeroToOne { get; set; }
+        internal bool AliasZeroToOne
+        {
+            get; set;
+        }
         private int Canonical(int key) => AliasZeroToOne && key == 0 ? 1 : key;
         public bool Equals(int x, int y) => Canonical(x) == Canonical(y);
         public int GetHashCode(int key) => Canonical(key);
@@ -713,7 +808,11 @@ public sealed class PartitionedDispatchCoordinatorTests
         const int count = 9;
         var lane = new PartitionLane<ReadOnlyMemory<byte>, int>(
             new TopicPartition("dispatch", 0), count,
-            static (_, _) => default, static _ => { }, static (_, _) => { });
+            static (_, _) => default, static _ =>
+            {
+            }, static (_, _) =>
+            {
+            });
         var storage = new TrackedMemory[count];
         for (var offset = 0; offset < count; offset++)
         {
@@ -721,7 +820,8 @@ public sealed class PartitionedDispatchCoordinatorTests
             memory.Bytes[^32] = (byte)offset;
             var batch = new RecordBatch
             {
-                BaseOffset = offset, LastOffsetDelta = 0,
+                BaseOffset = offset,
+                LastOffsetDelta = 0,
                 Records = [new Record { Key = memory.Memory, Value = memory.Memory[..sizeof(int)] }]
             };
             using var pending = PendingFetchData.Create("dispatch", 0, [batch], memoryOwner: memory);
@@ -742,7 +842,9 @@ public sealed class PartitionedDispatchCoordinatorTests
                 // Both keys already own different lanes. Mutation makes the later
                 // collision-triggered rebuild encounter duplicate keys after clearing.
                 if (offset == 2)
+                {
                     storage[0].Bytes[^32] = storage[1].Bytes[^32];
+                }
                 return workers[offset].Task;
             }, automaticCompletion: true);
         var processing = dispatcher.RunAsync(CancellationToken.None).AsTask();
@@ -751,28 +853,42 @@ public sealed class PartitionedDispatchCoordinatorTests
             await Assert.That(started).IsEqualTo(3);
             await Assert.That(processing.IsCompleted).IsFalse();
             foreach (var memory in storage)
+            {
                 await Assert.That(memory.DisposeCount).IsEqualTo(0);
+            }
         }
         finally
         {
             foreach (var worker in workers)
+            {
                 worker.Complete();
+            }
         }
         var thrown = await Assert.ThrowsAsync<InvalidOperationException>(
             async () => await processing.WaitAsync(TimeSpan.FromSeconds(5)));
         await Assert.That(thrown!.InnerException).IsTypeOf<ArgumentException>();
         foreach (var memory in storage)
+        {
             await Assert.That(memory.DisposeCount).IsEqualTo(1);
+        }
         foreach (var worker in workers)
+        {
             await Assert.That(worker.Observed).IsEqualTo(1);
+        }
         await Assert.That(dispatcher.LaneCount).IsEqualTo(0);
     }
 
     private sealed class TrackedMemory(int length = sizeof(int)) : IPooledMemory
     {
-        internal byte[] Bytes { get; } = new byte[length];
+        internal byte[] Bytes
+        {
+            get;
+        } = new byte[length];
         public ReadOnlyMemory<byte> Memory => Bytes;
-        internal int DisposeCount { get; private set; }
+        internal int DisposeCount
+        {
+            get; private set;
+        }
         public void Dispose() => DisposeCount++;
     }
 
@@ -783,7 +899,10 @@ public sealed class PartitionedDispatchCoordinatorTests
 
     private sealed class MutableKey(int value)
     {
-        internal int Value { get; set; } = value;
+        internal int Value
+        {
+            get; set;
+        } = value;
         public override int GetHashCode() => Value;
         public override bool Equals(object? obj) => obj is MutableKey other && other.Value == Value;
     }
@@ -792,7 +911,10 @@ public sealed class PartitionedDispatchCoordinatorTests
     {
         private Action<object?>? _continuation;
         private object? _state;
-        internal int Observed { get; private set; }
+        internal int Observed
+        {
+            get; private set;
+        }
         public void GetResult(short token)
         {
             Observed++;
@@ -803,7 +925,9 @@ public sealed class PartitionedDispatchCoordinatorTests
             ValueTaskSourceOnCompletedFlags flags)
         {
             if (callbackMode == 1)
+            {
                 continuation(state);
+            }
             else if (callbackMode == 2)
             {
                 _continuation = continuation;
@@ -813,10 +937,17 @@ public sealed class PartitionedDispatchCoordinatorTests
         }
         internal void CompleteLate() => _continuation?.Invoke(_state);
     }
+
     private sealed class ThrowingHashKey(int value)
     {
-        internal Exception? Failure { get; set; }
-        internal int HashCode { get; set; } = value;
+        internal Exception? Failure
+        {
+            get; set;
+        }
+        internal int HashCode
+        {
+            get; set;
+        } = value;
         public override int GetHashCode() => Failure is { } failure ? throw failure : HashCode;
         public override bool Equals(object? obj) => ReferenceEquals(this, obj);
     }
@@ -824,7 +955,10 @@ public sealed class PartitionedDispatchCoordinatorTests
     private sealed class ObservedCompletion : IValueTaskSource
     {
         private ManualResetValueTaskSourceCore<bool> _source;
-        internal int Observed { get; private set; }
+        internal int Observed
+        {
+            get; private set;
+        }
         internal ValueTask Task => new(this, _source.Version);
         internal void Complete() => _source.SetResult(true);
         public void GetResult(short token)
@@ -839,7 +973,11 @@ public sealed class PartitionedDispatchCoordinatorTests
     }
     private static PartitionLane<int, int> CreateLane(int capacity) => new(
         new TopicPartition("dispatch", 0), capacity,
-        static (_, _) => default, static _ => { }, static (_, _) => { });
+        static (_, _) => default, static _ =>
+        {
+        }, static (_, _) =>
+        {
+        });
 
     private static ConsumeResult<int, int> CreateRecord(long offset, int? keyOverride = null)
     {

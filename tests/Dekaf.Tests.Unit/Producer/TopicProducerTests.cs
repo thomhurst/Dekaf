@@ -267,7 +267,9 @@ public class TopicProducerTests
         mockProducer.FireAsync(Arg.Any<ProducerMessage<string, string>>(), Arg.Any<Action<RecordMetadata, Exception?>>())
             .Returns(default(ValueTask));
         var topicProducer = new TopicProducer<string, string>(mockProducer, "my-topic", ownsProducer: false);
-        Action<RecordMetadata, Exception?> callback = (_, _) => { };
+        Action<RecordMetadata, Exception?> callback = (_, _) =>
+        {
+        };
 
         // Act
         await topicProducer.FireAsync("key", "value", callback);

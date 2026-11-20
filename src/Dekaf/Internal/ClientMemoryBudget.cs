@@ -20,10 +20,14 @@ internal sealed class ClientMemoryBudget : IDekafMemoryBudget
     public ClientMemoryBudget(ulong? explicitBudget = null, double percentOfAvailable = DefaultPercentOfAvailable)
     {
         if (explicitBudget is 0)
+        {
             throw new ArgumentOutOfRangeException(nameof(explicitBudget));
+        }
         if (percentOfAvailable is not (> 0.0 and <= 1.0))
+        {
             throw new ArgumentOutOfRangeException(nameof(percentOfAvailable),
                 "Must be in the range (0.0, 1.0].");
+        }
 
         _explicitBudget = explicitBudget;
         _percentOfAvailable = percentOfAvailable;
@@ -69,7 +73,9 @@ internal sealed class ClientMemoryBudget : IDekafMemoryBudget
             lock (_lock)
             {
                 if (!_producers.Remove(instance))
+                {
                     return;
+                }
                 ScheduleRebalanceUnlocked();
             }
             _dispatcher.Dispatch();
@@ -97,7 +103,9 @@ internal sealed class ClientMemoryBudget : IDekafMemoryBudget
             lock (_lock)
             {
                 if (!_consumers.Remove(instance))
+                {
                     return;
+                }
                 ScheduleRebalanceUnlocked();
             }
             _dispatcher.Dispatch();
@@ -140,11 +148,15 @@ internal sealed class ClientMemoryBudget : IDekafMemoryBudget
     private ulong ComputeTotalBudgetUnlocked()
     {
         if (_explicitBudget.HasValue)
+        {
             return _explicitBudget.Value;
+        }
 
         var available = (ulong)GC.GetGCMemoryInfo().TotalAvailableMemoryBytes;
         if (available == 0)
+        {
             return FallbackBudgetBytes;
+        }
 
         return (ulong)(available * _percentOfAvailable);
     }
@@ -158,7 +170,9 @@ internal sealed class ClientMemoryBudget : IDekafMemoryBudget
     private ulong ComputePerProducerLimitUnlocked()
     {
         if (_producers.Count == 0)
+        {
             return 0;
+        }
 
         var auto = AutoBudgetUnlocked();
         var share = _consumers.Count == 0 ? auto : (ulong)(auto * ProducerShareWhenBoth);
@@ -169,7 +183,9 @@ internal sealed class ClientMemoryBudget : IDekafMemoryBudget
     private ulong ComputePerConsumerLimitUnlocked()
     {
         if (_consumers.Count == 0)
+        {
             return 0;
+        }
 
         var auto = AutoBudgetUnlocked();
         var share = _producers.Count == 0 ? auto : (ulong)(auto * ConsumerShareWhenBoth);
@@ -189,6 +205,10 @@ internal sealed class ClientMemoryBudget : IDekafMemoryBudget
 
     private static void ReportBookkeepingError(Exception exception)
     {
-        try { DekafMemoryBudget.OnBookkeepingError?.Invoke(exception); } catch { }
+        try
+        {
+            DekafMemoryBudget.OnBookkeepingError?.Invoke(exception);
+        }
+        catch { }
     }
 }

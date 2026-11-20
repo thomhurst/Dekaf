@@ -427,7 +427,9 @@ public sealed class ProducerDeliveryDiagnosticsTests
     {
         var batch = new ReadyBatch();
         for (var i = 0; i < 39; i++)
+        {
             batch.AppendDiag('D');
+        }
         batch.AppendDiag('X');
 
         var trace = batch.DiagTrace;
@@ -463,7 +465,9 @@ public sealed class ProducerDeliveryDiagnosticsTests
 
         var batches = new List<ReadyBatch>();
         while (accumulator.TryDrainBatch(out var batch))
+        {
             batches.Add(batch);
+        }
 
         await Assert.That(batches.Count).IsGreaterThan(0);
         return batches;

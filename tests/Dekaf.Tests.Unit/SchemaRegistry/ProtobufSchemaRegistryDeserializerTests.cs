@@ -14,7 +14,10 @@ public class ProtobufSchemaRegistryDeserializerTests
 
     private sealed class CapturingRuleExecutor(byte[]? deserializedPayload = null) : ISchemaRegistryRuleExecutor
     {
-        public SchemaRegistryRuleContext? Context { get; private set; }
+        public SchemaRegistryRuleContext? Context
+        {
+            get; private set;
+        }
 
         public ReadOnlyMemory<byte> TransformSerializedPayload(
             ReadOnlyMemory<byte> payload,
@@ -33,7 +36,10 @@ public class ProtobufSchemaRegistryDeserializerTests
     private sealed class CapturingRuleHandler : ISchemaRegistryRuleHandler
     {
         public string Type => "CAPTURE";
-        public bool WasCalled { get; private set; }
+        public bool WasCalled
+        {
+            get; private set;
+        }
 
         public ReadOnlyMemory<byte> TransformSerializedPayload(
             ReadOnlyMemory<byte> payload,

@@ -49,10 +49,14 @@ public class ValueTaskSourcePoolBenchmarks
     public void RentReturnSameThread()
     {
         for (var i = 0; i < SourcesPerInvoke; i++)
+        {
             _ring[i] = _pool.Rent();
+        }
 
         for (var i = 0; i < SourcesPerInvoke; i++)
+        {
             CompleteAndReturn(_ring[i], i);
+        }
     }
 
     /// <summary>
@@ -71,7 +75,9 @@ public class ValueTaskSourcePoolBenchmarks
         }
 
         for (var i = 0; i < SourcesPerInvoke; i++)
+        {
             CompleteAndReturn(_ring[i], i);
+        }
     }
 
     /// <summary>
@@ -91,7 +97,9 @@ public class ValueTaskSourcePoolBenchmarks
 
         var spinner = new SpinWait();
         while (Volatile.Read(ref _consumed) != published)
+        {
             spinner.SpinOnce(sleep1Threshold: -1);
+        }
     }
 
     private void ReturnLoop()
@@ -118,6 +126,8 @@ public class ValueTaskSourcePoolBenchmarks
         // GetResult on the completed source resets it and returns it to the pool, exactly as the
         // awaiting caller's continuation does in production.
         if (source.Task.GetAwaiter().GetResult() != result)
+        {
             throw new InvalidOperationException("Unexpected completion result.");
+        }
     }
 }

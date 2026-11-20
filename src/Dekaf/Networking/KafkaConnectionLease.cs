@@ -4,7 +4,10 @@ internal readonly struct KafkaConnectionLease(
     IKafkaConnection connection,
     IRetirableKafkaConnection? retirableConnection) : IDisposable
 {
-    public IKafkaConnection Connection { get; } = connection;
+    public IKafkaConnection Connection
+    {
+        get;
+    } = connection;
 
     public void Dispose() => retirableConnection?.ReleaseLease();
 
@@ -41,7 +44,9 @@ internal static class ConnectionPoolLeaseExtensions
             var connection = await connectionPool.GetConnectionAsync(brokerId, cancellationToken)
                 .ConfigureAwait(false);
             if (KafkaConnectionLease.TryAcquire(connection, out var lease))
+            {
                 return lease;
+            }
 
             cancellationToken.ThrowIfCancellationRequested();
             await Task.Delay(LeaseRetryDelay, cancellationToken).ConfigureAwait(false);
@@ -59,7 +64,9 @@ internal static class ConnectionPoolLeaseExtensions
             var connection = await connectionPool.GetConnectionAsync(host, port, cancellationToken)
                 .ConfigureAwait(false);
             if (KafkaConnectionLease.TryAcquire(connection, out var lease))
+            {
                 return lease;
+            }
 
             cancellationToken.ThrowIfCancellationRequested();
             await Task.Delay(LeaseRetryDelay, cancellationToken).ConfigureAwait(false);
@@ -77,7 +84,9 @@ internal static class ConnectionPoolLeaseExtensions
             var connection = await connectionPool.GetConnectionByIndexAsync(brokerId, index, cancellationToken)
                 .ConfigureAwait(false);
             if (KafkaConnectionLease.TryAcquire(connection, out var lease))
+            {
                 return lease;
+            }
 
             cancellationToken.ThrowIfCancellationRequested();
             await Task.Delay(LeaseRetryDelay, cancellationToken).ConfigureAwait(false);

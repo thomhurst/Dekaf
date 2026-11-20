@@ -27,7 +27,9 @@ public sealed class ConnectionBuilderOptionsTests
         await using var sharedProducer = client.CreateProducer<string, string>().Build();
 
         foreach (var instance in new object[] { producer, consumer, share, admin, sharedProducer })
+        {
             await Assert.That(GetConnectionOptions(instance).SaslScramMaxIterations).IsEqualTo(8192);
+        }
 
         await Assert.That(() => client.CreateProducer<string, string>().WithSaslScramMaxIterations(4096))
             .Throws<InvalidOperationException>();

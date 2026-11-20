@@ -19,7 +19,9 @@ public class ResponseArrayBoundsBenchmarks
         var writer = new KafkaProtocolWriter(buffer);
         writer.WriteUnsignedVarInt(101);
         for (var i = 0; i < 100; i++)
+        {
             writer.WriteInt32(i);
+        }
         _payload = buffer.WrittenMemory;
 
         buffer = new ArrayBufferWriter<byte>();

@@ -13,32 +13,50 @@ public sealed class InitProducerIdRequest : IKafkaRequest<InitProducerIdResponse
     /// <summary>
     /// The transactional ID, or null for idempotent-only producers.
     /// </summary>
-    public string? TransactionalId { get; init; }
+    public string? TransactionalId
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The transaction timeout in milliseconds.
     /// </summary>
-    public int TransactionTimeoutMs { get; init; }
+    public int TransactionTimeoutMs
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The current producer ID (v3+). Use -1 for new producer.
     /// </summary>
-    public long ProducerId { get; init; } = -1;
+    public long ProducerId
+    {
+        get; init;
+    } = -1;
 
     /// <summary>
     /// The current producer epoch (v3+). Use -1 for new producer.
     /// </summary>
-    public short ProducerEpoch { get; init; } = -1;
+    public short ProducerEpoch
+    {
+        get; init;
+    } = -1;
 
     /// <summary>
     /// Enables KIP-939 two-phase commit participation (v6+).
     /// </summary>
-    public bool EnableTwoPhaseCommit { get; init; }
+    public bool EnableTwoPhaseCommit
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Keeps an existing prepared transaction when re-initializing (v6+).
     /// </summary>
-    public bool KeepPreparedTransaction { get; init; }
+    public bool KeepPreparedTransaction
+    {
+        get; init;
+    }
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {

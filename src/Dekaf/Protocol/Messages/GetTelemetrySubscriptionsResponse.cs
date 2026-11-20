@@ -16,47 +16,74 @@ public sealed class GetTelemetrySubscriptionsResponse : IKafkaResponse
     /// <summary>
     /// Throttle time in milliseconds.
     /// </summary>
-    public int ThrottleTimeMs { get; init; }
+    public int ThrottleTimeMs
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The top-level error code, or 0 if there was no error.
     /// </summary>
-    public ErrorCode ErrorCode { get; init; }
+    public ErrorCode ErrorCode
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The assigned client instance ID, or Guid.Empty when unchanged.
     /// </summary>
-    public Guid ClientInstanceId { get; init; }
+    public Guid ClientInstanceId
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The broker-assigned subscription ID for subsequent PushTelemetry requests.
     /// </summary>
-    public int SubscriptionId { get; init; }
+    public int SubscriptionId
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Compression type IDs accepted for telemetry payloads.
     /// </summary>
-    public IReadOnlyList<sbyte> AcceptedCompressionTypes { get; init; } = [];
+    public IReadOnlyList<sbyte> AcceptedCompressionTypes
+    {
+        get; init;
+    } = [];
 
     /// <summary>
     /// Minimum interval in milliseconds between PushTelemetry requests.
     /// </summary>
-    public int PushIntervalMs { get; init; }
+    public int PushIntervalMs
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Maximum telemetry payload size in bytes.
     /// </summary>
-    public int TelemetryMaxBytes { get; init; }
+    public int TelemetryMaxBytes
+    {
+        get; init;
+    }
 
     /// <summary>
     /// True when delta temporality is requested; false for cumulative temporality.
     /// </summary>
-    public bool DeltaTemporality { get; init; }
+    public bool DeltaTemporality
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Metric name prefixes requested by the broker.
     /// </summary>
-    public IReadOnlyList<string> RequestedMetrics { get; init; } = [];
+    public IReadOnlyList<string> RequestedMetrics
+    {
+        get; init;
+    } = [];
 
     public static IKafkaResponse Read(ref KafkaProtocolReader reader, short version)
     {

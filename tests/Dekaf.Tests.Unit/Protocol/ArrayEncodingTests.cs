@@ -214,9 +214,13 @@ public class ArrayEncodingTests
             maxCount: 10);
 
         if (expectNull)
+        {
             await Assert.That(result).IsNull();
+        }
         else
+        {
             await Assert.That(result).IsEmpty();
+        }
     }
 
     [Test]

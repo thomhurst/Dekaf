@@ -25,7 +25,9 @@ internal sealed class CompressionRatioEstimator
             || double.IsNaN(observedRatio)
             || double.IsInfinity(observedRatio)
             || observedRatio <= 0)
+        {
             return 1.0;
+        }
 
         return _estimates.GetOrAdd((topic, type), static _ => new Estimate())
             .Update(observedRatio);
@@ -34,7 +36,9 @@ internal sealed class CompressionRatioEstimator
     internal void ResetAfterSplit(string topic, CompressionType type, double observedRatio)
     {
         if (type == CompressionType.None)
+        {
             return;
+        }
 
         _estimates.GetOrAdd((topic, type), static _ => new Estimate())
             .Reset(Math.Max(1.0, observedRatio));
@@ -54,9 +58,13 @@ internal sealed class CompressionRatioEstimator
             {
                 var value = _value;
                 if (observedRatio > value)
+                {
                     value = Math.Max(value + DeterioratingStep, observedRatio);
+                }
                 else if (observedRatio < value)
+                {
                     value = Math.Max(value - ImprovingStep, observedRatio);
+                }
 
                 Volatile.Write(ref _value, value);
                 return value;
@@ -66,7 +74,9 @@ internal sealed class CompressionRatioEstimator
         internal void Reset(double value)
         {
             lock (_lock)
+            {
                 Volatile.Write(ref _value, value);
+            }
         }
     }
 }

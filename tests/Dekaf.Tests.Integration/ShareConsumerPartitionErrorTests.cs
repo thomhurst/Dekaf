@@ -28,7 +28,9 @@ public sealed class ShareConsumerLeadershipTests(RackAwareKafkaContainer kafka)
         bool unsubscribe, CancellationToken cancellationToken)
     {
         if (!RackAwareKafkaContainer.SupportsShareGroups)
+        {
             Skip.Test($"Share groups need Kafka 4.2 or later; this run uses {KafkaContainerDefault.ImageTag}.");
+        }
 
         var topic = await kafka.CreateTopicWithRemoteLeaderAndLocalFollowerAsync().ConfigureAwait(false);
         var partition = new TopicPartition(topic, 0);
@@ -104,7 +106,9 @@ public sealed class ShareConsumerLeadershipTests(RackAwareKafkaContainer kafka)
         CancellationToken cancellationToken)
     {
         if (!RackAwareKafkaContainer.SupportsShareGroups)
+        {
             Skip.Test($"Share groups need Kafka 4.2 or later; this run uses {KafkaContainerDefault.ImageTag}.");
+        }
 
         // Both partitions start on broker 1. After partition 0 moves, the next request to broker 1
         // still fetches partition 1 and forgets partition 0 in the same share session.
@@ -171,7 +175,9 @@ public sealed class ShareConsumerLeadershipTests(RackAwareKafkaContainer kafka)
                     var descriptions = await admin.DescribeTopicsAsync([topic], timeout.Token).ConfigureAwait(false);
                     var description = descriptions[topic].Partitions.Single(static partition => partition.PartitionIndex == 0);
                     if (description.LeaderId == expectedLeader)
+                    {
                         return;
+                    }
                     if (elect && description.ReplicaNodes.Count > 0 && description.ReplicaNodes[0] == expectedLeader
                         && description.IsrNodes.Contains(expectedLeader))
                     {
@@ -283,7 +289,9 @@ internal static class ShareConsumerPartitionErrorHelper
             {
                 received.Add(record.Key!);
                 if (received.Count >= expectedCount)
+                {
                     return;
+                }
             }
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)

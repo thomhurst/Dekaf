@@ -9,8 +9,8 @@ using Dekaf.Protocol;
 using Dekaf.Protocol.Messages;
 using Dekaf.Serialization;
 using Dekaf.ShareConsumer;
-using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
 using NSubstitute;
 
 namespace Dekaf.Tests.Unit.ShareConsumer;
@@ -70,7 +70,11 @@ public sealed class ShareConsumerOffsetResetTests
         var response = new TaskCompletionSource<IncrementalAlterConfigsResponse>(TaskCreationOptions.RunContinuationsAsynchronously);
         fixture.Connection.SendAsync<IncrementalAlterConfigsRequest, IncrementalAlterConfigsResponse>(
             Arg.Any<IncrementalAlterConfigsRequest>(), Arg.Any<short>(), Arg.Any<CancellationToken>())
-            .Returns(call => { entered.TrySetResult(); return new(response.Task.WaitAsync(call.ArgAt<CancellationToken>(2))); });
+            .Returns(call =>
+            {
+                entered.TrySetResult();
+                return new(response.Task.WaitAsync(call.ArgAt<CancellationToken>(2)));
+            });
         using var cancellation = new CancellationTokenSource();
         var initialize = fixture.Consumer.InitializeAsync(cancellation.Token).AsTask();
         await entered.Task.WaitAsync(TimeSpan.FromSeconds(10));
@@ -173,14 +177,26 @@ public sealed class ShareConsumerOffsetResetTests
             ["BootstrapServers:0"] = "localhost:9092",
             ["GroupId"] = "offset-reset"
         };
-        if (policy is not null) values["AutoOffsetReset"] = policy;
-        if (duration is not null) values["AutoOffsetResetDuration"] = duration;
+        if (policy is not null)
+        {
+            values["AutoOffsetReset"] = policy;
+        }
+        if (duration is not null)
+        {
+            values["AutoOffsetResetDuration"] = duration;
+        }
         var configuration = new ConfigurationBuilder().AddInMemoryCollection(values).Build();
         var services = new ServiceCollection();
         services.AddDekaf(builder =>
         {
-            if (keyed) builder.AddShareConsumer<string, string>("configured", configuration);
-            else builder.AddShareConsumer<string, string>(configuration);
+            if (keyed)
+            {
+                builder.AddShareConsumer<string, string>("configured", configuration);
+            }
+            else
+            {
+                builder.AddShareConsumer<string, string>(configuration);
+            }
         });
         await using var provider = services.BuildServiceProvider();
         var consumer = keyed
@@ -203,7 +219,9 @@ public sealed class ShareConsumerOffsetResetTests
 
     private static ShareConsumerOptions Options(AutoOffsetReset? reset = null, int? milliseconds = null) => new()
     {
-        BootstrapServers = ["localhost:9092"], GroupId = "offset-reset", AutoOffsetReset = reset,
+        BootstrapServers = ["localhost:9092"],
+        GroupId = "offset-reset",
+        AutoOffsetReset = reset,
         AutoOffsetResetDuration = milliseconds is { } value ? TimeSpan.FromMilliseconds(value) : null
     };
 
@@ -225,13 +243,18 @@ public sealed class ShareConsumerOffsetResetTests
             _metadata.Metadata.Update(new MetadataResponse
             {
                 Brokers = [new BrokerMetadata { NodeId = 1, Host = "localhost", Port = 9092 }],
-                ControllerId = 1, Topics = []
+                ControllerId = 1,
+                Topics = []
             });
             _metadata.SetApiVersion(ApiKey.IncrementalAlterConfigs, 1, 1);
             typeof(MetadataManager).GetField("_initialized", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(_metadata, true);
             Connection.SendAsync<IncrementalAlterConfigsRequest, IncrementalAlterConfigsResponse>(
                 Arg.Any<IncrementalAlterConfigsRequest>(), Arg.Any<short>(), Arg.Any<CancellationToken>())
-                .Returns(call => { Requests.Add(call.ArgAt<IncrementalAlterConfigsRequest>(0)); return new(Response()); });
+                .Returns(call =>
+                {
+                    Requests.Add(call.ArgAt<IncrementalAlterConfigsRequest>(0));
+                    return new(Response());
+                });
             Consumer = new KafkaShareConsumer<string, string>(options,
                 Substitute.For<IDeserializer<string>>(), Substitute.For<IDeserializer<string>>(), Pool, _metadata);
         }

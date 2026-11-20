@@ -57,7 +57,8 @@ public partial class OutboxMetricTests
         var maximum = TimeSpan.FromMilliseconds(uint.MaxValue - 1L);
         var options = new OutboxRelayOptions
         {
-            MetricsCollectionInterval = maximum, MetricsCollectionTimeout = maximum
+            MetricsCollectionInterval = maximum,
+            MetricsCollectionTimeout = maximum
         };
         options.Validate();
         using var timeout = new CancellationTokenSource(options.MetricsCollectionTimeout, TimeProvider.System);
@@ -75,7 +76,9 @@ public partial class OutboxMetricTests
         listener.InstrumentPublished = (instrument, _) =>
         {
             if (instrument.Meter.Name == "Dekaf.Outbox")
+            {
                 names.Add(instrument.Name);
+            }
         };
         listener.Start();
         using var relay = new OutboxRelayService(new EmptyStore(), new EmptyPublisher(),

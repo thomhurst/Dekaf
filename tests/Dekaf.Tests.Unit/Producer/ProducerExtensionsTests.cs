@@ -192,7 +192,9 @@ public sealed class ProducerExtensionsTests
         var producer = new FastPathProducerSpy<string, string>();
         var headers = Headers.Create("h1", "v1");
         var timestamp = DateTimeOffset.FromUnixTimeMilliseconds(1_700_000_000_000);
-        Action<RecordMetadata, Exception?> handler = static (_, _) => { };
+        Action<RecordMetadata, Exception?> handler = static (_, _) =>
+        {
+        };
 
         await producer.FireAsync("my-topic", "key", "value", headers, 3, timestamp, handler);
 
@@ -211,7 +213,9 @@ public sealed class ProducerExtensionsTests
     {
         var producer = Substitute.For<IKafkaProducer<string, string>>();
         var timestamp = DateTimeOffset.FromUnixTimeMilliseconds(1_700_000_000_000);
-        Action<RecordMetadata, Exception?> handler = static (_, _) => { };
+        Action<RecordMetadata, Exception?> handler = static (_, _) =>
+        {
+        };
 
         await producer.FireAsync("my-topic", "key", "value", headers: null, 3, timestamp, handler);
 

@@ -1,5 +1,5 @@
-using BenchmarkDotNet.ConsoleArguments;
 using BenchmarkDotNet.Configs;
+using BenchmarkDotNet.ConsoleArguments;
 using BenchmarkDotNet.Filters;
 using BenchmarkDotNet.Jobs;
 using BenchmarkDotNet.Loggers;

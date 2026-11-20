@@ -347,12 +347,16 @@ public sealed class KafkaFaultPlanTests
         plan.FaultConsumed += observation =>
         {
             if (observation.Action == KafkaFaultAction.Throw)
+            {
                 Interlocked.Increment(ref consumed);
+            }
         };
 
         var operations = new Task[64];
         for (var i = 0; i < operations.Length; i++)
+        {
             operations[i] = Task.Run(() => ApplyIgnoringFaultAsync(plan, ProduceOrders));
+        }
 
         await Task.WhenAll(operations);
 

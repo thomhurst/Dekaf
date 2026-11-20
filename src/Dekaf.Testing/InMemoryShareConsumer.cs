@@ -179,7 +179,9 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
         ArgumentException.ThrowIfNullOrWhiteSpace(options.GroupId);
         ArgumentOutOfRangeException.ThrowIfLessThan(options.MaxPollRecords, 1);
         if (options.AcknowledgementMode is not (ShareAcknowledgementMode.Implicit or ShareAcknowledgementMode.Explicit))
+        {
             throw new ArgumentOutOfRangeException(nameof(options), "Unknown acknowledgement mode.");
+        }
         _cluster = cluster ?? throw new ArgumentNullException(nameof(cluster));
         _asyncKeyDeserializer = asyncKeyDeserializer;
         _asyncValueDeserializer = asyncValueDeserializer;
@@ -199,7 +201,9 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
             || DeserializerPreparation.RequiresPreparation(_keyDeserializer)
             || DeserializerPreparation.RequiresPreparation(_valueDeserializer);
         if (options.DeadLetterQueueTopic is { } deadLetterQueueTopic)
+        {
             ShareDeadLetterQueueConfiguration.ValidateTopicName(deadLetterQueueTopic, nameof(options));
+        }
         InMemoryKafkaCluster.ValidateShareOffsetReset(options);
         _options = options;
         _memberId = _options.MemberId ?? Guid.NewGuid().ToString("N");
@@ -210,7 +214,9 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
         get
         {
             lock (_gate)
+            {
                 return _subscription.ToHashSet(StringComparer.Ordinal);
+            }
         }
     }
 
@@ -219,7 +225,9 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
         get
         {
             lock (_gate)
+            {
                 return _assignment.ToHashSet();
+            }
         }
     }
 
@@ -253,11 +261,15 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
             UnregisterShareGroupMemberUnderLock();
             _subscription.Clear();
             foreach (var topic in topics.Where(topic => !string.IsNullOrWhiteSpace(topic)).Distinct(StringComparer.Ordinal))
+            {
                 _subscription.Add(topic);
+            }
 
             _assignment.Clear();
             foreach (var topicPartition in topicPartitions)
+            {
                 _assignment.Add(topicPartition);
+            }
 
             if (_subscription.Count != 0)
             {
@@ -298,7 +310,9 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
             foreach (var pair in _pending)
             {
                 if (pair.Value.IsRenewed)
+                {
                     (renewed ??= []).Add(pair.Key);
+                }
             }
         }
 
@@ -313,7 +327,9 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
                 ? await TryTakeAvailableRecordAsync(cancellationToken).ConfigureAwait(false)
                 : TryTakeAvailableRecord();
             if (record is null)
+            {
                 break;
+            }
 
             yield return record;
         }
@@ -323,12 +339,16 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
             foreach (var record in renewed)
             {
                 if (recordCount == _options.MaxPollRecords)
+                {
                     yield break;
+                }
                 cancellationToken.ThrowIfCancellationRequested();
                 lock (_gate)
                 {
                     if (!_pending.TryGetValue(record, out var pending) || !pending.IsRenewed)
+                    {
                         continue;
+                    }
                     if (!IsCurrentRecord(pending))
                     {
                         _pending.Remove(record);
@@ -349,12 +369,16 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
         ThrowIfDisposed();
         ArgumentOutOfRangeException.ThrowIfGreaterThan((byte)type, (byte)AcknowledgeType.Renew);
         if (type == AcknowledgeType.Renew && _options.AcknowledgementMode != ShareAcknowledgementMode.Explicit)
+        {
             throw new InvalidOperationException("Renew acknowledgements require explicit acknowledgement mode.");
+        }
 
         lock (_gate)
         {
             if (!_pending.TryGetValue(record, out var pending))
+            {
                 throw new InvalidOperationException("Record was not returned by the current poll.");
+            }
             if (!IsCurrentRecord(pending))
             {
                 // Preserve the existing stale-acknowledgement no-op while discarding the delivery.
@@ -364,7 +388,9 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
 
             pending.AcknowledgeType = type;
             if (type != AcknowledgeType.Renew)
+            {
                 pending.IsRenewed = false;
+            }
         }
     }
 
@@ -376,7 +402,9 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
         cancellationToken.ThrowIfCancellationRequested();
 
         if (_commitSemaphore.Wait(0, cancellationToken))
+        {
             return CommitAfterWaitAsync(allowDisposed, cancellationToken);
+        }
 
         return AwaitCommitSemaphoreAsync(
             _commitSemaphore.WaitAsync(cancellationToken),
@@ -396,19 +424,25 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
     private ValueTask CommitAfterWaitAsync(bool allowDisposed, CancellationToken cancellationToken)
     {
         if (HasPotentialFault(KafkaFaultOperation.ShareAcknowledge))
+        {
             return CommitWithFaultAsync(allowDisposed, cancellationToken);
+        }
 
         try
         {
             lock (_gate)
             {
                 if (allowDisposed && _disposed)
+                {
                     return ValueTask.CompletedTask;
+                }
 
                 ThrowIfDisposed();
                 RemoveInvalidPendingUnderLock();
                 if (_pending.Count == 0)
+                {
                     return ValueTask.CompletedTask;
+                }
 
                 EnsureCommitRecordCapacity(_pending.Count);
                 EnsureSnapshotCapacity(_pending.Count);
@@ -417,7 +451,9 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
                 {
                     pair.Value.ResolveImplicitAcknowledgement(allowDisposed, _options.AcknowledgementMode);
                     if (!pair.Value.HasAcknowledgement)
+                    {
                         continue;
+                    }
                     _commitSnapshot[recordCount] = pair;
                     _commitRecords[recordCount++] = pair.Value;
                 }
@@ -469,7 +505,9 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
                 {
                     pair.Value.ResolveImplicitAcknowledgement(allowDisposed, _options.AcknowledgementMode);
                     if (pair.Value.HasAcknowledgement)
+                    {
                         _commitSnapshot[snapshotCount++] = pair;
+                    }
                 }
             }
 
@@ -477,7 +515,9 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
             {
                 var record = _commitSnapshot[index].Value;
                 if (!HasPotentialFault(KafkaFaultOperation.ShareAcknowledge, record.TopicPartition))
+                {
                     continue;
+                }
 
                 var apply = _cluster.FaultPlan.ApplyAsync(
                     new KafkaFaultScope(
@@ -487,7 +527,9 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
                         _options.GroupId),
                     cancellationToken);
                 if (!apply.IsCompletedSuccessfully)
+                {
                     return AwaitCommitFaultAsync(apply, index + 1, snapshotCount, cancellationToken);
+                }
 
                 apply.GetAwaiter().GetResult();
             }
@@ -518,7 +560,9 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
             {
                 var record = _commitSnapshot[index].Value;
                 if (!HasPotentialFault(KafkaFaultOperation.ShareAcknowledge, record.TopicPartition))
+                {
                     continue;
+                }
 
                 await _cluster.FaultPlan.ApplyAsync(
                     new KafkaFaultScope(
@@ -549,11 +593,15 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
             {
                 var pair = _commitSnapshot[index];
                 if (_pending.TryGetValue(pair.Key, out var record) && ReferenceEquals(record, pair.Value))
+                {
                     _commitRecords[recordCount++] = record;
+                }
             }
 
             if (recordCount == 0)
+            {
                 return;
+            }
 
             try
             {
@@ -575,7 +623,9 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
             var pair = _commitSnapshot[index];
             if (pair.Value.HasAcknowledgement &&
                 _pending.TryGetValue(pair.Key, out var record) && ReferenceEquals(record, pair.Value))
+            {
                 _pending.Remove(pair.Key);
+            }
         }
     }
 
@@ -600,13 +650,17 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
     public async ValueTask CloseAsync(CancellationToken cancellationToken = default)
     {
         if (_disposed)
+        {
             return;
+        }
 
         await CommitAsync(allowDisposed: true, cancellationToken).ConfigureAwait(false);
         lock (_gate)
         {
             if (_disposed)
+            {
                 return;
+            }
 
             cancellationToken.ThrowIfCancellationRequested();
             ReleasePendingUnderLock();
@@ -618,7 +672,9 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
     public async ValueTask DisposeAsync()
     {
         if (_disposed)
+        {
             return;
+        }
 
         await CloseAsync().ConfigureAwait(false);
     }
@@ -634,7 +690,9 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
                     out var record,
                     out var deliveryCount,
                     out var acquiredRegistration))
+            {
                 continue;
+            }
 
             ShareConsumeResult<TKey, TValue> result;
             try
@@ -670,7 +728,9 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
                     out var record,
                     out var deliveryCount,
                     out var acquiredRegistration))
+            {
                 continue;
+            }
 
             ShareConsumeResult<TKey, TValue> result;
             try
@@ -706,7 +766,9 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
                         assignmentRegistration,
                         out record,
                         out registration))
+                {
                     continue;
+                }
 
                 try
                 {
@@ -779,11 +841,15 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
     private bool HasPotentialFault(KafkaFaultOperation operation)
     {
         if (_cluster.FaultPlan is not KafkaFaultPlan indexedPlan)
+        {
             return true;
+        }
 
         var version = indexedPlan.ShareFaultIndexVersion;
         if (Volatile.Read(ref _shareFaultIndexVersion) != version)
+        {
             return RefreshShareFaultIndex(indexedPlan, operation);
+        }
 
         return (Volatile.Read(ref _shareFaultOperationMask) & (1 << (int)operation)) != 0;
     }
@@ -931,7 +997,9 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
 
         ReleaseAcquiredRecord(record, registration);
         if (disposed)
+        {
             throw new ObjectDisposedException(GetType().FullName);
+        }
 
         return null;
     }
@@ -1040,14 +1108,18 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
         foreach (var pair in _pending)
         {
             if (!IsCurrentRecord(pair.Value))
+            {
                 _pending.Remove(pair.Key);
+            }
         }
     }
 
     private void ReleasePendingUnderLock()
     {
         if (_pending.Count == 0)
+        {
             return;
+        }
 
         _cluster.ReleaseShareRecords(
             _options.GroupId,
@@ -1060,7 +1132,9 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
     private void UnregisterShareGroupMemberUnderLock()
     {
         if (_registration is not { } registration)
+        {
             return;
+        }
 
         _cluster.UnregisterShareGroupMember(_options.GroupId, _memberId, registration);
         _registration = null;
@@ -1069,17 +1143,25 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
     private void EnsureSnapshotCapacity(int count)
     {
         if (_commitSnapshot.Length < count)
+        {
             Array.Resize(ref _commitSnapshot, count);
+        }
     }
 
     private void EnsureCommitRecordCapacity(int count)
     {
         if (_commitRecords.Length < count)
+        {
             Array.Resize(ref _commitRecords, count);
+        }
         if (_completedRecords.Length < count)
+        {
             Array.Resize(ref _completedRecords, count);
+        }
         if (_options.DeadLetterQueueTopic is not null && _deadLetterEligible.Length < count)
+        {
             Array.Resize(ref _deadLetterEligible, count);
+        }
     }
 
     private void CompleteRecords(int recordCount)
@@ -1104,23 +1186,29 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
         {
             var record = _commitRecords[index];
             if (record.AcknowledgeType == AcknowledgeType.Renew)
+            {
                 record.CompleteRenewal();
+            }
         }
 
         if (_options.DeadLetterQueueTopic is not { } deadLetterQueueTopic)
+        {
             return;
+        }
 
         // KIP-1191: the broker writes each rejected record to the group's dead-letter topic.
         for (var index = 0; index < recordCount; index++)
         {
             var record = _commitRecords[index];
             if (_deadLetterEligible[index])
+            {
                 _cluster.AppendShareDeadLetterRecord(
                     deadLetterQueueTopic,
                     _options.DeadLetterQueueCopyRecord,
                     _options.GroupId,
                     record.Record,
                     record.DeliveryCount);
+            }
         }
     }
 
@@ -1161,20 +1249,37 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
             DeliveryCount = deliveryCount;
         }
 
-        public TopicPartition TopicPartition { get; }
-        public InMemoryRecord Record { get; }
-        public int DeliveryCount { get; }
+        public TopicPartition TopicPartition
+        {
+            get;
+        }
+        public InMemoryRecord Record
+        {
+            get;
+        }
+        public int DeliveryCount
+        {
+            get;
+        }
         public long Offset => Record.Offset;
         // Only implicit mode accepts a provisional delivery. Close releases it in either mode.
         private const AcknowledgeType ImplicitDelivery = (AcknowledgeType)byte.MaxValue;
-        public AcknowledgeType AcknowledgeType { get; set; } = ImplicitDelivery;
+        public AcknowledgeType AcknowledgeType
+        {
+            get; set;
+        } = ImplicitDelivery;
         public bool HasAcknowledgement => AcknowledgeType != ImplicitDelivery;
-        public bool IsRenewed { get; set; }
+        public bool IsRenewed
+        {
+            get; set;
+        }
 
         public void ResolveImplicitAcknowledgement(bool closing, ShareAcknowledgementMode mode)
         {
             if (!HasAcknowledgement && (closing || mode == ShareAcknowledgementMode.Implicit))
+            {
                 AcknowledgeType = closing ? AcknowledgeType.Release : AcknowledgeType.Accept;
+            }
         }
 
         public void CompleteRenewal()

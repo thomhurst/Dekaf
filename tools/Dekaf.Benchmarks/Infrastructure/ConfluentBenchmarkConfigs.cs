@@ -29,7 +29,9 @@ public static class ConfluentBenchmarkConfigs
         };
 
         if (queueBufferingMaxMessages is { } maxMessages)
+        {
             config.QueueBufferingMaxMessages = maxMessages;
+        }
 
         return config;
     }

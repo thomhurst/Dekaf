@@ -12,7 +12,10 @@ namespace Dekaf.Benchmarks.Benchmarks.Unit;
 public class AdminDetailedSecurityBenchmarks
 {
     [Params("acl-1", "acl-32", "acl-mixed-32", "scram-delete-1", "scram-delete-32", "scram-upsert-1")]
-    public string Scenario { get; set; } = "acl-1";
+    public string Scenario
+    {
+        get; set;
+    } = "acl-1";
 
     private AdminClient _admin = null!;
     private AclBinding[] _bindings = null!;
@@ -31,8 +34,11 @@ public class AdminDetailedSecurityBenchmarks
         var metadata = new MetadataResponse
         { Brokers = [new() { NodeId = 1, Host = "localhost", Port = 9092 }], ControllerId = 1, ClusterId = "fixture", Topics = [] };
         var connection = new Connection(metadata,
-            new() { Results = names.Select((_, index) => new AclCreationResult
-            { ErrorCode = Scenario == "acl-mixed-32" && index == count - 1 ? ErrorCode.ClusterAuthorizationFailed : ErrorCode.None }).ToArray() },
+            new()
+            {
+                Results = names.Select((_, index) => new AclCreationResult
+                { ErrorCode = Scenario == "acl-mixed-32" && index == count - 1 ? ErrorCode.ClusterAuthorizationFailed : ErrorCode.None }).ToArray()
+            },
             new() { Results = names.Select(name => new AlterUserScramCredentialsResult { User = name }).ToArray() });
         var pool = new Pool(connection);
         var manager = new MetadataManager(pool, ["localhost:9092"]);
@@ -41,12 +47,17 @@ public class AdminDetailedSecurityBenchmarks
         manager.SetApiVersion(ApiKey.CreateAcls, 2, 3);
         manager.SetApiVersion(ApiKey.AlterUserScramCredentials, 0, 0);
         _admin = new AdminClient(new() { BootstrapServers = ["localhost:9092"] }, pool, manager, ownsResources: true);
-        if (await Mutate() != count) throw new InvalidOperationException("Unexpected result count.");
+        if (await Mutate() != count)
+        {
+            throw new InvalidOperationException("Unexpected result count.");
+        }
         if (Scenario == "acl-mixed-32")
         {
             var results = await _admin.CreateAclsDetailedAsync(_bindings);
             if (!results[0].Result.IsSuccess || results[^1].Result.ErrorCode != ErrorCode.ClusterAuthorizationFailed)
+            {
                 throw new InvalidOperationException("Mixed ACL results were lost.");
+            }
         }
     }
 
@@ -68,7 +79,12 @@ public class AdminDetailedSecurityBenchmarks
             where TRequest : IKafkaRequest<TResponse> where TResponse : IKafkaResponse
         {
             IKafkaResponse response = request switch
-            { MetadataRequest => metadata, CreateAclsRequest => acls, AlterUserScramCredentialsRequest => scram, _ => throw new NotSupportedException() };
+            {
+                MetadataRequest => metadata,
+                CreateAclsRequest => acls,
+                AlterUserScramCredentialsRequest => scram,
+                _ => throw new NotSupportedException()
+            };
             return ValueTask.FromResult((TResponse)response);
         }
         public ValueTask ConnectAsync(CancellationToken token = default) => ValueTask.CompletedTask;
@@ -88,7 +104,9 @@ public class AdminDetailedSecurityBenchmarks
         public ValueTask<IKafkaConnection> GetConnectionAsync(int brokerId, CancellationToken token = default) => ValueTask.FromResult<IKafkaConnection>(connection);
         public ValueTask<IKafkaConnection> GetConnectionAsync(string host, int port, CancellationToken token = default) => ValueTask.FromResult<IKafkaConnection>(connection);
         public ValueTask<IKafkaConnection> GetConnectionByIndexAsync(int brokerId, int index, CancellationToken token = default) => ValueTask.FromResult<IKafkaConnection>(connection);
-        public void RegisterBroker(int id, string host, int port) { }
+        public void RegisterBroker(int id, string host, int port)
+        {
+        }
         public ValueTask<int> ScaleConnectionGroupAsync(int id, int count, CancellationToken token = default) => ValueTask.FromResult(1);
         public ValueTask<IKafkaConnection?> ShrinkConnectionGroupAsync(int id, int count, CancellationToken token = default) => ValueTask.FromResult<IKafkaConnection?>(null);
         public ValueTask RemoveConnectionAsync(int id) => ValueTask.CompletedTask;

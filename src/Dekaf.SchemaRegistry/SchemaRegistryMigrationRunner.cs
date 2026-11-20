@@ -5,7 +5,10 @@ namespace Dekaf.SchemaRegistry;
 
 internal sealed class SchemaRegistryMigrationRunner
 {
-    internal static ISchemaRegistryRuleExecutor MarkerRuleExecutor { get; } = new MigrationMarkerRuleExecutor();
+    internal static ISchemaRegistryRuleExecutor MarkerRuleExecutor
+    {
+        get;
+    } = new MigrationMarkerRuleExecutor();
 
     private static readonly Func<SchemaRegistryMigrationRunner, string, Schema, Task<MigrationPlan>> s_createPlan =
         static (runner, subject, writerSchema) => runner.CreatePlanWithTimeoutAsync(subject, writerSchema);
@@ -42,9 +45,7 @@ internal sealed class SchemaRegistryMigrationRunner
             SubjectSchemaIdCache.MaxCachedEntries, cacheCompletedResolutions: latestCacheTtlSecs != 0);
     }
 
-    internal static (
-        SchemaRegistryMigrationRunner Runner,
-        ISchemaRegistryRuleExecutor EffectiveRuleExecutor) Create(
+    internal static (SchemaRegistryMigrationRunner Runner, ISchemaRegistryRuleExecutor EffectiveRuleExecutor) Create(
         ISchemaRegistryClient schemaRegistry,
         ISchemaRegistryRuleExecutor? ruleExecutor,
         TimeSpan timeout) =>
@@ -63,8 +64,10 @@ internal sealed class SchemaRegistryMigrationRunner
             string.Equals(plan.Subject, subject, StringComparison.Ordinal))
         {
             if (!IsExpired(plan))
+            {
                 return new ValueTask<PreparedTargetEnumerator>(
                     PreparedTargetEnumerator.Create(plan.ReaderSchema, plan.Steps));
+            }
 
             _plans.TryRemove(subject, writerSchema, plan);
             return AwaitPreparedPlanAsync(schemaId, subject, writerSchema, cancellationToken);
@@ -117,7 +120,9 @@ internal sealed class SchemaRegistryMigrationRunner
             !string.Equals(plan.Subject, subject, StringComparison.Ordinal))
         {
             if (!_plans.TryGet(subject, writerSchema, out plan) || plan.WriterSchemaId != schemaId)
+            {
                 return false;
+            }
 
             Volatile.Write(ref _lastPlan, plan);
         }
@@ -172,7 +177,9 @@ internal sealed class SchemaRegistryMigrationRunner
             }
 
             if (_ruleExecutor is null || ReferenceEquals(_ruleExecutor, MarkerRuleExecutor))
+            {
                 return new MigrationResult(payload, plan.ReaderSchema, schemaId, writerSchema);
+            }
 
             var readerContext = RentContext(
                 serializationContext,
@@ -245,7 +252,9 @@ internal sealed class SchemaRegistryMigrationRunner
         }
 
         if (!plan.IsMigrationChainComplete)
+        {
             return new MigrationResult(payload, plan.ReaderSchema, payloadSchemaId, payloadSchema);
+        }
 
         context = RentContext(
             serializationContext,
@@ -457,11 +466,15 @@ internal sealed class SchemaRegistryMigrationRunner
             }
 
             if (!migrationComplete)
+            {
                 return new MigrationResult(payload, plan.ReaderSchema, payloadSchemaId, payloadSchema);
+            }
         }
 
         if (!plan.IsMigrationChainComplete)
+        {
             return new MigrationResult(payload, plan.ReaderSchema, payloadSchemaId, payloadSchema);
+        }
 
         context = RentContext(
             serializationContext,
@@ -549,7 +562,9 @@ internal sealed class SchemaRegistryMigrationRunner
                     context,
                     step.Mode);
                 if (transformResult != SchemaRegistryMigrationTransformResult.Transformed)
+                {
                     return false;
+                }
 
                 payloadSchemaId = step.Target.Id;
                 payloadSchema = step.Target.Schema;
@@ -619,6 +634,7 @@ internal sealed class SchemaRegistryMigrationRunner
             .ConfigureAwait(false);
 
         if (writer.Version == reader.Version)
+        {
             return new MigrationPlan(
                 writer.Id,
                 subject,
@@ -626,6 +642,7 @@ internal sealed class SchemaRegistryMigrationRunner
                 [],
                 isMigrationChainComplete: true,
                 Environment.TickCount64);
+        }
 
         var steps = new List<MigrationStep>();
         var hasGap = false;
@@ -758,12 +775,30 @@ internal sealed class SchemaRegistryMigrationRunner
     {
         private int _preparationCount;
 
-        internal int WriterSchemaId { get; } = writerSchemaId;
-        internal string Subject { get; } = subject;
-        internal RegisteredSchema ReaderSchema { get; } = readerSchema;
-        internal MigrationStep[] Steps { get; } = steps;
-        internal bool IsMigrationChainComplete { get; } = isMigrationChainComplete;
-        internal long CreatedAtMilliseconds { get; } = createdAtMilliseconds;
+        internal int WriterSchemaId
+        {
+            get;
+        } = writerSchemaId;
+        internal string Subject
+        {
+            get;
+        } = subject;
+        internal RegisteredSchema ReaderSchema
+        {
+            get;
+        } = readerSchema;
+        internal MigrationStep[] Steps
+        {
+            get;
+        } = steps;
+        internal bool IsMigrationChainComplete
+        {
+            get;
+        } = isMigrationChainComplete;
+        internal long CreatedAtMilliseconds
+        {
+            get;
+        } = createdAtMilliseconds;
 
         internal void MarkPrepared() => Interlocked.Increment(ref _preparationCount);
 
@@ -773,9 +808,13 @@ internal sealed class SchemaRegistryMigrationRunner
             {
                 var count = Volatile.Read(ref _preparationCount);
                 if (count == 0)
+                {
                     return false;
+                }
                 if (Interlocked.CompareExchange(ref _preparationCount, count - 1, count) == count)
+                {
                     return true;
+                }
             }
         }
     }

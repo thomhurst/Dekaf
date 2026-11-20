@@ -31,7 +31,9 @@ public class ShareConsumerPollBufferTests(KafkaTestContainer kafka) : KafkaInteg
             .WithValueDeserializer(prepared ? new ReadyBorrowedDeserializer() : Serializers.RawBytes)
             .WithAcknowledgementMode(ShareAcknowledgementMode.Explicit);
         if (!useDefaultPollLimit)
+        {
             consumerBuilder.WithMaxPollRecords(2);
+        }
         await using var consumer = await consumerBuilder.BuildAsync();
         consumer.Subscribe(topic);
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
@@ -54,7 +56,10 @@ public class ShareConsumerPollBufferTests(KafkaTestContainer kafka) : KafkaInteg
                     BinaryPrimitives.WriteInt32LittleEndian(payload, index);
                     await producer.FireAsync(new ProducerMessage<int, byte[]>
                     {
-                        Topic = topic, Partition = index % 2, Key = index, Value = payload,
+                        Topic = topic,
+                        Partition = index % 2,
+                        Key = index,
+                        Value = payload,
                         Headers = Headers.Create("identity", payload)
                     });
                 }
@@ -73,8 +78,10 @@ public class ShareConsumerPollBufferTests(KafkaTestContainer kafka) : KafkaInteg
                         await using var next = consumer.PollAsync(timeout.Token).GetAsyncEnumerator();
                         await Assert.That(await next.MoveNextAsync()).IsTrue();
                         if (index == 1 && !useDefaultPollLimit)
+                        {
                             await Assert.That(() => consumer.Acknowledge(firstRecord, AcknowledgeType.Renew))
                                 .Throws<InvalidOperationException>();
+                        }
                         await ValidateRecordAsync(next.Current, received);
                         consumer.Acknowledge(next.Current);
                     }
@@ -85,8 +92,10 @@ public class ShareConsumerPollBufferTests(KafkaTestContainer kafka) : KafkaInteg
                     {
                         await Assert.That(await poll.MoveNextAsync()).IsTrue();
                         if (index == 2 && !useDefaultPollLimit)
+                        {
                             await Assert.That(() => consumer.Acknowledge(firstRecord, AcknowledgeType.Renew))
                                 .Throws<InvalidOperationException>();
+                        }
                         await ValidateRecordAsync(poll.Current, received);
                         consumer.Acknowledge(poll.Current);
                     }
@@ -97,7 +106,10 @@ public class ShareConsumerPollBufferTests(KafkaTestContainer kafka) : KafkaInteg
                 if (!firstMove.IsCompleted)
                 {
                     await timeout.CancelAsync();
-                    try { await firstMove; }
+                    try
+                    {
+                        await firstMove;
+                    }
                     catch (OperationCanceledException) when (timeout.IsCancellationRequested) { }
                 }
             }

@@ -62,7 +62,9 @@ public readonly record struct SchemaIdentity
     public SchemaIdentity(Guid schemaGuid)
     {
         if (schemaGuid == Guid.Empty)
+        {
             throw new ArgumentException("The schema GUID cannot be empty.", nameof(schemaGuid));
+        }
 
         SchemaId = null;
         SchemaGuid = schemaGuid;
@@ -73,17 +75,25 @@ public readonly record struct SchemaIdentity
     {
         ArgumentOutOfRangeException.ThrowIfNegative(schemaId);
         if (schemaGuid == Guid.Empty)
+        {
             throw new ArgumentException("The schema GUID cannot be empty.", nameof(schemaGuid));
+        }
 
         SchemaId = schemaId;
         SchemaGuid = schemaGuid;
     }
 
     /// <summary>Global integer schema ID, when available.</summary>
-    public int? SchemaId { get; }
+    public int? SchemaId
+    {
+        get;
+    }
 
     /// <summary>Schema GUID, when available.</summary>
-    public Guid? SchemaGuid { get; }
+    public Guid? SchemaGuid
+    {
+        get;
+    }
 }
 
 internal static class SchemaIdentityFraming
@@ -98,7 +108,9 @@ internal static class SchemaIdentityFraming
     {
         ArgumentOutOfRangeException.ThrowIfNegative(schemaId);
         if (destination.Length < SchemaIdFrameSize)
+        {
             throw new ArgumentException("The destination is too short for a schema ID frame.", nameof(destination));
+        }
 
         destination[0] = SchemaIdMagicByte;
         BinaryPrimitives.WriteInt32BigEndian(destination[1..SchemaIdFrameSize], schemaId);
@@ -109,9 +121,13 @@ internal static class SchemaIdentityFraming
     internal static int WriteSchemaGuid(Span<byte> destination, Guid schemaGuid)
     {
         if (schemaGuid == Guid.Empty)
+        {
             throw new ArgumentException("The schema GUID cannot be empty.", nameof(schemaGuid));
+        }
         if (destination.Length < SchemaGuidFrameSize)
+        {
             throw new ArgumentException("The destination is too short for a schema GUID frame.", nameof(destination));
+        }
 
         destination[0] = SchemaGuidMagicByte;
         _ = schemaGuid.TryWriteBytes(destination[1..SchemaGuidFrameSize], bigEndian: true, out _);
@@ -135,13 +151,19 @@ internal static class SchemaIdentityFraming
     internal static SchemaIdentity ReadPrefix(ReadOnlySpan<byte> payload, out int payloadOffset)
     {
         if (payload.Length < SchemaIdFrameSize)
+        {
             ThrowTruncatedSchemaIdPrefix();
+        }
         if (payload[0] != SchemaIdMagicByte)
+        {
             ThrowUnknownPrefixMagicByte(payload[0]);
+        }
 
         var schemaId = BinaryPrimitives.ReadInt32BigEndian(payload[1..]);
         if (schemaId < 0)
+        {
             ThrowNegativeSchemaId(schemaId);
+        }
 
         payloadOffset = SchemaIdFrameSize;
         return new SchemaIdentity(schemaId);
@@ -153,7 +175,9 @@ internal static class SchemaIdentityFraming
         out ReadOnlyMemory<byte> trailingHeaderData)
     {
         if (header.IsValueNull)
+        {
             throw new InvalidDataException("The Schema Registry identity header cannot be null.");
+        }
 
         return ReadHeaderValue(header.Value, out trailingHeaderData);
     }
@@ -175,7 +199,9 @@ internal static class SchemaIdentityFraming
             case SchemaIdDeserializerStrategy.Header:
                 payloadOffset = 0;
                 if (identityHeader is not { } requiredHeader)
+                {
                     throw new InvalidDataException("The required Schema Registry identity header is missing.");
+                }
                 return ReadHeader(in requiredHeader, out trailingHeaderData);
             case SchemaIdDeserializerStrategy.Dual:
                 if (identityHeader is { } optionalHeader)
@@ -233,9 +259,13 @@ internal static class SchemaIdentityFraming
     {
         var source = value.Span;
         if (source.IsEmpty)
+        {
             throw new InvalidDataException("The Schema Registry identity is empty.");
+        }
         if (source[0] != SchemaGuidMagicByte)
+        {
             throw new InvalidDataException($"Unknown Schema Registry header magic byte: {source[0]}.");
+        }
 
         var parsed = ReadSchemaGuid(source);
         trailingHeaderData = value[parsed.BytesConsumed..];
@@ -246,11 +276,15 @@ internal static class SchemaIdentityFraming
     private static IdentityFrame ReadSchemaGuid(ReadOnlySpan<byte> source)
     {
         if (source.Length < SchemaGuidFrameSize)
+        {
             throw new InvalidDataException("The Schema Registry GUID frame is truncated.");
+        }
 
         var schemaGuid = new Guid(source[1..SchemaGuidFrameSize], bigEndian: true);
         if (schemaGuid == Guid.Empty)
+        {
             throw new InvalidDataException("The Schema Registry GUID cannot be empty.");
+        }
 
         return new IdentityFrame(new SchemaIdentity(schemaGuid), SchemaGuidFrameSize);
     }
@@ -282,11 +316,17 @@ internal static class SchemaRegistrySerializerConfigValidator
         bool autoRegisterSchemas)
     {
         if (useSchemaId < 0)
+        {
             throw new ArgumentOutOfRangeException(nameof(useSchemaId), "The explicit schema ID cannot be negative.");
+        }
         if (useSchemaId.HasValue)
+        {
             return SchemaSelectionMode.ExplicitId;
+        }
         if (useLatestVersion)
+        {
             return SchemaSelectionMode.Latest;
+        }
 
         return autoRegisterSchemas ? SchemaSelectionMode.AutoRegister : SchemaSelectionMode.Lookup;
     }
@@ -305,7 +345,9 @@ internal static class SchemaIdentityResolution
         CancellationToken cancellationToken)
     {
         if (strategy == SchemaIdSerializerStrategy.Prefix)
+        {
             return new SubjectSchemaIdCache.SubjectSchemaIdCacheValue(schemaId, schema);
+        }
 
         registeredSchema ??= await schemaRegistry.LookupSchemaAsync(
                 subject,
@@ -343,7 +385,9 @@ internal static class BoundedSchemaIdentityCache
         where TKey : notnull
     {
         if (!cache.TryGetValue(key, out var entry))
+        {
             return;
+        }
 
         Interlocked.Increment(ref cachedCount);
         evictionQueue.Enqueue(new KeyValuePair<TKey, TValue>(key, entry));
@@ -351,7 +395,9 @@ internal static class BoundedSchemaIdentityCache
                && evictionQueue.TryDequeue(out var oldest))
         {
             if (((ICollection<KeyValuePair<TKey, TValue>>)cache).Remove(oldest))
+            {
                 Interlocked.Decrement(ref cachedCount);
+            }
         }
     }
 }

@@ -15,12 +15,18 @@ public sealed class FindCoordinatorRequest : IKafkaRequest<FindCoordinatorRespon
     /// <summary>
     /// The type of coordinator: 0 = group, 1 = transaction, 2 = share partition.
     /// </summary>
-    public CoordinatorType KeyType { get; init; } = CoordinatorType.Group;
+    public CoordinatorType KeyType
+    {
+        get; init;
+    } = CoordinatorType.Group;
 
     /// <summary>
     /// The key to look up the coordinator for.
     /// </summary>
-    public required string Key { get; init; }
+    public required string Key
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Creates a KIP-932 share-partition coordinator request from typed key parts.
@@ -39,7 +45,9 @@ public sealed class FindCoordinatorRequest : IKafkaRequest<FindCoordinatorRespon
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(groupId);
         if (topicId == Guid.Empty)
+        {
             throw new ArgumentException("A share coordinator key requires a non-empty topic ID.", nameof(topicId));
+        }
         ArgumentOutOfRangeException.ThrowIfNegative(partition);
 
         var topicIdBytes = new byte[16];

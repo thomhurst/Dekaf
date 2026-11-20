@@ -26,7 +26,10 @@ public class InflightTrackingBenchmarks
     private ProducerIdAndEpoch _producerState = null!;
 
     [Params(1, 10)]
-    public int PartitionCount { get; set; }
+    public int PartitionCount
+    {
+        get; set;
+    }
 
     [GlobalSetup]
     public void Setup()
@@ -39,7 +42,9 @@ public class InflightTrackingBenchmarks
 
         _partitions = new TopicPartition[PartitionCount];
         for (var i = 0; i < PartitionCount; i++)
+        {
             _partitions[i] = new TopicPartition("bench-topic", i);
+        }
 
         // Warmup: populate ConcurrentDictionary entries and pool
         for (var i = 0; i < 1000; i++)
@@ -53,7 +58,9 @@ public class InflightTrackingBenchmarks
         _producerState = new ProducerIdAndEpoch(1234, 0);
         _accumulator.PublishProducerState(_producerState);
         foreach (var tp in _partitions)
+        {
             _accumulator.GetAndIncrementSequence(tp, 1, _producerState, out _);
+        }
 
         _burstEntries = new InflightEntry[1100];
     }

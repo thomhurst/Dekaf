@@ -26,9 +26,13 @@ public sealed class ShareConsumeResult<TKey, TValue>
         get
         {
             if (_topicOrBatchOwner is not ShareRecordBatchOwner owner)
+            {
                 return null;
+            }
             if (unchecked((uint)~_partitionOrGeneration) != owner.Generation)
+            {
                 throw new InvalidOperationException("Cannot renew a record after its borrowed payload lifetime has ended.");
+            }
             return owner;
         }
     }
@@ -49,7 +53,9 @@ public sealed class ShareConsumeResult<TKey, TValue>
     internal ShareRecordBatchOwner? RefreshRetainedBatchOwner()
     {
         if (_topicOrBatchOwner is not ShareRecordBatchOwner owner)
+        {
             return null;
+        }
         var generation = owner.Generation;
         if (generation == 0)
         {
@@ -86,27 +92,42 @@ public sealed class ShareConsumeResult<TKey, TValue>
     /// <summary>
     /// The offset of this record within the partition.
     /// </summary>
-    public required long Offset { get; init; }
+    public required long Offset
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The deserialized key, or default if the record has no key.
     /// </summary>
-    public TKey? Key { get; init; }
+    public TKey? Key
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The deserialized value.
     /// </summary>
-    public required TValue Value { get; init; }
+    public required TValue Value
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The message headers. Empty if the record has no headers; never null.
     /// </summary>
-    public IReadOnlyList<Header> Headers { get; init; } = Array.Empty<Header>();
+    public IReadOnlyList<Header> Headers
+    {
+        get; init;
+    } = Array.Empty<Header>();
 
     /// <summary>
     /// The message timestamp as raw Unix milliseconds since epoch.
     /// </summary>
-    public long TimestampMs { get; init; }
+    public long TimestampMs
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The message timestamp as a DateTimeOffset.
@@ -118,7 +139,10 @@ public sealed class ShareConsumeResult<TKey, TValue>
     /// Number of times this record has been delivered (from AcquiredRecords.DeliveryCount).
     /// First delivery = 1.
     /// </summary>
-    public required int DeliveryCount { get; init; }
+    public required int DeliveryCount
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The acknowledgement state for this record. Defaults to Accept.

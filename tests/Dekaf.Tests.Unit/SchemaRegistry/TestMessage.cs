@@ -63,9 +63,18 @@ public sealed class TestMessage : IMessage<TestMessage>, IBufferMessage
         _descriptor = _fileDescriptor.MessageTypes[0];
     }
 
-    public int Id { get; set; }
-    public string Name { get; set; } = string.Empty;
-    public double Value { get; set; }
+    public int Id
+    {
+        get; set;
+    }
+    public string Name
+    {
+        get; set;
+    } = string.Empty;
+    public double Value
+    {
+        get; set;
+    }
 
     public static MessageParser<TestMessage> Parser => _parser;
     public static MessageDescriptor Descriptor => _descriptor;
@@ -77,13 +86,19 @@ public sealed class TestMessage : IMessage<TestMessage>, IBufferMessage
         var size = 0;
 
         if (Id != 0)
+        {
             size += 1 + CodedOutputStream.ComputeInt32Size(Id);
+        }
 
         if (!string.IsNullOrEmpty(Name))
+        {
             size += 1 + CodedOutputStream.ComputeStringSize(Name);
+        }
 
         if (Value != 0)
+        {
             size += 1 + 8; // Fixed64 for double
+        }
 
         return size;
     }
@@ -100,8 +115,14 @@ public sealed class TestMessage : IMessage<TestMessage>, IBufferMessage
 
     public bool Equals(TestMessage? other)
     {
-        if (other is null) return false;
-        if (ReferenceEquals(this, other)) return true;
+        if (other is null)
+        {
+            return false;
+        }
+        if (ReferenceEquals(this, other))
+        {
+            return true;
+        }
         return Id == other.Id && Name == other.Name && Value.Equals(other.Value);
     }
 
@@ -111,9 +132,18 @@ public sealed class TestMessage : IMessage<TestMessage>, IBufferMessage
 
     public void MergeFrom(TestMessage message)
     {
-        if (message.Id != 0) Id = message.Id;
-        if (!string.IsNullOrEmpty(message.Name)) Name = message.Name;
-        if (message.Value != 0) Value = message.Value;
+        if (message.Id != 0)
+        {
+            Id = message.Id;
+        }
+        if (!string.IsNullOrEmpty(message.Name))
+        {
+            Name = message.Name;
+        }
+        if (message.Value != 0)
+        {
+            Value = message.Value;
+        }
     }
 
     public void MergeFrom(CodedInputStream input)

@@ -87,7 +87,9 @@ public sealed class PendingAppendDrainWakeupTests
 
                     flush.GetAwaiter().GetResult();
                     for (var i = 0; i < HandoffsPerRound; i++)
+                    {
                         handoffs[i].GetAwaiter().GetResult();
+                    }
                 }
             }, CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default);
 

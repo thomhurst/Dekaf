@@ -55,7 +55,9 @@ internal abstract class ObjectPool<T> where T : class
     protected abstract void Reset(T item);
 
     /// <summary>Releases resources owned by an item discarded by Reservoir.</summary>
-    protected virtual void Destroy(T item) { }
+    protected virtual void Destroy(T item)
+    {
+    }
 
     /// <summary>Rents an item, creating one on a miss.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -84,13 +86,17 @@ internal abstract class ObjectPool<T> where T : class
 
         var currentPool = Volatile.Read(ref _pool);
         if (currentPool.MaximumRetained >= newSize)
+        {
             return;
+        }
 
         lock (_resizeLock)
         {
             currentPool = Volatile.Read(ref _pool);
             if (currentPool.MaximumRetained >= newSize)
+            {
                 return;
+            }
 
             var currentState = _poolState;
             var replacementState = CreatePool(newSize);
@@ -135,12 +141,16 @@ internal abstract class ObjectPool<T> where T : class
         {
             var retiredPool = _retiredPool;
             if (retiredPool is not null)
+            {
                 Volatile.Write(ref retiredPool.MigrationTarget, null);
+            }
 
             Volatile.Read(ref _pool).Clear();
 
             if (retiredPool is null)
+            {
                 return;
+            }
 
             retiredPool.Pool.Clear();
             retiredPool.Pool.Dispose();
@@ -190,7 +200,9 @@ internal abstract class ObjectPool<T> where T : class
             }
 
             while (Volatile.Read(ref target.MigrationTarget) is { } next)
+            {
                 target = next;
+            }
 
             target.Pool.Return(item);
             Interlocked.Increment(ref owner._retainedCount);

@@ -12,27 +12,39 @@ public sealed class DekafConsumerHealthCheckOptions
     /// Default is <see cref="HealthStatus.Healthy"/> because a consumer group may have more
     /// members than partitions.
     /// </summary>
-    public HealthStatus NoAssignmentStatus { get; init; } = HealthStatus.Healthy;
+    public HealthStatus NoAssignmentStatus
+    {
+        get; init;
+    } = HealthStatus.Healthy;
 
     /// <summary>
     /// The maximum acceptable consumer lag (in messages) per partition before the health check
     /// reports <see cref="Microsoft.Extensions.Diagnostics.HealthChecks.HealthStatus.Degraded"/>.
     /// Default is 1000.
     /// </summary>
-    public long DegradedThreshold { get; init; } = 1000;
+    public long DegradedThreshold
+    {
+        get; init;
+    } = 1000;
 
     /// <summary>
     /// The maximum acceptable consumer lag (in messages) per partition before the health check
     /// reports <see cref="Microsoft.Extensions.Diagnostics.HealthChecks.HealthStatus.Unhealthy"/>.
     /// Default is 10000.
     /// </summary>
-    public long UnhealthyThreshold { get; init; } = 10000;
+    public long UnhealthyThreshold
+    {
+        get; init;
+    } = 10000;
 
     /// <summary>
     /// The timeout for watermark offset queries.
     /// Default is 5 seconds.
     /// </summary>
-    public TimeSpan Timeout { get; init; } = TimeSpan.FromSeconds(5);
+    public TimeSpan Timeout
+    {
+        get; init;
+    } = TimeSpan.FromSeconds(5);
 
     /// <summary>
     /// Validates that the options are consistent.

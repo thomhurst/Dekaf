@@ -122,7 +122,9 @@ public static class DekafKafkaBuilderExtensions
             // The UI can be removed from the model after this call (for example by test fixtures); a link to its
             // endpoint would then reference a resource that never starts and stall the orchestrator.
             if (!@event.Model.Resources.Contains(kafkaUi))
+            {
                 return Task.CompletedTask;
+            }
 
             foreach (var kafka in @event.Model.Resources.OfType<DekafKafkaServerResource>())
             {
@@ -138,7 +140,9 @@ public static class DekafKafkaBuilderExtensions
         {
             var index = 0;
             foreach (var kafka in application.Resources.OfType<DekafKafkaServerResource>())
+            {
                 ConfigureKafkaUIContainer(context, kafka.InternalEndpoint, index++);
+            }
         });
 
         configureContainer?.Invoke(kafkaUiBuilder);

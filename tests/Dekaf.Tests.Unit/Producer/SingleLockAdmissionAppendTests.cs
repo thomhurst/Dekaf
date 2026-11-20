@@ -64,7 +64,9 @@ public sealed class SingleLockAdmissionAppendTests
     {
         var batches = new List<ReadyBatch>();
         while (accumulator.TryDrainPublishedBatch(out var batch))
+        {
             batches.Add(batch);
+        }
         return batches;
     }
 
@@ -75,7 +77,9 @@ public sealed class SingleLockAdmissionAppendTests
     {
         var offset = 0;
         foreach (var batch in batches)
+        {
             LeakGateHarness.RetireBatch(accumulator, batch, offset++);
+        }
     }
 
     [Test]
@@ -96,7 +100,9 @@ public sealed class SingleLockAdmissionAppendTests
 
             // Later records commit on the single-lock path from local credit: no new lease.
             for (var i = 0; i < 10; i++)
+            {
                 await Assert.That(await AppendSpansAsync(accumulator, value)).IsTrue();
+            }
             await Assert.That(budget.UnackedBytes).IsEqualTo(batchSize);
 
             await SealAllAsync(accumulator);
@@ -133,7 +139,9 @@ public sealed class SingleLockAdmissionAppendTests
             var budget = accumulator.GetBrokerUnackedBudget(LeaderNodeId)!;
 
             for (var i = 0; i < 100; i++)
+            {
                 await Assert.That(await AppendSpansAsync(accumulator, value)).IsTrue();
+            }
 
             // ~100 KB of records: the first lease (64 KB) ran out and exactly one more was taken.
             await Assert.That(budget.UnackedBytes).IsEqualTo(2L * quantum);
@@ -183,7 +191,9 @@ public sealed class SingleLockAdmissionAppendTests
                 for (var i = 0; i < appendsPerThread; i++)
                 {
                     if (await AppendSpansAsync(accumulator, value, partition: 0, cancellationToken))
+                    {
                         Interlocked.Increment(ref appended);
+                    }
                 }
             }, cancellationToken)).ToArray();
             await Task.WhenAll(tasks);
@@ -267,7 +277,9 @@ public sealed class SingleLockAdmissionAppendTests
                 for (var i = 0; i < appendsPerThread; i++)
                 {
                     if (await AppendSpansAsync(accumulator, value, partition: 0, cancellationToken))
+                    {
                         Interlocked.Increment(ref appended);
+                    }
                 }
             }, cancellationToken)).ToArray();
             await Task.WhenAll(tasks);

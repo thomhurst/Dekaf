@@ -36,7 +36,10 @@ internal sealed class ThroughputTracker
     private RuntimeObservation? _runtimeStart;
     private RuntimeObservation? _runtimeEnd;
 
-    internal ProducerWarmupSnapshot? Warmup { get; set; }
+    internal ProducerWarmupSnapshot? Warmup
+    {
+        get; set;
+    }
 
     public long MessageCount => Interlocked.Read(ref _messageCount);
     public long ByteCount => Interlocked.Read(ref _byteCount);
@@ -299,56 +302,152 @@ internal sealed class ThroughputTracker
 
 internal sealed class ThroughputSnapshot
 {
-    public ProducerWarmupSnapshot? Warmup { get; init; }
-    public RuntimeObservation? RuntimeStart { get; init; }
-    public RuntimeObservation? RuntimeEnd { get; init; }
-    public required long TotalMessages { get; init; }
-    public required long TotalBytes { get; init; }
-    public required long TotalErrors { get; init; }
+    public ProducerWarmupSnapshot? Warmup
+    {
+        get; init;
+    }
+    public RuntimeObservation? RuntimeStart
+    {
+        get; init;
+    }
+    public RuntimeObservation? RuntimeEnd
+    {
+        get; init;
+    }
+    public required long TotalMessages
+    {
+        get; init;
+    }
+    public required long TotalBytes
+    {
+        get; init;
+    }
+    public required long TotalErrors
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Broker-side delivery failures of accepted messages. Absent from older result
     /// files, so it defaults to zero on deserialization.
     /// </summary>
-    public long TotalDeliveryErrors { get; init; }
+    public long TotalDeliveryErrors
+    {
+        get; init;
+    }
 
-    public required double ElapsedSeconds { get; init; }
-    public required double AverageMessagesPerSecond { get; init; }
-    public required double AverageMegabytesPerSecond { get; init; }
-    public required List<double> MessagesPerSecondSamples { get; init; }
-    public List<ThroughputIntervalSample> IntervalSamples { get; init; } = [];
+    public required double ElapsedSeconds
+    {
+        get; init;
+    }
+    public required double AverageMessagesPerSecond
+    {
+        get; init;
+    }
+    public required double AverageMegabytesPerSecond
+    {
+        get; init;
+    }
+    public required List<double> MessagesPerSecondSamples
+    {
+        get; init;
+    }
+    public List<ThroughputIntervalSample> IntervalSamples
+    {
+        get; init;
+    } = [];
 
     /// <summary>
     /// Sum of intervals represented by <see cref="MessagesPerSecondSamples"/>. Excludes
     /// unsampled work after sampler shutdown, such as a producer's final flush.
     /// </summary>
-    public double SampledElapsedSeconds { get; init; }
+    public double SampledElapsedSeconds
+    {
+        get; init;
+    }
 
-    public List<ThroughputErrorSample> ErrorSamples { get; init; } = [];
+    public List<ThroughputErrorSample> ErrorSamples
+    {
+        get; init;
+    } = [];
 }
 
 internal sealed class ThroughputIntervalSample
 {
-    public long AcceptedMessages { get; init; }
-    public RuntimeObservation? Runtime { get; init; }
-    public required DateTimeOffset CapturedAtUtc { get; init; }
-    public required double ElapsedSeconds { get; init; }
-    public required double MessagesPerSecond { get; init; }
-    public int Gen0Collections { get; init; }
-    public int Gen1Collections { get; init; }
-    public int Gen2Collections { get; init; }
-    public double GcPauseDurationMs { get; init; }
+    public long AcceptedMessages
+    {
+        get; init;
+    }
+    public RuntimeObservation? Runtime
+    {
+        get; init;
+    }
+    public required DateTimeOffset CapturedAtUtc
+    {
+        get; init;
+    }
+    public required double ElapsedSeconds
+    {
+        get; init;
+    }
+    public required double MessagesPerSecond
+    {
+        get; init;
+    }
+    public int Gen0Collections
+    {
+        get; init;
+    }
+    public int Gen1Collections
+    {
+        get; init;
+    }
+    public int Gen2Collections
+    {
+        get; init;
+    }
+    public double GcPauseDurationMs
+    {
+        get; init;
+    }
 }
 
 internal sealed class ThroughputErrorSample
 {
-    public required long ErrorNumber { get; init; }
-    public required DateTime OccurredAtUtc { get; init; }
-    public required double ElapsedSeconds { get; init; }
-    public required long AcceptedMessagesAtError { get; init; }
-    public long? MessageIndex { get; init; }
-    public string? Operation { get; init; }
-    public required string ExceptionType { get; init; }
-    public string? Message { get; init; }
-    public string? Details { get; init; }
+    public required long ErrorNumber
+    {
+        get; init;
+    }
+    public required DateTime OccurredAtUtc
+    {
+        get; init;
+    }
+    public required double ElapsedSeconds
+    {
+        get; init;
+    }
+    public required long AcceptedMessagesAtError
+    {
+        get; init;
+    }
+    public long? MessageIndex
+    {
+        get; init;
+    }
+    public string? Operation
+    {
+        get; init;
+    }
+    public required string ExceptionType
+    {
+        get; init;
+    }
+    public string? Message
+    {
+        get; init;
+    }
+    public string? Details
+    {
+        get; init;
+    }
 }

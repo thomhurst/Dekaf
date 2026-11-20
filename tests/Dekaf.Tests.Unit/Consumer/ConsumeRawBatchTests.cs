@@ -49,7 +49,9 @@ public class ConsumeRawBatchTests
         var batch = new ConsumeRawBatch(pending);
 
         // Enumerate to populate the count
-        foreach (var _ in batch) { }
+        foreach (var _ in batch)
+        {
+        }
 
         await Assert.That(batch.Count).IsEqualTo(3);
     }

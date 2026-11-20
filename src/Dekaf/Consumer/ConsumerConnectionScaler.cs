@@ -36,7 +36,10 @@ internal sealed class ConsumerConnectionScaler : IDisposable
     private long _testTimeOffsetTicks;
     private int _stopping;
 
-    internal Action? BeforeScaleOperationLockForTest { get; set; }
+    internal Action? BeforeScaleOperationLockForTest
+    {
+        get; set;
+    }
 
     public int CurrentConnectionCount => Interlocked.CompareExchange(ref _currentConnectionCount, 0, 0);
 
@@ -68,7 +71,9 @@ internal sealed class ConsumerConnectionScaler : IDisposable
         if (isSaturated)
         {
             if (_saturationStartTimestamp == 0)
+            {
                 _saturationStartTimestamp = now;
+            }
         }
         else if (_saturationStartTimestamp != 0)
         {
@@ -81,7 +86,9 @@ internal sealed class ConsumerConnectionScaler : IDisposable
         if (isLowUtilization)
         {
             if (_lowUtilizationStartTimestamp == 0)
+            {
                 _lowUtilizationStartTimestamp = now;
+            }
         }
         else if (_lowUtilizationStartTimestamp != 0)
         {
@@ -102,10 +109,14 @@ internal sealed class ConsumerConnectionScaler : IDisposable
         lock (_operationLock)
         {
             if (_stopping != 0)
+            {
                 return;
+            }
 
             if (_lastScaleTimestamp != 0 && Stopwatch.GetElapsedTime(_lastScaleTimestamp, now) < Cooldown)
+            {
                 return;
+            }
 
             if (_saturationStartTimestamp != 0
                 && _currentConnectionCount < _maxConnectionCount
@@ -210,10 +221,14 @@ internal sealed class ConsumerConnectionScaler : IDisposable
     private void ObserveCompletedOperation(Task task)
     {
         lock (_operationLock)
+        {
             _pendingOperations.Remove(task);
+        }
 
         if (task.Exception is not null)
+        {
             _logError?.Invoke(task.Exception.InnerException ?? task.Exception);
+        }
     }
 
     internal async ValueTask StopAndDrainAsync(TimeSpan timeout)
@@ -242,10 +257,14 @@ internal sealed class ConsumerConnectionScaler : IDisposable
         }
 
         if (cancelOperations)
+        {
             _operationCancellationSource.Cancel();
+        }
 
         if (pendingOperations.Length == 0)
+        {
             return;
+        }
 
         try
         {

@@ -39,7 +39,9 @@ public class AssociatedNameStrategyBenchmarks
         _strategy = new AssociatedNameStrategy(_client);
         _serializer = new SchemaRegistrySerializer<int>(
             _client,
-            static (_, _) => { },
+            static (_, _) =>
+            {
+            },
             _strategy,
             static () => new Schema { SchemaType = SchemaType.Json, SchemaString = "{\"type\":\"integer\"}" });
         _jsonSerializer = new JsonSchemaRegistrySerializer<int>(
@@ -84,7 +86,9 @@ public class AssociatedNameStrategyBenchmarks
             SchemaIdentityHeaderNames.Value,
             SchemaIdentityFraming.CreateSchemaGuidFrame(AssociationHandler.SchemaGuid));
         for (var index = 0; index < 32; index++)
+        {
             jsonHeaders.Add(new Header($"noise-{index}", ReadOnlyMemory<byte>.Empty));
+        }
         _jsonDeserializationContext = new SerializationContext
         {
             Topic = _topic,

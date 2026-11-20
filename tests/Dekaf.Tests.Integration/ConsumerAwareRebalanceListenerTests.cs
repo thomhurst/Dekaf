@@ -61,7 +61,10 @@ public sealed class ConsumerAwareRebalanceListenerTests(KafkaTestContainer kafka
         }
 
         await timeout.CancelAsync();
-        try { await consumer2Task; }
+        try
+        {
+            await consumer2Task;
+        }
         catch (OperationCanceledException) { }
     }
 
@@ -185,10 +188,22 @@ public sealed class ConsumerAwareRebalanceListenerTests(KafkaTestContainer kafka
 
     private sealed class SeekingRebalanceListener : IConsumerAwareRebalanceListener
     {
-        public IRebalanceConsumer? RetainedView { get; private set; }
-        public bool AssignmentContainedCallbackPartitions { get; private set; }
-        public bool PauseResumeObserved { get; private set; }
-        public bool WatermarksQueried { get; private set; }
+        public IRebalanceConsumer? RetainedView
+        {
+            get; private set;
+        }
+        public bool AssignmentContainedCallbackPartitions
+        {
+            get; private set;
+        }
+        public bool PauseResumeObserved
+        {
+            get; private set;
+        }
+        public bool WatermarksQueried
+        {
+            get; private set;
+        }
 
         public async ValueTask OnPartitionsAssignedAsync(
             IRebalanceConsumer consumer,
@@ -224,7 +239,10 @@ public sealed class ConsumerAwareRebalanceListenerTests(KafkaTestContainer kafka
 
     private sealed class CommittingRebalanceListener : IConsumerAwareRebalanceListener
     {
-        public TaskCompletionSource<TopicPartitionOffset[]> Committed { get; } =
+        public TaskCompletionSource<TopicPartitionOffset[]> Committed
+        {
+            get;
+        } =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         public ValueTask OnPartitionsAssignedAsync(
@@ -244,7 +262,9 @@ public sealed class ConsumerAwareRebalanceListenerTests(KafkaTestContainer kafka
                     1))
                 .ToArray();
             if (offsets.Length == 0)
+            {
                 return;
+            }
 
             try
             {

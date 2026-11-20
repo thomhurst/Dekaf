@@ -13,12 +13,18 @@ public sealed class AlterShareGroupOffsetsRequest : IKafkaRequest<AlterShareGrou
     /// <summary>
     /// The group ID.
     /// </summary>
-    public required string GroupId { get; init; }
+    public required string GroupId
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The topics to alter offsets for.
     /// </summary>
-    public required IReadOnlyList<AlterShareGroupOffsetsRequestTopic> Topics { get; init; }
+    public required IReadOnlyList<AlterShareGroupOffsetsRequestTopic> Topics
+    {
+        get; init;
+    }
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {
@@ -40,12 +46,18 @@ public sealed class AlterShareGroupOffsetsRequestTopic
     /// <summary>
     /// The topic name.
     /// </summary>
-    public required string TopicName { get; init; }
+    public required string TopicName
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The partitions to alter offsets for.
     /// </summary>
-    public required IReadOnlyList<AlterShareGroupOffsetsRequestPartition> Partitions { get; init; }
+    public required IReadOnlyList<AlterShareGroupOffsetsRequestPartition> Partitions
+    {
+        get; init;
+    }
 
     public void Write(ref KafkaProtocolWriter writer)
     {
@@ -83,12 +95,18 @@ public sealed class AlterShareGroupOffsetsRequestPartition
     /// <summary>
     /// The partition index.
     /// </summary>
-    public int PartitionIndex { get; init; }
+    public int PartitionIndex
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The start offset to set for the share group on this partition.
     /// </summary>
-    public long StartOffset { get; init; }
+    public long StartOffset
+    {
+        get; init;
+    }
 
     public void Write(ref KafkaProtocolWriter writer)
     {

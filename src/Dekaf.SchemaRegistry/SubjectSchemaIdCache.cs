@@ -41,7 +41,9 @@ internal sealed class SubjectSchemaIdCache
     {
         var key = new SubjectSchemaIdCacheKey(topic, isKey);
         if (TryGetCached(key, out var cached))
+        {
             return cached;
+        }
 
         var subject = getSubjectName(state, topic, isKey);
         var schema = getSchema(state, subject);
@@ -56,7 +58,9 @@ internal sealed class SubjectSchemaIdCache
     {
         var key = new SubjectSchemaIdCacheKey(topic, isKey);
         if (TryGetCached(key, out var cached))
+        {
             return cached;
+        }
 
         var resolved = resolve(state, topic, isKey);
         return Cache(
@@ -183,7 +187,9 @@ internal sealed class SubjectSchemaIdCache
         for (var index = 0; index < TurnoverCapacity; index++)
         {
             if (_turnover[index].TryGet(key, hashCode, out entry))
+            {
                 return true;
+            }
         }
 
         return TryGetRetained(key, hashCode, out entry);
@@ -198,7 +204,9 @@ internal sealed class SubjectSchemaIdCache
         for (var index = 0; index < TurnoverCapacity; index++)
         {
             if (_turnover[index].TryGetRetained(key, hashCode, out entry))
+            {
                 return true;
+            }
         }
 
         entry = default;
@@ -245,7 +253,9 @@ internal sealed class SubjectSchemaIdCache
         byte[]? schemaGuidFrame)
     {
         if (TryGetCached(key, out var existing))
+        {
             return existing;
+        }
 
         var entry = new SubjectSchemaIdCacheEntry(key, subject, schemaId, schema, schemaGuidFrame);
         if (TryReserveCacheSlot())
@@ -259,7 +269,9 @@ internal sealed class SubjectSchemaIdCache
 
             Interlocked.Decrement(ref _cacheCount);
             if (TryGetCached(key, out existing))
+            {
                 return existing;
+            }
         }
 
         return PublishOverflow(entry);
@@ -287,11 +299,15 @@ internal sealed class SubjectSchemaIdCache
             for (var index = 0; index < TurnoverCapacity; index++)
             {
                 if (_turnover[index].TryGet(entry.Key, hashCode, out cached))
+                {
                     return cached;
+                }
             }
 
             if (TryGetRetained(entry.Key, hashCode, out cached))
+            {
                 return cached;
+            }
 
             return PublishTurnover(entry, hashCode);
         }
@@ -300,7 +316,9 @@ internal sealed class SubjectSchemaIdCache
         {
             var turnover = _turnover[index];
             if (turnover.TryGet(entry.Key, hashCode, out cached))
+            {
                 return cached;
+            }
 
             if (turnover.TryPublishEmpty(entry, hashCode))
             {
@@ -309,7 +327,9 @@ internal sealed class SubjectSchemaIdCache
             }
 
             if (turnover.TryGet(entry.Key, hashCode, out cached))
+            {
                 return cached;
+            }
         }
 
         return PublishTurnover(entry, hashCode);
@@ -324,7 +344,9 @@ internal sealed class SubjectSchemaIdCache
         {
             var index = (startIndex + attempt) & (TurnoverCapacity - 1);
             if (_turnover[index].TryPublish(entry, hashCode))
+            {
                 break;
+            }
         }
 
         return entry;
@@ -364,7 +386,9 @@ internal sealed class SubjectSchemaIdCache
     {
         var slots = new TurnoverEntry[TurnoverCapacity];
         for (var index = 0; index < slots.Length; index++)
+        {
             slots[index] = new TurnoverEntry();
+        }
 
         return slots;
     }
@@ -375,10 +399,14 @@ internal sealed class SubjectSchemaIdCache
         {
             var count = Volatile.Read(ref _cacheCount);
             if (count >= MaxCachedEntries)
+            {
                 return false;
+            }
 
             if (Interlocked.CompareExchange(ref _cacheCount, count + 1, count) == count)
+            {
                 return true;
+            }
         }
     }
 
@@ -399,7 +427,10 @@ internal sealed class SubjectSchemaIdCache
     private sealed class CachedEntry(SubjectSchemaIdCacheEntry value)
     {
         internal SubjectSchemaIdCacheKey Key => Value.Key;
-        internal SubjectSchemaIdCacheEntry Value { get; } = value;
+        internal SubjectSchemaIdCacheEntry Value
+        {
+            get;
+        } = value;
     }
 
     private sealed class TurnoverEntry
@@ -521,7 +552,9 @@ internal sealed class SubjectSchemaIdCache
         internal bool TryPublishEmpty(SubjectSchemaIdCacheEntry value, int hashCode)
         {
             if (Interlocked.CompareExchange(ref _version, 1, 0) != 0)
+            {
                 return false;
+            }
 
             _firstValue = value;
             _firstHashCode = hashCode;

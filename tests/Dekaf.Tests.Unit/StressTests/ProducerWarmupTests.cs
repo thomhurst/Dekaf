@@ -81,7 +81,12 @@ public sealed class ProducerWarmupTests
         using var cancellation = new CancellationTokenSource();
         var runs = 0;
         await Assert.That(async () => await ProducerWarmup.RunAsync(60,
-            (duration, _, _) => { runs++; cancellation.Cancel(); return Task.FromResult(Cycle(duration.TotalSeconds)); },
+            (duration, _, _) =>
+            {
+                runs++;
+                cancellation.Cancel();
+                return Task.FromResult(Cycle(duration.TotalSeconds));
+            },
             cancellation.Token)).Throws<OperationCanceledException>();
         await Assert.That(runs).IsEqualTo(1);
     }
@@ -112,10 +117,15 @@ public sealed class ProducerWarmupTests
         workloadSeconds,
         new ThroughputSnapshot
         {
-            TotalMessages = 10, TotalBytes = 100, TotalErrors = errors,
-            ElapsedSeconds = workloadSeconds + drainSeconds, AverageMessagesPerSecond = 1,
-            AverageMegabytesPerSecond = 1, MessagesPerSecondSamples = [],
-            RuntimeStart = new RuntimeObservation(), RuntimeEnd = new RuntimeObservation(),
+            TotalMessages = 10,
+            TotalBytes = 100,
+            TotalErrors = errors,
+            ElapsedSeconds = workloadSeconds + drainSeconds,
+            AverageMessagesPerSecond = 1,
+            AverageMegabytesPerSecond = 1,
+            MessagesPerSecondSamples = [],
+            RuntimeStart = new RuntimeObservation(),
+            RuntimeEnd = new RuntimeObservation(),
             IntervalSamples = []
         },
         new GcSnapshot { Gen0Collections = 0, Gen1Collections = 0, Gen2Collections = 0, AllocatedBytes = 0 });

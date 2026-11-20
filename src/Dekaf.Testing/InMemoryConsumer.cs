@@ -348,7 +348,9 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
         get
         {
             lock (_gate)
+            {
                 return _subscriptionPattern;
+            }
         }
     }
 
@@ -357,7 +359,9 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
         get
         {
             lock (_gate)
+            {
                 return GetCurrentAssignmentUnderLock().ToHashSet();
+            }
         }
     }
 
@@ -374,7 +378,9 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
                     foreach (var (partition, pending) in _pendingAutoCommitAdvancements)
                     {
                         if (pending.ResumePartition)
+                        {
                             paused.Remove(partition);
+                        }
                     }
                 }
 
@@ -457,7 +463,9 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
             _topicFilter = topicFilter;
             _subscription.Clear();
             foreach (var topic in subscription)
+            {
                 _subscription.Add(topic);
+            }
 
             RefreshSubscriptionUnderLock(replaceAssignment: true);
             RegisterConsumerGroupMemberUnderLock();
@@ -476,10 +484,14 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
     {
         ArgumentNullException.ThrowIfNull(pattern);
         if (string.IsNullOrWhiteSpace(pattern))
+        {
             throw new ArgumentException("Subscription pattern must be specified.", nameof(pattern));
+        }
 
         if (string.IsNullOrWhiteSpace(_groupId))
+        {
             throw new InvalidOperationException("Server-side regex subscriptions require a consumer group ID.");
+        }
 
         ThrowIfDisposed();
 
@@ -515,7 +527,9 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
         finally
         {
             lock (_gate)
+            {
                 _leavingGroup = _disposed;
+            }
             if (!revocation.IsCompleted)
             {
                 pending = revocation.AsTask();
@@ -524,7 +538,9 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
         }
 
         if (pending is not null)
+        {
             return;
+        }
 
         try
         {
@@ -542,7 +558,9 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
         {
             ThrowIfAutoCommitAdvancementPendingUnderLock();
             if (_groupId is not null)
+            {
                 ApplyGroupTransitionFaultUnderLock(KafkaFaultOperation.Rebalance);
+            }
 
             _subscriptionPattern = null;
             _subscriptionRegex = null;
@@ -616,7 +634,9 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
         while (true)
         {
             if (_rebalanceListener is { } listener)
+            {
                 await DeliverRebalanceEventsAsync(listener, cancellationToken).ConfigureAwait(false);
+            }
 
             lock (_gate)
             {
@@ -684,7 +704,9 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
                     cancellationToken).ConfigureAwait(false);
                 ThrowIfDisposed();
                 if (capturedProof is { SharedWaiter: true })
+                {
                     ThrowSnapshotStateChanged();
+                }
 
                 TopicPartition partition;
                 InMemoryRecord record;
@@ -829,7 +851,9 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
                         consumerStateVersion,
                         consumerGroupGeneration);
                 if (!positionAdvanced)
+                {
                     continue;
+                }
 
                 yield return result;
                 // The caller can add fault rules while enumeration is suspended at the yield.
@@ -843,7 +867,9 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
         finally
         {
             lock (_gate)
+            {
                 _snapshotActive = false;
+            }
         }
     }
 
@@ -853,7 +879,9 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
         CancellationToken cancellationToken = default)
     {
         if (offsetCount < 0)
+        {
             throw new ArgumentOutOfRangeException(nameof(offsetCount), "Offset count cannot be negative.");
+        }
 
         cancellationToken.ThrowIfCancellationRequested();
         ThrowIfDisposed();
@@ -872,7 +900,9 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
     {
         ThrowIfDisposed();
         if (timeout < TimeSpan.Zero && timeout != Timeout.InfiniteTimeSpan)
+        {
             throw new ArgumentOutOfRangeException(nameof(timeout));
+        }
 
         var deadline = timeout == Timeout.InfiniteTimeSpan ? (DateTimeOffset?)null : DateTimeOffset.UtcNow + timeout;
 
@@ -882,24 +912,36 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
             // Observe the wake signal before checking, so a change after the check is not missed.
             var recordsChanged = _cluster.ObserveRecordsChanged();
             if (_rebalanceListener is { } listener)
+            {
                 await DeliverRebalanceEventsAsync(listener, cancellationToken).ConfigureAwait(false);
+            }
 
             if (!_requiresAsyncDeserialization && !HasPotentialConsumerFault())
             {
                 if (TryConsumeOne(out var result, out var retry))
+                {
                     return result;
+                }
                 if (retry)
+                {
                     continue;
+                }
             }
             else
             {
                 var attempt = await TryConsumeOneAsync(cancellationToken).ConfigureAwait(false);
                 if (attempt.Result is { } asyncResult)
+                {
                     return asyncResult;
+                }
                 if (attempt.Retry)
+                {
                     continue;
+                }
                 if (attempt.StopPolling)
+                {
                     return null;
+                }
             }
 
             if (deadline is null)
@@ -911,7 +953,9 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
 
             var remaining = deadline.Value - DateTimeOffset.UtcNow;
             if (remaining <= TimeSpan.Zero)
+            {
                 return null;
+            }
 
             try
             {
@@ -985,7 +1029,9 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
             {
                 // Explicit commit proves the record that was in doubt when this call began.
                 if (_options.EnableAutoOffsetStore)
+                {
                     StoreOffsetUnderLock(capturedInDoubt);
+                }
                 ClearInDoubtRecordUnderLock();
             }
 
@@ -1055,7 +1101,9 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
             if (orderedPlan.HasPotentialMatch(KafkaFaultOperation.Commit, groupId))
             {
                 if (ReferenceEquals(offsetList, offsets))
+                {
                     offsetList = offsetList.ToArray();
+                }
 
                 if (orderedPlan.TryApplyFirstMatchingCommitFault(
                         groupId,
@@ -1071,7 +1119,9 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
         else if (!faultApplied && faultPlan.Count != 0)
         {
             if (ReferenceEquals(offsetList, offsets))
+            {
                 offsetList = offsetList.ToArray();
+            }
 
             var candidateScopes = new KafkaFaultScope[offsetList.Count + 1];
             candidateScopes[0] = new KafkaFaultScope(KafkaFaultOperation.Commit, groupId: groupId);
@@ -1111,7 +1161,9 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
     {
         ThrowIfDisposed();
         if (result.IsPartitionEof)
+        {
             return;
+        }
 
         StoreOffset(new TopicPartitionOffset(
             result.Topic,
@@ -1142,7 +1194,9 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
         where TOffsets : IReadOnlyList<TopicPartitionOffset>
     {
         if (offsets is null)
+        {
             throw new ArgumentNullException(nameof(offsets));
+        }
         ThrowIfDisposed();
 
         var count = offsets.Count;
@@ -1169,7 +1223,9 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
         {
             ThrowIfDisposed();
             for (var index = 0; index < count; index++)
+            {
                 StoreOffsetUnderLock(snapshot[index]);
+            }
         }
     }
 
@@ -1179,7 +1235,9 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
 
         var snapshot = offsets.ToArray();
         for (var index = 0; index < offsets.Length; index++)
+        {
             TopicPartitionOffsetValidator.Validate(snapshot[index], nameof(offsets));
+        }
 
         for (var index = 0; index < snapshot.Length; index++)
         {
@@ -1196,7 +1254,9 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
         {
             ThrowIfDisposed();
             for (var index = 0; index < snapshot.Length; index++)
+            {
                 StoreOffsetUnderLock(snapshot[index]);
+            }
         }
     }
 
@@ -1226,14 +1286,18 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
             {
                 // A callback the active close is running must not wait for that close.
                 if (ReferenceEquals(s_rebalanceCallbackOwner.Value, this))
+                {
                     return ValueTask.CompletedTask;
+                }
 
                 closeTask = activeClose;
             }
             else
             {
                 if (_disposed)
+                {
                     return ValueTask.CompletedTask;
+                }
 
                 closeCompletion = new TaskCompletionSource(
                     TaskCreationOptions.RunContinuationsAsynchronously);
@@ -1330,11 +1394,17 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
         }
 
         if (failure is null)
+        {
             completion.TrySetResult();
+        }
         else if (failure is OperationCanceledException canceled)
+        {
             completion.TrySetCanceled(canceled.CancellationToken);
+        }
         else
+        {
             completion.TrySetException(failure);
+        }
     }
 
     private ValueTask CompleteClose(CapturedCommitOffsets? capturedCommit)
@@ -1342,10 +1412,14 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
         lock (_gate)
         {
             if (_disposed)
+            {
                 return ValueTask.CompletedTask;
+            }
 
             if (capturedCommit is { } captured)
+            {
                 CommitCapturedOffsetsUnderLock(in captured);
+            }
 
             // The in-memory cluster has no broker session timer. Always unregister on close so
             // RemainInGroup cannot create an immortal member that permanently owns partitions.
@@ -1435,7 +1509,9 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
             MarkRepositionedUnderLock(partition);
             _positions[partition] = offset.Offset;
             if (_options.EnableAutoOffsetStore)
+            {
                 StoreOffsetUnderLock(partition, offset.Offset);
+            }
         }
     }
 
@@ -1455,7 +1531,9 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
                 MarkRepositionedUnderLock(partition);
                 _positions[partition] = position;
                 if (_options.EnableAutoOffsetStore)
+                {
                     StoreOffsetUnderLock(partition, position);
+                }
             }
         }
     }
@@ -1476,7 +1554,9 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
                 MarkRepositionedUnderLock(partition);
                 _positions[partition] = position;
                 if (_options.EnableAutoOffsetStore)
+                {
                     StoreOffsetUnderLock(partition, position);
+                }
             }
         }
     }
@@ -1543,7 +1623,9 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
             ObserveListenerMembershipLossUnderLock();
             // The listener's revocation commit still sees the subscribed partitions' offsets.
             foreach (var partition in _listenerAssignment)
+            {
                 PreserveDepartingOffsetUnderLock(partition);
+            }
             // Manual assignment replaces any subscription, as KafkaConsumer.IncrementalAssign does,
             // even for an empty enumerable, so ending one must also reach the listener.
             var changed = _subscriptionTopologyVersion >= 0;
@@ -1597,13 +1679,17 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
                 _paused.Remove(partition);
                 _positions.Remove(partition);
                 if (_storedOffsets.Remove(partition))
+                {
                     _storedOffsetsVersion++;
+                }
                 DiscardInDoubtRecordUnderLock(partition);
                 MarkRepositionedUnderLock(partition);
             }
 
             if (changed)
+            {
                 _consumerStateVersion++;
+            }
 
             RegisterConsumerGroupMemberUnderLock();
         }
@@ -1617,7 +1703,9 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
         lock (_gate)
         {
             if (SetPauseStateUnderLock(partitions, pause: true))
+            {
                 _consumerStateVersion++;
+            }
         }
     }
 
@@ -1629,7 +1717,9 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
         lock (_gate)
         {
             if (SetPauseStateUnderLock(partitions, pause: false))
+            {
                 _consumerStateVersion++;
+            }
         }
     }
 
@@ -1762,7 +1852,9 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
             }
 
             if (!TryAdvancePosition(partition, record, position, in selectionVersion))
+            {
                 continue;
+            }
 
             result = selectedResult;
             return true;
@@ -1802,7 +1894,9 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
             var hasPosition = _positions.TryGetValue(bound.Partition, out var position);
             // A snapshot already past its captured end does not fetch or rewind.
             if (hasPosition && position < bound.EndOffset)
+            {
                 position = ResolveFetchPositionUnderLock(bound.Partition, position);
+            }
 
             if (hasPosition && position < bound.EndOffset)
             {
@@ -1834,7 +1928,9 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
             {
                 _positions[bound.Partition] = bound.EndOffset;
                 if (_options.EnableAutoOffsetStore)
+                {
                     StoreOffsetUnderLock(bound.Partition, bound.EndOffset);
+                }
             }
             activePartitionIndex++;
         }
@@ -1874,10 +1970,14 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
         lock (_gate)
         {
             if (_disposed)
+            {
                 return Task.CompletedTask;
+            }
 
             if (_autoCommitAdvancementWaiterEntered is { Task.IsCompleted: false } existing)
+            {
                 return existing.Task;
+            }
 
             _autoCommitAdvancementWaiterEntered = new TaskCompletionSource(
                 TaskCreationOptions.RunContinuationsAsynchronously);
@@ -1903,7 +2003,9 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
         ThrowIfDisposed();
 
         if (_consumerStateVersion != consumerStateVersion)
+        {
             ThrowSnapshotStateChanged();
+        }
 
         if (consumerGroupGeneration < 0
             || _groupId is null
@@ -1945,7 +2047,9 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
             cancellationToken).ConfigureAwait(false);
         ThrowIfDisposed();
         if (capturedProof is { SharedWaiter: true })
+        {
             return new ConsumeAttemptResult(Result: null, StopPolling: true);
+        }
 
         try
         {
@@ -1960,7 +2064,9 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
                         out var position,
                         out var selectionVersion,
                         out var rebalancePending))
+                {
                     return new ConsumeAttemptResult(Result: null, StopPolling: false, Retry: rebalancePending);
+                }
 
                 var fetchScope = new KafkaFaultScope(
                     KafkaFaultOperation.Fetch,
@@ -1974,7 +2080,9 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
                         cancellationToken).ConfigureAwait(false);
                     ThrowIfDisposed();
                     if (!IsRecordSelectionCurrent(partition, position, in selectionVersion))
+                    {
                         continue;
+                    }
                 }
 
                 var selectedResult = _requiresAsyncDeserialization
@@ -1983,7 +2091,9 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
 
                 ThrowIfDisposed();
                 if (!IsRecordSelectionCurrent(partition, position, in selectionVersion))
+                {
                     continue;
+                }
 
                 var consumeScope = new KafkaFaultScope(
                     KafkaFaultOperation.Consume,
@@ -1997,7 +2107,9 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
                         cancellationToken).ConfigureAwait(false);
                     ThrowIfDisposed();
                     if (!IsRecordSelectionCurrent(partition, position, in selectionVersion))
+                    {
                         continue;
+                    }
                 }
 
                 if (!TryPrepareOnDeliveryAutoCommitFault(
@@ -2025,7 +2137,9 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
                     ? TryAdvanceReservedPosition(partition, record, position, in selectionVersion)
                     : TryAdvancePosition(partition, record, position, in selectionVersion);
                 if (!positionAdvanced)
+                {
                     continue;
+                }
 
                 return new ConsumeAttemptResult(selectedResult, StopPolling: false);
             }
@@ -2090,10 +2204,14 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
             {
                 var partition = assignment[(startIndex + partitionIndex) % assignment.Length];
                 if (_paused.Contains(partition))
+                {
                     continue;
+                }
 
                 if (!_positions.TryGetValue(partition, out var position))
+                {
                     continue;
+                }
 
                 position = ResolveFetchPositionUnderLock(partition, position);
                 if (!_cluster.TryRead(
@@ -2109,7 +2227,9 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
                     {
                         _positions[partition] = nextReadableOffset;
                         if (_options.EnableAutoOffsetStore)
-                        StoreOffsetUnderLock(partition, nextReadableOffset);
+                        {
+                            StoreOffsetUnderLock(partition, nextReadableOffset);
+                        }
                     }
                     continue;
                 }
@@ -2184,7 +2304,9 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
                         expectedPosition,
                         pending.ResumePartition,
                         in selectionVersion))
+                {
                     return false;
+                }
 
                 AdvancePositionUnderLock(partition, record, pending.CapturedCommit);
                 return true;
@@ -2257,11 +2379,15 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
         if (_options.OffsetStoreTiming == OffsetStoreTiming.OnDelivery)
         {
             if (_options.EnableAutoOffsetStore)
+            {
                 StoreOffsetUnderLock(partition, record.Offset + 1);
+            }
             if (_options.OffsetCommitMode == OffsetCommitMode.Auto)
             {
                 if (capturedCommit is null)
+                {
                     CommitStoredOffsets();
+                }
                 else
                 {
                     var captured = capturedCommit.Value;
@@ -2347,15 +2473,21 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
             consumerStateVersion,
             consumerGroupGeneration);
         if (!_positions.TryGetValue(partition, out var currentPosition) || currentPosition != expectedPosition)
+        {
             return false;
+        }
 
         _positions[partition] = record.Offset + 1;
         if (_options.OffsetStoreTiming == OffsetStoreTiming.OnDelivery)
         {
             if (_options.EnableAutoOffsetStore)
+            {
                 StoreOffsetUnderLock(partition, record.Offset + 1);
+            }
             if (_options.OffsetCommitMode == OffsetCommitMode.Auto)
+            {
                 CommitStoredOffsets();
+            }
         }
         else
         {
@@ -2375,7 +2507,9 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
     {
         _ = GetPotentialFaultAssignmentUnderLock(out _, out _);
         if (_inDoubtNextOffset < 0)
+        {
             return;
+        }
 
         if (capturedProof is { } proof &&
             (_inDoubtNextOffset != proof.Position || !_inDoubtPartition.Equals(proof.Partition)))
@@ -2387,21 +2521,29 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
         {
             var capturedCommit = captured.Commit;
             if (!IsCapturedCommitCurrentUnderLock(in capturedCommit))
+            {
                 return;
+            }
         }
 
         if (IsInDoubtAutoCommitAdvancementPendingUnderLock())
+        {
             return;
+        }
 
         if (_options.EnableAutoOffsetStore)
+        {
             StoreOffsetUnderLock(_inDoubtPartition, _inDoubtNextOffset);
+        }
 
         ClearInDoubtRecordUnderLock();
 
         if (commitAutomatically && _options.OffsetCommitMode == OffsetCommitMode.Auto)
         {
             if (capturedProof is null)
+            {
                 CommitStoredOffsets();
+            }
             else
             {
                 var capturedCommit = capturedProof.Value.Commit;
@@ -2419,7 +2561,9 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
     private void DiscardInDoubtRecordUnderLock(TopicPartition partition)
     {
         if (_inDoubtNextOffset >= 0 && _inDoubtPartition.Equals(partition))
+        {
             ClearInDoubtRecordUnderLock();
+        }
     }
 
     private void SetInDoubtRecordUnderLock(TopicPartition partition, long nextOffset)
@@ -2431,7 +2575,9 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
     private void ClearInDoubtRecordUnderLock()
     {
         if (_inDoubtNextOffset < 0)
+        {
             return;
+        }
 
         _inDoubtNextOffset = -1;
         _cluster.SignalRecordsChanged();
@@ -2485,7 +2631,9 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
         {
             serializationHeaders.Clear();
             for (var index = 0; index < record.Headers.Count; index++)
+            {
                 serializationHeaders.Add(record.Headers[index]);
+            }
         }
         TKey? key = default;
         if (!record.IsKeyNull)
@@ -2574,10 +2722,14 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
     {
         var nextPositions = new Dictionary<TopicPartition, long>();
         foreach (var partition in partitions.Distinct())
+        {
             nextPositions[partition] = initializePositions ? GetStartOffset(partition) : 0;
+        }
 
         foreach (var partition in _listenerAssignment)
+        {
             PreserveDepartingOffsetUnderLock(partition);
+        }
         _assignment.Clear();
         _paused.Clear();
         _positions.Clear();
@@ -2591,7 +2743,9 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
         {
             _assignment.Add(partition);
             if (initializePositions)
+            {
                 _positions[partition] = position;
+            }
         }
 
         EnsureCommitOffsetCapacity(_assignment.Count);
@@ -2625,7 +2779,9 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
         var offset = _cluster.GetOffsetForTimestamp(partition, timestamp, _options.IsolationLevel);
         // A missing topic returns -1 for every timestamp; retain the earliest policy sentinel.
         if (timestamp == TopicPartitionTimestamp.Earliest && offset == TopicPartitionTimestamp.Latest)
+        {
             return TopicPartitionTimestamp.Earliest;
+        }
 
         return timestamp >= 0 && offset == TopicPartitionTimestamp.Latest
             ? _cluster.GetWatermarks(partition, _options.IsolationLevel).High
@@ -2637,7 +2793,9 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
         // Range validation uses the log end, not the read-committed transaction boundary.
         var watermarks = _cluster.GetWatermarks(partition);
         if (position >= watermarks.Low && position <= watermarks.High)
+        {
             return position;
+        }
 
         var resolved = position switch
         {
@@ -2648,7 +2806,9 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
         _positions[partition] = resolved;
         // A reset is not consumed progress, and invalidates any previously stored offset.
         if (_storedOffsets.Remove(partition))
+        {
             _storedOffsetsVersion++;
+        }
         return resolved;
     }
 
@@ -2672,7 +2832,9 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
         var assignment = GetCurrentAssignmentUnderLock(out var consumerGroupGeneration);
         // An evicted member's revoked partitions may already have newer offsets from their new owner.
         if (IsGroupMembershipLostUnderLock())
+        {
             _departingOffsets.Clear();
+        }
         var inDoubtPartition = inDoubtOffset is { } pending
             ? new TopicPartition(pending.Topic, pending.Partition)
             : (TopicPartition?)null;
@@ -2682,32 +2844,44 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
         foreach (var partition in _storedOffsets.Keys)
         {
             if (partition != inDoubtPartition && assignment.Contains(partition))
+            {
                 count++;
+            }
         }
 
         foreach (var partition in _departingOffsets.Keys)
         {
             if (!HasCurrentCommitOffset(partition))
+            {
                 count++;
+            }
         }
 
         if (count == 0)
+        {
             return new CapturedCommitOffsets([], consumerGroupGeneration);
+        }
 
         var offsets = new TopicPartitionOffset[count];
         var index = 0;
         if (includeInDoubt && inDoubtOffset is { } capturedInDoubt)
+        {
             offsets[index++] = capturedInDoubt;
+        }
         foreach (var (partition, offset) in _storedOffsets)
         {
             if (partition != inDoubtPartition && assignment.Contains(partition))
+            {
                 offsets[index++] = offset;
+            }
         }
 
         foreach (var (partition, offset) in _departingOffsets)
         {
             if (!HasCurrentCommitOffset(partition))
+            {
                 offsets[index++] = offset;
+            }
         }
 
         return new CapturedCommitOffsets(offsets, consumerGroupGeneration);
@@ -2727,7 +2901,9 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
     {
         faultApplication = ValueTask.CompletedTask;
         if (offsets.Count == 0)
+        {
             return false;
+        }
 
         var faultPlan = _cluster.FaultPlan;
         if (faultPlan is KafkaFaultPlan indexedPlan)
@@ -2741,7 +2917,9 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
         }
 
         if (faultPlan.Count == 0)
+        {
             return false;
+        }
 
         var candidateScopes = new KafkaFaultScope[offsets.Count + 1];
         candidateScopes[0] = new KafkaFaultScope(KafkaFaultOperation.Commit, groupId: groupId);
@@ -2764,30 +2942,40 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
     internal void CommitOffsetsFrom(Dictionary<TopicPartition, TopicPartitionOffset> positions)
     {
         if (_groupId is null || positions.Count == 0)
+        {
             return;
+        }
 
         var assignment = GetPotentialFaultAssignmentUnderLock(out _, out _);
         var count = 0;
         foreach (var (partition, offset) in positions)
         {
             if (!assignment.Contains(partition))
+            {
                 continue;
+            }
 
             _commitOffsets[count++] = offset;
         }
 
         if (count == 0)
+        {
             return;
+        }
 
         _cluster.CommitOffsets(_groupId, _commitOffsets, count);
         for (var index = 0; index < count; index++)
+        {
             MarkOffsetCommittedUnderLock(_commitOffsets[index]);
+        }
     }
 
     private void MarkOffsetsCommittedUnderLock(IReadOnlyList<TopicPartitionOffset> offsets)
     {
         for (var index = 0; index < offsets.Count; index++)
+        {
             MarkOffsetCommittedUnderLock(offsets[index]);
+        }
     }
 
     private void MarkOffsetCommittedUnderLock(TopicPartitionOffset offset)
@@ -2803,11 +2991,15 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
     private void EnsureCommitOffsetCapacity(int count)
     {
         if (count <= _commitOffsets.Length)
+        {
             return;
+        }
 
         var capacity = _commitOffsets.Length;
         while (capacity < count)
+        {
             capacity = checked(capacity * 2);
+        }
         Array.Resize(ref _commitOffsets, capacity);
     }
 
@@ -2913,7 +3105,9 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
         // The partition can be paused while an async deserializer runs. Do not consume
         // its commit fault until this delivery can reserve the partition.
         if (_paused.Contains(partition))
+        {
             return false;
+        }
 
         var pendingOffset = _options.EnableAutoOffsetStore
             ? new TopicPartitionOffset(partition.Topic, partition.Partition, nextOffset)
@@ -2945,7 +3139,9 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
         capturedCommit = default;
         faultApplication = ValueTask.CompletedTask;
         if (_groupId is null)
+        {
             return false;
+        }
 
         var faultPlan = _cluster.FaultPlan;
         bool hasMatchingCommitFault;
@@ -2968,7 +3164,9 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
         capturedCommit = CaptureCommitOffsetsUnderLock(pendingOffset);
         var resumePartition = _paused.Add(reservationPartition);
         if (resumePartition)
+        {
             InvalidatePotentialFaultActiveResourcesUnderLock();
+        }
         (_pendingAutoCommitAdvancements ??= [])[reservationPartition] = new PendingAutoCommitAdvancement(
             reservationPosition,
             resumePartition,
@@ -3044,7 +3242,9 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
         foreach (var partition in _storedOffsets.Keys)
         {
             if (partition == pendingPartition || !assignment.Contains(partition))
+            {
                 continue;
+            }
 
             AddCommitFaultScopeUnderLock(
                 ref scopeCount,
@@ -3063,7 +3263,9 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
     private void AddCommitFaultScopeUnderLock(ref int scopeCount, KafkaFaultScope scope)
     {
         if (scopeCount == _commitFaultScopes.Length)
+        {
             Array.Resize(ref _commitFaultScopes, _commitFaultScopes.Length * 2);
+        }
 
         _commitFaultScopes[scopeCount++] = scope;
     }
@@ -3092,10 +3294,12 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
         bool completeWaiters = true)
     {
         lock (_gate)
+        {
             return ClearPendingAutoCommitAdvancementUnderLock(
                 partition,
                 expectedPosition,
                 completeWaiters);
+        }
     }
 
     private TaskCompletionSource<CapturedAutoCommitProof>? ClearPendingAutoCommitAdvancementUnderLock(
@@ -3112,9 +3316,13 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
 
         _pendingAutoCommitAdvancements.Remove(partition);
         if (pending.ResumePartition && _paused.Remove(partition))
+        {
             InvalidatePotentialFaultActiveResourcesUnderLock();
+        }
         if (_pendingAutoCommitAdvancements.Count == 0)
+        {
             _pendingAutoCommitAdvancements = null;
+        }
 
         if (completeWaiters)
         {
@@ -3132,7 +3340,9 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
     private void ThrowIfAutoCommitAdvancementPendingUnderLock()
     {
         if (_pendingAutoCommitAdvancements is not null)
+        {
             ThrowAutoCommitAdvancementPending();
+        }
     }
 
     [DoesNotReturn]
@@ -3144,7 +3354,9 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
         CancellationToken cancellationToken)
     {
         if (_options.OffsetCommitMode != OffsetCommitMode.Auto)
+        {
             return default;
+        }
 
         TopicPartition inDoubtPartition;
         long inDoubtNextOffset;
@@ -3155,7 +3367,9 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
             ThrowIfDisposed();
             _ = GetPotentialFaultAssignmentUnderLock(out _, out _);
             if (_inDoubtNextOffset < 0)
+            {
                 return default;
+            }
 
             inDoubtPartition = _inDoubtPartition;
             inDoubtNextOffset = _inDoubtNextOffset;
@@ -3173,7 +3387,9 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
                     cancellationToken);
             }
             if (_indexedFaultPlan is { Count: 0 })
+            {
                 return default;
+            }
 
             var inDoubtOffset = _options.EnableAutoOffsetStore
                 ? new TopicPartitionOffset(
@@ -3183,7 +3399,9 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
                 : (TopicPartitionOffset?)null;
             var assignment = GetCurrentAssignmentUnderLock(out var consumerGroupGeneration);
             if (!assignment.Contains(inDoubtPartition))
+            {
                 return default;
+            }
             var selectionVersion = new ConsumerSelectionVersion(
                 _consumerStateVersion,
                 consumerGroupGeneration);
@@ -3300,7 +3518,9 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
         {
             ThrowIfDisposed();
             if (_inDoubtNextOffset < 0)
+            {
                 return;
+            }
 
             partition = _inDoubtPartition;
             position = _inDoubtNextOffset;
@@ -3337,7 +3557,9 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
     {
         faultApplication = ValueTask.CompletedTask;
         if (_options.OffsetCommitMode != OffsetCommitMode.Auto || _groupId is null)
+        {
             return new CapturedCommitOffsets([], -1);
+        }
 
         var capturedCommit = CaptureCommitOffsetsUnderLock(inDoubtOffset: null);
         _ = TryApplyMatchingCapturedCommitFault(
@@ -3377,7 +3599,9 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
         if (subscriptionTopologyVersion >= 0 && subscriptionTopologyVersion != _cluster.TopologyVersion)
         {
             lock (_gate)
+            {
                 RefreshSubscriptionUnderLock();
+            }
         }
 
         var faultPlan = _cluster.FaultPlan;
@@ -3501,7 +3725,9 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
                 foreach (var partition in assignment)
                 {
                     if (!_paused.Contains(partition))
+                    {
                         unpaused.Add(partition);
+                    }
                 }
 
                 activeResources = unpaused;
@@ -3535,7 +3761,9 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
         foreach (var partition in _storedOffsets.Keys)
         {
             if (!assignment.Contains(partition))
+            {
                 continue;
+            }
 
             hasCommittableStoredOffset = true;
             break;
@@ -3590,7 +3818,9 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
         var orderedAssignment = new TopicPartition[assignment.Count];
         var partitionIndex = 0;
         foreach (var partition in assignment)
+        {
             orderedAssignment[partitionIndex++] = partition;
+        }
 
         Array.Sort(orderedAssignment, static (left, right) =>
         {
@@ -3653,10 +3883,14 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
             }
         }
         foreach (var (partition, position) in addedPositions)
+        {
             _positions[partition] = position;
+        }
 
         if (consumerGroupGeneration != _consumerGroupGeneration || addedPositions.Count != 0)
+        {
             _consumerStateVersion++;
+        }
         _assignmentOwnership = ownership;
         _consumerGroupGeneration = consumerGroupGeneration;
         return current;
@@ -3683,14 +3917,18 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
         {
             ThrowIfDisposed();
             if (_leavingGroup)
+            {
                 return;
+            }
 
             leaveVersion = _listenerLeaveVersion;
 
             var subscribed = _subscriptionTopologyVersion >= 0;
             var current = subscribed ? GetCurrentAssignmentUnderLock() : null;
             if (_listenerConsumerStateVersion == _consumerStateVersion)
+            {
                 return;
+            }
 
             _listenerConsumerStateVersion = _consumerStateVersion;
             lost = _listenerAssignmentLost || IsGroupMembershipLostUnderLock();
@@ -3718,26 +3956,36 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
                 foreach (var partition in current)
                 {
                     if (!_listenerAssignment.Contains(partition))
+                    {
                         (assigned ??= []).Add(partition);
+                    }
                 }
             }
 
             if (revoked is not null)
+            {
                 _listenerAssignment.ExceptWith(revoked);
+            }
             if (assigned is not null)
             {
                 _listenerAssignment.UnionWith(assigned);
                 foreach (var partition in assigned)
                 {
                     if (_assignmentOwnership.TryGetValue(partition, out var ownership))
+                    {
                         _listenerOwnership[partition] = ownership;
+                    }
                 }
             }
             // Lost partitions cannot be committed; a partition regained before this call kept its offsets.
             foreach (var partition in _listenerAssignment)
+            {
                 _departingOffsets.Remove(partition);
+            }
             if (lost && revoked is not null)
+            {
                 RemoveDepartingOffsetsUnderLock(revoked);
+            }
             // Published under the lock, so a leave that snapshots the assignment after this waits for it.
             delivery = new TaskCompletionSource<RebalanceDeliveryOutcome>(TaskCreationOptions.RunContinuationsAsynchronously);
             _activeRebalanceDelivery = delivery.Task;
@@ -3771,7 +4019,9 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
                     {
                         // The leave's snapshot took these partitions, but they were never reported.
                         if (_listenerLeaveVersion != leaveVersion)
+                        {
                             outcome = new RebalanceDeliveryOutcome(null, assigned, false);
+                        }
                         return;
                     }
                 }
@@ -3807,7 +4057,9 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
                     _listenerAssignmentLost |= lost;
                 }
                 if (assigned is not null)
+                {
                     _listenerAssignment.ExceptWith(assigned);
+                }
                 if (!revocationDelivered && regained is not null)
                 {
                     // A regained partition keeps its old token, so the retry reports it again.
@@ -3839,7 +4091,9 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
             static (listener, partitions, token) => listener.OnPartitionsRevokedAsync(partitions, token),
             listener, revoked, cancellationToken).ConfigureAwait(false);
         lock (_gate)
+        {
             RemoveDepartingOffsetsUnderLock(revoked);
+        }
     }
 
     // An administrative removal evicted the subscribed member; Unsubscribe clears the registration instead.
@@ -3849,7 +4103,9 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
     private void RemoveDepartingOffsetsUnderLock(IEnumerable<TopicPartition> partitions)
     {
         foreach (var partition in partitions)
+        {
             _departingOffsets.Remove(partition);
+        }
     }
 
     /// <summary>
@@ -3881,11 +4137,15 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
     private void ObserveListenerMembershipLossUnderLock()
     {
         if (_listenerAssignment.Count == 0 || _subscriptionTopologyVersion < 0)
+        {
             return;
+        }
 
         _ = GetCurrentAssignmentUnderLock();
         if (!IsGroupMembershipLostUnderLock())
+        {
             return;
+        }
 
         RemoveDepartingOffsetsUnderLock(_listenerAssignment);
         _listenerAssignmentLost = true;
@@ -3894,16 +4154,24 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
     private void PreserveDepartingOffsetUnderLock(TopicPartition partition)
     {
         if (_listenerAssignmentLost || !_listenerAssignment.Contains(partition))
+        {
             return;
+        }
 
         // Mirror CommitAsync: with automatic offset storage, the commit proves the batch progress
         // or the record in doubt.
         if (_options.EnableAutoOffsetStore && TryGetDepartingBatchCheckpointUnderLock(partition, out var batchOffset))
+        {
             _departingOffsets[partition] = new TopicPartitionOffset(partition.Topic, partition.Partition, batchOffset);
+        }
         else if (_options.EnableAutoOffsetStore && _inDoubtNextOffset >= 0 && _inDoubtPartition.Equals(partition))
+        {
             _departingOffsets[partition] = new TopicPartitionOffset(partition.Topic, partition.Partition, _inDoubtNextOffset);
+        }
         else if (_storedOffsets.TryGetValue(partition, out var stored))
+        {
             _departingOffsets[partition] = stored;
+        }
     }
 
     /// <summary>
@@ -3913,7 +4181,9 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
     private ValueTask StartListenerRevocation(bool closing, CancellationToken cancellationToken)
     {
         if (_rebalanceListener is not { } listener)
+        {
             return ValueTask.CompletedTask;
+        }
 
         TopicPartition[] revoked;
         bool lost;
@@ -3921,13 +4191,17 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
         lock (_gate)
         {
             if (closing ? _disposed : _leavingGroup)
+            {
                 return ValueTask.CompletedTask;
+            }
 
             // Refresh membership first: after an administrative removal the partitions are lost
             // and must not stay committable from the callback.
             var subscribed = _subscriptionTopologyVersion >= 0;
             if (subscribed)
+            {
                 _ = GetCurrentAssignmentUnderLock();
+            }
             lost = _listenerAssignmentLost || IsGroupMembershipLostUnderLock();
             _listenerAssignmentLost = false;
             _leavingGroup = true;
@@ -3938,7 +4212,9 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
             else
             {
                 foreach (var partition in _listenerAssignment)
+                {
                     PreserveDepartingOffsetUnderLock(partition);
+                }
             }
             revoked = _listenerAssignment.ToArray();
             _listenerAssignment.Clear();
@@ -3969,21 +4245,29 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
                     {
                         var partitions = new HashSet<TopicPartition>(revoked);
                         if (outcome.Unreported is not null)
+                        {
                             partitions.ExceptWith(outcome.Unreported);
+                        }
                         if (outcome.Restored is not null)
+                        {
                             partitions.UnionWith(outcome.Restored);
+                        }
                         revoked = partitions.ToArray();
                         if (outcome.Lost && !lost)
                         {
                             lost = true;
                             lock (_gate)
+                            {
                                 RemoveDepartingOffsetsUnderLock(revoked);
+                            }
                         }
                     }
                 }
             }
             if (revoked.Length == 0)
+            {
                 return;
+            }
 
             if (lost)
             {
@@ -4002,7 +4286,9 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
                     // Leaving the group never retries the callback, so its offsets must not
                     // stay committable.
                     lock (_gate)
+                    {
                         RemoveDepartingOffsetsUnderLock(revoked);
+                    }
                     throw;
                 }
             }
@@ -4016,7 +4302,9 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
     private async ValueTask AwaitPendingRebalanceCallbackAsync(CancellationToken cancellationToken)
     {
         if (Volatile.Read(ref _pendingRebalanceCallback) is not { } pending)
+        {
             return;
+        }
 
         try
         {
@@ -4056,11 +4344,15 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
         }
         _positions.Remove(partition);
         if (_storedOffsets.Remove(partition))
+        {
             _storedOffsetsVersion++;
+        }
         DiscardInDoubtRecordUnderLock(partition);
         MarkRepositionedUnderLock(partition);
         if (_retryInDoubtPartition.Equals(partition))
+        {
             _retryInDoubtNextOffset = -1;
+        }
     }
 
     private void RefreshSubscriptionUnderLock(bool replaceAssignment = false)
@@ -4078,17 +4370,27 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
         {
             bool matches;
             if (_subscriptionRegex is not null)
+            {
                 matches = IsFullMatch(_subscriptionRegex, topic.Name);
+            }
             else if (_topicFilter is not null)
+            {
                 matches = _topicFilter(topic.Name);
+            }
             else
+            {
                 matches = _subscription.Contains(topic.Name);
+            }
             if (!matches)
+            {
                 continue;
+            }
 
             topicIds.Add(topic.Name, topic.Id);
             for (var partition = 0; partition < topic.PartitionCount; partition++)
+            {
                 partitions.Add(new TopicPartition(topic.Name, partition));
+            }
         }
 
         if (replaceAssignment)
@@ -4121,7 +4423,9 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
             {
                 _assignment.Add(partition);
                 if (_groupId is null)
+                {
                     _positions[partition] = position;
+                }
             }
 
             if (removed.Length != 0 || addedPositions.Count != 0)
@@ -4129,7 +4433,9 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
                 EnsureCommitOffsetCapacity(_assignment.Count);
                 _consumerStateVersion++;
                 if (_groupId is not null && _memberId is not null && _consumerGroupRegistrationId != 0)
+                {
                     _cluster.UpdateConsumerGroupSubscription(_groupId, _memberId, _consumerGroupRegistrationId, _assignment);
+                }
             }
         }
 
@@ -4145,7 +4451,9 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
     private void RegisterConsumerGroupMemberUnderLock()
     {
         if (_groupId is null || _memberId is null)
+        {
             return;
+        }
 
         var previousRegistrationId = _consumerGroupRegistrationId;
         _consumerGroupGeneration = _cluster.RegisterConsumerGroupMember(
@@ -4159,7 +4467,9 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
     private void UnregisterConsumerGroupMemberUnderLock()
     {
         if (_groupId is null || _memberId is null)
+        {
             return;
+        }
 
         _cluster.UnregisterConsumerGroupMember(
             _groupId,
@@ -4172,7 +4482,9 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
     private void ApplyGroupTransitionFaults()
     {
         if (_groupId is null)
+        {
             return;
+        }
 
         ApplyGroupTransitionFaultUnderLock(KafkaFaultOperation.JoinGroup);
         ApplyGroupTransitionFaultUnderLock(KafkaFaultOperation.SyncGroup);
@@ -4210,7 +4522,9 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
     private void ApplySynchronousFaultIfMatching(KafkaFaultScope scope)
     {
         if (HasMatchingFault(scope))
+        {
             ApplySynchronousFault(scope);
+        }
     }
 
     private void ThrowIfDisposed()

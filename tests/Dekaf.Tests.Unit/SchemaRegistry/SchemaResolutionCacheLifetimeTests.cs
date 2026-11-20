@@ -13,6 +13,7 @@ public class SchemaResolutionCacheLifetimeTests
         var schema = new Schema { SchemaString = "{}", SchemaType = SchemaType.Json };
         var release = new TaskCompletionSource<object>(TaskCreationOptions.RunContinuationsAsynchronously);
         var calls = 0;
+
         Task<object> ResolvePending(int _, string subject, Schema requested)
         {
             Interlocked.Increment(ref calls);
@@ -52,7 +53,9 @@ public class SchemaResolutionCacheLifetimeTests
         await Assert.That(BookkeepingCount(cache)).IsEqualTo(0);
         await Assert.That(PooledEntryCount(cache)).IsLessThanOrEqualTo(4);
         foreach (var reference in references)
+        {
             await Assert.That(reference.IsAlive).IsFalse();
+        }
         GC.KeepAlive(cache);
     }
 
@@ -107,12 +110,16 @@ public class SchemaResolutionCacheLifetimeTests
         await Assert.That(cache.CachedEntryCount).IsEqualTo(0);
         await Assert.That(BookkeepingCount(cache)).IsEqualTo(0);
         for (var index = 0; index < capacity * 2; index++)
+        {
             await Resolve(cache, $"overflow-{index}", schema);
+        }
         await Assert.That(cache.CachedEntryCount).IsEqualTo(capacity);
         await Assert.That(BookkeepingCount(cache)).IsEqualTo(capacity);
         await Assert.That(PooledEntryCount(cache)).IsEqualTo(0);
         for (var index = 0; index < capacity * 2; index++)
+        {
             await Assert.That(cache.TryGet($"overflow-{index}", schema, out _)).IsEqualTo(index >= capacity);
+        }
     }
 
     [Test]
@@ -144,7 +151,9 @@ public class SchemaResolutionCacheLifetimeTests
         while (index >= 0)
         {
             if (++count > nodes.Length)
+            {
                 throw new InvalidOperationException("Cycle in eviction bookkeeping.");
+            }
             var node = nodes.GetValue(index)!;
             index = (int)node.GetType().GetField("Next", flags)!.GetValue(node)!;
         }
@@ -169,7 +178,9 @@ public class SchemaResolutionCacheLifetimeTests
             references[index * 2] = new WeakReference(value);
             references[index * 2 + 1] = new WeakReference(schema);
             if (!cache.TryRemove(subject, schema, value))
+            {
                 throw new InvalidOperationException("Expected the resolved entry to be removed.");
+            }
         }
         return references;
     }

@@ -81,9 +81,13 @@ public class BatchArenaConcurrencyTests
                 }
 
                 if (allocated)
+                {
                     Interlocked.Increment(ref successCount);
+                }
                 else
+                {
                     Interlocked.Increment(ref failCount);
+                }
             }
         })).ToArray();
 

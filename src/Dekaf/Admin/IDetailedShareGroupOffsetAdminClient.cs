@@ -26,7 +26,10 @@ public interface IDetailedShareGroupOffsetAdminClient
 public sealed class ShareGroupOffsetMutationOptions
 {
     /// <summary>Total operation deadline in milliseconds. Defaults to 30 seconds; zero expires immediately.</summary>
-    public int TimeoutMs { get; init; } = 30000;
+    public int TimeoutMs
+    {
+        get; init;
+    } = 30000;
 }
 
 /// <summary>Detailed share-group offset mutations for compatible admin implementations.</summary>

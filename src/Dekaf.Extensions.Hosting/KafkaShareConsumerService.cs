@@ -4,9 +4,9 @@ using System.Runtime.ExceptionServices;
 using Dekaf.Consumer;
 using Dekaf.Consumer.DeadLetter;
 using Dekaf.Errors;
+using Dekaf.Internal;
 using Dekaf.Producer;
 using Dekaf.Protocol;
-using Dekaf.Internal;
 using Dekaf.Retry;
 using Dekaf.ShareConsumer;
 using Microsoft.Extensions.Hosting;
@@ -62,7 +62,9 @@ public abstract partial class KafkaShareConsumerService<TKey, TValue> : Backgrou
         ArgumentNullException.ThrowIfNull(consumer);
         ArgumentNullException.ThrowIfNull(logger);
         if (deadLetterPolicy is not null && deadLetterOptions is null)
+        {
             throw new ArgumentException("A dead letter policy requires DeadLetterOptions.", nameof(deadLetterPolicy));
+        }
         _processingCompletedCallback = _operationCompleted.Signal;
         _consumer = consumer;
         _logger = logger;
@@ -83,7 +85,10 @@ public abstract partial class KafkaShareConsumerService<TKey, TValue> : Backgrou
     internal DeadLetterOptions? ConfiguredDeadLetterOptions => _deadLetterOptions;
 
     /// <summary>Gets source topics. Configured retry topics are added automatically.</summary>
-    protected abstract IEnumerable<string> Topics { get; }
+    protected abstract IEnumerable<string> Topics
+    {
+        get;
+    }
 
     /// <summary>Processes one acquired record. Acceptance follows only successful completion.</summary>
     protected abstract ValueTask ProcessAsync(ShareConsumeResult<TKey, TValue> result, CancellationToken cancellationToken);
@@ -122,7 +127,9 @@ public abstract partial class KafkaShareConsumerService<TKey, TValue> : Backgrou
     {
         var builder = Kafka.CreateProducer<byte[]?, byte[]?>();
         if (_deadLetterOptions?.BootstrapServers is { } servers)
+        {
             builder.WithBootstrapServers(servers);
+        }
         _deadLetterOptions?.ConfigureProducer?.Invoke(builder);
         // Routing must be durable even if the callback selected weaker acknowledgements.
         return builder.WithAcks(Acks.All).Build();
@@ -143,15 +150,23 @@ public abstract partial class KafkaShareConsumerService<TKey, TValue> : Backgrou
         try
         {
             if (_consumer is not IShareConsumerConfiguration { AcknowledgementMode: ShareAcknowledgementMode.Explicit })
+            {
                 throw new InvalidOperationException("Hosted share consumers require verified Explicit acknowledgement mode. Wrappers must implement IShareConsumerConfiguration.");
+            }
             if (_consumer is IHostedShareConsumer hostedConsumer)
+            {
                 hostedConsumer.ObserveAcknowledgements(ObserveAcknowledgements, _shutdownCancellation.Token);
+            }
             if (_deadLetterOptions is not null)
             {
                 if (!_deadLetterOptions.AwaitDelivery)
+                {
                     throw new InvalidOperationException("Hosted share consumers require AwaitDelivery for durable routing.");
+                }
                 if (_consumer is not IRawShareRecordAccessor raw)
+                {
                     throw new InvalidOperationException("This share consumer does not support raw record capture required for durable routing.");
+                }
                 raw.EnableRawRecordTracking();
                 _producer = CreateDeadLetterProducer();
             }
@@ -164,14 +179,15 @@ public abstract partial class KafkaShareConsumerService<TKey, TValue> : Backgrou
                 try
                 {
                     if (_producer is not null)
+                    {
                         await _producer.InitializeAsync(_pollCancellation.Token).ConfigureAwait(false);
+                    }
                     await _consumer.InitializeAsync(_pollCancellation.Token).ConfigureAwait(false);
                     initialized = true;
                     _consumer.Subscribe(topics);
                     break;
                 }
-                catch (Exception exception) when (
-                    !_pollCancellation.IsCancellationRequested && !_processingCancellation.IsCancellationRequested &&
+                catch (Exception exception) when (!_pollCancellation.IsCancellationRequested && !_processingCancellation.IsCancellationRequested &&
                     ServiceRestartPolicy.CanRestartAfter(exception))
                 {
                     await DelayBeforeRestartAsync(exception, ++restartAttempt).ConfigureAwait(false);
@@ -186,9 +202,13 @@ public abstract partial class KafkaShareConsumerService<TKey, TValue> : Backgrou
                         current = record;
                         restartAttempt = 0;
                         if (_acknowledgementFailure is { } pollFailure)
+                        {
                             ExceptionDispatchInfo.Capture(pollFailure).Throw();
+                        }
                         if (Volatile.Read(ref _shutdownStarted) != 0)
+                        {
                             break;
+                        }
                         _lastRenewal = _consumer is IHostedShareConsumer acquisition
                             ? acquisition.AcquisitionStartedTimestamp : Stopwatch.GetTimestamp();
                         _acquisitionLost = false;
@@ -232,9 +252,13 @@ public abstract partial class KafkaShareConsumerService<TKey, TValue> : Backgrou
                                                 continue;
                                             }
                                             if (await _operationCompleted.WaitAsync(GetRenewalDelayMs()).ConfigureAwait(false))
+                                            {
                                                 continue;
+                                            }
                                             if (operation.IsCompleted)
+                                            {
                                                 break;
+                                            }
                                             if (IsAcquisitionLockExpired())
                                             {
                                                 _acquisitionLost = true;
@@ -256,9 +280,13 @@ public abstract partial class KafkaShareConsumerService<TKey, TValue> : Backgrou
                                             // renewal marks the acquisition lost, a confirmed one extends the lock.
                                             // A decorated consumer reports none, so assume this lock was rejected.
                                             if (_consumer is not IHostedShareConsumer)
+                                            {
                                                 _acquisitionLost = true;
+                                            }
                                             else if (_renewalConfirmed && !_acquisitionLost)
+                                            {
                                                 _lastRenewal = renewalStarted;
+                                            }
                                             LogStaleAcquisition(exception, record.Topic, record.Partition);
                                         }
                                         catch (Exception exception) when (IsRecoverableAcknowledgementFailure(exception))
@@ -266,7 +294,9 @@ public abstract partial class KafkaShareConsumerService<TKey, TValue> : Backgrou
                                             // The consumer keeps the renewal pending and the next attempt resends
                                             // it; until one is confirmed the lock keeps its previous deadline.
                                             if (_consumer is IHostedShareConsumer && _renewalConfirmed && !_acquisitionLost)
+                                            {
                                                 _lastRenewal = renewalStarted;
+                                            }
                                             LogRecoverableAcknowledgementFailure(exception, record.Topic, record.Partition);
                                         }
                                         catch (Exception exception)
@@ -291,7 +321,9 @@ public abstract partial class KafkaShareConsumerService<TKey, TValue> : Backgrou
                                     LogFailure(exception, record.Topic);
                                 }
                                 if (renewalFailure is not null)
+                                {
                                     ExceptionDispatchInfo.Capture(renewalFailure).Throw();
+                                }
                                 break;
                             }
                             catch (Exception exception) when (processingFailure is null && !processingToken.IsCancellationRequested)
@@ -301,17 +333,22 @@ public abstract partial class KafkaShareConsumerService<TKey, TValue> : Backgrou
                         }
                         processingToken.ThrowIfCancellationRequested();
                         if (IsAcquisitionLockExpired())
+                        {
                             AbandonExpiredAcquisition(record);
+                        }
                         else
+                        {
                             _consumer.Acknowledge(record, _recordDisposition);
+                        }
                         current = null;
                         if (Volatile.Read(ref _shutdownStarted) != 0)
+                        {
                             break;
+                        }
                     }
                     break;
                 }
-                catch (Exception exception) when (
-                    current is null && _acknowledgementFailure is null &&
+                catch (Exception exception) when (current is null && _acknowledgementFailure is null &&
                     !_pollCancellation.IsCancellationRequested && !_processingCancellation.IsCancellationRequested &&
                     (ServiceRestartPolicy.CanRestartAfter(exception) ||
                      IsStaleAcquisitionFailure(exception) || IsRecoverableAcknowledgementFailure(exception)))
@@ -326,7 +363,9 @@ public abstract partial class KafkaShareConsumerService<TKey, TValue> : Backgrou
                 }
             }
             if (_acknowledgementFailure is { } acknowledgementFailure)
+            {
                 ExceptionDispatchInfo.Capture(acknowledgementFailure).Throw();
+            }
         }
         catch (OperationCanceledException) when (_pollCancellation.IsCancellationRequested || _processingCancellation.IsCancellationRequested)
         {
@@ -423,14 +462,18 @@ public abstract partial class KafkaShareConsumerService<TKey, TValue> : Backgrou
             if (result.Exception is not { } exception)
             {
                 if (IsRenewing(result.TopicPartition))
+                {
                     _renewalConfirmed = true;
+                }
                 continue;
             }
             if (IsStaleAcquisitionFailure(exception))
             {
                 // Rejected acquisitions are redelivered by the broker, so at-least-once still holds.
                 if (IsRenewing(result.TopicPartition))
+                {
                     _acquisitionLost = true;
+                }
                 LogStaleAcquisition(exception, result.TopicPartition.Topic, result.TopicPartition.Partition);
                 continue;
             }
@@ -458,12 +501,16 @@ public abstract partial class KafkaShareConsumerService<TKey, TValue> : Backgrou
         // Any acknowledgement would be rejected with INVALID_RECORD_STATE and fail the other
         // acknowledgements for the partition, so send none. The broker redelivers the record.
         if (_consumer is IHostedShareConsumer hostedConsumer)
+        {
             hostedConsumer.AbandonAcquisition(record.Topic, record.Partition, record.Offset);
+        }
         else if (_acquisitionRenewed)
+        {
             // A decorated consumer cannot forward abandonment. Without a terminal outcome the
             // wrapped consumer would replay its renewed copy locally; Release clears that state
             // whether the broker accepts it or rejects it as stale.
             _consumer.Acknowledge(record, AcknowledgeType.Release);
+        }
         LogAcquisitionLockExpired(record.Topic, record.Partition, record.Offset);
     }
 
@@ -506,7 +553,9 @@ public abstract partial class KafkaShareConsumerService<TKey, TValue> : Backgrou
     {
         if (_retrySourceTopics?.ContainsKey(record.Topic) == true &&
             RetryTopicHeaders.TryGetDueAt(record.Headers, out var dueAt) && dueAt > DateTimeOffset.UtcNow)
+        {
             return ProcessWhenDueAsync(record, dueAt, cancellationToken);
+        }
         return ProcessAsync(record, cancellationToken);
     }
 
@@ -516,7 +565,10 @@ public abstract partial class KafkaShareConsumerService<TKey, TValue> : Backgrou
         while (dueAt > DateTimeOffset.UtcNow)
         {
             var remaining = dueAt - DateTimeOffset.UtcNow;
-            if (remaining <= TimeSpan.Zero) break;
+            if (remaining <= TimeSpan.Zero)
+            {
+                break;
+            }
             await Task.Delay(TimeSpan.FromMilliseconds(Math.Min(remaining.TotalMilliseconds, int.MaxValue - 1)), cancellationToken).ConfigureAwait(false);
         }
         await ProcessAsync(record, cancellationToken).ConfigureAwait(false);
@@ -561,7 +613,9 @@ public abstract partial class KafkaShareConsumerService<TKey, TValue> : Backgrou
             // The broker already redelivers a record whose lock lapsed. Never retry or route it
             // without a lock; the caller abandons it instead of acknowledging.
             if (IsAcquisitionLockExpired())
+            {
                 return;
+            }
             var delay = _retryPolicy?.GetNextDelay(attempt, exception);
             var retryInPlace = delay is not null || (_retryPolicy is null && retryTopics?.IsEnabled != true &&
                 attempt < (_deadLetterOptions?.MaxFailures ?? 1));
@@ -571,7 +625,9 @@ public abstract partial class KafkaShareConsumerService<TKey, TValue> : Backgrou
                 {
                     await Task.Delay(delay.Value, cancellationToken).ConfigureAwait(false);
                     if (IsAcquisitionLockExpired())
+                    {
                         return;
+                    }
                 }
                 attempt++;
                 try
@@ -601,7 +657,9 @@ public abstract partial class KafkaShareConsumerService<TKey, TValue> : Backgrou
                     // already in flight is not cancelled: a cancelled produce may still be delivered, so
                     // cancellation cannot remove the duplicate, only hide whether it happened.
                     if (IsAcquisitionLockExpired())
+                    {
                         return;
+                    }
                     stage = MessageFailureStage.RetryTopicRouting;
                     try
                     {
@@ -615,10 +673,15 @@ public abstract partial class KafkaShareConsumerService<TKey, TValue> : Backgrou
                         await OnRetryTopicRoutingFailedAsync(failure, record, cancellationToken).ConfigureAwait(false);
                     }
                 }
-                else exhausted = true;
+                else
+                {
+                    exhausted = true;
+                }
             }
             if (IsAcquisitionLockExpired())
+            {
                 return;
+            }
             if (_deadLetterPolicy is not null && (exhausted || _deadLetterPolicy.ShouldDeadLetter(converted, exception, failureCount)))
             {
                 stage = MessageFailureStage.DeadLetterRouting;
@@ -635,7 +698,9 @@ public abstract partial class KafkaShareConsumerService<TKey, TValue> : Backgrou
                     await OnDeadLetterRoutingFailedAsync(failure, record, cancellationToken).ConfigureAwait(false);
                 }
                 if (IsAcquisitionLockExpired())
+                {
                     return;
+                }
             }
             var disposition = await GetFailureDispositionAsync(new ShareMessageFailureContext<TKey, TValue>(record,
                 exception, attempt, failureCount, stage, routingException), cancellationToken).ConfigureAwait(false);
@@ -650,7 +715,9 @@ public abstract partial class KafkaShareConsumerService<TKey, TValue> : Backgrou
                 return;
             }
             if (disposition != MessageFailureDisposition.Retry)
+            {
                 throw new InvalidOperationException($"Unsupported message failure disposition: {disposition}.");
+            }
             ExceptionDispatchInfo.Capture(routingException ?? exception).Throw();
         }
     }
@@ -660,17 +727,25 @@ public abstract partial class KafkaShareConsumerService<TKey, TValue> : Backgrou
     {
         if (_producer is null || _consumer is not IRawShareRecordAccessor raw ||
             !raw.TryGetRawRecord(new TopicPartitionOffset(record.Topic, record.Partition, record.Offset), out var key, out var value))
+        {
             throw new InvalidOperationException("Raw record data is unavailable; the source record cannot be accepted.");
+        }
         await _producer.ProduceAsync(new ProducerMessage<byte[]?, byte[]?>
         {
-            Topic = topic, Key = key, Value = value, Headers = headers
+            Topic = topic,
+            Key = key,
+            Value = value,
+            Headers = headers
         }, cancellationToken).ConfigureAwait(false);
     }
 
     private string[] BuildTopics()
     {
         var source = Topics.ToArray();
-        if (_deadLetterOptions?.RetryTopics is not { IsEnabled: true } retryTopics) return source;
+        if (_deadLetterOptions?.RetryTopics is not { IsEnabled: true } retryTopics)
+        {
+            return source;
+        }
         var sourceTopics = new HashSet<string>(source, StringComparer.Ordinal);
         var topics = new HashSet<string>(source, StringComparer.Ordinal);
         _retrySourceTopics = new Dictionary<string, string>(StringComparer.Ordinal);
@@ -680,9 +755,14 @@ public abstract partial class KafkaShareConsumerService<TKey, TValue> : Backgrou
             {
                 topics.Add(retryTopic);
                 // Explicit source topics never inherit retry-control semantics from their names.
-                if (sourceTopics.Contains(retryTopic)) continue;
+                if (sourceTopics.Contains(retryTopic))
+                {
+                    continue;
+                }
                 if (_retrySourceTopics.TryGetValue(retryTopic, out var existingSource) && existingSource != topic)
+                {
                     throw new InvalidOperationException($"Retry topic '{retryTopic}' belongs to multiple source topics.");
+                }
                 _retrySourceTopics[retryTopic] = topic;
             }
         }
@@ -701,20 +781,31 @@ public abstract partial class KafkaShareConsumerService<TKey, TValue> : Backgrou
             if (header.Key == RetryTopicHeaders.SourceTopicKey || (!isRetryTopic && header.Key is
                 RetryTopicHeaders.SourcePartitionKey or RetryTopicHeaders.SourceOffsetKey or
                 RetryTopicHeaders.FailureCountKey or RetryTopicHeaders.DelayMsKey or RetryTopicHeaders.DueTimestampMsKey))
+            {
                 continue;
+            }
             headers.Add(header);
         }
         // Topic membership, not a message header, determines the original source topic.
-        if (isRetryTopic) headers.Add(RetryTopicHeaders.SourceTopicKey, sourceTopic);
+        if (isRetryTopic)
+        {
+            headers.Add(RetryTopicHeaders.SourceTopicKey, sourceTopic);
+        }
         return headers;
     }
 
     private void BeginShutdown()
     {
-        if (Interlocked.Exchange(ref _shutdownStarted, 1) != 0) return;
+        if (Interlocked.Exchange(ref _shutdownStarted, 1) != 0)
+        {
+            return;
+        }
         _shutdownCancellation.CancelAfter(_options.ShutdownTimeout);
         _pollCancellation.Cancel();
-        if (!_options.DrainOnShutdown) CancelProcessing();
+        if (!_options.DrainOnShutdown)
+        {
+            CancelProcessing();
+        }
     }
 
     public override async Task StopAsync(CancellationToken cancellationToken)

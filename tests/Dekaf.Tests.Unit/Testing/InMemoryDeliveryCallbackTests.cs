@@ -29,18 +29,23 @@ public sealed class InMemoryDeliveryCallbackTests
             ? new InMemoryProducer<string, string>(cluster, Serializers.String, serializer)
             : new InMemoryProducer<string, string>(cluster);
         if (deliveryFails && !suspended)
+        {
             cluster.FailProduces("events", deliveryFailure);
+        }
 
         var invocations = 0;
         RecordMetadata observedMetadata = default;
         Exception? observedError = null;
+
         void Handler(RecordMetadata metadata, Exception? error)
         {
             invocations++;
             observedMetadata = metadata;
             observedError = error;
             if (invocations == 1)
+            {
                 throw callbackFailure;
+            }
         }
 
         var pending = Send(producer, topicWrapper, Handler);
@@ -97,7 +102,9 @@ public sealed class InMemoryDeliveryCallbackTests
         await using var producer = new InMemoryProducer<string, string>(cluster);
         var failure = new InvalidOperationException("delivery failure");
         if (deliveryFails)
+        {
             cluster.FailProduces("events", failure);
+        }
 
         var invocations = 0;
         Exception? observedError = null;
@@ -134,13 +141,21 @@ public sealed class InMemoryDeliveryCallbackTests
         ? producer.ForTopic("events").FireAsync("key", "value", handler)
         : producer.FireAsync(new ProducerMessage<string, string>
         {
-            Topic = "events", Key = "key", Value = "value"
+            Topic = "events",
+            Key = "key",
+            Value = "value"
         }, handler);
 
     private sealed class PausedSerializer(Exception? failure) : IAsyncSerializer<string>
     {
-        public TaskCompletionSource Entered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        public TaskCompletionSource Release { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource Entered
+        {
+            get;
+        } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource Release
+        {
+            get;
+        } = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         public async ValueTask SerializeAsync(
             string value,
@@ -151,7 +166,9 @@ public sealed class InMemoryDeliveryCallbackTests
             Entered.TrySetResult();
             await Release.Task.WaitAsync(cancellationToken);
             if (failure is not null)
+            {
                 throw failure;
+            }
             destination.Write(Encoding.UTF8.GetBytes(value));
         }
     }

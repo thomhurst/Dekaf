@@ -7,7 +7,10 @@ internal sealed class PartitionRecordBatch<TKey, TValue>(int capacity) : IReadOn
 {
     private ConsumeResult<TKey, TValue>[] _records = new ConsumeResult<TKey, TValue>[Math.Min(capacity, 16)];
 
-    public int Count { get; private set; }
+    public int Count
+    {
+        get; private set;
+    }
 
     public ConsumeResult<TKey, TValue> this[int index] => (uint)index < (uint)Count
         ? _records[index]
@@ -16,7 +19,9 @@ internal sealed class PartitionRecordBatch<TKey, TValue>(int capacity) : IReadOn
     internal void Add(ConsumeResult<TKey, TValue> record)
     {
         if (Count == _records.Length)
+        {
             Array.Resize(ref _records, (int)Math.Min((long)_records.Length * 2, capacity));
+        }
         _records[Count++] = record;
     }
 
@@ -46,12 +51,16 @@ internal sealed class PartitionRecordBatch<TKey, TValue>(int capacity) : IReadOn
         public bool MoveNext()
         {
             if (_index < count)
+            {
                 _index++;
+            }
             return _index < count;
         }
 
         public void Reset() => _index = -1;
 
-        public void Dispose() { }
+        public void Dispose()
+        {
+        }
     }
 }

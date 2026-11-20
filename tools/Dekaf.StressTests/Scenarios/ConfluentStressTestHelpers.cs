@@ -205,7 +205,8 @@ internal static class ConfluentStressTestHelpers
         Console.WriteLine($"  Warming up {scenario.Client} {scenario.Name}: {options.ProducerWarmupSeconds}s of workload in six drain/reuse cycles...");
         await producer.ProduceAsync(options.Topic, new ConfluentKafka.Message<string, string>
         {
-            Key = StressTestHelpers.GetKey(0), Value = value
+            Key = StressTestHelpers.GetKey(0),
+            Value = value
         }, cancellationToken).ConfigureAwait(false);
         throughput.Warmup = await ProducerWarmup.RunAsync(
             options.ProducerWarmupSeconds,

@@ -44,7 +44,10 @@ public class HostedConsumerLoopBenchmarks
     // Only startup calls reach the proxy; records come from the reusable enumerable.
     public class FixedRecordsConsumerProxy : DispatchProxy
     {
-        public FixedRecords Records { get; set; } = null!;
+        public FixedRecords Records
+        {
+            get; set;
+        } = null!;
 
         protected override object? Invoke(MethodInfo? targetMethod, object?[]? args) => targetMethod?.Name switch
         {
@@ -79,7 +82,9 @@ public class HostedConsumerLoopBenchmarks
             CancellationToken cancellationToken = default)
         {
             for (var index = 0; index < count; index++)
+            {
                 yield return _result;
+            }
 
             await Task.CompletedTask.ConfigureAwait(false);
         }
@@ -145,8 +150,14 @@ public class HostedShareConsumerLoopBenchmarks
         };
 
         public ShareAcknowledgementMode AcknowledgementMode => ShareAcknowledgementMode.Explicit;
-        public StringSet Subscription { get; } = new HashSet<string>();
-        public PartitionSet Assignment { get; } = new HashSet<TopicPartition>();
+        public StringSet Subscription
+        {
+            get;
+        } = new HashSet<string>();
+        public PartitionSet Assignment
+        {
+            get;
+        } = new HashSet<TopicPartition>();
         public string? MemberId => "benchmark-member";
 
         // No broker-reported lock timeout: the service skips acquisition deadline checks.
@@ -160,7 +171,9 @@ public class HostedShareConsumerLoopBenchmarks
             [EnumeratorCancellation] CancellationToken cancellationToken = default)
         {
             for (var index = 0; index < count; index++)
+            {
                 yield return _record;
+            }
 
             await Task.CompletedTask.ConfigureAwait(false);
         }

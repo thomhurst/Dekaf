@@ -18,7 +18,9 @@ public sealed class PartitionedBackpressureIntegrationTests(KafkaTestContainer k
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers).BuildAsync();
         for (var offset = 0; offset < 3; offset++)
+        {
             await producer.ProduceAsync(topic, "key", offset.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        }
 
         var allowCommit = NewSignal();
         var firstCommitted = NewSignal();
@@ -41,7 +43,8 @@ public sealed class PartitionedBackpressureIntegrationTests(KafkaTestContainer k
                 stop.Cancel();
                 allowCommit.TrySetResult();
                 commitQueued.Wait(timeout.Token);
-            } : null))
+            }
+        : null))
             .BuildAsync();
         await using var admin = Kafka.CreateAdminClient()
             .WithBootstrapServers(KafkaContainer.BootstrapServers).Build();
@@ -52,7 +55,9 @@ public sealed class PartitionedBackpressureIntegrationTests(KafkaTestContainer k
             await foreach (var record in context.Messages.WithCancellation(token))
             {
                 if (record.Offset == 0)
+                {
                     await allowCommit.Task.WaitAsync(token);
+                }
                 context.MarkProcessed(record);
                 var committing = context.CommitProcessedAsync(token);
                 commitQueued.Set();
@@ -61,10 +66,14 @@ public sealed class PartitionedBackpressureIntegrationTests(KafkaTestContainer k
                 {
                     firstCommitted.TrySetResult();
                     if (!shutdown)
+                    {
                         await releaseFirst.Task.WaitAsync(token);
+                    }
                 }
                 if (record.Offset == 2)
+                {
                     allCommitted.TrySetResult();
+                }
             }
         }, new PartitionedProcessingOptions
         {
@@ -105,7 +114,10 @@ public sealed class PartitionedBackpressureIntegrationTests(KafkaTestContainer k
             allowCommit.TrySetResult();
             releaseFirst.TrySetResult();
             await stop.CancelAsync();
-            try { await running; }
+            try
+            {
+                await running;
+            }
             catch (OperationCanceledException) when (stop.IsCancellationRequested)
             {
                 await Assert.That(running.IsCanceled).IsTrue();
@@ -164,12 +176,16 @@ public sealed class PartitionedBackpressureIntegrationTests(KafkaTestContainer k
             var now = Interlocked.Increment(ref active);
             var observed = Volatile.Read(ref maxActive);
             while (now > observed && Interlocked.CompareExchange(ref maxActive, now, observed) != observed)
+            {
                 observed = Volatile.Read(ref maxActive);
+            }
 
             await Task.Yield();
             Interlocked.Decrement(ref active);
             if (Interlocked.Increment(ref processed) == partitionCount * recordsPerPartition)
+            {
                 allProcessed.TrySetResult();
+            }
         }, new PartitionedProcessingOptions
         {
             Ordering = ordering,
@@ -188,7 +204,10 @@ public sealed class PartitionedBackpressureIntegrationTests(KafkaTestContainer k
         finally
         {
             await stop.CancelAsync();
-            try { await running.WaitAsync(timeout.Token); }
+            try
+            {
+                await running.WaitAsync(timeout.Token);
+            }
             catch (OperationCanceledException) when (stop.IsCancellationRequested)
             {
             }
@@ -197,7 +216,9 @@ public sealed class PartitionedBackpressureIntegrationTests(KafkaTestContainer k
         // Shutdown commits every partition's completed offset, so no paused partition was left behind.
         var offsets = await admin.ListConsumerGroupOffsetsAsync(groupId, timeout.Token);
         for (var partition = 0; partition < partitionCount; partition++)
+        {
             await Assert.That(offsets[new TopicPartition(topic, partition)]).IsEqualTo(recordsPerPartition);
+        }
     }
 
     private static TaskCompletionSource NewSignal() => new(TaskCreationOptions.RunContinuationsAsynchronously);

@@ -13,7 +13,10 @@ namespace Dekaf.Benchmarks.Benchmarks.Unit;
 public class InMemoryPendingOffsetQueryBenchmarks
 {
     [Params(1, 16, 64)]
-    public int Transactions { get; set; }
+    public int Transactions
+    {
+        get; set;
+    }
 
     private InMemoryAdminClient _admin = null!;
     private InMemoryProducer<string, string>[] _producers = null!;
@@ -46,9 +49,13 @@ public class InMemoryPendingOffsetQueryBenchmarks
         _query = new() { ["group"] = new() { TopicPartitions = selected } };
         // A matching partition must remain blocked while the measured selection is ready.
         if (cluster.TryGetStableGroupOffsetDetails("group", [new("orders", 0)], out _, out _))
+        {
             throw new InvalidOperationException("Benchmark requires pending transactional offsets.");
+        }
         if (!StableQueryWithPendingTransactions().IsCompletedSuccessfully)
+        {
             throw new InvalidOperationException("Measured selection must complete synchronously.");
+        }
     }
 
     [Benchmark]

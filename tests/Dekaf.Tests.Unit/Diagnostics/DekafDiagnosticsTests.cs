@@ -319,9 +319,13 @@ public sealed class DekafDiagnosticsTests
         // ("System.Byte[]") is not meaningful.
         object key = new byte[] { 0x01, 0x02, 0x03 };
         if (key is string stringKey)
+        {
             activity!.SetTag(DekafDiagnostics.MessagingMessageKey, stringKey);
+        }
         else if (key is not null and not byte[])
+        {
             activity!.SetTag(DekafDiagnostics.MessagingMessageKey, key.ToString());
+        }
 
         // Verify the key tag is NOT set for byte[] keys
         var keyTag = activity!.GetTagItem(DekafDiagnostics.MessagingMessageKey);
@@ -345,9 +349,13 @@ public sealed class DekafDiagnosticsTests
         // Non-string, non-byte[] keys use ToString() which produces a meaningful value.
         object key = 42;
         if (key is string stringKey)
+        {
             activity!.SetTag(DekafDiagnostics.MessagingMessageKey, stringKey);
+        }
         else if (key is not null and not byte[])
+        {
             activity!.SetTag(DekafDiagnostics.MessagingMessageKey, key.ToString());
+        }
 
         // Verify the key tag is set to the string representation of the int
         var tags = activity!.Tags.ToDictionary(t => t.Key, t => t.Value);

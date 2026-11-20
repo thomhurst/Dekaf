@@ -135,7 +135,9 @@ public class TransactionTests(KafkaTestContainer kafka) : TransactionalKafkaInte
         {
             var record = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(30), cts.Token);
             if (record is null)
+            {
                 break;
+            }
             values.Add(record.Value.Value);
         }
 
@@ -293,11 +295,15 @@ public class TransactionTests(KafkaTestContainer kafka) : TransactionalKafkaInte
         {
             var consumed = await consumer.ConsumeOneAsync(quietTimeout, cancellationToken);
             if (consumed is null)
+            {
                 break;
+            }
 
             values.Add(consumed.Value.Value);
             if (values.Count >= CommittedCount)
+            {
                 quietTimeout = TimeSpan.FromSeconds(3);
+            }
         }
 
         var expected = Enumerable.Range(0, CommittedCount).Select(i => $"committed-{i}").ToArray();
@@ -378,7 +384,9 @@ public class TransactionTests(KafkaTestContainer kafka) : TransactionalKafkaInte
         {
             var consumed = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(30), cancellationToken);
             if (consumed is null)
+            {
                 break;
+            }
 
             keys.Add(consumed.Value.Key!);
         }
@@ -485,7 +493,9 @@ public class TransactionTests(KafkaTestContainer kafka) : TransactionalKafkaInte
         {
             messages.Add(batch.Value);
             if (messages.Count >= 5)
+            {
                 break;
+            }
         }
 
         await Assert.That(messages).Count().IsEqualTo(5);
@@ -547,7 +557,9 @@ public class TransactionTests(KafkaTestContainer kafka) : TransactionalKafkaInte
         {
             messages.Add(batch.Value);
             if (messages.Count >= 2)
+            {
                 break;
+            }
         }
 
         await Assert.That(messages).Count().IsEqualTo(2);

@@ -92,7 +92,8 @@ public sealed class InMemoryMemberRemovalTests
         var exception = await Assert.That(async () => await concrete.RemoveMembersFromConsumerGroupAsync("group",
             new ConsumerGroupMemberRemovalOptions
             {
-                RemoveAll = removeAll, TimeoutMs = 0,
+                RemoveAll = removeAll,
+                TimeoutMs = 0,
                 Members = removeAll ? [] : [new ConsumerGroupMemberIdentity { MemberId = "member" }]
             })).Throws<KafkaTimeoutException>();
         await Assert.That(exception!.Configured).IsEqualTo(TimeSpan.Zero);
@@ -205,20 +206,26 @@ public sealed class InMemoryMemberRemovalTests
         {
             var registration = cluster.RegisterShareGroupMember("group", "member");
             if (groupType == "empty-share")
+            {
                 cluster.UnregisterShareGroupMember("group", "member", registration);
+            }
         }
         await using var admin = new InMemoryAdminClient(cluster);
         var exception = await Assert.That(async () =>
         {
             if (mode == "legacy")
+            {
                 await admin.RemoveMembersFromConsumerGroupAsync("group",
                     [new ConsumerGroupMemberToRemove { GroupInstanceId = "instance" }]);
+            }
             else
+            {
                 await admin.RemoveMembersFromConsumerGroupAsync("group", new ConsumerGroupMemberRemovalOptions
                 {
                     RemoveAll = mode == "all",
                     Members = mode == "all" ? [] : [new ConsumerGroupMemberIdentity { MemberId = "member" }]
                 });
+            }
         }).Throws<GroupException>();
         await Assert.That(exception!.ErrorCode).IsEqualTo(ErrorCode.UnsupportedVersion);
         await Assert.That(exception.GroupId).IsEqualTo("group");

@@ -30,9 +30,11 @@ internal sealed class ControllerMetadataManager : IDisposable
     {
         ArgumentNullException.ThrowIfNull(options);
         if (options.MetadataRefreshInterval < TimeSpan.Zero)
+        {
             throw new ArgumentOutOfRangeException(
                 nameof(options),
                 "Controller metadata refresh interval must not be negative.");
+        }
 
         _connectionPool = connectionPool;
         _versionManager = versionManager;
@@ -58,9 +60,13 @@ internal sealed class ControllerMetadataManager : IDisposable
         var initializationStartedAt = Stopwatch.GetTimestamp();
         using var initializationCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         if (_options.InitTimeoutMs <= 0)
+        {
             initializationCts.Cancel();
+        }
         else
+        {
             initializationCts.CancelAfter(_options.InitTimeoutMs);
+        }
         var initializationToken = initializationCts.Token;
         try
         {
@@ -79,7 +85,9 @@ internal sealed class ControllerMetadataManager : IDisposable
         {
             var snapshot = Snapshot;
             if (!force && !IsRefreshDue(snapshot))
+            {
                 return;
+            }
 
             var endpoints = BuildRefreshEndpoints(snapshot, _bootstrapEndpoints);
             var electionFailureCount = 0;
@@ -137,7 +145,9 @@ internal sealed class ControllerMetadataManager : IDisposable
 
                             var controllers = new Dictionary<int, ControllerEndpoint>(response.Nodes.Count);
                             foreach (var node in response.Nodes)
+                            {
                                 controllers[node.NodeId] = new ControllerEndpoint(node.NodeId, node.Host, node.Port, node.Rack);
+                            }
 
                             if (!controllers.ContainsKey(response.ControllerId))
                             {
@@ -175,18 +185,24 @@ internal sealed class ControllerMetadataManager : IDisposable
                     if (!electionPending)
                     {
                         if (lastException is not null)
+                        {
                             ExceptionDispatchInfo.Capture(lastException).Throw();
+                        }
 
                         throw new InvalidOperationException("Unable to discover an active KRaft controller.");
                     }
 
                     if (electionFailureCount >= _options.MaxInitRetries)
+                    {
                         ExceptionDispatchInfo.Capture(lastException!).Throw();
+                    }
 
                     var elapsed = Stopwatch.GetElapsedTime(initializationStartedAt);
                     var remainingMs = _options.InitTimeoutMs - elapsed.TotalMilliseconds;
                     if (remainingMs <= 0)
+                    {
                         throw CreateInitializationTimeout(initializationStartedAt, lastException!);
+                    }
 
                     var backoffMs = ExponentialRetryBackoff.CalculateDelayMilliseconds(
                         _options.RetryBackoffMs,
@@ -220,7 +236,9 @@ internal sealed class ControllerMetadataManager : IDisposable
         EnsureSupported(apiKey);
         var snapshot = Snapshot;
         if (!snapshot.Controllers.TryGetValue(snapshot.ActiveControllerId, out var endpoint))
+        {
             throw new KafkaException(ErrorCode.UnknownControllerId, "No active controller endpoint is available.");
+        }
 
         return await _connectionPool.LeaseConnectionAsync(endpoint.Host, endpoint.Port, cancellationToken)
             .ConfigureAwait(false);
@@ -233,7 +251,9 @@ internal sealed class ControllerMetadataManager : IDisposable
     {
         EnsureSupported(apiKey);
         if (!Snapshot.Controllers.TryGetValue(controllerId, out var endpoint))
+        {
             throw new KafkaException(ErrorCode.UnknownControllerId, $"Unknown controller ID: {controllerId}.");
+        }
 
         return await _connectionPool.LeaseConnectionAsync(endpoint.Host, endpoint.Port, cancellationToken)
             .ConfigureAwait(false);
@@ -274,7 +294,9 @@ internal sealed class ControllerMetadataManager : IDisposable
     public void Dispose()
     {
         if (Interlocked.Exchange(ref _disposed, 1) == 0)
+        {
             _refreshLock.Dispose();
+        }
     }
 
     private static IReadOnlyList<ControllerEndpoint> ParseEndpoints(IReadOnlyList<string> values)
@@ -283,26 +305,38 @@ internal sealed class ControllerMetadataManager : IDisposable
         foreach (var value in values)
         {
             if (string.IsNullOrWhiteSpace(value))
+            {
                 throw InvalidEndpoint(value);
+            }
 
             var colon = value.LastIndexOf(':');
             if (colon <= 0 || colon == value.Length - 1)
+            {
                 throw InvalidEndpoint(value);
+            }
 
 #if NETSTANDARD2_0
             if (!int.TryParse(value.Substring(colon + 1), out var port))
 #else
             if (!int.TryParse(value.AsSpan(colon + 1), out var port))
 #endif
+            {
                 throw InvalidEndpoint(value);
+            }
             if (port is < 1 or > ushort.MaxValue)
+            {
                 throw InvalidEndpoint(value);
+            }
 
             var host = value[..colon];
             if (host.Length > 1 && host[0] == '[' && host[^1] == ']')
+            {
                 host = host[1..^1];
+            }
             if (string.IsNullOrWhiteSpace(host))
+            {
                 throw InvalidEndpoint(value);
+            }
 
             endpoints.Add(new ControllerEndpoint(-1, host, port, null));
         }
@@ -343,13 +377,17 @@ internal sealed class ControllerMetadataManager : IDisposable
         foreach (var endpoint in snapshot.Controllers.Values)
         {
             if (seen.Add((endpoint.Host, endpoint.Port)))
+            {
                 result.Add(endpoint);
+            }
         }
 
         foreach (var endpoint in bootstrapEndpoints)
         {
             if (seen.Add((endpoint.Host, endpoint.Port)))
+            {
                 result.Add(endpoint);
+            }
         }
 
         return result;
@@ -369,7 +407,9 @@ internal sealed class ControllerMetadataManager : IDisposable
         foreach (var controller in controllers.Values)
         {
             if (HasSameAddress(endpoint, controller))
+            {
                 return endpoint with { NodeId = controller.NodeId };
+            }
         }
 
         return endpoint with { NodeId = -1 };
@@ -389,11 +429,15 @@ internal sealed class ControllerMetadataManager : IDisposable
         foreach (var pair in previous.DiscoveryConnections)
         {
             if (!controllers.ContainsKey(pair.Key))
+            {
                 continue;
+            }
 
             var liveAliases = RetainRepresentedAliases(pair.Value, statusSource);
             if (liveAliases.Length > 0)
+            {
                 result.Add(pair.Key, liveAliases);
+            }
         }
 
         var discovery = IdentifyDiscoveryConnection(endpoint, controllers);
@@ -401,7 +445,9 @@ internal sealed class ControllerMetadataManager : IDisposable
         {
             var alias = new ConnectionStatusEndpointAlias(discovery.Host, discovery.Port);
             if (!result.TryGetValue(discovery.NodeId, out var aliases))
+            {
                 result.Add(discovery.NodeId, [alias]);
+            }
             else if (!ContainsAlias(aliases, alias))
             {
                 var expanded = new ConnectionStatusEndpointAlias[aliases.Length + 1];
@@ -419,7 +465,9 @@ internal sealed class ControllerMetadataManager : IDisposable
         IConnectionPoolStatusSource? statusSource)
     {
         if (statusSource is null)
+        {
             return aliases;
+        }
 
         var firstMissing = -1;
         for (var i = 0; i < aliases.Length; i++)
@@ -433,7 +481,9 @@ internal sealed class ControllerMetadataManager : IDisposable
         }
 
         if (firstMissing < 0)
+        {
             return aliases;
+        }
 
         var retained = new ConnectionStatusEndpointAlias[aliases.Length - 1];
         Array.Copy(aliases, retained, firstMissing);
@@ -442,13 +492,19 @@ internal sealed class ControllerMetadataManager : IDisposable
         {
             var alias = aliases[i];
             if (statusSource.ContainsEndpointConnection(alias.Host, alias.Port))
+            {
                 retained[destination++] = alias;
+            }
         }
 
         if (destination == 0)
+        {
             return [];
+        }
         if (destination != retained.Length)
+        {
             Array.Resize(ref retained, destination);
+        }
 
         return retained;
     }
@@ -460,7 +516,9 @@ internal sealed class ControllerMetadataManager : IDisposable
         for (var i = 0; i < aliases.Length; i++)
         {
             if (aliases[i] == candidate)
+            {
                 return true;
+            }
         }
 
         return false;
@@ -474,7 +532,10 @@ internal sealed record ControllerMetadataSnapshot(
     IReadOnlyDictionary<int, ConnectionStatusEndpointAlias[]> DiscoveryConnections,
     DateTimeOffset LastRefreshed)
 {
-    internal static ControllerMetadataSnapshot Empty { get; } = new(
+    internal static ControllerMetadataSnapshot Empty
+    {
+        get;
+    } = new(
         null,
         -1,
         new Dictionary<int, ControllerEndpoint>(),

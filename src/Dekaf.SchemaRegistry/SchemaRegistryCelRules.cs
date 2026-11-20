@@ -64,7 +64,9 @@ public sealed class CelSchemaRegistryRuleHandler : ISchemaRegistryRuleTransformR
             }
 
             if (!value.Boolean)
+            {
                 throw new SchemaRegistryRuleException($"CEL condition rule '{context.Rule.Name}' evaluated to false.");
+            }
 
             return payload;
         }
@@ -131,9 +133,18 @@ public sealed class CelSchemaRegistryRuleHandler : ISchemaRegistryRuleTransformR
         ReadOnlyMemory<byte> Utf8,
         long Number)
     {
-        public static CelValue Null { get; } = new(CelValueKind.Null, false, string.Empty, default, 0);
-        public static CelValue True { get; } = new(CelValueKind.Boolean, true, string.Empty, default, 0);
-        public static CelValue False { get; } = new(CelValueKind.Boolean, false, string.Empty, default, 0);
+        public static CelValue Null
+        {
+            get;
+        } = new(CelValueKind.Null, false, string.Empty, default, 0);
+        public static CelValue True
+        {
+            get;
+        } = new(CelValueKind.Boolean, true, string.Empty, default, 0);
+        public static CelValue False
+        {
+            get;
+        } = new(CelValueKind.Boolean, false, string.Empty, default, 0);
         public static CelValue FromBoolean(bool value) => value ? True : False;
         public static CelValue FromString(string? value) =>
             value is null ? Null : new CelValue(CelValueKind.String, false, value, default, 0);
@@ -160,7 +171,9 @@ public sealed class CelSchemaRegistryRuleHandler : ISchemaRegistryRuleTransformR
         {
             var expression = rule.Expr;
             if (string.IsNullOrWhiteSpace(expression))
+            {
                 throw new SchemaRegistryRuleException($"CEL rule '{rule.Name}' has no expression.");
+            }
 
             return new ParsedCelExpression(new CelExpressionParser(expression).Parse());
         }
@@ -205,30 +218,29 @@ public sealed class CelSchemaRegistryRuleHandler : ISchemaRegistryRuleTransformR
 
     private sealed class FunctionNode(string name, CelNode[] arguments) : CelNode
     {
-        public override CelValue Evaluate(CelEvaluationContext context)
-            => name switch
-            {
-                "metadata" => CelValue.FromString(GetMetadataProperty(
-                    context,
-                    ExpectUtf16Argument(name, arguments, 0, 1, context))),
-                "hasMetadata" => CelValue.FromBoolean(GetMetadataProperty(
-                    context,
-                    ExpectUtf16Argument(name, arguments, 0, 1, context)) is not null),
-                "hasTag" or "tagged" => CelValue.FromBoolean(HasTag(
-                    context,
-                    ExpectUtf16Argument(name, arguments, 0, 2, context),
-                    ExpectUtf16Argument(name, arguments, 1, 2, context))),
-                "contains" => CelValue.FromBoolean(Contains(
-                    ExpectStringArgument(name, arguments, 0, 2, context),
-                    ExpectStringArgument(name, arguments, 1, 2, context))),
-                "startsWith" => CelValue.FromBoolean(StartsWith(
-                    ExpectStringArgument(name, arguments, 0, 2, context),
-                    ExpectStringArgument(name, arguments, 1, 2, context))),
-                "endsWith" => CelValue.FromBoolean(EndsWith(
-                    ExpectStringArgument(name, arguments, 0, 2, context),
-                    ExpectStringArgument(name, arguments, 1, 2, context))),
-                _ => throw Unsupported($"Unsupported CEL function '{name}'.")
-            };
+        public override CelValue Evaluate(CelEvaluationContext context) => name switch
+        {
+            "metadata" => CelValue.FromString(GetMetadataProperty(
+                context,
+                ExpectUtf16Argument(name, arguments, 0, 1, context))),
+            "hasMetadata" => CelValue.FromBoolean(GetMetadataProperty(
+                context,
+                ExpectUtf16Argument(name, arguments, 0, 1, context)) is not null),
+            "hasTag" or "tagged" => CelValue.FromBoolean(HasTag(
+                context,
+                ExpectUtf16Argument(name, arguments, 0, 2, context),
+                ExpectUtf16Argument(name, arguments, 1, 2, context))),
+            "contains" => CelValue.FromBoolean(Contains(
+                ExpectStringArgument(name, arguments, 0, 2, context),
+                ExpectStringArgument(name, arguments, 1, 2, context))),
+            "startsWith" => CelValue.FromBoolean(StartsWith(
+                ExpectStringArgument(name, arguments, 0, 2, context),
+                ExpectStringArgument(name, arguments, 1, 2, context))),
+            "endsWith" => CelValue.FromBoolean(EndsWith(
+                ExpectStringArgument(name, arguments, 0, 2, context),
+                ExpectStringArgument(name, arguments, 1, 2, context))),
+            _ => throw Unsupported($"Unsupported CEL function '{name}'.")
+        };
     }
 
     private sealed class NotNode(CelNode operand) : CelNode
@@ -265,7 +277,9 @@ public sealed class CelSchemaRegistryRuleHandler : ISchemaRegistryRuleTransformR
     private static string? GetMetadataProperty(CelEvaluationContext context, string name)
     {
         if (string.IsNullOrEmpty(name))
+        {
             throw Unsupported("Metadata property name cannot be empty.");
+        }
 
         return context.RuleContext.PayloadContext.Schema?.Metadata?.Properties?.TryGetValue(name, out var value) == true
             ? value
@@ -275,7 +289,9 @@ public sealed class CelSchemaRegistryRuleHandler : ISchemaRegistryRuleTransformR
     private static bool HasTag(CelEvaluationContext context, string path, string tag)
     {
         if (context.RuleContext.PayloadContext.Schema?.Metadata?.Tags is not { } tags)
+        {
             return false;
+        }
 
         return tags.TryGetValue(path, out var pathTags) && pathTags.Contains(tag);
     }
@@ -295,7 +311,9 @@ public sealed class CelSchemaRegistryRuleHandler : ISchemaRegistryRuleTransformR
 
         var value = arguments[index].Evaluate(context);
         if (value.Kind is not (CelValueKind.String or CelValueKind.Utf8String))
+        {
             throw Unsupported($"CEL function '{functionName}' argument {index + 1} must be a string.");
+        }
 
         return value;
     }
@@ -374,7 +392,9 @@ public sealed class CelSchemaRegistryRuleHandler : ISchemaRegistryRuleTransformR
         private CelNode ParseUnary()
         {
             if (!TryTake(CelTokenKind.Not))
+            {
                 return ParsePrimary();
+            }
 
             return new NotNode(ParseUnary());
         }
@@ -415,7 +435,9 @@ public sealed class CelSchemaRegistryRuleHandler : ISchemaRegistryRuleTransformR
         {
             Take();
             if (!TryTake(CelTokenKind.LeftParen))
+            {
                 return new IdentifierNode(identifier);
+            }
 
             var arguments = new List<CelNode>();
             if (!TryTake(CelTokenKind.RightParen))
@@ -436,7 +458,9 @@ public sealed class CelSchemaRegistryRuleHandler : ISchemaRegistryRuleTransformR
         {
             SkipWhitespace();
             if (_position >= _expression.Length)
+            {
                 return new CelToken(CelTokenKind.End, string.Empty);
+            }
 
             var ch = _expression[_position];
             switch (ch)
@@ -473,10 +497,14 @@ public sealed class CelSchemaRegistryRuleHandler : ISchemaRegistryRuleTransformR
                     return ReadString(ch);
                 default:
                     if (char.IsDigit(ch))
+                    {
                         return ReadNumber();
+                    }
 
                     if (IsIdentifierStart(ch))
+                    {
                         return ReadIdentifier();
+                    }
 
                     throw Unsupported($"Unsupported CEL character '{ch}'.");
             }
@@ -520,7 +548,9 @@ public sealed class CelSchemaRegistryRuleHandler : ISchemaRegistryRuleTransformR
             {
                 var ch = _expression[_position++];
                 if (ch == quote)
+                {
                     return new CelToken(CelTokenKind.String, builder.ToString());
+                }
 
                 if (ch != '\\')
                 {
@@ -529,7 +559,9 @@ public sealed class CelSchemaRegistryRuleHandler : ISchemaRegistryRuleTransformR
                 }
 
                 if (_position >= _expression.Length)
+                {
                     throw Unsupported("Unterminated CEL string escape.");
+                }
 
                 var escaped = _expression[_position++];
                 builder.Append(escaped switch
@@ -561,7 +593,9 @@ public sealed class CelSchemaRegistryRuleHandler : ISchemaRegistryRuleTransformR
         private bool TryTake(CelTokenKind kind)
         {
             if (_current.Kind != kind)
+            {
                 return false;
+            }
 
             Take();
             return true;
@@ -570,7 +604,9 @@ public sealed class CelSchemaRegistryRuleHandler : ISchemaRegistryRuleTransformR
         private void Expect(CelTokenKind kind)
         {
             if (_current.Kind != kind)
+            {
                 throw Unsupported($"Expected {kind} but found '{_current.Text}'.");
+            }
 
             Take();
         }
@@ -581,10 +617,14 @@ public sealed class CelSchemaRegistryRuleHandler : ISchemaRegistryRuleTransformR
     private static bool AreEqual(CelValue left, CelValue right)
     {
         if (IsString(left) && IsString(right))
+        {
             return StringEquals(left, right);
+        }
 
         if (left.Kind != right.Kind)
+        {
             return false;
+        }
 
         return left.Kind switch
         {
@@ -598,7 +638,9 @@ public sealed class CelSchemaRegistryRuleHandler : ISchemaRegistryRuleTransformR
     private static bool StringEquals(CelValue left, CelValue right)
     {
         if (left.Kind == CelValueKind.String && right.Kind == CelValueKind.String)
+        {
             return string.Equals(left.String, right.String, StringComparison.Ordinal);
+        }
 
         return GetUtf8Span(left).SequenceEqual(GetUtf8Span(right));
     }
@@ -606,7 +648,9 @@ public sealed class CelSchemaRegistryRuleHandler : ISchemaRegistryRuleTransformR
     private static bool Contains(CelValue value, CelValue candidate)
     {
         if (value.Kind == CelValueKind.String && candidate.Kind == CelValueKind.String)
+        {
             return value.String.Contains(candidate.String, StringComparison.Ordinal);
+        }
 
         return GetUtf8Span(value).IndexOf(GetUtf8Span(candidate)) >= 0;
     }
@@ -614,7 +658,9 @@ public sealed class CelSchemaRegistryRuleHandler : ISchemaRegistryRuleTransformR
     private static bool StartsWith(CelValue value, CelValue candidate)
     {
         if (value.Kind == CelValueKind.String && candidate.Kind == CelValueKind.String)
+        {
             return value.String.StartsWith(candidate.String, StringComparison.Ordinal);
+        }
 
         return GetUtf8Span(value).StartsWith(GetUtf8Span(candidate));
     }
@@ -622,7 +668,9 @@ public sealed class CelSchemaRegistryRuleHandler : ISchemaRegistryRuleTransformR
     private static bool EndsWith(CelValue value, CelValue candidate)
     {
         if (value.Kind == CelValueKind.String && candidate.Kind == CelValueKind.String)
+        {
             return value.String.EndsWith(candidate.String, StringComparison.Ordinal);
+        }
 
         return GetUtf8Span(value).EndsWith(GetUtf8Span(candidate));
     }
@@ -638,7 +686,9 @@ public sealed class CelSchemaRegistryRuleHandler : ISchemaRegistryRuleTransformR
     private static ReadOnlySpan<byte> GetUtf8Span(CelValue value)
     {
         if (value.Kind == CelValueKind.Utf8String)
+        {
             return value.Utf8.Span;
+        }
 
         return (t_utf8Values ??= new Utf8TextCache()).Get(value.String);
     }
@@ -708,7 +758,9 @@ public sealed class CelSchemaRegistryRuleHandler : ISchemaRegistryRuleTransformR
     private static bool AsBoolean(CelValue value)
     {
         if (value.Kind == CelValueKind.Boolean)
+        {
             return value.Boolean;
+        }
 
         throw Unsupported("CEL logical operators require boolean operands.");
     }

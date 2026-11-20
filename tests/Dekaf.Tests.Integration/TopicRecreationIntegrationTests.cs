@@ -335,7 +335,9 @@ public sealed class TopicRecreationIntegrationTests(KafkaTestContainer kafka) : 
             var record = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(2), cancellationToken)
                 .ConfigureAwait(false);
             if (record is not null)
+            {
                 records.Add(record.Value);
+            }
         }
 
         return records;
@@ -351,7 +353,9 @@ public sealed class TopicRecreationIntegrationTests(KafkaTestContainer kafka) : 
             var record = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(2), cancellationToken)
                 .ConfigureAwait(false);
             if (record is not null && predicate(record.Value))
+            {
                 return record.Value;
+            }
         }
     }
 
@@ -470,8 +474,7 @@ public sealed class TopicRecreationIntegrationTests(KafkaTestContainer kafka) : 
                     return description.TopicId;
                 }
             }
-            catch (KafkaException exception) when (
-                exception.ErrorCode is ErrorCode.UnknownTopicOrPartition or ErrorCode.UnknownTopicId)
+            catch (KafkaException exception) when (exception.ErrorCode is ErrorCode.UnknownTopicOrPartition or ErrorCode.UnknownTopicId)
             {
             }
 
@@ -496,8 +499,7 @@ public sealed class TopicRecreationIntegrationTests(KafkaTestContainer kafka) : 
                     return;
                 }
             }
-            catch (KafkaException exception) when (
-                exception.ErrorCode is ErrorCode.UnknownTopicOrPartition or ErrorCode.UnknownTopicId)
+            catch (KafkaException exception) when (exception.ErrorCode is ErrorCode.UnknownTopicOrPartition or ErrorCode.UnknownTopicId)
             {
                 return;
             }

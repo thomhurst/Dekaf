@@ -30,22 +30,34 @@ public sealed class FetchResponse : IKafkaResponse
     /// <summary>
     /// Throttle time in milliseconds.
     /// </summary>
-    public int ThrottleTimeMs { get; internal set; }
+    public int ThrottleTimeMs
+    {
+        get; internal set;
+    }
 
     /// <summary>
     /// Top-level error code.
     /// </summary>
-    public ErrorCode ErrorCode { get; internal set; }
+    public ErrorCode ErrorCode
+    {
+        get; internal set;
+    }
 
     /// <summary>
     /// Fetch session ID.
     /// </summary>
-    public int SessionId { get; internal set; }
+    public int SessionId
+    {
+        get; internal set;
+    }
 
     /// <summary>
     /// Endpoints for current leaders reported in KIP-951 response tagged fields.
     /// </summary>
-    public NodeEndpoint[] NodeEndpoints { get; internal set; } = [];
+    public NodeEndpoint[] NodeEndpoints
+    {
+        get; internal set;
+    } = [];
 
     /// <summary>
     /// Responses per topic.
@@ -65,7 +77,10 @@ public sealed class FetchResponse : IKafkaResponse
     /// Set by KafkaConnection after parsing when records reference the network buffer.
     /// Must be disposed after all records have been consumed.
     /// </summary>
-    internal IPooledMemory? PooledMemoryOwner { get; set; }
+    internal IPooledMemory? PooledMemoryOwner
+    {
+        get; set;
+    }
 
     /// <summary>
     /// Returns this FetchResponse and all nested topic/partition objects to their pools.
@@ -74,7 +89,9 @@ public sealed class FetchResponse : IKafkaResponse
     internal void ReturnToPool()
     {
         if (Interlocked.CompareExchange(ref _pooled, 1, 0) != 0)
+        {
             return;
+        }
 
         for (var i = 0; i < _responses.Count; i++)
         {
@@ -108,15 +125,19 @@ public sealed class FetchResponse : IKafkaResponse
         try
         {
             if (FetchRequest.IsFlexibleVersion(version))
+            {
                 reader.ReadCompactArrayInto(
                     responses,
                     static (ref KafkaProtocolReader r, short v) => FetchResponseTopic.Read(ref r, v),
                     version);
+            }
             else
+            {
                 reader.ReadArrayInto(
                     responses,
                     static (ref KafkaProtocolReader r, short v) => FetchResponseTopic.Read(ref r, v),
                     version);
+            }
 
             var nodeEndpoints = FetchRequest.IsFlexibleVersion(version)
                 ? ReadResponseTaggedFields(ref reader, version)
@@ -210,12 +231,18 @@ public sealed class FetchResponseTopic
     /// <summary>
     /// Topic name (v0-v12).
     /// </summary>
-    public string? Topic { get; internal set; }
+    public string? Topic
+    {
+        get; internal set;
+    }
 
     /// <summary>
     /// Topic ID (v13+).
     /// </summary>
-    public Guid TopicId { get; internal set; }
+    public Guid TopicId
+    {
+        get; internal set;
+    }
 
     /// <summary>
     /// Partition responses.
@@ -236,7 +263,9 @@ public sealed class FetchResponseTopic
     internal void ReturnToPool()
     {
         if (Interlocked.CompareExchange(ref _pooled, 1, 0) != 0)
+        {
             return;
+        }
 
         for (var i = 0; i < _partitions.Count; i++)
         {
@@ -297,18 +326,24 @@ public sealed class FetchResponseTopic
         try
         {
             if (FetchRequest.IsFlexibleVersion(version))
+            {
                 reader.ReadCompactArrayInto(
                     partitions,
                     static (ref KafkaProtocolReader r, short v) => FetchResponsePartition.Read(ref r, v),
                     version);
+            }
             else
+            {
                 reader.ReadArrayInto(
                     partitions,
                     static (ref KafkaProtocolReader r, short v) => FetchResponsePartition.Read(ref r, v),
                     version);
+            }
 
             if (FetchRequest.IsFlexibleVersion(version))
+            {
                 reader.SkipTaggedFields();
+            }
 
             var result = Rent();
             result.Topic = topic;
@@ -373,7 +408,9 @@ public sealed class FetchResponsePartition
     internal static void ReturnRecordBatchListAfterFailedParse(List<RecordBatch>? list)
     {
         if (list is null)
+        {
             return;
+        }
 
         for (var i = 0; i < list.Count; i++)
         {
@@ -386,42 +423,66 @@ public sealed class FetchResponsePartition
     /// <summary>
     /// Partition index.
     /// </summary>
-    public int PartitionIndex { get; internal set; }
+    public int PartitionIndex
+    {
+        get; internal set;
+    }
 
     /// <summary>
     /// Error code.
     /// </summary>
-    public ErrorCode ErrorCode { get; internal set; }
+    public ErrorCode ErrorCode
+    {
+        get; internal set;
+    }
 
     /// <summary>
     /// High watermark.
     /// </summary>
-    public long HighWatermark { get; internal set; }
+    public long HighWatermark
+    {
+        get; internal set;
+    }
 
     /// <summary>
     /// Last stable offset (for transactions).
     /// </summary>
-    public long LastStableOffset { get; internal set; } = -1;
+    public long LastStableOffset
+    {
+        get; internal set;
+    } = -1;
 
     /// <summary>
     /// Log start offset.
     /// </summary>
-    public long LogStartOffset { get; internal set; } = -1;
+    public long LogStartOffset
+    {
+        get; internal set;
+    } = -1;
 
     /// <summary>
     /// Diverging epoch (v12+).
     /// </summary>
-    public EpochEndOffset? DivergingEpoch { get; internal set; }
+    public EpochEndOffset? DivergingEpoch
+    {
+        get; internal set;
+    }
 
     /// <summary>
     /// Current leader (v12+).
     /// </summary>
-    public LeaderIdAndEpoch? CurrentLeader { get; internal set; }
+    public LeaderIdAndEpoch? CurrentLeader
+    {
+        get; internal set;
+    }
 
     /// <summary>
     /// Snapshot ID (v12+).
     /// </summary>
-    public SnapshotId? SnapshotId { get; internal set; }
+    public SnapshotId? SnapshotId
+    {
+        get; internal set;
+    }
 
     /// <summary>
     /// Aborted transactions (for read committed isolation).
@@ -439,9 +500,15 @@ public sealed class FetchResponsePartition
     /// <summary>
     /// Preferred read replica.
     /// </summary>
-    public int PreferredReadReplica { get; internal set; } = -1;
+    public int PreferredReadReplica
+    {
+        get; internal set;
+    } = -1;
 
-    internal MalformedProtocolDataException? RecordParseError { get; private set; }
+    internal MalformedProtocolDataException? RecordParseError
+    {
+        get; private set;
+    }
 
     /// <summary>
     /// Record batches.
@@ -463,7 +530,9 @@ public sealed class FetchResponsePartition
     internal void ReturnToPool()
     {
         if (Interlocked.CompareExchange(ref _pooled, 1, 0) != 0)
+        {
             return;
+        }
 
         // Return the aborted transaction list to the pool.
         // AbortedTransactions is consumed during PendingFetchData.Create and not transferred,
@@ -592,7 +661,9 @@ public sealed class FetchResponsePartition
             }
 
             if (FetchRequest.IsFlexibleVersion(version))
+            {
                 ReadPartitionTaggedFields(ref reader, version, out divergingEpoch, out currentLeader, out snapshotId);
+            }
 
             var result = Rent();
             result.PartitionIndex = partitionIndex;
@@ -708,8 +779,14 @@ public sealed class FetchResponsePartition
 /// </summary>
 public readonly record struct AbortedTransaction
 {
-    public required long ProducerId { get; init; }
-    public required long FirstOffset { get; init; }
+    public required long ProducerId
+    {
+        get; init;
+    }
+    public required long FirstOffset
+    {
+        get; init;
+    }
 
     public static AbortedTransaction Read(ref KafkaProtocolReader reader, short version)
     {
@@ -717,7 +794,9 @@ public readonly record struct AbortedTransaction
         var firstOffset = reader.ReadInt64();
 
         if (FetchRequest.IsFlexibleVersion(version))
+        {
             reader.SkipTaggedFields();
+        }
 
         return new AbortedTransaction
         {
@@ -732,8 +811,14 @@ public readonly record struct AbortedTransaction
 /// </summary>
 public sealed class EpochEndOffset
 {
-    public int Epoch { get; init; } = -1;
-    public long EndOffset { get; init; } = -1;
+    public int Epoch
+    {
+        get; init;
+    } = -1;
+    public long EndOffset
+    {
+        get; init;
+    } = -1;
 }
 
 /// <summary>
@@ -741,8 +826,14 @@ public sealed class EpochEndOffset
 /// </summary>
 public sealed class LeaderIdAndEpoch
 {
-    public int LeaderId { get; init; } = -1;
-    public int LeaderEpoch { get; init; } = -1;
+    public int LeaderId
+    {
+        get; init;
+    } = -1;
+    public int LeaderEpoch
+    {
+        get; init;
+    } = -1;
 }
 
 /// <summary>
@@ -750,6 +841,12 @@ public sealed class LeaderIdAndEpoch
 /// </summary>
 public sealed class SnapshotId
 {
-    public long EndOffset { get; init; } = -1;
-    public int Epoch { get; init; } = -1;
+    public long EndOffset
+    {
+        get; init;
+    } = -1;
+    public int Epoch
+    {
+        get; init;
+    } = -1;
 }

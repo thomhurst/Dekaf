@@ -34,9 +34,11 @@ internal static class BufferedConsumerHarness
         out Action<TopicPartition, long, bool> setPosition)
     {
         var consumerType = consumer.GetType();
+
         MethodInfo RequireMethod(string name) => consumerType.GetMethod(name,
             BindingFlags.Instance | BindingFlags.NonPublic)
             ?? throw new InvalidOperationException($"{name} method not found.");
+
         fetch = RequireMethod("FetchFromBrokerAsync")
             .CreateDelegate<Func<int, List<TopicPartition>, int, CancellationToken, ValueTask<List<PendingFetchData>?>>>(consumer);
         prefetch = RequireMethod("PrefetchFromBrokerAsync").CreateDelegate<PrefetchResponseHandler>(consumer);
@@ -55,7 +57,9 @@ internal static class BufferedConsumerHarness
     {
         var consumerType = typeof(KafkaConsumer<TKey, TValue>);
         if (!hasInterceptors || consumerType.GetField("_onBatchConsume", BindingFlags.Instance | BindingFlags.NonPublic) is not null)
+        {
             return null;
+        }
 
         var method = consumerType.GetMethod("ApplyOnConsumeInterceptorsSlow", BindingFlags.Instance | BindingFlags.NonPublic)
             ?? throw new InvalidOperationException("The consumer interceptor chain was not found.");
@@ -134,7 +138,9 @@ internal static class BufferedConsumerHarness
     {
         var pendingFetches = GetPendingFetches(consumer);
         while (pendingFetches.Count > 0)
+        {
             pendingFetches.Dequeue().Dispose();
+        }
     }
 
     /// <summary>

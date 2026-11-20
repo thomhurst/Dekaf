@@ -58,7 +58,9 @@ internal sealed class ScriptedProduceResponses : IDisposable
         }
 
         if (alreadyFailed)
+        {
             guardCts.Cancel();
+        }
         return guardCts.Token;
     }
 
@@ -144,7 +146,9 @@ public abstract class ScriptedProduceResponseFixture
     {
         var guarded = testToken;
         foreach (var scripted in _scriptedResponses)
+        {
             guarded = scripted.Guard(guarded);
+        }
         return guarded;
     }
 
@@ -160,7 +164,9 @@ public abstract class ScriptedProduceResponseFixture
 
         _scriptedResponses.Clear();
         if (failure is not null)
+        {
             throw failure;
+        }
     }
 
     /// <summary>
@@ -178,7 +184,9 @@ public abstract class ScriptedProduceResponseFixture
             "_knownPartitions",
             BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(sender)!;
         foreach (var topicPartition in topicPartitions)
+        {
             knownPartitions.Add(topicPartition);
+        }
     }
 
     /// <summary>
@@ -198,7 +206,9 @@ public abstract class ScriptedProduceResponseFixture
         var batch = failureObserver is null ? new ReadyBatch() : new ReadyBatch(failureObserver);
         var sources = ArrayPool<PooledValueTaskSource<RecordMetadata>>.Shared.Rent(messageCount);
         for (var i = 0; i < messageCount; i++)
+        {
             sources[i] = pool.Rent();
+        }
 
         batch.Initialize(
             new TopicPartition(topic, partition),
@@ -209,7 +219,9 @@ public abstract class ScriptedProduceResponseFixture
             dataSize: dataSize);
 
         if (markPreSerialized)
+        {
             batch.MarkPreSerialized();
+        }
 
         if (markMemoryReleased)
         {
@@ -271,8 +283,7 @@ public abstract class ScriptedProduceResponseFixture
         bool isTransactional = false,
         bool usesTransactionV2 = false,
         Func<ReadyBatch[], int, Action<Exception?>, HashSet<TopicPartition>, HashSet<TopicPartition>,
-            TransactionPartitionEnrollmentResult>?
-            tryEnsurePartitionsInTransaction = null,
+            TransactionPartitionEnrollmentResult>? tryEnsurePartitionsInTransaction = null,
         Func<short, CancellationToken, ValueTask<ProducerIdAndEpoch>>? bumpEpoch = null,
         Func<ProducerIdAndEpoch>? getProducerState = null,
         Action<TopicPartition>? onSequenceRestartHeld = null,
@@ -288,7 +299,9 @@ public abstract class ScriptedProduceResponseFixture
             new CompressionCodecRegistry(),
             inflightTracker: inflightTracker ?? new PartitionInflightTracker(),
             getProduceApiVersion: () => produceApiVersion,
-            setProduceApiVersion: _ => { },
+            setProduceApiVersion: _ =>
+            {
+            },
             isTransactional: () => isTransactional,
             tryEnsurePartitionsInTransaction: tryEnsurePartitionsInTransaction,
             bumpEpoch: bumpEpoch,

@@ -330,7 +330,10 @@ internal interface IProducerDiagnostics
     /// <summary>
     /// Largest throttle delay reported by a broker in a produce response while delivery diagnostics are enabled.
     /// </summary>
-    int MaxObservedBrokerThrottleTimeMs { get; }
+    int MaxObservedBrokerThrottleTimeMs
+    {
+        get;
+    }
 
     /// <summary>
     /// Captures batches still tracked inside the producer pipeline.
@@ -348,114 +351,284 @@ internal interface IProducerDiagnostics
 /// </summary>
 internal sealed class ProducerDeliveryDiagnosticsSnapshot
 {
-    public bool DiagnosticsEnabled { get; init; }
-    public DateTimeOffset CapturedAtUtc { get; init; }
-    public long InFlightBatchCount { get; init; }
-    public long ProduceRequestCount { get; init; }
-    public double ProduceRequestElapsedSeconds { get; init; }
-    public double ProduceRequestsPerSecond { get; init; }
-    public long BatchArenaPoolMisses { get; init; }
-    public long BatchArenaPoolDrops { get; init; }
-    public int BatchArenaPoolCapacity { get; init; }
-    public List<ProducerBrokerRequestDiagnostic> BrokerProduceRequests { get; init; } = [];
-    public List<ProducerCoalesceWidthDiagnostic> CoalesceWidthHistogram { get; init; } = [];
-    public List<ProducerBatchDeliveryDiagnostic> Batches { get; init; } = [];
-    public List<ProducerBrokerBudgetDiagnostic> BrokerBudgets { get; init; } = [];
-    public List<ProducerBrokerBudgetDiagnostic> BrokerBudgetSamples { get; init; } = [];
-    public List<ProducerBudgetProbeDiagnostic> BudgetProbeEvents { get; init; } = [];
-    public List<ConnectionReapDiagnostic> ConnectionReapEvents { get; init; } = [];
-    public List<ProducerConnectionScaleDiagnostic> ConnectionScaleEvents { get; init; } = [];
+    public bool DiagnosticsEnabled
+    {
+        get; init;
+    }
+    public DateTimeOffset CapturedAtUtc
+    {
+        get; init;
+    }
+    public long InFlightBatchCount
+    {
+        get; init;
+    }
+    public long ProduceRequestCount
+    {
+        get; init;
+    }
+    public double ProduceRequestElapsedSeconds
+    {
+        get; init;
+    }
+    public double ProduceRequestsPerSecond
+    {
+        get; init;
+    }
+    public long BatchArenaPoolMisses
+    {
+        get; init;
+    }
+    public long BatchArenaPoolDrops
+    {
+        get; init;
+    }
+    public int BatchArenaPoolCapacity
+    {
+        get; init;
+    }
+    public List<ProducerBrokerRequestDiagnostic> BrokerProduceRequests
+    {
+        get; init;
+    } = [];
+    public List<ProducerCoalesceWidthDiagnostic> CoalesceWidthHistogram
+    {
+        get; init;
+    } = [];
+    public List<ProducerBatchDeliveryDiagnostic> Batches
+    {
+        get; init;
+    } = [];
+    public List<ProducerBrokerBudgetDiagnostic> BrokerBudgets
+    {
+        get; init;
+    } = [];
+    public List<ProducerBrokerBudgetDiagnostic> BrokerBudgetSamples
+    {
+        get; init;
+    } = [];
+    public List<ProducerBudgetProbeDiagnostic> BudgetProbeEvents
+    {
+        get; init;
+    } = [];
+    public List<ConnectionReapDiagnostic> ConnectionReapEvents
+    {
+        get; init;
+    } = [];
+    public List<ProducerConnectionScaleDiagnostic> ConnectionScaleEvents
+    {
+        get; init;
+    } = [];
 }
 
 internal sealed class ProducerBrokerRequestDiagnostic
 {
-    public required int BrokerId { get; init; }
-    public required long RequestCount { get; init; }
-    public required double RequestsPerSecond { get; init; }
-    public required double AverageRequestBytes { get; init; }
+    public required int BrokerId
+    {
+        get; init;
+    }
+    public required long RequestCount
+    {
+        get; init;
+    }
+    public required double RequestsPerSecond
+    {
+        get; init;
+    }
+    public required double AverageRequestBytes
+    {
+        get; init;
+    }
 }
 
 internal sealed class ProducerCoalesceWidthDiagnostic
 {
-    public required int MinimumWidth { get; init; }
-    public int? MaximumWidth { get; init; }
-    public required long RequestCount { get; init; }
+    public required int MinimumWidth
+    {
+        get; init;
+    }
+    public int? MaximumWidth
+    {
+        get; init;
+    }
+    public required long RequestCount
+    {
+        get; init;
+    }
 }
 
 internal sealed class ProducerBrokerBudgetDiagnostic
 {
-    public required DateTimeOffset CapturedAtUtc { get; init; }
-    public required int BrokerId { get; init; }
-    public required long BudgetBytes { get; init; }
-    public required long UnackedBytes { get; init; }
-    public required long MinRttMicros { get; init; }
-    public required long MaxRateBytesPerSec { get; init; }
-    public required long AdmissionBlockCount { get; init; }
+    public required DateTimeOffset CapturedAtUtc
+    {
+        get; init;
+    }
+    public required int BrokerId
+    {
+        get; init;
+    }
+    public required long BudgetBytes
+    {
+        get; init;
+    }
+    public required long UnackedBytes
+    {
+        get; init;
+    }
+    public required long MinRttMicros
+    {
+        get; init;
+    }
+    public required long MaxRateBytesPerSec
+    {
+        get; init;
+    }
+    public required long AdmissionBlockCount
+    {
+        get; init;
+    }
     // Optional for backward compatibility with persisted stress results captured before
     // probe outcomes were added; missing JSON values naturally deserialize as zero.
-    public long CapacityProbeSuccessCount { get; init; }
-    public long CapacityProbeFailureCount { get; init; }
+    public long CapacityProbeSuccessCount
+    {
+        get; init;
+    }
+    public long CapacityProbeFailureCount
+    {
+        get; init;
+    }
     /// <summary>Controllable seal-to-send queue-latency EWMA. Name retained for diagnostic
     /// output compatibility.</summary>
-    public required long DeliveryLatencyEwmaMicros { get; init; }
-    public required double LatencyBudgetScale { get; init; }
+    public required long DeliveryLatencyEwmaMicros
+    {
+        get; init;
+    }
+    public required double LatencyBudgetScale
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Log2 histogram of acked produce-request payload sizes; bucket semantics are defined
     /// by <see cref="BrokerUnackedByteBudget.CopyRequestSizeHistogram"/>. Populated only on
     /// live snapshots, not periodic samples, to keep the sample ring compact.
     /// </summary>
-    public long[]? RequestSizeLog2Histogram { get; init; }
+    public long[]? RequestSizeLog2Histogram
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Log2 histogram of acked produce-request round trips in microseconds; bucket semantics
     /// are defined by <see cref="BrokerUnackedByteBudget.CopyRequestRttMicrosHistogram"/>.
     /// Populated only on live snapshots.
     /// </summary>
-    public long[]? RequestRttMicrosLog2Histogram { get; init; }
+    public long[]? RequestRttMicrosLog2Histogram
+    {
+        get; init;
+    }
 
     /// <summary>Log2 histogram of completed contiguous admission-block intervals in
     /// microseconds. Populated only on live snapshots.</summary>
-    public long[]? AdmissionBlockMicrosLog2Histogram { get; init; }
+    public long[]? AdmissionBlockMicrosLog2Histogram
+    {
+        get; init;
+    }
 
     /// <summary>Age of the currently open admission-block interval, or zero when the
     /// broker gate is presently admitting.</summary>
-    public long CurrentAdmissionBlockMicros { get; init; }
+    public long CurrentAdmissionBlockMicros
+    {
+        get; init;
+    }
 }
 
 internal sealed class ProducerBudgetProbeDiagnostic
 {
-    public required DateTimeOffset OccurredAtUtc { get; init; }
-    public required int BrokerId { get; init; }
-    public required string ProbeType { get; init; }
-    public required string Outcome { get; init; }
-    public required long DurationMilliseconds { get; init; }
-    public required long BudgetBytes { get; init; }
-    public required long UnackedBytes { get; init; }
+    public required DateTimeOffset OccurredAtUtc
+    {
+        get; init;
+    }
+    public required int BrokerId
+    {
+        get; init;
+    }
+    public required string ProbeType
+    {
+        get; init;
+    }
+    public required string Outcome
+    {
+        get; init;
+    }
+    public required long DurationMilliseconds
+    {
+        get; init;
+    }
+    public required long BudgetBytes
+    {
+        get; init;
+    }
+    public required long UnackedBytes
+    {
+        get; init;
+    }
 }
 
 internal sealed class ProducerConnectionScaleDiagnostic
 {
-    public required DateTimeOffset OccurredAtUtc { get; init; }
-    public required int BrokerId { get; init; }
-    public required int OldConnectionCount { get; init; }
-    public required int NewConnectionCount { get; init; }
+    public required DateTimeOffset OccurredAtUtc
+    {
+        get; init;
+    }
+    public required int BrokerId
+    {
+        get; init;
+    }
+    public required int OldConnectionCount
+    {
+        get; init;
+    }
+    public required int NewConnectionCount
+    {
+        get; init;
+    }
     public string Direction
     {
         get
         {
             if (PartitionLimited)
+            {
                 return "capped";
+            }
 
             return NewConnectionCount > OldConnectionCount ? "up" : "down";
         }
     }
-    public bool PartitionLimited { get; init; }
-    public long ObservationCount { get; init; } = 1;
-    public long ObservedDurationMs { get; init; }
-    public required double BufferUtilization { get; init; }
-    public required long BufferPressureDelta { get; init; }
-    public required long SendLoopPressureDelta { get; init; }
+    public bool PartitionLimited
+    {
+        get; init;
+    }
+    public long ObservationCount
+    {
+        get; init;
+    } = 1;
+    public long ObservedDurationMs
+    {
+        get; init;
+    }
+    public required double BufferUtilization
+    {
+        get; init;
+    }
+    public required long BufferPressureDelta
+    {
+        get; init;
+    }
+    public required long SendLoopPressureDelta
+    {
+        get; init;
+    }
 }
 
 /// <summary>
@@ -463,26 +636,86 @@ internal sealed class ProducerConnectionScaleDiagnostic
 /// </summary>
 internal sealed class ProducerBatchDeliveryDiagnostic
 {
-    public required string Topic { get; init; }
-    public required int Partition { get; init; }
-    public required int RecordCount { get; init; }
-    public required int DataSize { get; init; }
-    public required int EncodedSize { get; init; }
-    public required int ReadyBatchId { get; init; }
-    public int? RecordBatchId { get; init; }
-    public int? ArenaId { get; init; }
-    public required int PipelineGeneration { get; init; }
-    public required int CurrentGeneration { get; init; }
-    public required string LifecycleState { get; init; }
-    public required string Trace { get; init; }
-    public required string LastTouchedBy { get; init; }
-    public required bool IsStale { get; init; }
-    public required bool IsPreSerialized { get; init; }
-    public required bool IsSendCompleted { get; init; }
-    public required bool IsDoneTaskCompleted { get; init; }
-    public required bool IsMemoryReleased { get; init; }
-    public required bool IsReturnedToPool { get; init; }
-    public required bool InFlightLinked { get; init; }
+    public required string Topic
+    {
+        get; init;
+    }
+    public required int Partition
+    {
+        get; init;
+    }
+    public required int RecordCount
+    {
+        get; init;
+    }
+    public required int DataSize
+    {
+        get; init;
+    }
+    public required int EncodedSize
+    {
+        get; init;
+    }
+    public required int ReadyBatchId
+    {
+        get; init;
+    }
+    public int? RecordBatchId
+    {
+        get; init;
+    }
+    public int? ArenaId
+    {
+        get; init;
+    }
+    public required int PipelineGeneration
+    {
+        get; init;
+    }
+    public required int CurrentGeneration
+    {
+        get; init;
+    }
+    public required string LifecycleState
+    {
+        get; init;
+    }
+    public required string Trace
+    {
+        get; init;
+    }
+    public required string LastTouchedBy
+    {
+        get; init;
+    }
+    public required bool IsStale
+    {
+        get; init;
+    }
+    public required bool IsPreSerialized
+    {
+        get; init;
+    }
+    public required bool IsSendCompleted
+    {
+        get; init;
+    }
+    public required bool IsDoneTaskCompleted
+    {
+        get; init;
+    }
+    public required bool IsMemoryReleased
+    {
+        get; init;
+    }
+    public required bool IsReturnedToPool
+    {
+        get; init;
+    }
+    public required bool InFlightLinked
+    {
+        get; init;
+    }
 }
 #endif
 
@@ -699,7 +932,9 @@ public readonly record struct PreparedTransactionState(long ProducerId, short Pr
     public static PreparedTransactionState Parse(string value)
     {
         if (TryParse(value, out var state))
+        {
             return state;
+        }
 
         throw new FormatException("Prepared transaction state must be empty or in 'producerId:producerEpoch' form.");
     }
@@ -712,17 +947,25 @@ public readonly record struct PreparedTransactionState(long ProducerId, short Pr
         state = Empty;
 
         if (string.IsNullOrEmpty(value))
+        {
             return true;
+        }
 
         var parts = value!.Split(':');
         if (parts.Length != 2 || parts[0].Length == 0 || parts[1].Length == 0)
+        {
             return false;
+        }
 
         if (!long.TryParse(parts[0], out var producerId))
+        {
             return false;
+        }
 
         if (!short.TryParse(parts[1], out var producerEpoch))
+        {
             return false;
+        }
 
         state = new PreparedTransactionState(producerId, producerEpoch);
         return state.HasTransaction;

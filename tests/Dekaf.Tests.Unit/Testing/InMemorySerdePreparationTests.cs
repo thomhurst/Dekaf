@@ -27,7 +27,10 @@ public sealed class InMemorySerdePreparationTests
             : new InMemoryProducer<string, string>(cluster, asyncSerde, serializer);
         var message = new ProducerMessage<string, string>
         {
-            Topic = "prepared", Key = "key", Value = "value", Headers = Headers.Create("trace", "123")
+            Topic = "prepared",
+            Key = "key",
+            Value = "value",
+            Headers = Headers.Create("trace", "123")
         };
 
         if (transactional)
@@ -76,7 +79,9 @@ public sealed class InMemorySerdePreparationTests
         await using var producer = new InMemoryProducer<string, string>(cluster, Serializers.String, serializer);
         using var cancellation = new CancellationTokenSource();
         if (transactional)
+        {
             await producer.InitTransactionsAsync();
+        }
         await using var transaction = transactional ? producer.BeginTransaction() : null;
         var pending = transactional
             ? transaction!.ProduceAsync("prepared", "key", "value", cancellation.Token).AsTask()
@@ -116,7 +121,10 @@ public sealed class InMemorySerdePreparationTests
         await using var producer = new InMemoryProducer<string, string>(cluster);
         var message = new ProducerMessage<string, string>
         {
-            Topic = "prepared", Key = "key", Value = "value", Headers = Headers.Create("trace", "123")
+            Topic = "prepared",
+            Key = "key",
+            Value = "value",
+            Headers = Headers.Create("trace", "123")
         };
         await producer.ProduceAsync(message);
         await producer.ProduceAsync(message);
@@ -263,7 +271,8 @@ public sealed class InMemorySerdePreparationTests
         using var registry = new MockSchemaRegistryClient();
         var schemaId = await registry.RegisterSchemaAsync("prepared-value", new Schema
         {
-            SchemaType = SchemaType.Json, SchemaString = "{\"type\":\"integer\"}"
+            SchemaType = SchemaType.Json,
+            SchemaString = "{\"type\":\"integer\"}"
         });
         await using var deserializer = new JsonSchemaRegistryDeserializer<int>(
             registry, jsonOptions: null,
@@ -271,7 +280,9 @@ public sealed class InMemorySerdePreparationTests
         await using var producer = new InMemoryProducer<string, byte[]>(cluster);
         await producer.ProduceAsync(new ProducerMessage<string, byte[]>
         {
-            Topic = "prepared", Key = "key", Value = "42"u8.ToArray(),
+            Topic = "prepared",
+            Key = "key",
+            Value = "42"u8.ToArray(),
             Headers = new Headers(1).Add(new Header(SchemaIdentityHeaderNames.Value,
                 SchemaIdentityFraming.CreateSchemaGuidFrame(new Guid(schemaId, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0))))
         });
@@ -311,9 +322,13 @@ public sealed class InMemorySerdePreparationTests
             await using (var records = consumer.PollAsync().GetAsyncEnumerator())
             {
                 if (requiredPreparations > 2)
+                {
                     await Assert.That(async () => await records.MoveNextAsync()).Throws<InvalidOperationException>();
+                }
                 else
+                {
                     await Assert.That(await records.MoveNextAsync()).IsTrue();
+                }
             }
             await Assert.That(deserializer.PrepareCalls).IsEqualTo(2);
             if (requiredPreparations > 2)
@@ -348,7 +363,10 @@ public sealed class InMemorySerdePreparationTests
 
     private sealed class AsyncSubjectStrategy : IAsyncSubjectNameStrategy
     {
-        public int Calls { get; private set; }
+        public int Calls
+        {
+            get; private set;
+        }
 
         public async ValueTask<string> GetSubjectNameAsync(
             string topic, string? recordType, bool isKey, CancellationToken cancellationToken = default)
@@ -363,13 +381,34 @@ public sealed class InMemorySerdePreparationTests
 
     private sealed class PreparingSerializer : ISerializer<string>, IAsyncSerializerPreparer<string>
     {
-        public bool Block { get; init; }
-        public int PrepareCalls { get; private set; }
-        public int SerializeCalls { get; private set; }
-        public CancellationToken LastCancellationToken { get; private set; }
-        public SerializationContext LastContext { get; private set; }
-        public TaskCompletionSource Entered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        public TaskCompletionSource Release { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public bool Block
+        {
+            get; init;
+        }
+        public int PrepareCalls
+        {
+            get; private set;
+        }
+        public int SerializeCalls
+        {
+            get; private set;
+        }
+        public CancellationToken LastCancellationToken
+        {
+            get; private set;
+        }
+        public SerializationContext LastContext
+        {
+            get; private set;
+        }
+        public TaskCompletionSource Entered
+        {
+            get;
+        } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource Release
+        {
+            get;
+        } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         private bool _prepared;
 
         public async ValueTask PrepareAsync(string value, SerializationContext context, CancellationToken cancellationToken = default)
@@ -379,7 +418,9 @@ public sealed class InMemorySerdePreparationTests
             LastCancellationToken = cancellationToken;
             Entered.TrySetResult();
             if (Block)
+            {
                 await Release.Task;
+            }
             _prepared = true;
         }
 
@@ -388,7 +429,9 @@ public sealed class InMemorySerdePreparationTests
             , allows ref struct
         {
             if (!_prepared)
+            {
                 throw new InvalidOperationException("Serialize ran before preparation.");
+            }
             SerializeCalls++;
             Serializers.String.Serialize(value, ref destination, context);
         }
@@ -396,8 +439,14 @@ public sealed class InMemorySerdePreparationTests
 
     private sealed class AdmissionSerializer(bool emptyAdmission) : ISerializer<string>, IAsyncSerializerPreparationAdmission<string>
     {
-        public int AdmissionCalls { get; private set; }
-        public int PreparedSerializeCalls { get; private set; }
+        public int AdmissionCalls
+        {
+            get; private set;
+        }
+        public int PreparedSerializeCalls
+        {
+            get; private set;
+        }
 
         public ValueTask PrepareAsync(string value, SerializationContext context, CancellationToken cancellationToken = default) =>
             throw new InvalidOperationException("Exact admission required.");
@@ -414,7 +463,9 @@ public sealed class InMemorySerdePreparationTests
             , allows ref struct
         {
             if (!emptyAdmission)
+            {
                 throw new InvalidOperationException("Exact admission required.");
+            }
             Serializers.String.Serialize(value, ref destination, context);
         }
 
@@ -424,7 +475,9 @@ public sealed class InMemorySerdePreparationTests
             , allows ref struct
         {
             if (admission.Subject != value || !Equals(admission.Schema, value))
+            {
                 throw new InvalidOperationException("Wrong admission.");
+            }
             PreparedSerializeCalls++;
             Serializers.String.Serialize(value, ref destination, context);
         }
@@ -433,14 +486,38 @@ public sealed class InMemorySerdePreparationTests
     private sealed class PreparingDeserializer : IDeserializer<string>, IAsyncDeserializerPreparer<string>, IRecordHeaderDeserializer
     {
         public bool ConsumesRecordHeaders => true;
-        public int RequiredPreparations { get; init; } = 1;
-        public bool Block { get; init; }
-        public int PrepareCalls { get; private set; }
-        public CancellationToken LastCancellationToken { get; private set; }
-        public SerializationContext LastContext { get; private set; }
-        public ReadOnlyMemory<byte> LastData { get; private set; }
-        public TaskCompletionSource Entered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        public TaskCompletionSource Release { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public int RequiredPreparations
+        {
+            get; init;
+        } = 1;
+        public bool Block
+        {
+            get; init;
+        }
+        public int PrepareCalls
+        {
+            get; private set;
+        }
+        public CancellationToken LastCancellationToken
+        {
+            get; private set;
+        }
+        public SerializationContext LastContext
+        {
+            get; private set;
+        }
+        public ReadOnlyMemory<byte> LastData
+        {
+            get; private set;
+        }
+        public TaskCompletionSource Entered
+        {
+            get;
+        } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource Release
+        {
+            get;
+        } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         private bool _prepared;
 
         public bool TryDeserialize(ReadOnlyMemory<byte> data, SerializationContext context, out string value)
@@ -457,7 +534,9 @@ public sealed class InMemorySerdePreparationTests
             LastCancellationToken = cancellationToken;
             Entered.TrySetResult();
             if (Block)
+            {
                 await Release.Task;
+            }
             _prepared = PrepareCalls >= RequiredPreparations;
         }
 

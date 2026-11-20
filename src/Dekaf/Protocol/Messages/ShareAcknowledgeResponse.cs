@@ -17,32 +17,50 @@ public sealed class ShareAcknowledgeResponse : IKafkaResponse
     /// <summary>
     /// Throttle time in milliseconds.
     /// </summary>
-    public int ThrottleTimeMs { get; init; }
+    public int ThrottleTimeMs
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The top-level error code, or 0 if there was no error.
     /// </summary>
-    public ErrorCode ErrorCode { get; init; }
+    public ErrorCode ErrorCode
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The top-level error message, or null if there was no error.
     /// </summary>
-    public string? ErrorMessage { get; init; }
+    public string? ErrorMessage
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The acquisition lock timeout in milliseconds (v2+ only).
     /// </summary>
-    public int AcquisitionLockTimeoutMs { get; init; }
+    public int AcquisitionLockTimeoutMs
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The per-topic acknowledgement responses.
     /// </summary>
-    public required IReadOnlyList<ShareAcknowledgeResponseTopic> Responses { get; init; }
+    public required IReadOnlyList<ShareAcknowledgeResponseTopic> Responses
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Endpoints for all current leaders enumerated in the response.
     /// </summary>
-    public required IReadOnlyList<ShareAcknowledgeNodeEndpoint> NodeEndpoints { get; init; }
+    public required IReadOnlyList<ShareAcknowledgeNodeEndpoint> NodeEndpoints
+    {
+        get; init;
+    }
 
     public static IKafkaResponse Read(ref KafkaProtocolReader reader, short version)
     {
@@ -88,12 +106,18 @@ public sealed class ShareAcknowledgeResponseTopic
     /// <summary>
     /// The topic ID (UUID).
     /// </summary>
-    public Guid TopicId { get; init; }
+    public Guid TopicId
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The per-partition acknowledgement responses.
     /// </summary>
-    public required IReadOnlyList<ShareAcknowledgeResponsePartition> Partitions { get; init; }
+    public required IReadOnlyList<ShareAcknowledgeResponsePartition> Partitions
+    {
+        get; init;
+    }
 
     public static ShareAcknowledgeResponseTopic Read(ref KafkaProtocolReader reader)
     {
@@ -121,22 +145,34 @@ public sealed class ShareAcknowledgeResponsePartition
     /// <summary>
     /// The partition index.
     /// </summary>
-    public int PartitionIndex { get; init; }
+    public int PartitionIndex
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The error code for this partition, or 0 if there was no error.
     /// </summary>
-    public ErrorCode ErrorCode { get; init; }
+    public ErrorCode ErrorCode
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The error message for this partition, or null if there was no error.
     /// </summary>
-    public string? ErrorMessage { get; init; }
+    public string? ErrorMessage
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The current leader information. Always present inline in the response.
     /// </summary>
-    public required ShareAcknowledgeLeaderIdAndEpoch CurrentLeader { get; init; }
+    public required ShareAcknowledgeLeaderIdAndEpoch CurrentLeader
+    {
+        get; init;
+    }
 
     public static ShareAcknowledgeResponsePartition Read(ref KafkaProtocolReader reader)
     {
@@ -168,12 +204,18 @@ public sealed class ShareAcknowledgeLeaderIdAndEpoch
     /// <summary>
     /// The ID of the current leader, or -1 if the leader is unknown.
     /// </summary>
-    public int LeaderId { get; init; } = -1;
+    public int LeaderId
+    {
+        get; init;
+    } = -1;
 
     /// <summary>
     /// The latest known leader epoch.
     /// </summary>
-    public int LeaderEpoch { get; init; } = -1;
+    public int LeaderEpoch
+    {
+        get; init;
+    } = -1;
 
     public static ShareAcknowledgeLeaderIdAndEpoch Read(ref KafkaProtocolReader reader)
     {
@@ -198,22 +240,34 @@ public sealed class ShareAcknowledgeNodeEndpoint
     /// <summary>
     /// The ID of the associated node.
     /// </summary>
-    public int NodeId { get; init; }
+    public int NodeId
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The node's hostname.
     /// </summary>
-    public required string Host { get; init; }
+    public required string Host
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The node's port.
     /// </summary>
-    public int Port { get; init; }
+    public int Port
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The rack of the node, or null if it has not been assigned to a rack.
     /// </summary>
-    public string? Rack { get; init; }
+    public string? Rack
+    {
+        get; init;
+    }
 
     public static ShareAcknowledgeNodeEndpoint Read(ref KafkaProtocolReader reader)
     {

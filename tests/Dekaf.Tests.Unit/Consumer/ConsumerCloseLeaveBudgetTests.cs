@@ -246,7 +246,9 @@ public sealed class ConsumerCloseLeaveBudgetTests
             OnLeaveSent = () =>
             {
                 if (coordinatorLock!.Wait(0))
+                {
                     Volatile.Write(ref lockTaken, 1);
+                }
                 closeCancellation.Cancel();
             }
         };
@@ -267,7 +269,9 @@ public sealed class ConsumerCloseLeaveBudgetTests
         finally
         {
             if (Volatile.Read(ref lockTaken) == 1)
+            {
                 coordinatorLock.Release();
+            }
         }
 
         await Assert.That(Volatile.Read(ref lockTaken)).IsEqualTo(1);
@@ -412,20 +416,38 @@ public sealed class ConsumerCloseLeaveBudgetTests
         private int _offsetCommits;
         private int _completedOffsetCommits;
 
-        public Func<OffsetCommitRequest, CancellationToken, ValueTask<OffsetCommitResponse>>? OnOffsetCommit { get; set; }
+        public Func<OffsetCommitRequest, CancellationToken, ValueTask<OffsetCommitResponse>>? OnOffsetCommit
+        {
+            get; set;
+        }
 
-        public ConcurrentQueue<int> LeaveEpochs { get; } = new();
+        public ConcurrentQueue<int> LeaveEpochs
+        {
+            get;
+        } = new();
 
         /// <summary>Runs whenever the consumer gets a connection to the coordinator.</summary>
-        public Action? OnGetConnection { get; init; }
+        public Action? OnGetConnection
+        {
+            get; init;
+        }
 
         /// <summary>Runs once the substitute coordinator has received the leave.</summary>
-        public Action? OnLeaveSent { get; init; }
+        public Action? OnLeaveSent
+        {
+            get; init;
+        }
 
         /// <summary>The coordinator connection; a substitute when not set.</summary>
-        public IKafkaConnection? Connection { get; init; }
+        public IKafkaConnection? Connection
+        {
+            get; init;
+        }
 
-        public ILoggerFactory? LoggerFactory { get; init; }
+        public ILoggerFactory? LoggerFactory
+        {
+            get; init;
+        }
 
         public int OffsetCommits => Volatile.Read(ref _offsetCommits);
 
@@ -477,7 +499,9 @@ public sealed class ConsumerCloseLeaveBudgetTests
                     {
                         // A cancelled request never reaches the wire.
                         if (call.Arg<CancellationToken>().IsCancellationRequested)
+                        {
                             return ValueTask.FromCanceled<ConsumerGroupHeartbeatResponse>(call.Arg<CancellationToken>());
+                        }
                         LeaveEpochs.Enqueue(call.Arg<ConsumerGroupHeartbeatRequest>().MemberEpoch);
                         OnLeaveSent?.Invoke();
                         return ValueTask.FromResult(new ConsumerGroupHeartbeatResponse
@@ -582,7 +606,10 @@ public sealed class ConsumerCloseLeaveBudgetTests
             Connection = connection;
         }
 
-        public KafkaConnection Connection { get; }
+        public KafkaConnection Connection
+        {
+            get;
+        }
 
         public int PendingRequestCount => (int)typeof(KafkaConnection)
             .GetField("_pendingRequestCount", BindingFlags.NonPublic | BindingFlags.Instance)!
@@ -604,7 +631,9 @@ public sealed class ConsumerCloseLeaveBudgetTests
             catch
             {
                 if (connection is not null)
+                {
                     await connection.DisposeAsync();
+                }
                 listener.Stop();
                 throw;
             }
@@ -643,7 +672,9 @@ public sealed class ConsumerCloseLeaveBudgetTests
                 var stream = client.GetStream();
                 var request = await ReadFrameAsync(stream, cancellationToken);
                 if ((ApiKey)BinaryPrimitives.ReadInt16BigEndian(request) != ApiKey.ApiVersions)
+                {
                     throw new InvalidOperationException("Expected the ApiVersions handshake");
+                }
                 await stream.WriteAsync(
                     BuildApiVersionsResponseFrame(BinaryPrimitives.ReadInt32BigEndian(request.AsSpan(4))),
                     cancellationToken);
@@ -705,7 +736,9 @@ public sealed class ConsumerCloseLeaveBudgetTests
         public Task? Claim()
         {
             if (Interlocked.Exchange(ref _claimed, 1) != 0)
+            {
                 return null;
+            }
             _entered.TrySetResult();
             return _released.Task;
         }
@@ -714,7 +747,10 @@ public sealed class ConsumerCloseLeaveBudgetTests
     /// <summary>Passes writes through to the socket stream, holding the first one until released.</summary>
     private sealed class StallingWriteStream(Stream inner) : Stream
     {
-        public StalledWrite Stall { get; } = new();
+        public StalledWrite Stall
+        {
+            get;
+        } = new();
 
         public override bool CanRead => inner.CanRead;
         public override bool CanSeek => false;
@@ -730,7 +766,9 @@ public sealed class ConsumerCloseLeaveBudgetTests
         public override async ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, CancellationToken cancellationToken = default)
         {
             if (Stall.Claim() is { } gate)
+            {
                 await gate.WaitAsync(cancellationToken);
+            }
             await inner.WriteAsync(buffer, cancellationToken);
         }
 
@@ -755,7 +793,9 @@ public sealed class ConsumerCloseLeaveBudgetTests
         protected override void Dispose(bool disposing)
         {
             if (disposing)
+            {
                 inner.Dispose();
+            }
             base.Dispose(disposing);
         }
     }
@@ -793,7 +833,9 @@ public sealed class ConsumerCloseLeaveBudgetTests
             foreach (var message in _messages)
             {
                 if (message.Contains(text, StringComparison.Ordinal))
+                {
                     return true;
+                }
             }
 
             return false;
@@ -801,9 +843,13 @@ public sealed class ConsumerCloseLeaveBudgetTests
 
         public ILogger CreateLogger(string categoryName) => new Logger(_messages);
 
-        public void AddProvider(ILoggerProvider provider) { }
+        public void AddProvider(ILoggerProvider provider)
+        {
+        }
 
-        public void Dispose() { }
+        public void Dispose()
+        {
+        }
 
         private sealed class Logger(ConcurrentQueue<string> messages) : ILogger
         {

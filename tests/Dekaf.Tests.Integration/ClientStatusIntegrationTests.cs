@@ -27,10 +27,7 @@ public sealed class ClientStatusIntegrationTests(KafkaTestContainer kafka) : Kaf
         await using var admin = client.CreateAdminClient().Build();
         _ = await admin.ListTopicsAsync(cancellationToken: cancellationToken);
 
-        var identities = new (
-            string Role,
-            IKafkaClientIdentity ClusterIdentity,
-            IKafkaClientInstanceIdentity InstanceIdentity)[]
+        var identities = new (string Role, IKafkaClientIdentity ClusterIdentity, IKafkaClientInstanceIdentity InstanceIdentity)[]
         {
             ("producer", (IKafkaClientIdentity)producer, (IKafkaClientInstanceIdentity)producer),
             ("consumer", (IKafkaClientIdentity)consumer, (IKafkaClientInstanceIdentity)consumer),
@@ -224,7 +221,9 @@ public sealed class BrokerConnectionStatusIntegrationTests(RackAwareKafkaContain
         finally
         {
             if (brokerStopped)
+            {
                 await kafka.StartBrokerAsync(1, CancellationToken.None);
+            }
         }
     }
 }

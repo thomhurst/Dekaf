@@ -14,7 +14,10 @@ namespace Dekaf.Benchmarks.Benchmarks.Unit;
 public class InMemoryDetailedClientQuotaBenchmarks
 {
     [Params(1, 32)]
-    public int EntityCount { get; set; }
+    public int EntityCount
+    {
+        get; set;
+    }
 
     private InMemoryAdminClient _admin = null!;
     private ClientQuotaAlteration[] _alterations = null!;
@@ -31,13 +34,21 @@ public class InMemoryDetailedClientQuotaBenchmarks
         _concurrentCall = ConcurrentCallAsync;
         var result = await Alter();
         if (result.Count != EntityCount || result.Values.Any(outcome => !outcome.IsSuccess))
+        {
             throw new InvalidOperationException("In-memory quota fixture did not apply every entity.");
+        }
         foreach (var concurrentResult in await ContendedAlter())
+        {
             if (concurrentResult.Count != EntityCount || concurrentResult.Values.Any(outcome => !outcome.IsSuccess))
+            {
                 throw new InvalidOperationException("Concurrent quota fixture did not apply every entity.");
+            }
+        }
         var stored = await _admin.DescribeClientQuotasAsync(ClientQuotaFilter.All());
         if (stored.Count != EntityCount || stored.Values.Any(quota => quota["consumer_byte_rate"] != 4096))
+        {
             throw new InvalidOperationException("In-memory quota fixture stored incorrect values.");
+        }
     }
 
     [Benchmark]
@@ -51,7 +62,9 @@ public class InMemoryDetailedClientQuotaBenchmarks
     private async Task<IReadOnlyDictionary<ClientQuotaEntity, AdminMutationResult>> ConcurrentCallAsync()
     {
         if (!_start.SignalAndWait(TimeSpan.FromSeconds(10)))
+        {
             throw new TimeoutException("The second quota mutation worker did not reach the start barrier.");
+        }
         return await _admin.AlterClientQuotasDetailedAsync(_alterations);
     }
 

@@ -14,7 +14,9 @@ internal sealed class ConsumerFollowerRecoveryStressTest : IStressTestScenario
     public async Task<StressTestResult> RunAsync(StressTestOptions options, CancellationToken cancellationToken)
     {
         if (options.BrokerCount != 3)
+        {
             throw new ArgumentException("Follower recovery requires the three-broker rack-aware environment.", nameof(options));
+        }
         var servers = options.BootstrapServers.Split(',');
         const int connections = 3;
         const string clientId = "stress-follower-recovery";
@@ -82,11 +84,15 @@ internal sealed class ConsumerFollowerRecoveryStressTest : IStressTestScenario
                     // A duration boundary can cancel the last pending retry. Require actual completed
                     // recovery in every phase rather than counting warmup-only faults as measured work.
                     if (snapshot.Violations != 0)
+                    {
                         throughput.RecordError(new InvalidOperationException(oracle.LastViolation), "follower recovery correctness");
+                    }
                     if (measured.InjectedFaults == 0 || measured.MatchingLeaderResponses + measured.LeaderResponsesAfterVerifiedProgress == 0
                         || measured.CompletePasses == 0
                         || (throughput.Warmup is not null && measured.MatchingLeaderResponses == 0))
+                    {
                         throughput.RecordError(new InvalidOperationException("The phase did not exercise follower recovery and a complete replay."), "follower recovery coverage");
+                    }
                 }
             }, connections, captureConsumerDiagnostics: () => StressTestHelpers.CaptureConsumerDiagnostics(consumer),
             cancellationToken: cancellationToken).ConfigureAwait(false);

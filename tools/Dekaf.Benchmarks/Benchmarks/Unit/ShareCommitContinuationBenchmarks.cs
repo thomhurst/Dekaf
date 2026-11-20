@@ -13,10 +13,16 @@ public class ShareCommitContinuationBenchmarks
     private HostedShareRequestBenchmarks _requests = null!;
 
     [Params(false, true)]
-    public bool Hosted { get; set; }
+    public bool Hosted
+    {
+        get; set;
+    }
 
     [Params(1, 16)]
-    public int PartitionCount { get; set; }
+    public int PartitionCount
+    {
+        get; set;
+    }
 
     [GlobalSetup]
     public async Task Setup()

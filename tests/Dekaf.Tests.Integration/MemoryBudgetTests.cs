@@ -168,7 +168,9 @@ public class MemoryBudgetTests(KafkaTestContainer kafka) : KafkaIntegrationTest(
             foreach (var build in builds)
             {
                 if (build.IsCompletedSuccessfully)
+                {
                     await (await build).DisposeAsync();
+                }
             }
             DekafMemoryBudget.ResetForTesting();
         }

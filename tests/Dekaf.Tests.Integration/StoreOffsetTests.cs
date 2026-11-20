@@ -53,7 +53,10 @@ public class OffsetCommitModeTests(KafkaTestContainer kafka) : KafkaIntegrationT
         await foreach (var msg in consumer.ConsumeAsync(cts.Token).ConfigureAwait(false))
         {
             count++;
-            if (count >= 3) break;
+            if (count >= 3)
+            {
+                break;
+            }
         }
 
         // Commit - should commit all consumed positions
@@ -109,7 +112,10 @@ public class OffsetCommitModeTests(KafkaTestContainer kafka) : KafkaIntegrationT
         await foreach (var msg in consumer.ConsumeAsync(cts.Token).ConfigureAwait(false))
         {
             messages.Add(msg);
-            if (messages.Count >= 3) break;
+            if (messages.Count >= 3)
+            {
+                break;
+            }
         }
 
         // Commit a specific offset (2)
@@ -164,7 +170,10 @@ public class OffsetCommitModeTests(KafkaTestContainer kafka) : KafkaIntegrationT
             await foreach (var msg in consumer1.ConsumeAsync(cts1.Token).ConfigureAwait(false))
             {
                 count++;
-                if (count >= 3) break;
+                if (count >= 3)
+                {
+                    break;
+                }
             }
 
             // Commit all consumed offsets
@@ -234,7 +243,10 @@ public class OffsetCommitModeTests(KafkaTestContainer kafka) : KafkaIntegrationT
             await foreach (var msg in consumer1.ConsumeAsync(cts1.Token).ConfigureAwait(false))
             {
                 count++;
-                if (count >= 3) break;
+                if (count >= 3)
+                {
+                    break;
+                }
             }
 
             // Intentionally NOT calling CommitAsync()
@@ -371,7 +383,10 @@ public class OffsetCommitModeTests(KafkaTestContainer kafka) : KafkaIntegrationT
             await foreach (var msg in consumer1.ConsumeAsync(cts1.Token).ConfigureAwait(false))
             {
                 count++;
-                if (count >= 3) break;
+                if (count >= 3)
+                {
+                    break;
+                }
             }
 
             // Poll for auto-commit to propagate instead of using a fixed delay.
@@ -646,7 +661,9 @@ public class OffsetCommitModeTests(KafkaTestContainer kafka) : KafkaIntegrationT
             for (var consumed = 0; consumed < 6;)
             {
                 if (await first.ConsumeOneAsync(TimeSpan.FromSeconds(30), cancellationToken).ConfigureAwait(false) is not null)
+                {
                     consumed++;
+                }
             }
 
             await first.CommitAsync(cancellationToken).ConfigureAwait(false);

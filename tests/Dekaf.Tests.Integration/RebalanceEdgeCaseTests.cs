@@ -52,7 +52,10 @@ public sealed class RebalanceEdgeCaseTests(KafkaTestContainer kafka) : KafkaInte
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))
         {
             messages.Add(msg);
-            if (messages.Count >= 3) break;
+            if (messages.Count >= 3)
+            {
+                break;
+            }
         }
 
         // Assert - consumer survived the throwing listener and consumed messages
@@ -105,7 +108,9 @@ public sealed class RebalanceEdgeCaseTests(KafkaTestContainer kafka) : KafkaInte
         {
             try
             {
-                await foreach (var _ in consumer1.ConsumeAsync(cts1.Token)) { }
+                await foreach (var _ in consumer1.ConsumeAsync(cts1.Token))
+                {
+                }
             }
             catch (OperationCanceledException) { }
         });
@@ -147,7 +152,11 @@ public sealed class RebalanceEdgeCaseTests(KafkaTestContainer kafka) : KafkaInte
 
         // Stop consumer1's background consume and dispose it to simulate leaving the group
         await cts1.CancelAsync();
-        try { await consumer1Task; } catch (OperationCanceledException) { }
+        try
+        {
+            await consumer1Task;
+        }
+        catch (OperationCanceledException) { }
         try
         {
             await consumer1.DisposeAsync();
@@ -178,7 +187,11 @@ public sealed class RebalanceEdgeCaseTests(KafkaTestContainer kafka) : KafkaInte
 
         // Clean up
         await cts2.CancelAsync();
-        try { await consumer2Task; } catch (OperationCanceledException) { }
+        try
+        {
+            await consumer2Task;
+        }
+        catch (OperationCanceledException) { }
     }
 
     [Test]
@@ -229,7 +242,10 @@ public sealed class RebalanceEdgeCaseTests(KafkaTestContainer kafka) : KafkaInte
         await foreach (var msg in consumer1.ConsumeAsync(cts1.Token))
         {
             messages.Add(msg);
-            if (messages.Count >= 4) break;
+            if (messages.Count >= 4)
+            {
+                break;
+            }
         }
 
         await Assert.That(messages).Count().IsEqualTo(4);
@@ -385,7 +401,10 @@ public sealed class RebalanceEdgeCaseTests(KafkaTestContainer kafka) : KafkaInte
         await foreach (var msg in stableConsumer.ConsumeAsync(cts.Token))
         {
             messages.Add(msg);
-            if (messages.Count >= 1) break;
+            if (messages.Count >= 1)
+            {
+                break;
+            }
         }
 
         // Assert - group stabilized and the stable consumer got assigned and consumed
@@ -462,7 +481,10 @@ public sealed class RebalanceEdgeCaseTests(KafkaTestContainer kafka) : KafkaInte
                 await foreach (var msg in consumer1.ConsumeAsync(cts2.Token))
                 {
                     consumer1Messages.Add(msg);
-                    if (consumer1Messages.Count >= 3) break;
+                    if (consumer1Messages.Count >= 3)
+                    {
+                        break;
+                    }
                 }
             }
             catch (OperationCanceledException) { }
@@ -475,7 +497,10 @@ public sealed class RebalanceEdgeCaseTests(KafkaTestContainer kafka) : KafkaInte
                 await foreach (var msg in consumer2.ConsumeAsync(cts2.Token))
                 {
                     consumer2Messages.Add(msg);
-                    if (consumer2Messages.Count >= 1) break;
+                    if (consumer2Messages.Count >= 1)
+                    {
+                        break;
+                    }
                 }
             }
             catch (OperationCanceledException) { }
@@ -561,7 +586,10 @@ public sealed class RebalanceEdgeCaseTests(KafkaTestContainer kafka) : KafkaInte
         private int _assignedCount;
         private int _revokedCount;
 
-        public IKafkaConsumer<string, string>? Consumer { get; set; }
+        public IKafkaConsumer<string, string>? Consumer
+        {
+            get; set;
+        }
         public int AssignedCallCount => _assignedCount;
         public int RevokedCallCount => _revokedCount;
 

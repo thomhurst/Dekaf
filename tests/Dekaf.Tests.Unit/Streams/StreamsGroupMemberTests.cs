@@ -758,7 +758,9 @@ public sealed class StreamsGroupMemberTests
         var pendingHeartbeat = new TaskCompletionSource<StreamsGroupHeartbeatResponse>(
             TaskCreationOptions.RunContinuationsAsynchronously);
         if (!ambiguousJoin)
+        {
             connection.EnqueueHeartbeat(Success(epoch: 1));
+        }
         connection.EnqueueHeartbeat(pendingHeartbeat.Task);
         connection.EnqueueHeartbeat(new StreamsGroupHeartbeatResponse
         {
@@ -895,7 +897,9 @@ public sealed class StreamsGroupMemberTests
     {
         var connection = new ScriptedConnection();
         if (ambiguousUpdate)
+        {
             connection.EnqueueHeartbeat(Success(epoch: 1));
+        }
         var pendingHeartbeat = new TaskCompletionSource<StreamsGroupHeartbeatResponse>(
             TaskCreationOptions.RunContinuationsAsynchronously);
         connection.EnqueueHeartbeat(pendingHeartbeat.Task);
@@ -1151,7 +1155,9 @@ public sealed class StreamsGroupMemberTests
 
         _ = await Assert.ThrowsAsync<NotSupportedException>(() => activeUpdate);
         for (var index = 0; index < queued.Length; index++)
+        {
             _ = await Assert.ThrowsAsync<OperationCanceledException>(() => queued[index]);
+        }
         await connection.ThirdHeartbeatStarted.Task;
     }
 
@@ -1946,7 +1952,9 @@ public sealed class StreamsGroupMemberTests
 
         cancellation.Cancel();
         for (var index = 0; index < queued.Length; index++)
+        {
             _ = await Assert.ThrowsAsync<OperationCanceledException>(() => queued[index]);
+        }
         var close = fixture.Member.CloseAsync().AsTask();
 
         _ = await Assert.ThrowsAsync<OperationCanceledException>(() => activeUpdate);
@@ -2455,8 +2463,14 @@ public sealed class StreamsGroupMemberTests
         private readonly Channel<string> _events = Channel.CreateUnbounded<string>();
         private readonly Channel<bool> _completed = Channel.CreateUnbounded<bool>();
 
-        public Func<StreamsGroupAssignment, CancellationToken, Task>? OnAssigned { get; init; }
-        public Func<StreamsGroupAssignment, CancellationToken, Task>? OnRevoked { get; init; }
+        public Func<StreamsGroupAssignment, CancellationToken, Task>? OnAssigned
+        {
+            get; init;
+        }
+        public Func<StreamsGroupAssignment, CancellationToken, Task>? OnRevoked
+        {
+            get; init;
+        }
 
         public ValueTask OnTasksAssignedAsync(StreamsGroupAssignment tasks, CancellationToken cancellationToken) =>
             RecordAsync("assigned", tasks, OnAssigned, cancellationToken);
@@ -2483,7 +2497,9 @@ public sealed class StreamsGroupMemberTests
                 .Select(static set => $"{set.SubtopologyId}:{string.Join(',', set.Partitions)}");
             _events.Writer.TryWrite($"{kind} {string.Join(' ', parts)}");
             if (callback is not null)
+            {
                 await callback(tasks, cancellationToken);
+            }
             _completed.Writer.TryWrite(true);
         }
     }
@@ -2540,26 +2556,26 @@ public sealed class StreamsGroupMemberTests
     private static StreamsGroupMemberUpdate CreateInitialUpdate(
         int topologyEpoch = 0,
         StreamsGroupTopologyDescription? description = null) => new()
-    {
-        EndpointInformationEpoch = 0,
-        Topology = CreateTopology(topologyEpoch, description),
-        ActiveTasks = [],
-        StandbyTasks = [],
-        WarmupTasks = [],
-        ProcessId = "process-1",
-        ClientTags = [],
-        TaskOffsets = [],
-        TaskEndOffsets = []
-    };
+        {
+            EndpointInformationEpoch = 0,
+            Topology = CreateTopology(topologyEpoch, description),
+            ActiveTasks = [],
+            StandbyTasks = [],
+            WarmupTasks = [],
+            ProcessId = "process-1",
+            ClientTags = [],
+            TaskOffsets = [],
+            TaskEndOffsets = []
+        };
 
     private static StreamsGroupTopology CreateTopology(
         int epoch,
         StreamsGroupTopologyDescription? description = null) => new()
-    {
-        Epoch = epoch,
-        Subtopologies = [],
-        Description = description
-    };
+        {
+            Epoch = epoch,
+            Subtopologies = [],
+            Description = description
+        };
 
     private static StreamsGroupTopologyDescription CreateDescription(string sourceTopic = "input") => new()
     {
@@ -2701,7 +2717,10 @@ public sealed class StreamsGroupMemberTests
         StreamsGroupMember member,
         MetadataManager metadataManager) : IAsyncDisposable
     {
-        public StreamsGroupMember Member { get; } = member;
+        public StreamsGroupMember Member
+        {
+            get;
+        } = member;
 
         public void SetBrokers(bool available) => metadataManager.Metadata.Update(new MetadataResponse
         {
@@ -2744,18 +2763,42 @@ public sealed class StreamsGroupMemberTests
         public string Host => "localhost";
         public int Port => 9092;
         public bool IsConnected => true;
-        public int FindCoordinatorRequestCount { get; private set; }
-        public List<StreamsGroupHeartbeatRequest> HeartbeatRequests { get; } = [];
-        public List<short> HeartbeatApiVersions { get; } = [];
-        public TaskCompletionSource FirstHeartbeatStarted { get; } = new(
+        public int FindCoordinatorRequestCount
+        {
+            get; private set;
+        }
+        public List<StreamsGroupHeartbeatRequest> HeartbeatRequests
+        {
+            get;
+        } = [];
+        public List<short> HeartbeatApiVersions
+        {
+            get;
+        } = [];
+        public TaskCompletionSource FirstHeartbeatStarted
+        {
+            get;
+        } = new(
             TaskCreationOptions.RunContinuationsAsynchronously);
-        public TaskCompletionSource SecondHeartbeatStarted { get; } = new(
+        public TaskCompletionSource SecondHeartbeatStarted
+        {
+            get;
+        } = new(
             TaskCreationOptions.RunContinuationsAsynchronously);
-        public TaskCompletionSource SecondHeartbeatCompleted { get; } = new(
+        public TaskCompletionSource SecondHeartbeatCompleted
+        {
+            get;
+        } = new(
             TaskCreationOptions.RunContinuationsAsynchronously);
-        public TaskCompletionSource ThirdHeartbeatStarted { get; } = new(
+        public TaskCompletionSource ThirdHeartbeatStarted
+        {
+            get;
+        } = new(
             TaskCreationOptions.RunContinuationsAsynchronously);
-        public Channel<PublicationAttempt> PublicationAttempts { get; } =
+        public Channel<PublicationAttempt> PublicationAttempts
+        {
+            get;
+        } =
             Channel.CreateUnbounded<PublicationAttempt>();
         public int PublicationAttemptCount => Volatile.Read(ref _publicationAttemptCount);
 
@@ -2766,8 +2809,14 @@ public sealed class StreamsGroupMemberTests
             Func<CancellationToken, Task<StreamsGroupTopologyDescriptionUpdateResponse>> response) =>
             _publicationResponses.Enqueue(response);
 
-        public List<OffsetCommitRequest> OffsetCommitRequests { get; } = [];
-        public List<short> OffsetCommitApiVersions { get; } = [];
+        public List<OffsetCommitRequest> OffsetCommitRequests
+        {
+            get;
+        } = [];
+        public List<short> OffsetCommitApiVersions
+        {
+            get;
+        } = [];
         private readonly Queue<ErrorCode> _offsetCommitErrors = new();
 
         public void EnqueueOffsetCommitError(ErrorCode error) => _offsetCommitErrors.Enqueue(error);
@@ -2796,7 +2845,9 @@ public sealed class StreamsGroupMemberTests
             where TResponse : IKafkaResponse
         {
             if (request is StreamsGroupHeartbeatRequest && _preWriteHeartbeatFailures.TryDequeue(out var exception))
+            {
                 return ValueTask.FromException<TResponse>(exception);
+            }
 
             requestWriteStarted();
             return SendAsync<TRequest, TResponse>(request, apiVersion, cancellationToken);
@@ -2835,7 +2886,9 @@ public sealed class StreamsGroupMemberTests
                 try
                 {
                     if (!_publicationResponses.TryDequeue(out var respond))
+                    {
                         throw new InvalidOperationException("No scripted topology description response.");
+                    }
                     var response = await respond(cancellationToken).WaitAsync(cancellationToken);
                     return (TResponse)(IKafkaResponse)response;
                 }
@@ -2869,11 +2922,17 @@ public sealed class StreamsGroupMemberTests
                 HeartbeatRequests.Add(heartbeat);
                 HeartbeatApiVersions.Add(apiVersion);
                 if (HeartbeatRequests.Count == 1)
+                {
                     FirstHeartbeatStarted.TrySetResult();
+                }
                 if (HeartbeatRequests.Count == 2)
+                {
                     SecondHeartbeatStarted.TrySetResult();
+                }
                 if (HeartbeatRequests.Count == 3)
+                {
                     ThirdHeartbeatStarted.TrySetResult();
+                }
                 try
                 {
                     var response = await _heartbeatResponses.Dequeue().WaitAsync(cancellationToken);
@@ -2882,7 +2941,9 @@ public sealed class StreamsGroupMemberTests
                 finally
                 {
                     if (HeartbeatRequests.Count == 2)
+                    {
                         SecondHeartbeatCompleted.TrySetResult();
+                    }
                 }
             }
 
@@ -2917,7 +2978,10 @@ public sealed class StreamsGroupMemberTests
             short Version,
             CancellationToken CancellationToken)
         {
-            public TaskCompletionSource Completed { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            public TaskCompletionSource Completed
+            {
+                get;
+            } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         }
 
         internal static FindCoordinatorResponse SuccessfulCoordinator() => new()

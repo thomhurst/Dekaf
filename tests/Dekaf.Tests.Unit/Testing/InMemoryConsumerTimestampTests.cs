@@ -21,11 +21,15 @@ public sealed class InMemoryConsumerTimestampTests
         var cluster = new InMemoryKafkaCluster();
         await using var producer = new InMemoryProducer<string, string>(cluster);
         for (var i = 0; i < 10; i++)
+        {
             await producer.ProduceAsync(Message(1000 + i));
+        }
         await producer.InitTransactionsAsync();
         await using var transaction = producer.BeginTransaction();
         for (var i = 0; i < 5; i++)
+        {
             await transaction.ProduceAsync(Message(2000 + i));
+        }
         // Even non-transactional records after the first unstable offset remain hidden.
         await using var otherProducer = new InMemoryProducer<string, string>(cluster);
         await otherProducer.ProduceAsync(Message(3000));
@@ -40,9 +44,13 @@ public sealed class InMemoryConsumerTimestampTests
         await Assert.That(await QueryOffsetAsync(consumer, 4000)).IsEqualTo(-1L);
 
         if (commit)
+        {
             await transaction.CommitAsync();
+        }
         else
+        {
             await transaction.AbortAsync();
+        }
 
         // ListOffsets bounds timestamps by LSO; filtering aborted records belongs to fetching.
         await Assert.That(await QueryOffsetAsync(consumer, TopicPartitionTimestamp.Latest)).IsEqualTo(17L);

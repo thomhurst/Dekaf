@@ -166,9 +166,13 @@ public sealed class AvroWriterSchemaTests
             var forward = AvroWriterSchemaComparer.SchemaEquals(leftModel, rightModel);
             var backward = AvroWriterSchemaComparer.SchemaEquals(rightModel, leftModel);
             if (forward != expected || backward != expected)
+            {
                 mismatches.Add($"{label}: Apache.Avro {expected}, model {forward}/{backward}");
+            }
             if (!AvroWriterSchemaComparer.SchemaEquals(leftModel, AvroWriterSchema.Parse(left)))
+            {
                 mismatches.Add($"{label}: model is not reflexive");
+            }
         }
 
         await Assert.That(mismatches).IsEmpty();
@@ -210,12 +214,16 @@ public sealed class AvroWriterSchemaTests
             if (actual is null)
             {
                 if (failure is not (Avro.SchemaParseException or Avro.AvroTypeException))
+                {
                     mismatches.Add($"{json}: model threw {failure!.GetType().Name}");
+                }
                 continue;
             }
 
             if (!SameShape(expected!, actual))
+            {
                 mismatches.Add($"{json}: parsed shape differs from Apache.Avro ({expected})");
+            }
         }
 
         await Assert.That(mismatches).IsEmpty();
@@ -258,7 +266,9 @@ public sealed class AvroWriterSchemaTests
     {
         var expectedTag = expected.Tag == ApacheSchema.Type.Error ? "Record" : expected.Tag.ToString();
         if (!string.Equals(expectedTag, actual.Tag.ToString(), StringComparison.Ordinal))
+        {
             return false;
+        }
         switch (expected)
         {
             case Avro.RecordSchema record:
@@ -268,7 +278,9 @@ public sealed class AvroWriterSchemaTests
                     return false;
                 }
                 if (!visited.Add(actual))
+                {
                     return true;
+                }
                 for (var index = 0; index < record.Count; index++)
                 {
                     if (!string.Equals(record.Fields[index].Name, actual.Fields[index].Name, StringComparison.Ordinal) ||
@@ -290,11 +302,15 @@ public sealed class AvroWriterSchemaTests
                 return SameShape(map.ValueSchema, actual.Child!, visited);
             case Avro.UnionSchema union:
                 if (union.Count != actual.Branches.Length)
+                {
                     return false;
+                }
                 for (var index = 0; index < union.Count; index++)
                 {
                     if (!SameShape(union[index], actual.Branches[index], visited))
+                    {
                         return false;
+                    }
                 }
                 return true;
             case Avro.LogicalSchema logical:

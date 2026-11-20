@@ -13,7 +13,10 @@ public sealed class SaslHandshakeRequest : IKafkaRequest<SaslHandshakeResponse>
     /// <summary>
     /// The SASL mechanism to use (e.g., "PLAIN", "SCRAM-SHA-256", "SCRAM-SHA-512").
     /// </summary>
-    public required string Mechanism { get; init; }
+    public required string Mechanism
+    {
+        get; init;
+    }
 
     public static bool IsFlexibleVersion(short version) => false;
     public static short GetRequestHeaderVersion(short version) => 1;

@@ -24,7 +24,9 @@ public static class OutboxHeaderCodec
     public static byte[]? Encode(Headers? headers)
     {
         if (headers is null || headers.Count == 0)
+        {
             return null;
+        }
 
         var size = 5;
         for (var i = 0; i < headers.Count; i++)
@@ -69,21 +71,29 @@ public static class OutboxHeaderCodec
     public static Headers? Decode(byte[]? data)
     {
         if (data is null)
+        {
             return null;
+        }
 
         var span = data.AsSpan();
         if (span[0] != FormatVersion)
+        {
             throw new FormatException($"Unknown outbox header blob version {span[0]}; expected {FormatVersion}.");
+        }
 
         var count = BinaryPrimitives.ReadInt32LittleEndian(span[1..]);
         if (count < 0)
+        {
             throw new FormatException("Outbox header blob has a negative header count.");
+        }
 
         // Every header occupies at least 8 bytes (two length prefixes), so a count the
         // remaining bytes cannot possibly hold is corruption - reject it before sizing any
         // allocation from it, or a malformed row could drive an enormous allocation.
         if (count > (span.Length - 5) / 8)
+        {
             throw new FormatException("Outbox header blob header count exceeds the remaining bytes.");
+        }
 
         var headers = new Headers(count);
         var offset = 5;

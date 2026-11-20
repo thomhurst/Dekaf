@@ -122,7 +122,9 @@ public class RecordAccumulatorDequeCacheTests
             start.Wait();
             object? deque = null;
             for (var i = 0; i < 1_000; i++)
+            {
                 deque = GetOrCreateDeque(accumulator, "orders", partition);
+            }
 
             setResult(deque!);
         })
@@ -139,7 +141,9 @@ public class RecordAccumulatorDequeCacheTests
     private static void JoinThread(Thread thread, CancellationToken cancellationToken)
     {
         while (!thread.Join(millisecondsTimeout: 50))
+        {
             cancellationToken.ThrowIfCancellationRequested();
+        }
     }
 
     private static int GetPartition(object deque)
@@ -152,18 +156,24 @@ public class RecordAccumulatorDequeCacheTests
     {
         var cache = (Array?)ThreadCacheField.GetValue(null);
         if (cache is null)
+        {
             return false;
+        }
 
         for (var i = 0; i < cache.Length; i++)
         {
             var weakEntry = cache.GetValue(i);
             if (weakEntry is null)
+            {
                 continue;
+            }
 
             object?[] arguments = [null];
             var found = (bool)weakEntry.GetType().GetMethod("TryGetTarget")!.Invoke(weakEntry, arguments)!;
             if (found && ReferenceEquals(arguments[0], deque))
+            {
                 return true;
+            }
         }
 
         return false;

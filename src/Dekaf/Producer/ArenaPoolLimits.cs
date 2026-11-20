@@ -37,7 +37,13 @@ internal sealed class ArenaPoolLimits
     /// </summary>
     public ArenaPoolLimit Current
     {
-        get { lock (_lock) { return _current; } }
+        get
+        {
+            lock (_lock)
+            {
+                return _current;
+            }
+        }
     }
 
     /// <summary>Adds a producer's request to the effective limit.</summary>
@@ -62,7 +68,9 @@ internal sealed class ArenaPoolLimits
         lock (_lock)
         {
             if (!_registrations.Remove(registration))
+            {
                 return false;
+            }
 
             _current = ComputeUnlocked();
             return true;
@@ -72,7 +80,9 @@ internal sealed class ArenaPoolLimits
     private ArenaPoolLimit ComputeUnlocked()
     {
         if (_registrations.Count == 0)
+        {
             return _drained;
+        }
 
         var poolSize = 0;
         var missRatchetLimit = 0;
@@ -90,6 +100,9 @@ internal sealed class ArenaPoolLimits
     /// <summary>One producer's request, removed by <see cref="Unregister"/>.</summary>
     internal sealed class Registration(ArenaPoolLimit limit)
     {
-        public ArenaPoolLimit Limit { get; } = limit;
+        public ArenaPoolLimit Limit
+        {
+            get;
+        } = limit;
     }
 }

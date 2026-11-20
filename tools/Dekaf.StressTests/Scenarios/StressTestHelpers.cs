@@ -51,11 +51,15 @@ internal static class StressTestHelpers
         using var diagnostics = captureConsumerDiagnostics is null ? null
             : new ConsumerFetchDiagnosticsTracker(options.Topic, enabled: options.EnableConsumerFetchDiagnostics);
         if (captureConsumerDiagnostics?.Invoke() is { } initial)
+        {
             diagnostics?.Start(initial);
+        }
 
         var startedAt = DateTime.UtcNow;
         if (tracker.Warmup is not null)
+        {
             Console.WriteLine($"  Running {scenario.Client} {scenario.Name} stress test for {options.DurationMinutes} minutes...");
+        }
         LogResourceUsage("Initial");
         tracker.Start();
         var stop = ProducerWorkload.StopIngressAsync(cts, duration, TimeProvider.System);
@@ -85,14 +89,19 @@ internal static class StressTestHelpers
             cts.Cancel();
             observations.Cancel();
             await stop.ConfigureAwait(false);
-            try { await Task.WhenAll(sampler, resources, diagnosticSampler).ConfigureAwait(false); }
+            try
+            {
+                await Task.WhenAll(sampler, resources, diagnosticSampler).ConfigureAwait(false);
+            }
             catch (OperationCanceledException) when (observations.IsCancellationRequested) { }
             tracker.Stop();
             gcStats.Capture();
         }
         token.ThrowIfCancellationRequested();
         if (captureConsumerDiagnostics is not null)
+        {
             diagnostics?.TryTakeSample(captureConsumerDiagnostics);
+        }
         Console.WriteLine($"  Completed: {tracker.MessageCount:N0} messages, {tracker.GetAverageMessagesPerSecond():N0} msg/sec");
         LogResourceUsage("Final");
         return (new StressTestResult
@@ -431,8 +440,10 @@ internal static class StressTestHelpers
         {
             // A broken producer may ignore cancellation and fault after the bounded wait.
             if (!flushing.IsCompletedSuccessfully)
+            {
                 _ = flushing.ContinueWith(static task => _ = task.Exception, CancellationToken.None,
                     TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+            }
         }
     }
 
@@ -496,7 +507,9 @@ internal static class StressTestHelpers
         StressTestOptions options)
     {
         if (options.EnableProducerDeliveryDiagnostics)
+        {
             builder.WithDeliveryDiagnostics();
+        }
     }
 
     internal static ProducerDeliveryDiagnosticsSnapshot? CaptureProducerDeliveryDiagnostics<TKey, TValue>(
@@ -504,7 +517,9 @@ internal static class StressTestHelpers
         StressTestOptions options)
     {
         if (producer is not IProducerDiagnostics diagnostics)
+        {
             return null;
+        }
 
         var snapshot = diagnostics.GetDeliveryDiagnosticsSnapshot();
         if (options.EnableProducerDeliveryDiagnostics && snapshot.Batches.Count > 0)
@@ -520,7 +535,9 @@ internal static class StressTestHelpers
         IKafkaProducer<TKey, TValue> producer)
     {
         if (producer is IProducerDiagnostics diagnostics)
+        {
             diagnostics.ResetProduceRequestDiagnostics();
+        }
     }
 
     internal static ConsumerDiagnosticSnapshot? CaptureConsumerDiagnostics<TKey, TValue>(

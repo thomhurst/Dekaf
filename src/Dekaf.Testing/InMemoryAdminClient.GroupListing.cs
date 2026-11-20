@@ -24,7 +24,9 @@ public sealed partial class InMemoryAdminClient : IGroupListingAdminClient
         await ApplyAdminFaultAsync(cancellationToken).ConfigureAwait(false);
         var inventory = _cluster.ListGroupInventory();
         if (states is not { Count: > 0 } && types is not { Count: > 0 } && protocols is not { Count: > 0 })
+        {
             return inventory;
+        }
         var result = new List<GroupListing>();
         for (var i = 0; i < inventory.Count; i++)
         {
@@ -32,7 +34,9 @@ public sealed partial class InMemoryAdminClient : IGroupListingAdminClient
             if (AdminClient.MatchesGroupFilter(states, group.State, StringComparison.OrdinalIgnoreCase) &&
                 AdminClient.MatchesGroupFilter(types, group.GroupType, StringComparison.OrdinalIgnoreCase) &&
                 AdminClient.MatchesGroupFilter(protocols, group.ProtocolType, StringComparison.Ordinal))
+            {
                 result.Add(group);
+            }
         }
         return result;
     }

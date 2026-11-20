@@ -28,18 +28,27 @@ public sealed class OutboxRelayOptions
     /// Changing it requires draining the table first: rows in buckets at or beyond the new
     /// count are never claimed.
     /// </summary>
-    public int BucketCount { get; init; } = DefaultBucketCount;
+    public int BucketCount
+    {
+        get; init;
+    } = DefaultBucketCount;
 
     /// <summary>
     /// Maximum rows fetched and published per bucket per round trip.
     /// </summary>
-    public int BatchSize { get; init; } = 500;
+    public int BatchSize
+    {
+        get; init;
+    } = 500;
 
     /// <summary>
     /// Fallback delay before polling again when no bucket had work. A local commit
     /// notification interrupts this delay; writers without notifications rely on polling.
     /// </summary>
-    public TimeSpan PollInterval { get; init; } = TimeSpan.FromSeconds(1);
+    public TimeSpan PollInterval
+    {
+        get; init;
+    } = TimeSpan.FromSeconds(1);
 
     /// <summary>
     /// Delay before retrying after a store or publish failure. While cycles keep failing
@@ -50,20 +59,29 @@ public sealed class OutboxRelayOptions
     /// failing; the relay's other buckets keep draining meanwhile, and a commit to one of them
     /// still ends the relay's wait.
     /// </summary>
-    public TimeSpan ErrorBackoff { get; init; } = TimeSpan.FromSeconds(1);
+    public TimeSpan ErrorBackoff
+    {
+        get; init;
+    } = TimeSpan.FromSeconds(1);
 
     /// <summary>
     /// How long a bucket lease remains valid without renewal. A relay that stalls longer
     /// than this loses its buckets to peers; rows it had published but not yet marked may
     /// then be republished (at-least-once duplicates, never loss).
     /// </summary>
-    public TimeSpan LeaseDuration { get; init; } = TimeSpan.FromSeconds(30);
+    public TimeSpan LeaseDuration
+    {
+        get; init;
+    } = TimeSpan.FromSeconds(30);
 
     /// <summary>
     /// How often leases are renewed. Must be comfortably below <see cref="LeaseDuration"/>.
     /// Stores implementing IOutboxLeaseRenewalStore also renew while publication is pending.
     /// </summary>
-    public TimeSpan LeaseRenewInterval { get; init; } = TimeSpan.FromSeconds(10);
+    public TimeSpan LeaseRenewInterval
+    {
+        get; init;
+    } = TimeSpan.FromSeconds(10);
 
     /// <summary>
     /// Conservative bound for an entire PublishAsync call, including submission of every
@@ -77,32 +95,50 @@ public sealed class OutboxRelayOptions
     /// Cancellation cannot fence records already appended to Kafka. Null uses in-flight
     /// renewal and requires a store supporting that capability.
     /// </remarks>
-    public TimeSpan? MaxPublishDuration { get; init; }
+    public TimeSpan? MaxPublishDuration
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Header name stamped with <see cref="OutboxMessage.MessageId"/> on every published
     /// record, enabling consumer-side deduplication.
     /// </summary>
-    public string MessageIdHeaderName { get; init; } = DefaultMessageIdHeaderName;
+    public string MessageIdHeaderName
+    {
+        get; init;
+    } = DefaultMessageIdHeaderName;
 
     /// <summary>
     /// Unique identifier for this relay instance, at most <see cref="MaxRelayIdLength"/>
     /// characters. Defaults to machine name plus a random suffix, which is correct for
     /// almost all deployments.
     /// </summary>
-    public string RelayId { get; init; } = $"{Environment.MachineName}-{Guid.NewGuid():N}";
+    public string RelayId
+    {
+        get; init;
+    } = $"{Environment.MachineName}-{Guid.NewGuid():N}";
 
     /// <summary>
     /// Stable logical outbox name used in metric tags. Use distinct names for independent
     /// stores in one process; never use message identifiers or generated relay identifiers.
     /// </summary>
-    public string MetricsName { get; init; } = "outbox";
+    public string MetricsName
+    {
+        get; init;
+    } = "outbox";
 
     /// <summary>Minimum delay between store metric queries, measured after each query completes. At most 4,294,967,294 milliseconds.</summary>
-    public TimeSpan MetricsCollectionInterval { get; init; } = TimeSpan.FromSeconds(30);
+    public TimeSpan MetricsCollectionInterval
+    {
+        get; init;
+    } = TimeSpan.FromSeconds(30);
 
     /// <summary>Cancellation timeout for each optional store metric query. At most 4,294,967,294 milliseconds.</summary>
-    public TimeSpan MetricsCollectionTimeout { get; init; } = TimeSpan.FromSeconds(5);
+    public TimeSpan MetricsCollectionTimeout
+    {
+        get; init;
+    } = TimeSpan.FromSeconds(5);
 
     /// <summary>
     /// Samples whole-store backlog metrics only while this relay owns bucket zero, so a store
@@ -112,7 +148,10 @@ public sealed class OutboxRelayOptions
     /// Set to false to sample on every relay, for dashboards that read one pod; every relay
     /// sharing the store should use the same value.
     /// </summary>
-    public bool CollectMetricsOnBucketZeroOwnerOnly { get; init; } = true;
+    public bool CollectMetricsOnBucketZeroOwnerOnly
+    {
+        get; init;
+    } = true;
 
     /// <summary>
     /// Validates option consistency. Called by the relay at startup.

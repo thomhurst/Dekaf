@@ -13,12 +13,18 @@ public sealed class ConsumerGroupDescribeRequest : IKafkaRequest<ConsumerGroupDe
     /// <summary>
     /// The consumer group IDs to describe.
     /// </summary>
-    public required IReadOnlyList<string> GroupIds { get; init; }
+    public required IReadOnlyList<string> GroupIds
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Whether to include authorized operations.
     /// </summary>
-    public bool IncludeAuthorizedOperations { get; init; }
+    public bool IncludeAuthorizedOperations
+    {
+        get; init;
+    }
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {

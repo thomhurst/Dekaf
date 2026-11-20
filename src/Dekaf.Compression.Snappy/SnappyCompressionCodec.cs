@@ -47,7 +47,9 @@ public sealed class SnappyCompressionCodec : ICompressionCodec
     public SnappyCompressionCodec(int blockSize = DefaultBlockSize)
     {
         if (blockSize <= 0)
+        {
             throw new ArgumentOutOfRangeException(nameof(blockSize), "Block size must be positive.");
+        }
 
         _blockSize = blockSize;
     }
@@ -111,7 +113,9 @@ public sealed class SnappyCompressionCodec : ICompressionCodec
         }
 
         if (source.Length < HeaderSize)
+        {
             throw new InvalidDataException("Snappy data too short for xerial header.");
+        }
 
         // Skip xerial header (magic + version + compat version).
         var position = source.GetPosition(HeaderSize);
@@ -130,10 +134,14 @@ public sealed class SnappyCompressionCodec : ICompressionCodec
             remaining -= 4;
 
             if (compressedSize < 0)
+            {
                 throw new InvalidDataException("Invalid block size in xerial-snappy data.");
+            }
 
             if (remaining < compressedSize)
+            {
                 throw new InvalidDataException("Truncated xerial-snappy block.");
+            }
 
             var compressedSequence = source.Slice(position, compressedSize);
             DecompressBlock(compressedSequence, destination);
@@ -143,13 +151,17 @@ public sealed class SnappyCompressionCodec : ICompressionCodec
         }
 
         if (remaining != 0)
+        {
             throw new InvalidDataException("Trailing data after last xerial-snappy block.");
+        }
     }
 
     private static bool HasXerialMagic(ReadOnlySequence<byte> source)
     {
         if (source.Length < XerialMagic.Length)
+        {
             return false;
+        }
 
         Span<byte> magic = stackalloc byte[XerialMagic.Length];
         source.Slice(0, XerialMagic.Length).CopyTo(magic);
@@ -163,8 +175,7 @@ public sealed class SnappyCompressionCodec : ICompressionCodec
         {
             Snappier.Snappy.Decompress(source, trackedDestination);
         }
-        catch (InvalidOperationException exception)
-            when (!trackedDestination.DestinationThrewInvalidOperationException)
+        catch (InvalidOperationException exception) when (!trackedDestination.DestinationThrewInvalidOperationException)
         {
             throw new InvalidDataException("Invalid Snappy payload.", exception);
         }
@@ -197,7 +208,10 @@ public sealed class SnappyCompressionCodec : ICompressionCodec
 
         internal bool IsInUse => _destination is not null;
 
-        internal bool DestinationThrewInvalidOperationException { get; private set; }
+        internal bool DestinationThrewInvalidOperationException
+        {
+            get; private set;
+        }
 
         internal void Initialize(IBufferWriter<byte> destination)
         {

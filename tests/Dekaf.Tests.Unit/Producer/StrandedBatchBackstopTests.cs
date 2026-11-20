@@ -136,7 +136,9 @@ public class StrandedBatchBackstopTests
         await using var metadataManager = AccumulatorTestHelpers.CreateMetadataManager(Topic, partitionCount: 1);
 
         for (var pass = 0; pass < 5; pass++)
+        {
             await Assert.That(RunReadyPass(accumulator, metadataManager)).IsEmpty();
+        }
 
         await Assert.That(capturingLogger.Messages).IsEmpty();
         await Assert.That(DispatchQueuedCount(accumulator)).IsEqualTo(0);

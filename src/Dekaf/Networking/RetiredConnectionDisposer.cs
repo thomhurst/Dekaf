@@ -16,14 +16,18 @@ internal static class RetiredConnectionDisposer
         if (connection is IRetirableKafkaConnection retirableConnection)
         {
             while (retirableConnection.LeaseCount > 0)
+            {
                 await Task.Delay(DrainPollInterval, cancellationToken).ConfigureAwait(false);
+            }
 
             retirableConnection.CompleteRetirement();
         }
 
         // A send may have entered immediately before retirement was sealed.
         while (HasActiveWork(connection))
+        {
             await Task.Delay(DrainPollInterval, cancellationToken).ConfigureAwait(false);
+        }
 
         await connection.DisposeAsync().ConfigureAwait(false);
     }

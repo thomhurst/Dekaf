@@ -10,7 +10,10 @@ namespace Dekaf.Benchmarks.Benchmarks.Unit;
 public class ShareConsumerRenewalBenchmarks
 {
     [Params(false, true)]
-    public bool Hosted { get; set; }
+    public bool Hosted
+    {
+        get; set;
+    }
 
     private Action<string, int, long> _removeRenewedRecord = null!;
     private readonly KafkaShareConsumer<string, string> _consumer = new(
@@ -36,12 +39,20 @@ public class ShareConsumerRenewalBenchmarks
     public void Setup()
     {
         if (Hosted)
-            ((IHostedShareConsumer)_consumer).ObserveAcknowledgements(static _ => { });
+        {
+            ((IHostedShareConsumer)_consumer).ObserveAcknowledgements(static _ =>
+            {
+            });
+        }
         _consumer.Acknowledge(_record, AcknowledgeType.Renew);
         // Keep the dictionary allocated while cycling one record's renewal state.
         _consumer.Acknowledge(new ShareConsumeResult<string, string>
         {
-            Topic = _record.Topic, Partition = _record.Partition, Offset = 43, Value = "sentinel", DeliveryCount = 1
+            Topic = _record.Topic,
+            Partition = _record.Partition,
+            Offset = 43,
+            Value = "sentinel",
+            DeliveryCount = 1
         }, AcknowledgeType.Renew);
         _removeRenewedRecord = typeof(KafkaShareConsumer<string, string>)
             .GetMethod("RemoveRenewedRecord", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!

@@ -9,9 +9,21 @@ public class ShareAcknowledgedOffsetsLookupBenchmarks
 {
     private List<AcknowledgementBatchData> _batches = null!;
 
-    [Params(64, 1024)] public int RecordCount { get; set; }
-    [Params(false, true)] public bool Sparse { get; set; }
-    [Params(1, 4)] public int BatchCount { get; set; }
+    [Params(64, 1024)]
+    public int RecordCount
+    {
+        get; set;
+    }
+    [Params(false, true)]
+    public bool Sparse
+    {
+        get; set;
+    }
+    [Params(1, 4)]
+    public int BatchCount
+    {
+        get; set;
+    }
 
     [GlobalSetup]
     public void Setup()
@@ -21,7 +33,9 @@ public class ShareAcknowledgedOffsetsLookupBenchmarks
         var lastBatch = _batches[^1];
         var expectedLast = lastBatch.LastOffset - (Sparse ? 1 : 0);
         if (CreateAndCount() != expectedCount || CreateAndLookupLast() != expectedLast)
+        {
             throw new InvalidOperationException("Construction and lookup must preserve acknowledged offsets.");
+        }
     }
 
     [Benchmark]

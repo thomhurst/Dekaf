@@ -126,7 +126,9 @@ public sealed class ConnectionSetupNetworkFaultTests(TransactionFaultKafkaContai
         {
             await kafka.HealNetworkFaultsAsync(CancellationToken.None);
             if (!disposed)
+            {
                 await admin.DisposeAsync();
+            }
         }
     }
 }

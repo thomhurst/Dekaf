@@ -11,7 +11,9 @@ foreach (var assembly in new[] { typeof(Kafka).Assembly, typeof(TopicPartition).
 {
     var actualFramework = assembly.GetCustomAttribute<TargetFrameworkAttribute>()?.FrameworkName;
     if (actualFramework != expectedFramework)
+    {
         throw new InvalidOperationException($"{assembly.GetName().Name} selected {actualFramework}; expected {expectedFramework}.");
+    }
 }
 
 if (args is ["--verify-assets"])
@@ -38,7 +40,9 @@ await using var consumer = await Kafka.CreateConsumer<string, string>()
 consumer.Assign(new TopicPartition(topic, 0));
 var record = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(15), cancellationToken);
 if (record is null || record.Value.Key != "package-key" || record.Value.Value != "package-value")
+{
     throw new InvalidOperationException("The authenticated package round trip returned the wrong record.");
+}
 
 try
 {

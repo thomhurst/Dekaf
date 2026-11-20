@@ -44,7 +44,10 @@ public sealed partial class ConsumerCoordinatorKip848Tests
         {
             // Also observe an unexpected early fault instead of waiting for a test timeout.
             await Task.WhenAny(refreshing.Task, join);
-            if (join.IsCompleted) await join;
+            if (join.IsCompleted)
+            {
+                await join;
+            }
             cancellation.Cancel();
             await Assert.That(async () => await join).Throws<OperationCanceledException>();
             await Assert.That(coordinator.State).IsEqualTo(CoordinatorState.Unjoined);

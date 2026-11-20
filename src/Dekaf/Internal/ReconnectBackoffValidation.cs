@@ -5,7 +5,9 @@ internal static class ReconnectBackoffValidation
     public static int ToMilliseconds(TimeSpan value, string parameterName, string errorMessage)
     {
         if (value < TimeSpan.Zero)
+        {
             throw new ArgumentOutOfRangeException(parameterName, errorMessage);
+        }
         ArgumentOutOfRangeException.ThrowIfGreaterThan(value.TotalMilliseconds, int.MaxValue, parameterName);
 
         return (int)value.TotalMilliseconds;

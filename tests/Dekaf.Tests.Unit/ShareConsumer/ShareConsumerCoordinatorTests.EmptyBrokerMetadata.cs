@@ -75,7 +75,10 @@ public sealed partial class ShareConsumerCoordinatorTests
         {
             // Also observe an unexpected early fault instead of waiting for a test timeout.
             await Task.WhenAny(refreshing.Task, join);
-            if (join.IsCompleted) await join;
+            if (join.IsCompleted)
+            {
+                await join;
+            }
             cancellation.Cancel();
             await Assert.That(async () => await join).Throws<OperationCanceledException>();
             await Assert.That(harness.Coordinator.State).IsEqualTo(CoordinatorState.Unjoined);
@@ -104,10 +107,16 @@ public sealed partial class ShareConsumerCoordinatorTests
         Brokers = [new BrokerMetadata { NodeId = 0, Host = "broker-0", Port = 9092 }],
         Topics = [new TopicMetadata
         {
-            ErrorCode = ErrorCode.None, Name = "first", TopicId = KnownTopicId,
+            ErrorCode = ErrorCode.None,
+            Name = "first",
+            TopicId = KnownTopicId,
             Partitions = [new PartitionMetadata
             {
-                ErrorCode = ErrorCode.None, PartitionIndex = 0, LeaderId = 0, ReplicaNodes = [0], IsrNodes = [0]
+                ErrorCode = ErrorCode.None,
+                PartitionIndex = 0,
+                LeaderId = 0,
+                ReplicaNodes = [0],
+                IsrNodes = [0]
             }]
         }]
     };
@@ -128,7 +137,10 @@ public sealed partial class ShareConsumerCoordinatorTests
             Coordinator = coordinator;
         }
 
-        public ShareConsumerCoordinator Coordinator { get; }
+        public ShareConsumerCoordinator Coordinator
+        {
+            get;
+        }
 
         public static EmptyMetadataHarness Create(
             Func<CancellationToken, ValueTask<MetadataResponse>> refresh,
@@ -169,7 +181,11 @@ public sealed partial class ShareConsumerCoordinatorTests
                 {
                     Coordinators = [new Coordinator
                     {
-                        Key = options.GroupId, NodeId = 0, Host = "broker-0", Port = 9092, ErrorCode = ErrorCode.None
+                        Key = options.GroupId,
+                        NodeId = 0,
+                        Host = "broker-0",
+                        Port = 9092,
+                        ErrorCode = ErrorCode.None
                     }]
                 }));
             connection.SendAsync<ShareGroupHeartbeatRequest, ShareGroupHeartbeatResponse>(

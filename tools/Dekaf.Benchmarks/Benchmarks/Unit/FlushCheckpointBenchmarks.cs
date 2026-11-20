@@ -88,7 +88,9 @@ public class FlushCheckpointBenchmarks
     public void Cleanup()
     {
         while (_inFlight.Count > 0)
+        {
             Retire(_inFlight.Dequeue());
+        }
         _accumulator.DisposeAsync().AsTask().GetAwaiter().GetResult();
         _workerCts.Cancel();
         _workerCts.Dispose();
@@ -110,7 +112,9 @@ public class FlushCheckpointBenchmarks
                     var oldest = _inFlight.Dequeue();
                     // A non-head exit first, then the head exit.
                     if ((++_retirements & 1) == 0)
+                    {
                         Retire(_inFlight.Dequeue());
+                    }
                     Retire(oldest);
                 }
             }
@@ -122,13 +126,17 @@ public class FlushCheckpointBenchmarks
     {
         // Retire the lifecycle benchmark's window so each flush measures its own batch only.
         while (_inFlight.Count > 0)
+        {
             Retire(_inFlight.Dequeue());
+        }
 
         var ts = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
         for (var flush = 0; flush < FlushesPerInvoke; flush++)
         {
             for (var i = 0; i < RecordsPerFlush; i++)
+            {
                 Append(ts);
+            }
 
             FlushAndDeliver();
         }
@@ -138,7 +146,9 @@ public class FlushCheckpointBenchmarks
     public void AppendWorkerHandoff()
     {
         while (_inFlight.Count > 0)
+        {
             Retire(_inFlight.Dequeue());
+        }
 
         var ts = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
         for (var i = 0; i < HandoffsPerInvoke; i++)
@@ -158,7 +168,9 @@ public class FlushCheckpointBenchmarks
         for (var i = 0; i < HandoffsPerInvoke; i++)
         {
             while (!_handoffs[i].IsCompleted)
+            {
                 FlushAndDeliver();
+            }
             _handoffs[i].GetAwaiter().GetResult();
         }
     }
@@ -167,7 +179,9 @@ public class FlushCheckpointBenchmarks
     public void MixedAppendWorkerHandoff()
     {
         while (_inFlight.Count > 0)
+        {
             Retire(_inFlight.Dequeue());
+        }
 
         var ts = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
         for (var i = 0; i < HandoffsPerInvoke; i++)
@@ -188,7 +202,9 @@ public class FlushCheckpointBenchmarks
         for (var i = 0; i < HandoffsPerInvoke; i++)
         {
             while (!_spanAppends[i].IsCompleted || !_handoffs[i].IsCompleted)
+            {
                 FlushAndDeliver();
+            }
             _spanAppends[i].GetAwaiter().GetResult();
             _handoffs[i].GetAwaiter().GetResult();
         }
@@ -200,9 +216,13 @@ public class FlushCheckpointBenchmarks
         while (!pending.IsCompleted)
         {
             if (_accumulator.TryDrainPublishedBatch(out var batch))
+            {
                 Retire(batch);
+            }
             else
+            {
                 Thread.SpinWait(1);
+            }
         }
 
         pending.GetAwaiter().GetResult();
@@ -216,7 +236,9 @@ public class FlushCheckpointBenchmarks
             null, 0, null, CancellationToken.None);
 
         if (!task.IsCompleted)
+        {
             throw new InvalidOperationException("Append left the synchronous path; the fixture fell behind.");
+        }
 
         task.GetAwaiter().GetResult();
     }

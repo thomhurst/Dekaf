@@ -11,7 +11,10 @@ public sealed class ShareFaultKafkaContainer : TransactionFaultKafkaContainer
 {
     public override string ContainerName => $"apache/kafka:{KafkaContainerDefault.DefaultTag}";
 
-    public override int Version { get; } = KafkaContainerDefault.ParseVersion(KafkaContainerDefault.DefaultTag);
+    public override int Version
+    {
+        get;
+    } = KafkaContainerDefault.ParseVersion(KafkaContainerDefault.DefaultTag);
 
     // The same share settings as KafkaContainerDefault, sized for a single broker.
     protected override ContainerBuilder ConfigureKafka(ContainerBuilder builder) => builder

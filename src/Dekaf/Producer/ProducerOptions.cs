@@ -50,19 +50,28 @@ public sealed class ProducerOptions
     /// <summary>
     /// Bootstrap servers (host:port,host:port).
     /// </summary>
-    public required IReadOnlyList<string> BootstrapServers { get; init; }
+    public required IReadOnlyList<string> BootstrapServers
+    {
+        get; init;
+    }
 
     internal const string DefaultClientId = "dekaf-producer";
 
     /// <summary>
     /// Client ID.
     /// </summary>
-    public string? ClientId { get; init; } = DefaultClientId;
+    public string? ClientId
+    {
+        get; init;
+    } = DefaultClientId;
 
     /// <summary>
     /// Acknowledgment mode.
     /// </summary>
-    public Acks Acks { get; init; } = Acks.All;
+    public Acks Acks
+    {
+        get; init;
+    } = Acks.All;
 
     /// <summary>
     /// Request timeout in milliseconds: how long the producer waits for a broker response
@@ -72,7 +81,10 @@ public sealed class ProducerOptions
     /// <see cref="DeliveryTimeoutMs"/> expires or <see cref="Retries"/> is exhausted, so a shorter
     /// value detects an unresponsive broker sooner.
     /// </summary>
-    public int RequestTimeoutMs { get; init; } = DefaultRequestTimeoutMs;
+    public int RequestTimeoutMs
+    {
+        get; init;
+    } = DefaultRequestTimeoutMs;
 
     internal const int DefaultRequestTimeoutMs = 15_000;
 
@@ -113,12 +125,18 @@ public sealed class ProducerOptions
     /// Default is 9 minutes, below Kafka's default broker-side 10 minute idle timeout.
     /// Set to -1 to disable client-side idle connection reaping.
     /// </summary>
-    public int ConnectionsMaxIdleMs { get; init; } = ConnectionOptions.DefaultConnectionsMaxIdleMs;
+    public int ConnectionsMaxIdleMs
+    {
+        get; init;
+    } = ConnectionOptions.DefaultConnectionsMaxIdleMs;
 
     /// <summary>
     /// Maximum time allowed for socket connection setup, including TLS/SASL handshakes.
     /// </summary>
-    public TimeSpan ConnectionTimeout { get; init; } = ConnectionOptions.DefaultConnectionTimeout;
+    public TimeSpan ConnectionTimeout
+    {
+        get; init;
+    } = ConnectionOptions.DefaultConnectionTimeout;
 
     /// <summary>
     /// Maximum connection setup timeout after consecutive failures. Defaults to
@@ -136,23 +154,35 @@ public sealed class ProducerOptions
     /// <summary>
     /// Whether to enable TCP keepalive on broker sockets.
     /// </summary>
-    public bool EnableTcpKeepAlive { get; init; } = ConnectionOptions.DefaultEnableTcpKeepAlive;
+    public bool EnableTcpKeepAlive
+    {
+        get; init;
+    } = ConnectionOptions.DefaultEnableTcpKeepAlive;
 
     /// <summary>
     /// Idle time before TCP keepalive probes start. Unsupported platforms ignore this.
     /// </summary>
-    public TimeSpan TcpKeepAliveTime { get; init; } = ConnectionOptions.DefaultTcpKeepAliveTime;
+    public TimeSpan TcpKeepAliveTime
+    {
+        get; init;
+    } = ConnectionOptions.DefaultTcpKeepAliveTime;
 
     /// <summary>
     /// Interval between TCP keepalive probes. Unsupported platforms ignore this.
     /// </summary>
-    public TimeSpan TcpKeepAliveInterval { get; init; } = ConnectionOptions.DefaultTcpKeepAliveInterval;
+    public TimeSpan TcpKeepAliveInterval
+    {
+        get; init;
+    } = ConnectionOptions.DefaultTcpKeepAliveInterval;
 
     /// <summary>
     /// Number of TCP keepalive probes before the connection is considered dead.
     /// Unsupported platforms ignore this.
     /// </summary>
-    public int TcpKeepAliveRetryCount { get; init; } = ConnectionOptions.DefaultTcpKeepAliveRetryCount;
+    public int TcpKeepAliveRetryCount
+    {
+        get; init;
+    } = ConnectionOptions.DefaultTcpKeepAliveRetryCount;
 
     /// <summary>
     /// Linger time in milliseconds before sending a batch.
@@ -160,14 +190,20 @@ public sealed class ProducerOptions
     /// Use <see cref="ProducerBuilder{TKey,TValue}.ForHighThroughput"/> to set 100ms
     /// for throughput-oriented workloads.
     /// </summary>
-    public int LingerMs { get; init; }
+    public int LingerMs
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Maximum batch size in bytes.
     /// Larger batches improve throughput by reducing batch rotation overhead.
     /// Default is 1MB which handles high-throughput scenarios efficiently.
     /// </summary>
-    public int BatchSize { get; init; } = 1048576;
+    public int BatchSize
+    {
+        get; init;
+    } = 1048576;
 
     /// <summary>
     /// Total memory buffer size in bytes for pending messages.
@@ -200,19 +236,28 @@ public sealed class ProducerOptions
     /// low-throughput or memory-constrained environments.
     /// </para>
     /// </summary>
-    public ulong BufferMemory { get; init; } = 256L * 1024 * 1024;
+    public ulong BufferMemory
+    {
+        get; init;
+    } = 256L * 1024 * 1024;
 
     /// <summary>
     /// Controls whether each partition batch reserves its full arena immediately or grows
     /// from pooled chunks as records are appended. Default is <see cref="BufferMemoryAllocationStrategy.Full"/>.
     /// </summary>
-    public BufferMemoryAllocationStrategy BufferMemoryAllocationStrategy { get; init; }
+    public BufferMemoryAllocationStrategy BufferMemoryAllocationStrategy
+    {
+        get; init;
+    }
 
     /// <summary>
     /// True when BufferMemory was auto-tuned from the global memory budget.
     /// False when the user explicitly set BufferMemory via WithBufferMemory().
     /// </summary>
-    internal bool IsAutoTuned { get; init; }
+    internal bool IsAutoTuned
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Soft target, in milliseconds, for per-broker producer delivery latency (append to
@@ -251,7 +296,10 @@ public sealed class ProducerOptions
     /// <summary>
     /// Compression type.
     /// </summary>
-    public CompressionType CompressionType { get; init; } = CompressionType.None;
+    public CompressionType CompressionType
+    {
+        get; init;
+    } = CompressionType.None;
 
     /// <summary>
     /// Compression level for the configured compression codec.
@@ -263,7 +311,10 @@ public sealed class ProducerOptions
     /// - Zstd: 1-22 (1 = fast, 22 = best compression)
     /// - Snappy: not supported (fixed algorithm, this value is ignored)
     /// </summary>
-    public int? CompressionLevel { get; init; }
+    public int? CompressionLevel
+    {
+        get; init;
+    }
 
     private int _maxInFlightRequestsPerConnection = IdempotentMaxInFlightRequestsPerConnection;
     private bool _isMaxInFlightRequestsPerConnectionConfigured;
@@ -318,7 +369,10 @@ public sealed class ProducerOptions
     /// Default is 1. Use adaptive scaling (<see cref="EnableAdaptiveConnections"/>) for
     /// automatic connection scaling based on buffer pressure.
     /// </summary>
-    public int ConnectionsPerBroker { get; init; } = 1;
+    public int ConnectionsPerBroker
+    {
+        get; init;
+    } = 1;
 
     /// <summary>
     /// Maximum number of times a batch is resent after a retriable failure of a request that
@@ -331,22 +385,34 @@ public sealed class ProducerOptions
     /// records within a partition. Enable idempotence or use one in-flight request when
     /// retry-safe ordering is required.
     /// </summary>
-    public int Retries { get; init; } = int.MaxValue;
+    public int Retries
+    {
+        get; init;
+    } = int.MaxValue;
 
     /// <summary>
     /// Retry backoff in milliseconds.
     /// </summary>
-    public int RetryBackoffMs { get; init; } = 100;
+    public int RetryBackoffMs
+    {
+        get; init;
+    } = 100;
 
     /// <summary>
     /// Maximum retry backoff in milliseconds.
     /// </summary>
-    public int RetryBackoffMaxMs { get; init; } = 1000;
+    public int RetryBackoffMaxMs
+    {
+        get; init;
+    } = 1000;
 
     /// <summary>
     /// Delivery timeout in milliseconds.
     /// </summary>
-    public int DeliveryTimeoutMs { get; init; } = 120000;
+    public int DeliveryTimeoutMs
+    {
+        get; init;
+    } = 120000;
 
     /// <summary>
     /// <see cref="DeliveryTimeoutMs"/> converted to <see cref="Stopwatch"/> ticks.
@@ -383,30 +449,45 @@ public sealed class ProducerOptions
     /// require idempotence for correctness.
     /// </para>
     /// </summary>
-    public bool EnableIdempotence { get; init; } = true;
+    public bool EnableIdempotence
+    {
+        get; init;
+    } = true;
 
     /// <summary>
     /// Transactional ID for exactly-once semantics. Null disables transactions; a configured ID must not be empty or whitespace.
     /// </summary>
-    public string? TransactionalId { get; init; }
+    public string? TransactionalId
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Whether transactional produce continuations run inline on the broker sender thread.
     /// Disable this when continuation code may block or perform long-running synchronous work.
     /// Default is true for maximum transactional throughput.
     /// </summary>
-    public bool InlineTransactionCompletions { get; init; } = true;
+    public bool InlineTransactionCompletions
+    {
+        get; init;
+    } = true;
 
     /// <summary>
     /// Enables KIP-939 two-phase commit participation for transactional producers.
     /// Requires broker support for <c>transaction.version</c> 3 and InitProducerId v6.
     /// </summary>
-    public bool EnableTwoPhaseCommit { get; init; }
+    public bool EnableTwoPhaseCommit
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Transaction timeout in milliseconds.
     /// </summary>
-    public int TransactionTimeoutMs { get; init; } = 60000;
+    public int TransactionTimeoutMs
+    {
+        get; init;
+    } = 60000;
 
     /// <summary>
     /// Maximum total time in milliseconds for producer disposal (close).
@@ -424,7 +505,10 @@ public sealed class ProducerOptions
     /// </list>
     /// Set to 0 for no timeout (wait indefinitely). Default is 30 seconds.
     /// </summary>
-    public int CloseTimeoutMs { get; init; } = 30000;
+    public int CloseTimeoutMs
+    {
+        get; init;
+    } = 30000;
 
     /// <summary>
     /// Maximum time in milliseconds that <see cref="KafkaProducer{TKey,TValue}.ProduceAsync(ProducerMessage{TKey,TValue}, CancellationToken)"/>
@@ -458,44 +542,65 @@ public sealed class ProducerOptions
     /// <summary>
     /// Maximum request size in bytes.
     /// </summary>
-    public int MaxRequestSize { get; init; } = 1048576;
+    public int MaxRequestSize
+    {
+        get; init;
+    } = 1048576;
 
     /// <summary>
     /// Partitioner type.
     /// </summary>
-    public PartitionerType Partitioner { get; init; } = PartitionerType.Default;
+    public PartitionerType Partitioner
+    {
+        get; init;
+    } = PartitionerType.Default;
 
     /// <summary>
     /// Custom partitioner instance. When set, this takes precedence over <see cref="Partitioner"/>.
     /// </summary>
-    public IPartitioner? CustomPartitioner { get; init; }
+    public IPartitioner? CustomPartitioner
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Whether built-in sticky partitioning adapts partition choice to queued broker load.
     /// Equivalent to Kafka's <c>partitioner.adaptive.partitioning.enable</c>. Default is true.
     /// Has no effect when <see cref="CustomPartitioner"/> is set.
     /// </summary>
-    public bool EnableAdaptivePartitioning { get; init; } = true;
+    public bool EnableAdaptivePartitioning
+    {
+        get; init;
+    } = true;
 
     /// <summary>
     /// Milliseconds a partition may stay backed up before adaptive partitioning treats it as unavailable.
     /// Set to 0 to disable availability exclusion. Equivalent to Kafka's
     /// <c>partitioner.availability.timeout.ms</c>. Default is 0.
     /// </summary>
-    public int PartitionerAvailabilityTimeoutMs { get; init; }
+    public int PartitionerAvailabilityTimeoutMs
+    {
+        get; init;
+    }
 
     /// <summary>
     /// When true, built-in default partitioning ignores message keys and uses uniform sticky partitioning.
     /// Equivalent to Kafka's <c>partitioner.ignore.keys</c>. Default is false.
     /// Has no effect when <see cref="CustomPartitioner"/> is set.
     /// </summary>
-    public bool IgnorePartitionerKeys { get; init; }
+    public bool IgnorePartitionerKeys
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Logical rack ID of this producer. Used by rack-aware built-in partitioning.
     /// Equivalent to Kafka's <c>client.rack</c> configuration.
     /// </summary>
-    public string? ClientRack { get; init; }
+    public string? ClientRack
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Whether built-in default and sticky partitioners prefer partitions whose leaders
@@ -503,52 +608,82 @@ public sealed class ProducerOptions
     /// Equivalent to Kafka's <c>partitioner.rack.aware</c>. Default is false.
     /// Has no effect when <see cref="CustomPartitioner"/> is set.
     /// </summary>
-    public bool EnableRackAwarePartitioning { get; init; }
+    public bool EnableRackAwarePartitioning
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Use TLS.
     /// </summary>
-    public bool UseTls { get; init; }
+    public bool UseTls
+    {
+        get; init;
+    }
 
     /// <summary>
     /// TLS configuration for SSL/mTLS connections.
     /// When set, <see cref="UseTls"/> is automatically enabled.
     /// </summary>
-    public TlsConfig? TlsConfig { get; init; }
+    public TlsConfig? TlsConfig
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Custom TLS certificate validation callback.
     /// </summary>
-    public RemoteCertificateValidationCallback? RemoteCertificateValidationCallback { get; init; }
+    public RemoteCertificateValidationCallback? RemoteCertificateValidationCallback
+    {
+        get; init;
+    }
 
     /// <summary>
     /// SASL authentication mechanism.
     /// </summary>
-    public SaslMechanism SaslMechanism { get; init; } = SaslMechanism.None;
+    public SaslMechanism SaslMechanism
+    {
+        get; init;
+    } = SaslMechanism.None;
 
     /// <summary>
     /// SASL username for PLAIN and SCRAM authentication.
     /// </summary>
-    public string? SaslUsername { get; init; }
+    public string? SaslUsername
+    {
+        get; init;
+    }
 
     /// <summary>
     /// SASL password for PLAIN and SCRAM authentication.
     /// </summary>
-    public string? SaslPassword { get; init; }
+    public string? SaslPassword
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Dynamic credential provider for PLAIN and SCRAM authentication.
     /// </summary>
-    public Func<CancellationToken, ValueTask<SaslCredentials>>? SaslCredentialProvider { get; init; }
+    public Func<CancellationToken, ValueTask<SaslCredentials>>? SaslCredentialProvider
+    {
+        get; init;
+    }
 
-    internal bool UsesClientOwnedDynamicSaslCredentials { get; init; }
+    internal bool UsesClientOwnedDynamicSaslCredentials
+    {
+        get; init;
+    }
     internal bool UsesDynamicSaslCredentials =>
         SaslCredentialProvider is not null || UsesClientOwnedDynamicSaslCredentials;
 
     /// <summary>
     /// Whether SCRAM authentication uses Kafka delegation token credentials.
     /// </summary>
-    public bool SaslScramTokenAuth { get; init; }
+    public bool SaslScramTokenAuth
+    {
+        get; init;
+    }
 
     private int _saslScramMaxIterations = ScramAuthenticator.DefaultMaxIterations;
 
@@ -570,34 +705,52 @@ public sealed class ProducerOptions
     /// <summary>
     /// GSSAPI (Kerberos) configuration. Required when SaslMechanism is Gssapi.
     /// </summary>
-    public GssapiConfig? GssapiConfig { get; init; }
+    public GssapiConfig? GssapiConfig
+    {
+        get; init;
+    }
 
     /// <summary>
     /// OAuth bearer token configuration for OAUTHBEARER authentication.
     /// </summary>
-    public OAuthBearerConfig? OAuthBearerConfig { get; init; }
+    public OAuthBearerConfig? OAuthBearerConfig
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Custom OAuth bearer token provider function for OAUTHBEARER authentication.
     /// Takes precedence over <see cref="OAuthBearerConfig"/> if both are specified.
     /// </summary>
-    public Func<CancellationToken, ValueTask<OAuthBearerToken>>? OAuthBearerTokenProvider { get; init; }
+    public Func<CancellationToken, ValueTask<OAuthBearerToken>>? OAuthBearerTokenProvider
+    {
+        get; init;
+    }
 
     /// <summary>
     /// AWS_MSK_IAM configuration.
     /// </summary>
-    public AwsMskIamConfig? AwsMskIamConfig { get; init; }
+    public AwsMskIamConfig? AwsMskIamConfig
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Socket send buffer size in bytes. Set to 0 to use system default.
     /// Larger buffers can improve throughput for high-volume producers.
     /// </summary>
-    public int SocketSendBufferBytes { get; init; }
+    public int SocketSendBufferBytes
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Socket receive buffer size in bytes. Set to 0 to use system default.
     /// </summary>
-    public int SocketReceiveBufferBytes { get; init; }
+    public int SocketReceiveBufferBytes
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Maximum size of the internal ValueTaskSource pool.
@@ -606,7 +759,10 @@ public sealed class ProducerOptions
     /// to scale with the expected concurrency level. Set an explicit positive value to override.
     /// For the default BufferMemory and BatchSize settings, the auto-calculated value is 65,536 (MaxAutoPoolSize).
     /// </summary>
-    public int ValueTaskSourcePoolSize { get; init; }
+    public int ValueTaskSourcePoolSize
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Capacity in bytes of the per-batch arena that records are encoded into at append time.
@@ -617,7 +773,10 @@ public sealed class ProducerOptions
     /// workloads where individual records regularly exceed BatchSize, to avoid re-renting a
     /// larger arena for those batches.
     /// </summary>
-    public int ArenaCapacity { get; init; } = 0;
+    public int ArenaCapacity
+    {
+        get; init;
+    } = 0;
 
     internal const int ArenaOverflowMarginDivisor = 8;
 
@@ -633,13 +792,17 @@ public sealed class ProducerOptions
     internal static void ValidateRetries(bool enableIdempotence, int retries)
     {
         if (enableIdempotence && retries < 1)
+        {
             throw new InvalidOperationException("Retries must be at least 1 when idempotence is enabled. Idempotence relies on retries to deliver each batch exactly once; disable idempotence to send without retries.");
+        }
     }
 
     internal static void ValidateArenaCapacity(int batchSize, int arenaCapacity)
     {
         if (arenaCapacity == 0)
+        {
             return;
+        }
 
         var minimum = GetMinimumArenaCapacity(batchSize);
         if (arenaCapacity < minimum)
@@ -656,7 +819,10 @@ public sealed class ProducerOptions
     /// array resizing. Set explicitly to override: lower values reduce memory for applications
     /// with many small batches, higher values reduce resizing for high-throughput scenarios.
     /// </summary>
-    public int InitialBatchRecordCapacity { get; init; } = 0;
+    public int InitialBatchRecordCapacity
+    {
+        get; init;
+    } = 0;
 
     /// <summary>
     /// Strategy for recovering cluster metadata when all known brokers become unavailable.
@@ -665,21 +831,30 @@ public sealed class ProducerOptions
     /// change during rolling upgrades.
     /// Default is <see cref="MetadataRecoveryStrategy.Rebootstrap"/>.
     /// </summary>
-    public MetadataRecoveryStrategy MetadataRecoveryStrategy { get; init; } = MetadataRecoveryStrategy.Rebootstrap;
+    public MetadataRecoveryStrategy MetadataRecoveryStrategy
+    {
+        get; init;
+    } = MetadataRecoveryStrategy.Rebootstrap;
 
     /// <summary>
     /// Whether new broker connections verify the expected cluster and node identity (KIP-1242).
     /// Default is true; ignored when <see cref="MetadataRecoveryStrategy"/> is
     /// <see cref="MetadataRecoveryStrategy.None"/>.
     /// </summary>
-    public bool MetadataClusterCheckEnabled { get; init; } = true;
+    public bool MetadataClusterCheckEnabled
+    {
+        get; init;
+    } = true;
 
     /// <summary>
     /// Whether topic metadata lookups ask the broker to auto-create missing topics
     /// (Java's <c>allow.auto.create.topics</c>). The broker creates a topic only when its
     /// <c>auto.create.topics.enable</c> is also true. Default is true.
     /// </summary>
-    public bool AllowAutoCreateTopics { get; init; } = true;
+    public bool AllowAutoCreateTopics
+    {
+        get; init;
+    } = true;
 
     /// <summary>
     /// How long in milliseconds to wait before triggering a rebootstrap when all known brokers
@@ -687,39 +862,60 @@ public sealed class ProducerOptions
     /// <see cref="MetadataRecoveryStrategy.Rebootstrap"/>.
     /// Default is 300000 (5 minutes).
     /// </summary>
-    public int MetadataRecoveryRebootstrapTriggerMs { get; init; } = 300000;
+    public int MetadataRecoveryRebootstrapTriggerMs
+    {
+        get; init;
+    } = 300000;
 
     /// <summary>
     /// Controls how broker hostnames are resolved before connecting.
     /// </summary>
-    public ClientDnsLookup ClientDnsLookup { get; init; } = ClientDnsLookup.UseAllDnsIps;
+    public ClientDnsLookup ClientDnsLookup
+    {
+        get; init;
+    } = ClientDnsLookup.UseAllDnsIps;
 
     /// <summary>
     /// Maximum time in milliseconds spent retrying initial bootstrap DNS resolution.
     /// Corresponds to Kafka's <c>bootstrap.resolve.timeout.ms</c>, but defaults to 120000 (the original
     /// KIP-909 value) where Kafka 4.4 defaults to 0. Zero resolves once with no deadline.
     /// </summary>
-    public int BootstrapResolveTimeoutMs { get; init; } = 120000;
+    public int BootstrapResolveTimeoutMs
+    {
+        get; init;
+    } = 120000;
 
-    internal ClientDnsEndpointResolver DnsResolver { get; init; } = ClientDnsEndpointResolver.Default;
+    internal ClientDnsEndpointResolver DnsResolver
+    {
+        get; init;
+    } = ClientDnsEndpointResolver.Default;
 
     /// <summary>
     /// Application-level retry policy for <see cref="KafkaProducer{TKey,TValue}.ProduceAsync(ProducerMessage{TKey,TValue}, CancellationToken)"/>.
     /// When set, retriable exceptions that escape the internal protocol-level retries will be
     /// retried according to this policy. When <c>null</c>, no application-level retries occur.
     /// </summary>
-    public IRetryPolicy? RetryPolicy { get; init; }
+    public IRetryPolicy? RetryPolicy
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Application metrics registered for broker telemetry subscriptions.
     /// </summary>
-    public IReadOnlyList<ApplicationTelemetryMetric> ApplicationMetrics { get; init; } = [];
+    public IReadOnlyList<ApplicationTelemetryMetric> ApplicationMetrics
+    {
+        get; init;
+    } = [];
 
     /// <summary>
     /// Enables troubleshooting-only delivery diagnostics for live producer batches.
     /// Disabled by default to avoid diagnostic bookkeeping in normal producer runs.
     /// </summary>
-    internal bool EnableDeliveryDiagnostics { get; init; }
+    internal bool EnableDeliveryDiagnostics
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Test seam for broker-free allocation gates: skips the ActivitySource listener check on
@@ -729,7 +925,10 @@ public sealed class ProducerOptions
     /// allocation-gate tests; setting it suppresses produce span creation for the componentwise
     /// overloads.
     /// </summary>
-    internal bool SkipProduceActivityListenerCheckForTesting { get; init; }
+    internal bool SkipProduceActivityListenerCheckForTesting
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Enable adaptive connection scaling based on buffer pressure.
@@ -747,7 +946,10 @@ public sealed class ProducerOptions
     /// </para>
     /// Default: true.
     /// </summary>
-    public bool EnableAdaptiveConnections { get; init; } = true;
+    public bool EnableAdaptiveConnections
+    {
+        get; init;
+    } = true;
 
     /// <summary>
     /// Maximum connections per broker when adaptive scaling is enabled.
@@ -771,27 +973,39 @@ public sealed class ProducerOptions
     /// Null uses the production constant. Internal so unit tests can drive scale
     /// cycles without waiting minutes; not part of the public API.
     /// </summary>
-    internal long? ScaleCooldownMsOverride { get; init; }
+    internal long? ScaleCooldownMsOverride
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Test-only override for the sustained-low-utilization window (milliseconds)
     /// required before a scale-down. Null uses the production constant.
     /// </summary>
-    internal long? ScaleDownSustainedMsOverride { get; init; }
+    internal long? ScaleDownSustainedMsOverride
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Test-only override for the unacked-byte budget ceiling (bytes). Null derives the
     /// ceiling from <see cref="BatchSize"/> and the connection count. Internal so unit
     /// tests can bind the admission gate with small payloads; not part of the public API.
     /// </summary>
-    internal long? UnackedByteBudgetCapOverride { get; init; }
+    internal long? UnackedByteBudgetCapOverride
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Producer interceptors, called in order during the produce pipeline.
     /// Interceptors are called on the hot path (OnSend) and on acknowledgement (OnAcknowledgement).
     /// Interceptor exceptions are caught and logged, not propagated.
     /// </summary>
-    internal IReadOnlyList<object>? Interceptors { get; init; }
+    internal IReadOnlyList<object>? Interceptors
+    {
+        get; init;
+    }
 }
 
 /// <summary>

@@ -1,7 +1,7 @@
 using Dekaf.Consumer;
 using Dekaf.Networking;
-using Dekaf.Protocol;
 using Dekaf.Producer;
+using Dekaf.Protocol;
 using Dekaf.Protocol.Messages;
 using Dekaf.Serialization;
 using Dekaf.Streams;

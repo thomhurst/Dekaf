@@ -35,7 +35,10 @@ public sealed class UnregisterControllerOptions
     /// Total operation timeout in milliseconds, including controller discovery and retries.
     /// Zero is an already-expired deadline.
     /// </summary>
-    public int TimeoutMs { get; init; } = DefaultTimeoutMs;
+    public int TimeoutMs
+    {
+        get; init;
+    } = DefaultTimeoutMs;
 }
 
 /// <summary>Controller registration operations for <see cref="IAdminClient"/>.</summary>

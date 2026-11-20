@@ -6,8 +6,14 @@ namespace Dekaf.StressTests.Scenarios;
 
 internal interface IStressTestScenario
 {
-    string Name { get; }
-    string Client { get; }
+    string Name
+    {
+        get;
+    }
+    string Client
+    {
+        get;
+    }
     Task<StressTestResult> RunAsync(StressTestOptions options, CancellationToken cancellationToken);
 }
 
@@ -15,31 +21,88 @@ internal sealed class StressTestOptions
 {
     public const int HighThroughputConsumerConnectionsPerBroker = 3;
 
-    public required string BootstrapServers { get; init; }
-    public required string Topic { get; init; }
-    public string OutputDirectory { get; init; } = ".";
-    public Uri? TelemetryReceiverEndpoint { get; init; }
-    public required int DurationMinutes { get; init; }
-    public required int MessageSizeBytes { get; init; }
-    public int ProducerWarmupSeconds { get; init; } = ProducerWarmup.DefaultSeconds;
-    public int Partitions { get; init; } = 6;
-    public string KeyedShape { get; init; } = "scalar";
-    public int KeyedRecordsPerPartition { get; init; } = KeyedConsumerWorkload.DefaultRecordsPerPartition;
-    public int LingerMs { get; init; } = 5;
-    public int BatchSize { get; init; } = 16384;
-    public int DeliveryLatencyTargetMs { get; init; } = 10;
-    public int? ConsumerSeedBatchSizeBytes { get; init; }
-    public string Compression { get; init; } = "none";
-    public int BrokerCount { get; init; } = 1;
-    public int ConnectionsPerBroker { get; init; } = 1;
+    public required string BootstrapServers
+    {
+        get; init;
+    }
+    public required string Topic
+    {
+        get; init;
+    }
+    public string OutputDirectory
+    {
+        get; init;
+    } = ".";
+    public Uri? TelemetryReceiverEndpoint
+    {
+        get; init;
+    }
+    public required int DurationMinutes
+    {
+        get; init;
+    }
+    public required int MessageSizeBytes
+    {
+        get; init;
+    }
+    public int ProducerWarmupSeconds
+    {
+        get; init;
+    } = ProducerWarmup.DefaultSeconds;
+    public int Partitions
+    {
+        get; init;
+    } = 6;
+    public string KeyedShape
+    {
+        get; init;
+    } = "scalar";
+    public int KeyedRecordsPerPartition
+    {
+        get; init;
+    } = KeyedConsumerWorkload.DefaultRecordsPerPartition;
+    public int LingerMs
+    {
+        get; init;
+    } = 5;
+    public int BatchSize
+    {
+        get; init;
+    } = 16384;
+    public int DeliveryLatencyTargetMs
+    {
+        get; init;
+    } = 10;
+    public int? ConsumerSeedBatchSizeBytes
+    {
+        get; init;
+    }
+    public string Compression
+    {
+        get; init;
+    } = "none";
+    public int BrokerCount
+    {
+        get; init;
+    } = 1;
+    public int ConnectionsPerBroker
+    {
+        get; init;
+    } = 1;
 
     /// <summary>
     /// Leaves the Dekaf producer's default adaptive connection scaling enabled instead of
     /// pinning the configured connection count. Measures the library default configuration;
     /// results are labelled "Dekaf (adaptive)" so they never enter the pinned baseline band.
     /// </summary>
-    public bool AdaptiveConnections { get; init; }
-    public int RoundTripSteadySeconds { get; init; } = 60;
+    public bool AdaptiveConnections
+    {
+        get; init;
+    }
+    public int RoundTripSteadySeconds
+    {
+        get; init;
+    } = 60;
 
     /// <summary>
     /// Fallback round-trip log budget for runs that don't declare a broker log-dir size
@@ -53,26 +116,47 @@ internal sealed class StressTestOptions
     /// retention so validation can consume everything, so the produce phase must fit the
     /// broker's log dir (a tmpfs in CI stress jobs; see stress-tests.yml).
     /// </summary>
-    public long RoundTripSteadyMaxLogBytes { get; init; } = DefaultRoundTripSteadyMaxLogBytes;
-    public bool EnableProducerDeliveryDiagnostics { get; init; }
+    public long RoundTripSteadyMaxLogBytes
+    {
+        get; init;
+    } = DefaultRoundTripSteadyMaxLogBytes;
+    public bool EnableProducerDeliveryDiagnostics
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Enables the Dekaf-only per-fetch diagnostics listener and 1-minute snapshot sampler
     /// in the consumer scenarios. Off by default so the measured window carries no
     /// diagnostics overhead; pass <c>--consumer-fetch-diagnostics</c> on debug runs.
     /// </summary>
-    public bool EnableConsumerFetchDiagnostics { get; init; }
-    public required ProgressWatchdog ProgressWatchdog { get; init; }
+    public bool EnableConsumerFetchDiagnostics
+    {
+        get; init;
+    }
+    public required ProgressWatchdog ProgressWatchdog
+    {
+        get; init;
+    }
     /// <summary>
     /// Target mixed-soak produce rate. 0 disables pacing entirely: the producer runs
     /// as fast as admission control allows so long soaks exercise the sustained
     /// backpressure and max-throughput regime instead of a fixed rate.
     /// </summary>
-    public int SoakMessagesPerSecond { get; init; } = 5_000;
+    public int SoakMessagesPerSecond
+    {
+        get; init;
+    } = 5_000;
 
     public bool SoakUnbounded => SoakMessagesPerSecond == 0;
-    public double ResourceSampleIntervalSeconds { get; init; } = 60;
-    public ResourceTrendThresholds ResourceTrendThresholds { get; init; } = new()
+    public double ResourceSampleIntervalSeconds
+    {
+        get; init;
+    } = 60;
+    public ResourceTrendThresholds ResourceTrendThresholds
+    {
+        get; init;
+    } = new()
     {
         WarmupMinutes = 60,
         MinimumSampleCount = 30,

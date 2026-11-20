@@ -370,7 +370,9 @@ public sealed class RoutingSerdeTests
         Parallel.For(0, 10_000, _ =>
         {
             if (!ReferenceEquals(router.Deserialize(ReadOnlyMemory<byte>.Empty, Context("alpha")), Alpha))
+            {
                 Interlocked.Increment(ref failures);
+            }
         });
 
         await Assert.That(failures).IsEqualTo(0);
@@ -621,7 +623,9 @@ public sealed class RoutingSerdeTests
     }
 
     private abstract class EventBase;
+
     private sealed class AlphaEvent : EventBase;
+
     private sealed class BetaEvent : EventBase;
 
     private sealed class EventDeserializer<T>(T value) : IDeserializer<T>
@@ -631,7 +635,10 @@ public sealed class RoutingSerdeTests
 
     private sealed class CapturingDeserializer(EventBase value) : IDeserializer<EventBase>
     {
-        public ReadOnlyMemory<byte> Data { get; private set; }
+        public ReadOnlyMemory<byte> Data
+        {
+            get; private set;
+        }
 
         public EventBase Deserialize(ReadOnlyMemory<byte> data, SerializationContext context)
         {
@@ -642,7 +649,10 @@ public sealed class RoutingSerdeTests
 
     private sealed class ContextCapturingDeserializer<T>(T value) : IDeserializer<T>
     {
-        public SerializationContext Context { get; private set; }
+        public SerializationContext Context
+        {
+            get; private set;
+        }
 
         public T Deserialize(ReadOnlyMemory<byte> data, SerializationContext context)
         {
@@ -658,8 +668,14 @@ public sealed class RoutingSerdeTests
     {
         private bool _prepared;
 
-        public int PrepareCount { get; private set; }
-        public bool HeaderPathUsed { get; private set; }
+        public int PrepareCount
+        {
+            get; private set;
+        }
+        public bool HeaderPathUsed
+        {
+            get; private set;
+        }
 
         public T Deserialize(ReadOnlyMemory<byte> data, SerializationContext context) =>
             _prepared
@@ -736,7 +752,10 @@ public sealed class RoutingSerdeTests
     {
         private bool _prepared;
 
-        public int PrepareCount { get; private set; }
+        public int PrepareCount
+        {
+            get; private set;
+        }
 
         public ValueTask PrepareAsync(
             T value,
@@ -753,7 +772,9 @@ public sealed class RoutingSerdeTests
             , allows ref struct
         {
             if (!_prepared)
+            {
                 throw new InvalidOperationException("Serializer was not prepared.");
+            }
 
             destination.GetSpan(1)[0] = marker;
             destination.Advance(1);
@@ -762,10 +783,16 @@ public sealed class RoutingSerdeTests
 
     private sealed class BlockingPreparingSerializer<T> : ISerializer<T>, IAsyncSerializerPreparer<T>
     {
-        public TaskCompletionSource Started { get; } =
+        public TaskCompletionSource Started
+        {
+            get;
+        } =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
 
-        public CancellationToken ObservedToken { get; private set; }
+        public CancellationToken ObservedToken
+        {
+            get; private set;
+        }
 
         public async ValueTask PrepareAsync(
             T value,
@@ -789,7 +816,10 @@ public sealed class RoutingSerdeTests
         IAsyncSerializerPreparer<T>,
         IValueTaskSource
     {
-        public int GetResultCount { get; private set; }
+        public int GetResultCount
+        {
+            get; private set;
+        }
 
         public ValueTask PrepareAsync(
             T value,
@@ -823,9 +853,18 @@ public sealed class RoutingSerdeTests
     {
         private static readonly object PreparedSchema = new();
 
-        public int PrepareCount { get; private set; }
-        public int SerializePreparedCount { get; private set; }
-        public int SerializeCount { get; private set; }
+        public int PrepareCount
+        {
+            get; private set;
+        }
+        public int SerializePreparedCount
+        {
+            get; private set;
+        }
+        public int SerializeCount
+        {
+            get; private set;
+        }
 
         public ValueTask PrepareAsync(
             T value,
@@ -869,7 +908,10 @@ public sealed class RoutingSerdeTests
     {
         private string? _subject;
 
-        public int AsyncResolutionCount { get; private set; }
+        public int AsyncResolutionCount
+        {
+            get; private set;
+        }
 
         // Completes asynchronously until warmed, like a strategy backed by a registry lookup.
         public ValueTask<string> GetSubjectNameAsync(

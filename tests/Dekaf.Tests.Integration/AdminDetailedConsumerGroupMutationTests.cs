@@ -26,9 +26,13 @@ public class AdminDetailedConsumerGroupMutationTests(KafkaTestContainer kafka) :
             // Name-based versions report the broker error; topic-ID versions fail
             // local mapping before send. Both must preserve the valid sibling.
             if (missingResult.Outcome == AdminMutationOutcome.NotAttempted)
+            {
                 await Assert.That(missingResult.Exception).IsTypeOf<Dekaf.Errors.KafkaException>();
+            }
             else
+            {
                 await Assert.That(missingResult.ErrorCode).IsEqualTo(ErrorCode.UnknownTopicOrPartition);
+            }
             var offsets = await admin.ListConsumerGroupOffsetsAsync(group);
             await Assert.That(offsets[new(topic, 0)]).IsEqualTo(42);
         }

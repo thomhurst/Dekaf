@@ -30,11 +30,11 @@ public sealed class BrokerErrorCodeTests(KafkaTestContainer kafka) : KafkaIntegr
             .BuildAsync();
 
         await Assert.That(async () => await producer.ProduceAsync(new ProducerMessage<string, string>
-            {
-                Topic = nonExistentTopic,
-                Key = "key",
-                Value = "value"
-            }, CancellationToken.None))
+        {
+            Topic = nonExistentTopic,
+            Key = "key",
+            Value = "value"
+        }, CancellationToken.None))
             .Throws<KafkaException>();
 
         await Assert.That(await TopicExistsAsync(nonExistentTopic)).IsFalse();

@@ -30,22 +30,34 @@ public sealed class ListOffsetsRequest : IKafkaRequest<ListOffsetsResponse>, IRe
     /// <summary>
     /// Broker ID of the follower, or -1 if this request is from a consumer.
     /// </summary>
-    public int ReplicaId { get; init; } = -1;
+    public int ReplicaId
+    {
+        get; init;
+    } = -1;
 
     /// <summary>
     /// Isolation level for the request (v2+).
     /// </summary>
-    public IsolationLevel IsolationLevel { get; init; } = IsolationLevel.ReadUncommitted;
+    public IsolationLevel IsolationLevel
+    {
+        get; init;
+    } = IsolationLevel.ReadUncommitted;
 
     /// <summary>
     /// Topics with partitions to list offsets for.
     /// </summary>
-    public required IReadOnlyList<ListOffsetsRequestTopic> Topics { get; init; }
+    public required IReadOnlyList<ListOffsetsRequestTopic> Topics
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Maximum time the broker may wait for remote-storage reads (v10+).
     /// </summary>
-    public int TimeoutMs { get; init; }
+    public int TimeoutMs
+    {
+        get; init;
+    }
 
     private void OnRequestWriteStarted() =>
         _writeSequence = _writeSequenceSource?.NextRequestWriteSequence()
@@ -63,7 +75,9 @@ public sealed class ListOffsetsRequest : IKafkaRequest<ListOffsetsResponse>, IRe
                     version);
 
         if (version >= 10)
+        {
             writer.WriteInt32(TimeoutMs);
+        }
 
         writer.WriteEmptyTaggedFields();
     }
@@ -93,8 +107,14 @@ internal static class ListOffsetsSpecVersion
 /// </summary>
 public sealed class ListOffsetsRequestTopic
 {
-    public required string Name { get; init; }
-    public required IReadOnlyList<ListOffsetsRequestPartition> Partitions { get; init; }
+    public required string Name
+    {
+        get; init;
+    }
+    public required IReadOnlyList<ListOffsetsRequestPartition> Partitions
+    {
+        get; init;
+    }
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {
@@ -113,17 +133,26 @@ public sealed class ListOffsetsRequestTopic
 /// </summary>
 public sealed class ListOffsetsRequestPartition
 {
-    public required int PartitionIndex { get; init; }
+    public required int PartitionIndex
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Current leader epoch (v4+), -1 if unknown.
     /// </summary>
-    public int CurrentLeaderEpoch { get; init; } = -1;
+    public int CurrentLeaderEpoch
+    {
+        get; init;
+    } = -1;
 
     /// <summary>
     /// Timestamp to query. Use -1 for latest, -2 for earliest.
     /// </summary>
-    public required long Timestamp { get; init; }
+    public required long Timestamp
+    {
+        get; init;
+    }
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {

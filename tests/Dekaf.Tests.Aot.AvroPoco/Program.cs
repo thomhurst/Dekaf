@@ -48,7 +48,9 @@ internal static class AvroPocoAotSmoke
         // The switch name must match AvroPocoRuleSupport.SwitchName.
         if (RuntimeFeature.IsDynamicCodeSupported &&
             !(AppContext.TryGetSwitch("Dekaf.SchemaRegistry.Avro.Poco.RulesSupport.IsSupported", out var enabled) && !enabled))
+        {
             return;
+        }
 
         var ruleExecutor = new SchemaRegistryRuleExecutor([]);
         RequireNotSupported(
@@ -89,7 +91,9 @@ internal static class AvroPocoAotSmoke
     private static void Require(bool condition, string message)
     {
         if (!condition)
+        {
             throw new InvalidOperationException(message);
+        }
     }
 
     private sealed class InMemorySchemaRegistry : ISchemaRegistryClient, ISchemaRegistryCache
@@ -107,7 +111,9 @@ internal static class AvroPocoAotSmoke
             cancellationToken.ThrowIfCancellationRequested();
 
             if (_schemasBySubject.TryGetValue(subject, out var existing))
+            {
                 return Task.FromResult(existing.Id);
+            }
 
             var id = _nextId++;
             var guid = GuidFromId(id);
@@ -140,7 +146,9 @@ internal static class AvroPocoAotSmoke
             cancellationToken.ThrowIfCancellationRequested();
             var parsedGuid = Guid.Parse(guid);
             if (_schemasByGuid.TryGetValue((parsedGuid, format), out var cached))
+            {
                 return Task.FromResult(cached);
+            }
 
             var schema = _schemasByGuid[(parsedGuid, null)];
             _schemasByGuid[(parsedGuid, format)] = schema;
@@ -155,7 +163,9 @@ internal static class AvroPocoAotSmoke
             cancellationToken.ThrowIfCancellationRequested();
             var registered = _schemasBySubject[subject];
             if (registered.Id != id)
+            {
                 throw new KeyNotFoundException($"Schema {id} is not registered under subject '{subject}'.");
+            }
 
             return Task.FromResult(registered.Schema);
         }
@@ -224,12 +234,16 @@ internal static class AvroPocoAotSmoke
         {
             cancellationToken.ThrowIfCancellationRequested();
             if (!_schemasBySubject.Remove(subject, out var registered))
+            {
                 return Task.FromResult<IReadOnlyList<int>>([]);
+            }
 
             _schemasById.Remove(registered.Id);
             var guid = Guid.Parse(registered.Guid!);
             foreach (var key in _schemasByGuid.Keys.Where(key => key.Guid == guid).ToArray())
+            {
                 _schemasByGuid.Remove(key);
+            }
 
             return Task.FromResult<IReadOnlyList<int>>([registered.Version]);
         }
@@ -282,9 +296,18 @@ internal static class AvroPocoAotSmoke
 [AvroRecord(Name = "AotAvroPoco", Namespace = "Dekaf.Tests.Aot")]
 internal sealed partial class AotAvroPoco
 {
-    public int Id { get; init; }
-    public required string Name { get; init; }
+    public int Id
+    {
+        get; init;
+    }
+    public required string Name
+    {
+        get; init;
+    }
 
     [AvroField(Precision = 8, Scale = 2)]
-    public decimal Amount { get; init; }
+    public decimal Amount
+    {
+        get; init;
+    }
 }

@@ -77,7 +77,9 @@ internal static class HeaderProtocol
         var keyByteCount = Encoding.UTF8.GetByteCount(key);
         writer.WriteVarInt(keyByteCount);
         if (keyByteCount == 0)
+        {
             return;
+        }
 
         var span = writer.BufferWriter.GetSpan(keyByteCount);
         Encoding.UTF8.GetBytes(key, span);
@@ -162,7 +164,9 @@ internal static class HeaderProtocol
         var size = Record.VarIntSize(keyBytes) + keyBytes;
 
         if (header.IsValueNull)
+        {
             return size + Record.VarIntSize(-1);
+        }
 
         var valueLength = header.DeferredValue switch
         {

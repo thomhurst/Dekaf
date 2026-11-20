@@ -39,19 +39,25 @@ public sealed partial class AdminClient : IDetailedClientQuotaMutationAdminClien
             {
                 var component = alteration.Entity.Components[i];
                 if (!types.Add(component.EntityType))
+                {
                     throw new ArgumentException("A quota entity cannot repeat a component type.", nameof(alterations));
+                }
                 components[i] = new() { EntityType = component.EntityType, Name = component.Name };
             }
             var entity = new ClientQuotaEntity { Components = System.Array.AsReadOnly(components) };
             if (!entities.Add(entity))
+            {
                 throw new ArgumentException("Quota alterations cannot repeat an entity.", nameof(alterations));
+            }
             var operations = new ClientQuotaOperation[alteration.Operations.Count];
             var keys = new HashSet<string>(StringComparer.Ordinal);
             for (var i = 0; i < operations.Length; i++)
             {
                 var operation = alteration.Operations[i];
                 if (!keys.Add(operation.Key))
+                {
                     throw new ArgumentException("A quota alteration cannot repeat an operation key.", nameof(alterations));
+                }
                 operations[i] = new() { Key = operation.Key, Value = operation.Value, Remove = operation.Remove };
             }
             items.Add(new() { Entity = entity, Operations = System.Array.AsReadOnly(operations) });

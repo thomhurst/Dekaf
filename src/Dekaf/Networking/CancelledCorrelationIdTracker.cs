@@ -17,7 +17,9 @@ internal sealed class CancelledCorrelationIdTracker
     public bool TryAdd(int correlationId)
     {
         if (!_ids.TryAdd(correlationId, 0))
+        {
             return false;
+        }
 
         _order.Enqueue(correlationId);
         Trim();

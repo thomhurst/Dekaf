@@ -208,7 +208,9 @@ public sealed class AdminClientDeleteShareGroupsTests
             .Returns(_ =>
             {
                 if (Interlocked.Increment(ref calls) == 1)
+                {
                     throw new KafkaException(ErrorCode.RequestTimedOut, "simulated timeout");
+                }
 
                 return ValueTask.FromResult(new DeleteGroupsResponse
                 {

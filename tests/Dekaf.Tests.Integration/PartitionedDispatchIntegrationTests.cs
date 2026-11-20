@@ -21,7 +21,10 @@ public sealed class PartitionedDispatchIntegrationTests(KafkaTestContainer kafka
         {
             await producer.ProduceAsync(new ProducerMessage<int, int>
             {
-                Topic = topic, Partition = 0, Key = index % keys, Value = index
+                Topic = topic,
+                Partition = 0,
+                Key = index % keys,
+                Value = index
             });
         }
 
@@ -59,9 +62,13 @@ public sealed class PartitionedDispatchIntegrationTests(KafkaTestContainer kafka
             var previous = Interlocked.Exchange(ref lastByKey[record.Key], record.Offset);
             await Assert.That(record.Offset).IsGreaterThan(previous);
             if (record.Key != 0)
+            {
                 otherKeyProcessed.TrySetResult();
+            }
             if (Interlocked.Increment(ref handled) == count)
+            {
                 allProcessed.TrySetResult();
+            }
         }
 
         var options = new PartitionedProcessingOptions
@@ -93,7 +100,9 @@ public sealed class PartitionedDispatchIntegrationTests(KafkaTestContainer kafka
             releaseFirst.TrySetResult();
             await Task.WhenAny(allProcessed.Task, run).WaitAsync(deadline.Token);
             if (run.IsCompleted)
+            {
                 await run;
+            }
             await allProcessed.Task.WaitAsync(deadline.Token);
         }
         finally

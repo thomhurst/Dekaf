@@ -105,7 +105,9 @@ internal sealed class ProduceAllCompletion : IValueTaskSource<RecordMetadata[]>
         var candidateIsCancellation = candidate is OperationCanceledException;
 
         if (currentIsCancellation != candidateIsCancellation)
+        {
             return currentIsCancellation;
+        }
 
         return candidateIndex < currentIndex;
     }
@@ -148,16 +150,22 @@ internal sealed class ProduceAllCompletion : IValueTaskSource<RecordMetadata[]>
     private void OnOperationCompleted()
     {
         if (Interlocked.Decrement(ref _remaining) != 0)
+        {
             return;
+        }
 
         // Last completion (or registration guard when everything finished inline).
         // The Interlocked.Decrement fences make all _results writes and RecordFailure
         // updates visible here.
         var exception = _firstException;
         if (exception is not null)
+        {
             _core.SetException(exception);
+        }
         else
+        {
             _core.SetResult(_results!);
+        }
     }
 
     RecordMetadata[] IValueTaskSource<RecordMetadata[]>.GetResult(short token)

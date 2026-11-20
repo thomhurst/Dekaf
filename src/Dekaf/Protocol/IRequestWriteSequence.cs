@@ -7,7 +7,16 @@ internal interface IRequestWriteSequenceSource
 
 internal interface IRequestWriteSequenceTarget
 {
-    IRequestWriteSequenceSource? WriteSequenceSource { set; }
-    Action RequestWriteStarted { get; }
-    long WriteSequence { get; }
+    IRequestWriteSequenceSource? WriteSequenceSource
+    {
+        set;
+    }
+    Action RequestWriteStarted
+    {
+        get;
+    }
+    long WriteSequence
+    {
+        get;
+    }
 }

@@ -10,7 +10,10 @@ public sealed class DescribeProducersRequest : IKafkaRequest<DescribeProducersRe
     public static short LowestSupportedVersion => 0;
     public static short HighestSupportedVersion => 0;
 
-    public required IReadOnlyList<DescribeProducersRequestTopic> Topics { get; init; }
+    public required IReadOnlyList<DescribeProducersRequestTopic> Topics
+    {
+        get; init;
+    }
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {
@@ -27,8 +30,14 @@ public sealed class DescribeProducersRequest : IKafkaRequest<DescribeProducersRe
 /// </summary>
 public sealed class DescribeProducersRequestTopic
 {
-    public required string Name { get; init; }
-    public required IReadOnlyList<int> PartitionIndexes { get; init; }
+    public required string Name
+    {
+        get; init;
+    }
+    public required IReadOnlyList<int> PartitionIndexes
+    {
+        get; init;
+    }
 
     public void Write(ref KafkaProtocolWriter writer)
     {

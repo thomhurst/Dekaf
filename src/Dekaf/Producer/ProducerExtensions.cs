@@ -56,7 +56,9 @@ public static class ProducerExtensions
         ArgumentNullException.ThrowIfNull(topic);
 
         if (producer is IProducerFastPath<TKey, TValue> fastPath)
+        {
             return fastPath.ProduceAsync(topic, key, value, headers, partition: null, timestamp: null, cancellationToken);
+        }
 
         return producer.ProduceAsync(new ProducerMessage<TKey, TValue>
         {
@@ -91,7 +93,9 @@ public static class ProducerExtensions
         ArgumentNullException.ThrowIfNull(topic);
 
         if (producer is IProducerFastPath<TKey, TValue> fastPath)
+        {
             return fastPath.ProduceAsync(topic, key, value, headers: null, partition: partition, timestamp: null, cancellationToken);
+        }
 
         return producer.ProduceAsync(new ProducerMessage<TKey, TValue>
         {
@@ -173,7 +177,9 @@ public static class ProducerExtensions
         ArgumentNullException.ThrowIfNull(topic);
 
         if (producer is IProducerFastPath<TKey, TValue> fastPath)
+        {
             return fastPath.FireAsync(topic, key, value, headers, partition, timestamp, deliveryHandler);
+        }
 
         var message = new ProducerMessage<TKey, TValue>
         {

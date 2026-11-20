@@ -14,12 +14,18 @@ public sealed class ListOffsetsResponse : IKafkaResponse
     /// <summary>
     /// Throttle time in milliseconds (v2+).
     /// </summary>
-    public int ThrottleTimeMs { get; init; }
+    public int ThrottleTimeMs
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Topics with partition offset information.
     /// </summary>
-    public required IReadOnlyList<ListOffsetsResponseTopic> Topics { get; init; }
+    public required IReadOnlyList<ListOffsetsResponseTopic> Topics
+    {
+        get; init;
+    }
 
     public static IKafkaResponse Read(ref KafkaProtocolReader reader, short version)
     {
@@ -45,8 +51,14 @@ public sealed class ListOffsetsResponse : IKafkaResponse
 /// </summary>
 public sealed class ListOffsetsResponseTopic
 {
-    public required string Name { get; init; }
-    public required IReadOnlyList<ListOffsetsResponsePartition> Partitions { get; init; }
+    public required string Name
+    {
+        get; init;
+    }
+    public required IReadOnlyList<ListOffsetsResponsePartition> Partitions
+    {
+        get; init;
+    }
 
     public static ListOffsetsResponseTopic Read(ref KafkaProtocolReader reader, short version)
     {
@@ -72,28 +84,46 @@ public sealed class ListOffsetsResponseTopic
 /// </summary>
 public sealed class ListOffsetsResponsePartition
 {
-    public required int PartitionIndex { get; init; }
-    public required ErrorCode ErrorCode { get; init; }
+    public required int PartitionIndex
+    {
+        get; init;
+    }
+    public required ErrorCode ErrorCode
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Timestamps returned (v0 only, deprecated).
     /// </summary>
-    public IReadOnlyList<long>? OldStyleOffsets { get; init; }
+    public IReadOnlyList<long>? OldStyleOffsets
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The timestamp associated with the offset (v1+).
     /// </summary>
-    public long Timestamp { get; init; }
+    public long Timestamp
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The returned offset (v1+).
     /// </summary>
-    public long Offset { get; init; }
+    public long Offset
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Leader epoch (v4+).
     /// </summary>
-    public int LeaderEpoch { get; init; } = -1;
+    public int LeaderEpoch
+    {
+        get; init;
+    } = -1;
 
     public static ListOffsetsResponsePartition Read(ref KafkaProtocolReader reader, short version)
     {

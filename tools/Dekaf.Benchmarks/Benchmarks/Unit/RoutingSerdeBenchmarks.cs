@@ -120,7 +120,9 @@ public class RoutingSerdeBenchmarks
     public Event DeserializePreparedByTopic()
     {
         if (!_preparedTopicDeserializer.TryDeserialize(Data, _context, out var value))
+        {
             throw new InvalidOperationException("Prepared route did not deserialize synchronously.");
+        }
 
         return value;
     }
@@ -132,7 +134,9 @@ public class RoutingSerdeBenchmarks
     public Event DeserializePreparedBySchemaId()
     {
         if (!_preparedSchemaIdDeserializer.TryDeserialize(FramedData, _context, out var value))
+        {
             throw new InvalidOperationException("Prepared route did not deserialize synchronously.");
+        }
 
         return value;
     }
@@ -214,14 +218,20 @@ public class RoutingSerdeBenchmarks
     {
         var preparation = serializer.PrepareForSerializationAsync(Payload, _context);
         if (!preparation.IsCompletedSuccessfully)
+        {
             throw new InvalidOperationException("Warm preparation did not complete synchronously.");
+        }
 
         var admission = preparation.Result;
         _buffer.Clear();
         if (admission.IsPrepared)
+        {
             serializer.SerializePrepared(Payload, ref _buffer, _context, in admission);
+        }
         else
+        {
             ((ISerializer<Event>)serializer).Serialize(Payload, ref _buffer, _context);
+        }
         return _buffer.WrittenCount;
     }
 
@@ -358,7 +368,10 @@ public class HeaderRoutingLookupBenchmarks
     private SerializationContext _context;
 
     [Params(1, 8, 64, 1_024)]
-    public int HeaderCount { get; set; }
+    public int HeaderCount
+    {
+        get; set;
+    }
 
     [GlobalSetup]
     public void Setup()
@@ -469,7 +482,9 @@ public class HeaderRoutingLookupBenchmarks
     {
         var headers = new Header[HeaderCount];
         for (var index = 0; index < headers.Length; index++)
+        {
             headers[index] = new Header($"noise-{index}", Array.Empty<byte>());
+        }
         headers[0] = routedHeader;
         return headers;
     }

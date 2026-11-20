@@ -12,7 +12,10 @@ public sealed class WriteTxnMarkersResponse : IKafkaResponse
     public static short LowestSupportedVersion => 1;
     public static short HighestSupportedVersion => 2;
 
-    public required IReadOnlyList<WriteTxnMarkersResponseMarker> Markers { get; init; }
+    public required IReadOnlyList<WriteTxnMarkersResponseMarker> Markers
+    {
+        get; init;
+    }
 
     public static IKafkaResponse Read(ref KafkaProtocolReader reader, short version)
     {
@@ -36,8 +39,14 @@ public sealed class WriteTxnMarkersResponse : IKafkaResponse
 /// </summary>
 public sealed class WriteTxnMarkersResponseMarker
 {
-    public long ProducerId { get; init; }
-    public required IReadOnlyList<WriteTxnMarkersResponseTopic> Topics { get; init; }
+    public long ProducerId
+    {
+        get; init;
+    }
+    public required IReadOnlyList<WriteTxnMarkersResponseTopic> Topics
+    {
+        get; init;
+    }
 
     public static WriteTxnMarkersResponseMarker Read(ref KafkaProtocolReader reader, short version)
     {
@@ -63,8 +72,14 @@ public sealed class WriteTxnMarkersResponseMarker
 /// </summary>
 public sealed class WriteTxnMarkersResponseTopic
 {
-    public required string Name { get; init; }
-    public required IReadOnlyList<WriteTxnMarkersResponsePartition> Partitions { get; init; }
+    public required string Name
+    {
+        get; init;
+    }
+    public required IReadOnlyList<WriteTxnMarkersResponsePartition> Partitions
+    {
+        get; init;
+    }
 
     public static WriteTxnMarkersResponseTopic Read(ref KafkaProtocolReader reader, short version)
     {
@@ -90,8 +105,14 @@ public sealed class WriteTxnMarkersResponseTopic
 /// </summary>
 public sealed class WriteTxnMarkersResponsePartition
 {
-    public int PartitionIndex { get; init; }
-    public ErrorCode ErrorCode { get; init; }
+    public int PartitionIndex
+    {
+        get; init;
+    }
+    public ErrorCode ErrorCode
+    {
+        get; init;
+    }
 
     public static WriteTxnMarkersResponsePartition Read(ref KafkaProtocolReader reader, short version)
     {

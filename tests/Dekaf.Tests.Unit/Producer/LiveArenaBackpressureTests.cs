@@ -40,16 +40,16 @@ public sealed class LiveArenaBackpressureTests
         int maxBlockMs = 30_000,
         int arenaCapacity = 0,
         CompressionType compressionType = CompressionType.None) => new()
-    {
-        BootstrapServers = ["localhost:9092"],
-        ClientId = "live-arena-test",
-        BatchSize = BatchSize,
-        ArenaCapacity = arenaCapacity,
-        BufferMemory = bufferMemory,
-        LingerMs = 60_000,
-        MaxBlockMs = maxBlockMs,
-        CompressionType = compressionType,
-    };
+        {
+            BootstrapServers = ["localhost:9092"],
+            ClientId = "live-arena-test",
+            BatchSize = BatchSize,
+            ArenaCapacity = arenaCapacity,
+            BufferMemory = bufferMemory,
+            LingerMs = 60_000,
+            MaxBlockMs = maxBlockMs,
+            CompressionType = compressionType,
+        };
 
     [Test]
     public async Task LiveArenas_WithinAllowance_AreCountedButNotCharged()
@@ -59,7 +59,9 @@ public sealed class LiveArenaBackpressureTests
         accumulator.UseLiveArenaBudgetForTest(budget);
 
         for (var partition = 0; partition < 4; partition++)
+        {
             await Assert.That(await AccumulatorTestHelpers.AppendNullRecordAsync(accumulator, Topic, partition, PartitionCount)).IsTrue();
+        }
 
         await Assert.That(budget.LiveBytes).IsGreaterThanOrEqualTo(4L * ProducerOptions.GetEffectiveArenaCapacity(BatchSize, 0));
         await Assert.That(accumulator.ArenaChargedBytes).IsEqualTo(0);
@@ -130,10 +132,14 @@ public sealed class LiveArenaBackpressureTests
 
         // Every queued record is still appended, as earlier batches complete.
         for (var round = 0; round < PartitionCount && queued.Any(static append => !append.IsCompleted); round++)
+        {
             await CompleteAllBatchesAsync(accumulator, PartitionCount);
+        }
 
         foreach (var append in queued)
+        {
             await Assert.That(await append.AsTask().WaitAsync(TimeSpan.FromSeconds(10))).IsTrue();
+        }
 
         await CompleteAllBatchesAsync(accumulator, PartitionCount);
         await Assert.That(accumulator.BufferedBytes).IsEqualTo(0);
@@ -373,7 +379,9 @@ public sealed class LiveArenaBackpressureTests
                 BatchArena.ReleaseIdleArenasAfterOutOfMemory();
                 waiting = AppendValueAsync(accumulator, partition, oversizedValueSize);
                 if (Volatile.Read(ref failedSwaps) > 0)
+                {
                     break;
+                }
 
                 await Assert.That(await waiting).IsTrue();
             }
@@ -411,7 +419,9 @@ public sealed class LiveArenaBackpressureTests
         var partition = await OpenBatchWithFreshArenaAsync(accumulator, budget);
         var liveBeforeGrowth = budget.LiveBytes;
         for (var i = 1; i < GrowthRecordCount; i++)
+        {
             await Assert.That(await AppendValueAsync(accumulator, partition)).IsTrue();
+        }
 
         // The batch's arena grew past its rented capacity: the growth is counted as live and,
         // over the allowance, charged against BufferMemory too.
@@ -453,7 +463,9 @@ public sealed class LiveArenaBackpressureTests
             // Growing is optional: every append succeeds, the full batch is sealed instead.
             var partition = await OpenBatchWithFreshArenaAsync(accumulator, budget);
             for (var i = 1; i < GrowthRecordCount; i++)
+            {
                 await Assert.That(await AppendValueAsync(accumulator, partition)).IsTrue();
+            }
 
             await Assert.That(failedGrowths).IsGreaterThan(0);
 
@@ -497,7 +509,9 @@ public sealed class LiveArenaBackpressureTests
             var liveBefore = budget.LiveBytes;
             await Assert.That(await AppendValueAsync(accumulator, partition)).IsTrue();
             if (budget.LiveBytes - liveBefore == InjectedArenaCapacity)
+            {
                 return partition;
+            }
         }
 
         throw new InvalidOperationException("No batch rented a newly created arena.");
@@ -533,11 +547,15 @@ public sealed class LiveArenaBackpressureTests
             // unused rental.
             accumulator.AfterRentBatchForTest = null;
             if (!AccumulatorTestHelpers.AppendNullRecordAsync(accumulator, Topic, 0, PartitionCount).AsTask().GetAwaiter().GetResult())
+            {
                 throw new InvalidOperationException("B was not appended.");
+            }
 
             // X leaves the pipeline, so A's append seals B's batch.
             if (!accumulator.TryDrainBatch(partition, out var x))
+            {
                 throw new InvalidOperationException("X was not sealed.");
+            }
             accumulator.ReleaseBatchMemory(x);
             x.CompleteSend(0, DateTimeOffset.UnixEpoch);
             accumulator.OnBatchExitsPipeline(x);
@@ -547,10 +565,14 @@ public sealed class LiveArenaBackpressureTests
             // room for it, and a drain serves it, to this same partition.
             filledBytes = (long)accumulator.MaxBufferMemory - accumulator.BufferedBytes;
             if (!accumulator.TryReserveMemoryForTest((int)filledBytes))
+            {
                 throw new InvalidOperationException("BufferMemory was not filled.");
+            }
             queued = AccumulatorTestHelpers.AppendNullRecordAsync(accumulator, Topic, 0, PartitionCount);
             if (queued.IsCompleted)
+            {
                 throw new InvalidOperationException("C was not queued.");
+            }
         };
 
         // A on its own thread: an inline drain there would spin on A's own rotation gate.
@@ -600,7 +622,9 @@ public sealed class LiveArenaBackpressureTests
                 callback: null,
                 estimatedSize: PartitionBatch.EstimateRecordSize(0, value.Length, null, 0));
             if (!result.Success)
+            {
                 throw new InvalidOperationException("Test record did not fit.");
+            }
         }
 
         var ready = source.Complete()!;
@@ -615,12 +639,16 @@ public sealed class LiveArenaBackpressureTests
         var budget = new LiveArenaBudget(0);
         accumulator.UseLiveArenaBudgetForTest(budget);
 
-        var children = accumulator.SplitForSenderRetry(ready, ready.Generation, static () => { })!;
+        var children = accumulator.SplitForSenderRetry(ready, ready.Generation, static () =>
+        {
+        })!;
 
         await Assert.That(children.Count).IsGreaterThan(1);
         var childArenaBytes = 0L;
         foreach (var child in children)
+        {
             childArenaBytes += child.ArenaCapacityForTest;
+        }
         // Every child holds at least a normal arena, and every one of them is counted.
         await Assert.That(childArenaBytes)
             .IsGreaterThanOrEqualTo((long)children.Count * ProducerOptions.GetEffectiveArenaCapacity(1024, 0));
@@ -656,7 +684,9 @@ public sealed class LiveArenaBackpressureTests
             accumulator,
             "_compressionRatioEstimator");
         for (var i = 0; i < 200; i++)
+        {
             estimator.Update(Topic, CompressionType.Gzip, observedRatio: 0.1);
+        }
     }
 
     private static ValueTask<bool> AppendValueAsync(
@@ -706,7 +736,9 @@ public sealed class LiveArenaBackpressureTests
                 cancellationToken,
                 PartitionCount);
             if (!append.IsCompleted)
+            {
                 return (append, partition);
+            }
 
             await Assert.That(await append).IsTrue();
         }

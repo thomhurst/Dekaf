@@ -14,14 +14,18 @@ public class StandardConsumerTelemetryBenchmarks
     private KafkaConsumer<Ignore, ReadOnlyMemory<byte>> _consumer = null!;
 
     [Params(false, true)]
-    public bool Subscribed { get; set; }
+    public bool Subscribed
+    {
+        get; set;
+    }
 
     [GlobalSetup]
     public void Setup()
     {
         _consumer = new(new ConsumerOptions
         {
-            BootstrapServers = ["localhost:9092"], OffsetCommitMode = OffsetCommitMode.Manual,
+            BootstrapServers = ["localhost:9092"],
+            OffsetCommitMode = OffsetCommitMode.Manual,
             QueuedMinMessages = 1
         }, Serializers.Ignore, Serializers.RawBytes);
         BufferedConsumerHarness.InitializeForBufferedFastPath(_consumer, "telemetry", 0);

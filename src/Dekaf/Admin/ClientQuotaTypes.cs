@@ -55,12 +55,18 @@ public sealed class ClientQuotaFilter
     /// <summary>
     /// Entity components to match. An empty list matches all quota entities.
     /// </summary>
-    public required IReadOnlyList<ClientQuotaFilterComponent> Components { get; init; }
+    public required IReadOnlyList<ClientQuotaFilterComponent> Components
+    {
+        get; init;
+    }
 
     /// <summary>
     /// True if only entities with exactly these components should match.
     /// </summary>
-    public bool Strict { get; init; }
+    public bool Strict
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Creates a filter that matches all client quota entities.
@@ -76,17 +82,26 @@ public sealed class ClientQuotaFilterComponent
     /// <summary>
     /// The entity type to match.
     /// </summary>
-    public required ClientQuotaEntityType EntityType { get; init; }
+    public required ClientQuotaEntityType EntityType
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The match type.
     /// </summary>
-    public required ClientQuotaMatchType MatchType { get; init; }
+    public required ClientQuotaMatchType MatchType
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The entity name for exact matches, otherwise null.
     /// </summary>
-    public string? Match { get; init; }
+    public string? Match
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Creates an exact entity-name match.
@@ -141,12 +156,18 @@ public sealed class ClientQuotaEntityComponent
     /// <summary>
     /// The entity type.
     /// </summary>
-    public required ClientQuotaEntityType EntityType { get; init; }
+    public required ClientQuotaEntityType EntityType
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The entity name, or null for the default entity of this type.
     /// </summary>
-    public string? Name { get; init; }
+    public string? Name
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Creates a user entity component.
@@ -175,7 +196,10 @@ public sealed class ClientQuotaEntity : IEquatable<ClientQuotaEntity>
     /// <summary>
     /// Entity components that identify this quota entity.
     /// </summary>
-    public required IReadOnlyList<ClientQuotaEntityComponent> Components { get; init; }
+    public required IReadOnlyList<ClientQuotaEntityComponent> Components
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Creates a user quota entity.
@@ -306,17 +330,26 @@ public sealed class ClientQuotaOperation
     /// <summary>
     /// The quota key.
     /// </summary>
-    public required string Key { get; init; }
+    public required string Key
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The quota value for set operations.
     /// </summary>
-    public double Value { get; init; }
+    public double Value
+    {
+        get; init;
+    }
 
     /// <summary>
     /// True to remove this quota key.
     /// </summary>
-    public bool Remove { get; init; }
+    public bool Remove
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Creates a set operation.
@@ -339,12 +372,18 @@ public sealed class ClientQuotaAlteration
     /// <summary>
     /// The entity to alter.
     /// </summary>
-    public required ClientQuotaEntity Entity { get; init; }
+    public required ClientQuotaEntity Entity
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Set or remove operations for the entity.
     /// </summary>
-    public required IReadOnlyList<ClientQuotaOperation> Operations { get; init; }
+    public required IReadOnlyList<ClientQuotaOperation> Operations
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Creates an alteration that sets one quota key.
@@ -397,7 +436,10 @@ public sealed class DescribeClientQuotasOptions
     /// <summary>
     /// How long to wait in milliseconds before timing out the request.
     /// </summary>
-    public int TimeoutMs { get; init; } = 30000;
+    public int TimeoutMs
+    {
+        get; init;
+    } = 30000;
 }
 
 /// <summary>
@@ -408,12 +450,18 @@ public sealed class AlterClientQuotasOptions
     /// <summary>
     /// How long to wait in milliseconds before timing out the request.
     /// </summary>
-    public int TimeoutMs { get; init; } = 30000;
+    public int TimeoutMs
+    {
+        get; init;
+    } = 30000;
 
     /// <summary>
     /// If true, the broker validates the request but does not change quotas.
     /// </summary>
-    public bool ValidateOnly { get; init; }
+    public bool ValidateOnly
+    {
+        get; init;
+    }
 }
 
 internal static class ClientQuotaEntityTypeNames

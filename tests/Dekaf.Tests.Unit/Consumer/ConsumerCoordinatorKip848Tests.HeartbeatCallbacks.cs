@@ -122,7 +122,9 @@ public sealed partial class ConsumerCoordinatorKip848Tests
             await cancelled.Task.WaitAsync(cancellationToken);
             await Assert.That(stop.IsCompleted).IsFalse();
             if (cancelStop)
+            {
                 await stopCancellation.CancelAsync();
+            }
             await stop.WaitAsync(cancellationToken);
             await heartbeat.WaitAsync(cancellationToken);
 
@@ -208,11 +210,15 @@ public sealed partial class ConsumerCoordinatorKip848Tests
                 {
                     duringRevocation.Enqueue(request);
                     if (duringRevocation.Count >= 3)
+                    {
                         duringCallback.TrySetResult();
+                    }
                 }
                 if (release.Task.IsCompleted && request.TopicPartitions is [{ } topic] &&
                     topic.Partitions.Count == 1 && topic.Partitions[0] == (newerTarget ? 1 : 0))
+                {
                     acknowledged.TrySetResult();
+                }
 
                 ConsumerGroupHeartbeatAssignment? assignment = null;
                 if (stage == 0)
@@ -258,7 +264,9 @@ public sealed partial class ConsumerCoordinatorKip848Tests
                 await Assert.That(request.MemberEpoch).IsEqualTo(2);
                 // null also means unchanged: the last explicit set must still own both partitions.
                 if (request.TopicPartitions is { } owned)
+                {
                     await Assert.That(owned.Single().Partitions).IsEquivalentTo([0, 1]);
+                }
             }
             release.TrySetResult();
             synchronousRelease.Set();
@@ -306,7 +314,9 @@ public sealed partial class ConsumerCoordinatorKip848Tests
             .Returns(_ =>
             {
                 if (Interlocked.Increment(ref count) >= 4)
+                {
                     heartbeatDuringAssignment.TrySetResult();
+                }
                 return ValueTask.FromResult(new ConsumerGroupHeartbeatResponse
                 {
                     ErrorCode = ErrorCode.None,

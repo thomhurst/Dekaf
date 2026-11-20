@@ -38,7 +38,10 @@ public class EmptyTopicConsumerTests(KafkaTestContainer kafka) : KafkaIntegratio
                 await foreach (var msg in consumer.ConsumeAsync(cts.Token))
                 {
                     receivedMessages.Add(msg);
-                    if (receivedMessages.Count >= 1) break;
+                    if (receivedMessages.Count >= 1)
+                    {
+                        break;
+                    }
                 }
             }
             catch (OperationCanceledException) { }
@@ -107,7 +110,10 @@ public class EmptyTopicConsumerTests(KafkaTestContainer kafka) : KafkaIntegratio
                 await foreach (var msg in consumer.ConsumeAsync(cts.Token))
                 {
                     receivedMessages.Add(msg);
-                    if (receivedMessages.Count >= 2) break;
+                    if (receivedMessages.Count >= 2)
+                    {
+                        break;
+                    }
                 }
             }
             catch (OperationCanceledException) { }
@@ -188,7 +194,10 @@ public class EmptyTopicConsumerTests(KafkaTestContainer kafka) : KafkaIntegratio
                 await foreach (var msg in consumer.ConsumeAsync(cts.Token))
                 {
                     receivedMessages.Add(msg);
-                    if (receivedMessages.Count >= 3) break;
+                    if (receivedMessages.Count >= 3)
+                    {
+                        break;
+                    }
                 }
             }
             catch (OperationCanceledException) { }
@@ -296,7 +305,10 @@ public class EmptyTopicConsumerTests(KafkaTestContainer kafka) : KafkaIntegratio
                 await foreach (var msg in consumer1.ConsumeAsync(cts1.Token))
                 {
                     received1.Add(msg);
-                    if (received1.Count >= 2) break;
+                    if (received1.Count >= 2)
+                    {
+                        break;
+                    }
                 }
             }
             catch (OperationCanceledException) { }
@@ -336,7 +348,10 @@ public class EmptyTopicConsumerTests(KafkaTestContainer kafka) : KafkaIntegratio
                 await foreach (var msg in consumer2.ConsumeAsync(cts2.Token))
                 {
                     received2.Add(msg);
-                    if (received2.Count >= 2) break;
+                    if (received2.Count >= 2)
+                    {
+                        break;
+                    }
                 }
             }
             catch (OperationCanceledException) { }

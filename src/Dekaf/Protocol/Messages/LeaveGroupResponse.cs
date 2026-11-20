@@ -9,9 +9,18 @@ public sealed class LeaveGroupResponse : IKafkaResponse
     public static short LowestSupportedVersion => 3;
     public static short HighestSupportedVersion => 5;
 
-    public int ThrottleTimeMs { get; init; }
-    public ErrorCode ErrorCode { get; init; }
-    public required IReadOnlyList<LeaveGroupResponseMember> Members { get; init; }
+    public int ThrottleTimeMs
+    {
+        get; init;
+    }
+    public ErrorCode ErrorCode
+    {
+        get; init;
+    }
+    public required IReadOnlyList<LeaveGroupResponseMember> Members
+    {
+        get; init;
+    }
 
     public static IKafkaResponse Read(ref KafkaProtocolReader reader, short version)
     {
@@ -49,9 +58,18 @@ public sealed class LeaveGroupResponse : IKafkaResponse
 /// </summary>
 public sealed class LeaveGroupResponseMember
 {
-    public required string MemberId { get; init; }
-    public string? GroupInstanceId { get; init; }
-    public ErrorCode ErrorCode { get; init; }
+    public required string MemberId
+    {
+        get; init;
+    }
+    public string? GroupInstanceId
+    {
+        get; init;
+    }
+    public ErrorCode ErrorCode
+    {
+        get; init;
+    }
 
     public static LeaveGroupResponseMember Read(ref KafkaProtocolReader reader, short version)
     {

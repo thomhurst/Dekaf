@@ -41,11 +41,15 @@ public sealed class BrokerSenderEpochRecoveryTests : ScriptedProduceResponseFixt
         accumulator.PublishProducerState(state);
         var bumpRequests = new List<short>();
         var sender = CreateSender(
-            pool, options, accumulator, (_, _, _, _, _) => { },
+            pool, options, accumulator, (_, _, _, _, _) =>
+            {
+            },
             bumpEpoch: (expectedEpoch, _) =>
             {
                 lock (bumpRequests)
+                {
                     bumpRequests.Add(expectedEpoch);
+                }
                 throw new InvalidOperationException("injected epoch bump failure");
             },
             getProducerState: () => state);
@@ -65,7 +69,9 @@ public sealed class BrokerSenderEpochRecoveryTests : ScriptedProduceResponseFixt
             await Assert.That(metadata.Offset).IsEqualTo(42L);
             short[] observedBumpRequests;
             lock (bumpRequests)
+            {
                 observedBumpRequests = bumpRequests.ToArray();
+            }
             await Assert.That(observedBumpRequests).IsEquivalentTo([(short)5]);
             await Assert.That(GetEpochBumpRequestedForEpoch(sender)).IsEqualTo(-1);
         }
@@ -95,11 +101,15 @@ public sealed class BrokerSenderEpochRecoveryTests : ScriptedProduceResponseFixt
         accumulator.PublishProducerState(state);
         var bumpRequests = new List<short>();
         var sender = CreateSender(
-            pool, options, accumulator, (_, _, _, _, _) => { },
+            pool, options, accumulator, (_, _, _, _, _) =>
+            {
+            },
             bumpEpoch: (expectedEpoch, _) =>
             {
                 lock (bumpRequests)
+                {
                     bumpRequests.Add(expectedEpoch);
+                }
                 return new ValueTask<ProducerIdAndEpoch>(Volatile.Read(ref state));
             },
             getProducerState: () => Volatile.Read(ref state));
@@ -125,12 +135,16 @@ public sealed class BrokerSenderEpochRecoveryTests : ScriptedProduceResponseFixt
 
             short[] observedBumpRequests;
             lock (bumpRequests)
+            {
                 observedBumpRequests = bumpRequests.ToArray();
+            }
             await Assert.That(observedBumpRequests).IsEquivalentTo([(short)5]);
 
             (long ProducerId, short ProducerEpoch, int BaseSequence)[] secondStamps;
             lock (connection.CapturedProduceRequests)
+            {
                 secondStamps = connection.CapturedProduceRequests[1].ProducerStamps.ToArray();
+            }
             await Assert.That(secondStamps).IsEquivalentTo([(1234L, (short)6, 0)]);
             await Assert.That(GetEpochBumpRequestedForEpoch(sender)).IsEqualTo(-1);
         }
@@ -158,7 +172,9 @@ public sealed class BrokerSenderEpochRecoveryTests : ScriptedProduceResponseFixt
         var bumpStarted = new TaskCompletionSource<short>(TaskCreationOptions.RunContinuationsAsynchronously);
         var resetCompleted = new TaskCompletionSource<ProducerIdAndEpoch>(TaskCreationOptions.RunContinuationsAsynchronously);
         var sender = CreateSender(
-            pool, options, accumulator, (_, _, _, _, _) => { },
+            pool, options, accumulator, (_, _, _, _, _) =>
+            {
+            },
             bumpEpoch: (expectedEpoch, _) =>
             {
                 bumpStarted.TrySetResult(expectedEpoch);
@@ -227,7 +243,9 @@ public sealed class BrokerSenderEpochRecoveryTests : ScriptedProduceResponseFixt
         var resetStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var resetNeverCompletes = new TaskCompletionSource<ProducerIdAndEpoch>(TaskCreationOptions.RunContinuationsAsynchronously);
         var sender = CreateSender(
-            pool, options, accumulator, (_, _, _, _, _) => { },
+            pool, options, accumulator, (_, _, _, _, _) =>
+            {
+            },
             bumpEpoch: (_, _) =>
             {
                 resetStarted.TrySetResult();
@@ -277,7 +295,9 @@ public sealed class BrokerSenderEpochRecoveryTests : ScriptedProduceResponseFixt
         var state = new ProducerIdAndEpoch(5678, 0);
         accumulator.PublishProducerState(state);
         var sender = CreateSender(
-            pool, options, accumulator, (_, _, _, _, _) => { },
+            pool, options, accumulator, (_, _, _, _, _) =>
+            {
+            },
             bumpEpoch: (_, _) => new ValueTask<ProducerIdAndEpoch>(state),
             getProducerState: () => state);
 
@@ -291,7 +311,9 @@ public sealed class BrokerSenderEpochRecoveryTests : ScriptedProduceResponseFixt
 
             (long ProducerId, short ProducerEpoch, int BaseSequence)[] stamps;
             lock (connection.CapturedProduceRequests)
+            {
                 stamps = connection.CapturedProduceRequests.Single().ProducerStamps.ToArray();
+            }
 
             await Assert.That(stamps).IsEquivalentTo([(5678L, (short)0, 0)]);
         }
@@ -324,7 +346,9 @@ public sealed class BrokerSenderEpochRecoveryTests : ScriptedProduceResponseFixt
         accumulator.PublishProducerState(state.Value);
         var bumpRequests = new List<short>();
         var sender = CreateSender(
-            pool, options, accumulator, (_, _, _, _, _) => { },
+            pool, options, accumulator, (_, _, _, _, _) =>
+            {
+            },
             bumpEpoch: LocalBump(accumulator, bumpRequests, state),
             getProducerState: () => state.Read());
 
@@ -350,7 +374,9 @@ public sealed class BrokerSenderEpochRecoveryTests : ScriptedProduceResponseFixt
 
             short[] observedBumpRequests;
             lock (bumpRequests)
+            {
                 observedBumpRequests = bumpRequests.ToArray();
+            }
             await Assert.That(observedBumpRequests).IsEquivalentTo([(short)5]);
 
             (long ProducerId, short ProducerEpoch, int BaseSequence)[] retryStamps, partition1Stamps;
@@ -401,7 +427,9 @@ public sealed class BrokerSenderEpochRecoveryTests : ScriptedProduceResponseFixt
         var (batch1Second, delivery1Second) = CreateTrackedBatch(valueTaskSourcePool, Partition1, producerId: 1234, producerEpoch: 6);
         BrokerSender sender = null!;
         sender = CreateSender(
-            pool, options, accumulator, (_, _, _, _, _) => { },
+            pool, options, accumulator, (_, _, _, _, _) =>
+            {
+            },
             bumpEpoch: LocalBump(accumulator, bumpRequests, state, afterBump: () => sender.Enqueue(batch1Second)),
             getProducerState: () => Volatile.Read(ref state.Value),
             onSequenceRestartHeld: topicPartition => held.TrySetResult(topicPartition));
@@ -424,7 +452,9 @@ public sealed class BrokerSenderEpochRecoveryTests : ScriptedProduceResponseFixt
             await WaitUntilAsync(() => connection.CapturedProduceRequestCount == 3, cancellationToken);
             (string Name, Guid TopicId, int Partition)[] retryTopics;
             lock (connection.CapturedProduceRequests)
+            {
                 retryTopics = connection.CapturedProduceRequests[2].Topics.ToArray();
+            }
             await Assert.That(retryTopics).IsEquivalentTo([(Topic, Guid.Empty, 0)]);
             await Assert.That(Volatile.Read(ref connection.SendPipelinedAfterWriteCalls)).IsEqualTo(3);
 
@@ -439,7 +469,9 @@ public sealed class BrokerSenderEpochRecoveryTests : ScriptedProduceResponseFixt
 
             short[] observedBumpRequests;
             lock (bumpRequests)
+            {
                 observedBumpRequests = bumpRequests.ToArray();
+            }
             await Assert.That(observedBumpRequests).IsEquivalentTo([(short)5]);
 
             (long ProducerId, short ProducerEpoch, int BaseSequence)[] firstStamps, retryStamps, secondStamps;
@@ -488,7 +520,9 @@ public sealed class BrokerSenderEpochRecoveryTests : ScriptedProduceResponseFixt
         var bumpRequests = new List<short>();
         var held = new TaskCompletionSource<TopicPartition>(TaskCreationOptions.RunContinuationsAsynchronously);
         var sender = CreateSender(
-            pool, options, accumulator, (_, _, _, _, _) => { },
+            pool, options, accumulator, (_, _, _, _, _) =>
+            {
+            },
             bumpEpoch: LocalBump(accumulator, bumpRequests, state),
             getProducerState: () => state.Read(),
             onSequenceRestartHeld: topicPartition => held.TrySetResult(topicPartition));
@@ -521,7 +555,9 @@ public sealed class BrokerSenderEpochRecoveryTests : ScriptedProduceResponseFixt
             await WaitUntilAsync(() => connection.CapturedProduceRequestCount == 4, cancellationToken);
             (long ProducerId, short ProducerEpoch, int BaseSequence)[] ambiguousRetryStamps;
             lock (connection.CapturedProduceRequests)
+            {
                 ambiguousRetryStamps = connection.CapturedProduceRequests[3].ProducerStamps.ToArray();
+            }
             await Assert.That(ambiguousRetryStamps).IsEquivalentTo([(1234L, (short)5, 20)]);
             await Assert.That(Volatile.Read(ref connection.SendPipelinedAfterWriteCalls)).IsEqualTo(4);
 
@@ -534,12 +570,16 @@ public sealed class BrokerSenderEpochRecoveryTests : ScriptedProduceResponseFixt
 
             (long ProducerId, short ProducerEpoch, int BaseSequence)[] freshStamps;
             lock (connection.CapturedProduceRequests)
+            {
                 freshStamps = connection.CapturedProduceRequests[4].ProducerStamps.ToArray();
+            }
             await Assert.That(freshStamps).IsEquivalentTo([(1234L, (short)6, 0)]);
 
             short[] observedBumpRequests;
             lock (bumpRequests)
+            {
                 observedBumpRequests = bumpRequests.ToArray();
+            }
             await Assert.That(observedBumpRequests).IsEquivalentTo([(short)5]);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -588,7 +628,9 @@ public sealed class BrokerSenderEpochRecoveryTests : ScriptedProduceResponseFixt
         using var inflightTracker = new PartitionInflightTracker();
         var heldOnB = new TaskCompletionSource<TopicPartition>(TaskCreationOptions.RunContinuationsAsynchronously);
         var senderB = CreateSender(
-            poolB, options, accumulator, (_, _, _, _, _) => { },
+            poolB, options, accumulator, (_, _, _, _, _) =>
+            {
+            },
             metadataManager,
             bumpEpoch: LocalBump(accumulator, bumpRequests, state),
             getProducerState: () => state.Read(),
@@ -596,7 +638,9 @@ public sealed class BrokerSenderEpochRecoveryTests : ScriptedProduceResponseFixt
             brokerId: 2,
             inflightTracker: inflightTracker);
         var senderA = CreateSender(
-            poolA, options, accumulator, (_, _, _, _, _) => { },
+            poolA, options, accumulator, (_, _, _, _, _) =>
+            {
+            },
             metadataManager,
             rerouteBatch: senderB.Enqueue,
             bumpEpoch: LocalBump(accumulator, bumpRequests, state),
@@ -645,7 +689,9 @@ public sealed class BrokerSenderEpochRecoveryTests : ScriptedProduceResponseFixt
 
             short[] observedBumpRequests;
             lock (bumpRequests)
+            {
                 observedBumpRequests = bumpRequests.ToArray();
+            }
             await Assert.That(observedBumpRequests).IsEquivalentTo([(short)5]);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -681,7 +727,9 @@ public sealed class BrokerSenderEpochRecoveryTests : ScriptedProduceResponseFixt
         var snapshot = new ProducerIdAndEpoch(1234, 5);
         accumulator.PublishProducerState(snapshot);
         var sender = CreateSender(
-            pool, options, accumulator, (_, _, _, _, _) => { },
+            pool, options, accumulator, (_, _, _, _, _) =>
+            {
+            },
             getProducerState: () => snapshot);
 
         try
@@ -734,7 +782,9 @@ public sealed class BrokerSenderEpochRecoveryTests : ScriptedProduceResponseFixt
         var snapshot = new ProducerIdAndEpoch(1234, 5);
         accumulator.PublishProducerState(snapshot);
         var sender = CreateSender(
-            pool, options, accumulator, (_, _, _, _, _) => { },
+            pool, options, accumulator, (_, _, _, _, _) =>
+            {
+            },
             getProducerState: () => snapshot);
 
         try
@@ -797,7 +847,9 @@ public sealed class BrokerSenderEpochRecoveryTests : ScriptedProduceResponseFixt
         using var inflightTracker = new PartitionInflightTracker(enablePruning: false);
         var held = new TaskCompletionSource<TopicPartition>(TaskCreationOptions.RunContinuationsAsynchronously);
         var sender = CreateSender(
-            pool, options, accumulator, (_, _, _, _, _) => { },
+            pool, options, accumulator, (_, _, _, _, _) =>
+            {
+            },
             getProducerState: () => current,
             onSequenceRestartHeld: topicPartition => held.TrySetResult(topicPartition),
             inflightTracker: inflightTracker);
@@ -877,7 +929,9 @@ public sealed class BrokerSenderEpochRecoveryTests : ScriptedProduceResponseFixt
         accumulator.PublishProducerState(current);
         var held = new TaskCompletionSource<TopicPartition>(TaskCreationOptions.RunContinuationsAsynchronously);
         var sender = CreateSender(
-            pool, options, accumulator, (_, _, _, _, _) => { },
+            pool, options, accumulator, (_, _, _, _, _) =>
+            {
+            },
             getProducerState: () => current,
             onSequenceRestartHeld: topicPartition => held.TrySetResult(topicPartition),
             inflightTracker: inflightTracker);
@@ -954,7 +1008,9 @@ public sealed class BrokerSenderEpochRecoveryTests : ScriptedProduceResponseFixt
         accumulator.PublishProducerState(current);
         var claimsBetweenSteps = new List<InflightEntry?>();
         var sender = CreateSender(
-            pool, options, accumulator, (_, _, _, _, _) => { },
+            pool, options, accumulator, (_, _, _, _, _) =>
+            {
+            },
             getProducerState: () => current,
             inflightTracker: inflightTracker,
             onRestampRegistered: topicPartition =>
@@ -962,8 +1018,10 @@ public sealed class BrokerSenderEpochRecoveryTests : ScriptedProduceResponseFixt
                 // Another loop's fresh batch of the partition, claimed between the two steps.
                 var otherLoopState = (ProducerIdAndEpoch?)current;
                 lock (claimsBetweenSteps)
+                {
                     claimsBetweenSteps.Add(accumulator.RegisterWithNextSequence(
                         inflightTracker, topicPartition, 3, -1, ref otherLoopState, out _));
+                }
             });
 
         try
@@ -986,7 +1044,9 @@ public sealed class BrokerSenderEpochRecoveryTests : ScriptedProduceResponseFixt
 
             InflightEntry?[] observed;
             lock (claimsBetweenSteps)
+            {
                 observed = claimsBetweenSteps.ToArray();
+            }
             await Assert.That(observed.Length).IsEqualTo(1);
             await Assert.That(observed[0]).IsNull();
             await Assert.That(StampsOf(connection, request: 1)).IsEquivalentTo([(1, 2, 1234L, (short)6, 4)]);
@@ -1038,7 +1098,9 @@ public sealed class BrokerSenderEpochRecoveryTests : ScriptedProduceResponseFixt
         using var inflightTracker = new PartitionInflightTracker(enablePruning: false);
         var held = new TaskCompletionSource<TopicPartition>(TaskCreationOptions.RunContinuationsAsynchronously);
         var sender = CreateSender(
-            pool, options, accumulator, (_, _, _, _, _) => { },
+            pool, options, accumulator, (_, _, _, _, _) =>
+            {
+            },
             getProducerState: () => current,
             onSequenceRestartHeld: topicPartition => held.TrySetResult(topicPartition),
             inflightTracker: inflightTracker);
@@ -1121,7 +1183,9 @@ public sealed class BrokerSenderEpochRecoveryTests : ScriptedProduceResponseFixt
         var (batch1Second, delivery1Second) = CreateTrackedBatch(valueTaskSourcePool, Partition1, producerId: 5678, producerEpoch: 0);
         BrokerSender sender = null!;
         sender = CreateSender(
-            pool, options, accumulator, (_, _, _, _, _) => { },
+            pool, options, accumulator, (_, _, _, _, _) =>
+            {
+            },
             bumpEpoch: (_, _) =>
             {
                 // The producer replaces its exhausted ID (KafkaProducer.PublishIdempotentProducerId).
@@ -1148,7 +1212,9 @@ public sealed class BrokerSenderEpochRecoveryTests : ScriptedProduceResponseFixt
             await WaitUntilAsync(() => connection.CapturedProduceRequestCount == 3, cancellationToken);
             (string Name, Guid TopicId, int Partition)[] retryTopics;
             lock (connection.CapturedProduceRequests)
+            {
                 retryTopics = connection.CapturedProduceRequests[2].Topics.ToArray();
+            }
             await Assert.That(retryTopics).IsEquivalentTo([(Topic, Guid.Empty, 0)]);
             await Assert.That(Volatile.Read(ref connection.SendPipelinedAfterWriteCalls)).IsEqualTo(3);
 
@@ -1208,7 +1274,9 @@ public sealed class BrokerSenderEpochRecoveryTests : ScriptedProduceResponseFixt
         var logger = new CapacityWaitLogger();
         var held = new TaskCompletionSource<TopicPartition>(TaskCreationOptions.RunContinuationsAsynchronously);
         var sender = CreateSender(
-            pool, options, accumulator, (_, _, _, _, _) => { },
+            pool, options, accumulator, (_, _, _, _, _) =>
+            {
+            },
             bumpEpoch: (expectedEpoch, _) =>
             {
                 // Like KafkaProducer.BumpEpochForRecoveryAsync: only the first request for an epoch bumps.
@@ -1310,7 +1378,9 @@ public sealed class BrokerSenderEpochRecoveryTests : ScriptedProduceResponseFixt
         var state = new ProducerIdAndEpoch(1234, 5);
         accumulator.PublishProducerState(state);
         var sender = CreateSender(
-            pool, options, accumulator, (_, _, _, _, _) => { },
+            pool, options, accumulator, (_, _, _, _, _) =>
+            {
+            },
             bumpEpoch: (_, _) => new ValueTask<ProducerIdAndEpoch>(state),
             getProducerState: () => state);
 
@@ -1332,7 +1402,9 @@ public sealed class BrokerSenderEpochRecoveryTests : ScriptedProduceResponseFixt
             // unanswered (ordinary pipelining), not behind a queued retry. Wait for the retry's mute.
             responses[0].SetResult(CreateErrorResponse(Topic, 0, ErrorCode.NotLeaderOrFollower));
             while (!accumulator.IsMuted(Partition0))
+            {
                 await Task.Delay(1, cancellationToken);
+            }
             responses[1].SetResult(CreateErrorResponse(Topic, 0, ErrorCode.NotLeaderOrFollower));
             await Assert.That(async () => await expiredDelivery.WaitAsync(cancellationToken))
                 .ThrowsExactly<Dekaf.Errors.KafkaTimeoutException>();
@@ -1400,7 +1472,9 @@ public sealed class BrokerSenderEpochRecoveryTests : ScriptedProduceResponseFixt
         if (transactional)
         {
             sender = CreateSender(
-                pool, options, accumulator, (_, _, _, _, _) => { },
+                pool, options, accumulator, (_, _, _, _, _) =>
+                {
+                },
                 produceApiVersion: ProduceRequest.ImplicitTransactionPartitionEnrollmentVersion,
                 isTransactional: true,
                 usesTransactionV2: true,
@@ -1410,7 +1484,9 @@ public sealed class BrokerSenderEpochRecoveryTests : ScriptedProduceResponseFixt
         {
             accumulator.PublishProducerState(state.Value);
             sender = CreateSender(
-                pool, options, accumulator, (_, _, _, _, _) => { },
+                pool, options, accumulator, (_, _, _, _, _) =>
+                {
+                },
                 bumpEpoch: LocalBump(accumulator, bumpRequests, state),
                 getProducerState: () => state.Read(),
                 logger: behindPredecessor);
@@ -1443,7 +1519,9 @@ public sealed class BrokerSenderEpochRecoveryTests : ScriptedProduceResponseFixt
             await Assert.That(StampsOf(connection, request: 3)).IsEquivalentTo([(0, 2, 1234L, (short)5, 1)]);
             int bumps;
             lock (bumpRequests)
+            {
                 bumps = bumpRequests.Count;
+            }
             await Assert.That(bumps).IsEqualTo(0);
             await Assert.That(GetEpochBumpRequestedForEpoch(sender)).IsEqualTo(-1);
             await Assert.That(Volatile.Read(ref transactionFailures)).IsEqualTo(0);
@@ -1495,7 +1573,9 @@ public sealed class BrokerSenderEpochRecoveryTests : ScriptedProduceResponseFixt
         };
         var behindPredecessor = new EventLogger("LogOutOfOrderSequenceBehindRejectedPredecessor");
         var sender = CreateSender(
-            pool, options, accumulator, (_, _, _, _, _) => { },
+            pool, options, accumulator, (_, _, _, _, _) =>
+            {
+            },
             produceApiVersion: ProduceRequest.ImplicitTransactionPartitionEnrollmentVersion,
             isTransactional: true,
             usesTransactionV2: true,
@@ -1556,7 +1636,9 @@ public sealed class BrokerSenderEpochRecoveryTests : ScriptedProduceResponseFixt
         var bumpRequests = new List<short>();
         var deliveries = new List<Task<RecordMetadata>>();
         var sender = CreateSender(
-            pool, options, accumulator, (_, _, _, _, _) => { },
+            pool, options, accumulator, (_, _, _, _, _) =>
+            {
+            },
             bumpEpoch: LocalBump(accumulator, bumpRequests, state),
             getProducerState: () => state.Read());
 
@@ -1573,21 +1655,36 @@ public sealed class BrokerSenderEpochRecoveryTests : ScriptedProduceResponseFixt
 
             responses[1].SetResult(CreateErrorResponse(Topic, 0, ErrorCode.OutOfOrderSequenceNumber));
 
-            await WaitUntilAsync(() => { lock (bumpRequests) return bumpRequests.Count > 0; }, cancellationToken);
+            await WaitUntilAsync(
+                () =>
+                {
+                    lock (bumpRequests)
+                    {
+                        return bumpRequests.Count > 0;
+                    }
+                },
+                cancellationToken
+            );
             short firstBump;
             lock (bumpRequests)
+            {
                 firstBump = bumpRequests[0];
+            }
             await Assert.That(firstBump).IsEqualTo((short)5);
         }
         finally
         {
             // Whatever the recovery resends after the bump is answered too.
             foreach (var response in responses)
+            {
                 response.TrySetResult(CreateSuccessResponse(Topic, 0, baseOffset: 0));
+            }
             await sender.DisposeAsync();
             // The test checks only the bump; disposal can fail the recovered deliveries.
             foreach (var delivery in deliveries)
+            {
                 TaskFaultObserver.ObserveFault(delivery);
+            }
             await accumulator.DisposeAsync();
             await valueTaskSourcePool.DisposeAsync();
         }
@@ -1626,7 +1723,9 @@ public sealed class BrokerSenderEpochRecoveryTests : ScriptedProduceResponseFixt
             (_, _, _, _, exception) =>
             {
                 lock (acknowledgements)
+                {
                     acknowledgements.Add(exception);
+                }
             },
             produceApiVersion: ProduceRequest.ImplicitTransactionPartitionEnrollmentVersion,
             isTransactional: true,
@@ -1665,10 +1764,21 @@ public sealed class BrokerSenderEpochRecoveryTests : ScriptedProduceResponseFixt
             await Assert.That(first[0].RecordCount + second[0].RecordCount).IsEqualTo(8);
             await Assert.That(StampsOf(connection, request: 4)).IsEquivalentTo([(0, 2, 1234L, (short)5, 8)]);
             await Assert.That(Volatile.Read(ref transactionFailures)).IsEqualTo(0);
-            await WaitUntilAsync(() => { lock (acknowledgements) return acknowledgements.Count == 3; }, cancellationToken);
+            await WaitUntilAsync(
+                () =>
+                {
+                    lock (acknowledgements)
+                    {
+                        return acknowledgements.Count == 3;
+                    }
+                },
+                cancellationToken
+            );
             bool allSucceeded;
             lock (acknowledgements)
+            {
                 allSucceeded = acknowledgements.All(static exception => exception is null);
+            }
             await Assert.That(allSucceeded).IsTrue();
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -1709,7 +1819,9 @@ public sealed class BrokerSenderEpochRecoveryTests : ScriptedProduceResponseFixt
                 callback: null,
                 estimatedSize: PartitionBatch.EstimateRecordSize(0, value.Length, null, 0));
             if (!appended.Success)
+            {
                 throw new InvalidOperationException("Test record did not fit.");
+            }
         }
 
         var batch = builder.Complete()!;
@@ -1731,7 +1843,9 @@ public sealed class BrokerSenderEpochRecoveryTests : ScriptedProduceResponseFixt
         => (expectedEpoch, _) =>
         {
             lock (bumpRequests)
+            {
                 bumpRequests.Add(expectedEpoch);
+            }
             var bumped = new ProducerIdAndEpoch(1234, (short)(expectedEpoch + 1));
             accumulator.PublishProducerState(bumped);
             state.Write(bumped);
@@ -1758,22 +1872,22 @@ public sealed class BrokerSenderEpochRecoveryTests : ScriptedProduceResponseFixt
         int retryBackoffMs = 1,
         string? transactionalId = null,
         int batchSize = 1_048_576) => new()
-    {
-        BootstrapServers = ["localhost:9092"],
-        MaxInFlightRequestsPerConnection = maxInFlightRequestsPerConnection,
-        ConnectionsPerBroker = 1,
-        EnableAdaptiveConnections = false,
-        EnableIdempotence = true,
-        Acks = Acks.All,
-        DeliveryTimeoutMs = deliveryTimeoutMs,
-        RequestTimeoutMs = 30_000,
-        // 0 disables the backoff and with it the jitter that decides which retries are due together.
-        RetryBackoffMs = retryBackoffMs,
-        RetryBackoffMaxMs = retryBackoffMs,
-        LingerMs = 0,
-        TransactionalId = transactionalId,
-        BatchSize = batchSize
-    };
+        {
+            BootstrapServers = ["localhost:9092"],
+            MaxInFlightRequestsPerConnection = maxInFlightRequestsPerConnection,
+            ConnectionsPerBroker = 1,
+            EnableAdaptiveConnections = false,
+            EnableIdempotence = true,
+            Acks = Acks.All,
+            DeliveryTimeoutMs = deliveryTimeoutMs,
+            RequestTimeoutMs = 30_000,
+            // 0 disables the backoff and with it the jitter that decides which retries are due together.
+            RetryBackoffMs = retryBackoffMs,
+            RetryBackoffMaxMs = retryBackoffMs,
+            LingerMs = 0,
+            TransactionalId = transactionalId,
+            BatchSize = batchSize
+        };
 
     private (IConnectionPool pool, TestKafkaConnection connection) CreateMockConnection(
         Queue<TaskCompletionSource<ProduceResponse>> responseQueue)
@@ -1864,7 +1978,10 @@ public sealed class BrokerSenderEpochRecoveryTests : ScriptedProduceResponseFixt
         private ProduceResponse? _response;
         private volatile bool _inspected;
 
-        public Func<bool> ReadyWhen { get; set; } = static () => true;
+        public Func<bool> ReadyWhen
+        {
+            get; set;
+        } = static () => true;
 
         public bool Inspected => _inspected;
 
@@ -1879,13 +1996,17 @@ public sealed class BrokerSenderEpochRecoveryTests : ScriptedProduceResponseFixt
             }
 
             foreach (var (continuation, state) in continuations)
+            {
                 ThreadPool.QueueUserWorkItem(continuation, state, preferLocal: false);
+            }
         }
 
         public ValueTaskSourceStatus GetStatus(short token)
         {
             if (Volatile.Read(ref _response) is null)
+            {
                 return ValueTaskSourceStatus.Pending;
+            }
 
             _inspected = true;
             return ReadyWhen() ? ValueTaskSourceStatus.Succeeded : ValueTaskSourceStatus.Pending;
@@ -1933,7 +2054,9 @@ public sealed class BrokerSenderEpochRecoveryTests : ScriptedProduceResponseFixt
             Func<TState, Exception?, string> formatter)
         {
             if (eventId.Name == eventName)
+            {
                 _logged.TrySetResult();
+            }
         }
 
         public Task WaitAsync(CancellationToken cancellationToken) => _logged.Task.WaitAsync(cancellationToken);
@@ -1959,7 +2082,9 @@ public sealed class BrokerSenderEpochRecoveryTests : ScriptedProduceResponseFixt
             Func<TState, Exception?, string> formatter)
         {
             if (eventId.Name == "LogWaitingForInFlightCapacity")
+            {
                 Interlocked.Increment(ref _capacityWaits);
+            }
         }
 
         public Task WaitForCapacityWaitsAsync(int count, CancellationToken cancellationToken)

@@ -41,21 +41,29 @@ internal sealed class UnobservedTaskExceptionProbe : IDisposable
     private void OnUnobserved(object? sender, UnobservedTaskExceptionEventArgs e)
     {
         if (Contains(e.Exception, _target))
+        {
             Volatile.Write(ref _observed, 1);
+        }
     }
 
     private static bool Contains(Exception? exception, Exception target)
     {
         if (exception is null)
+        {
             return false;
+        }
         if (ReferenceEquals(exception, target))
+        {
             return true;
+        }
         if (exception is AggregateException aggregate)
         {
             foreach (var inner in aggregate.InnerExceptions)
             {
                 if (Contains(inner, target))
+                {
                     return true;
+                }
             }
 
             return false;

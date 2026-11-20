@@ -248,7 +248,9 @@ public sealed class ConsumeBatchSkipTests
                 CreatePendingFetch(Partition0, 10, 2));
         var snapshotActive = GetField("_snapshotOperationActive");
         if (snapshot)
+        {
             snapshotActive.SetValue(consumer, 1);
+        }
         try
         {
             // Stop after a fixed number of re-offers instead of a wall-clock window, so a
@@ -263,7 +265,9 @@ public sealed class ConsumeBatchSkipTests
                 while (await batches.MoveNextAsync())
                 {
                     if (++yields == TargetYields)
+                    {
                         cts.Cancel();
+                    }
                 }
             }
             catch (OperationCanceledException)
@@ -396,11 +400,15 @@ public sealed class ConsumeBatchSkipTests
         const int partitionCount = 64;
         var fetches = new PendingFetchData[partitionCount];
         for (var i = 0; i < partitionCount; i++)
+        {
             fetches[i] = CreatePendingFetch(new TopicPartition(Topic, i), 100L * i, 1);
+        }
         await using var consumer = CreateConsumer(fetches);
         var eofEvents = GetEofEvents(consumer);
         for (var i = 0; i < partitionCount; i++)
+        {
             eofEvents.Enqueue((new TopicPartition(Topic, i), 100L * i + 1));
+        }
         await using var batches = Open(consumer, raw);
 
         await Assert.That(await batches.MoveNextAsync()).IsTrue();
@@ -500,11 +508,15 @@ public sealed class ConsumeBatchSkipTests
         const int skipped = partitionCount / 2;
         var fetches = new PendingFetchData[partitionCount];
         for (var i = 0; i < partitionCount; i++)
+        {
             fetches[i] = CreatePendingFetch(new TopicPartition(Topic, i), 100L * i, 1);
+        }
         await using var consumer = CreateConsumer(fetches);
         var eofEvents = GetEofEvents(consumer);
         for (var i = 0; i < partitionCount; i++)
+        {
             eofEvents.Enqueue((new TopicPartition(Topic, i), 100L * i + 1));
+        }
         await using var batches = Open(consumer, raw);
 
         var dataOrder = new List<int>();
@@ -564,7 +576,9 @@ public sealed class ConsumeBatchSkipTests
     {
         var fetches = new PendingFetchData[partitionCount];
         for (var i = 0; i < partitionCount; i++)
+        {
             fetches[i] = CreatePendingFetch(new TopicPartition(Topic, i), 10, 1);
+        }
         await using var consumer = CreateConsumer(
             500, null, prefetch: true, unknownPosition: null, enablePartitionEof: true, fetches);
         GetPendingFetches(consumer).Clear();
@@ -595,7 +609,9 @@ public sealed class ConsumeBatchSkipTests
 
         // The real end after the records is reported once per partition.
         for (var i = 0; i < partitionCount; i++)
+        {
             _ = consumer.HandleEmptyFetchResponse(new TopicPartition(Topic, i), null, visibleEndOffset: 12, epoch);
+        }
         await Assert.That(eofEvents.Count).IsEqualTo(2 * partitionCount);
 
         using var cts = new CancellationTokenSource();
@@ -660,20 +676,27 @@ public sealed class ConsumeBatchSkipTests
         const int partitionCount = 48;
         var fetches = new List<PendingFetchData>();
         for (var i = 0; i < partitionCount; i++)
+        {
             fetches.Add(CreatePendingFetch(new TopicPartition(Topic, i), 100L * i, 1));
+        }
         // A second fetch per partition: skipped partitions' later fetches must be dropped too.
         for (var i = 0; i < partitionCount; i++)
+        {
             fetches.Add(CreatePendingFetch(new TopicPartition(Topic, i), 100L * i + 1, 1));
+        }
         await using var consumer = CreateConsumer(500, null, prefetch, unknownPosition: null, [.. fetches]);
         var fetchPositions = GetDictionary(consumer, "_fetchPositions");
         for (var i = 0; i < partitionCount; i++)
+        {
             fetchPositions[new TopicPartition(Topic, i)] = 100L * i + 2;
+        }
         var epochBefore = GetFetchBufferEpoch(consumer);
         using var cts = new CancellationTokenSource();
         await using var batches = Open(consumer, raw, cts.Token);
 
         // Skip every third partition's first batch; process everything else.
         static bool Skips(int partition) => partition % 3 == 0;
+
         var skippedYields = new List<int>();
         var processed = new List<long>();
         for (var i = 0; i < partitionCount / 3 + 2 * (partitionCount - partitionCount / 3); i++)
@@ -681,9 +704,13 @@ public sealed class ConsumeBatchSkipTests
             await Assert.That(await batches.MoveNextAsync()).IsTrue();
             var partition = batches.Current.Partition.Partition;
             if (Skips(partition))
+            {
                 skippedYields.Add(partition);
+            }
             else
+            {
                 processed.AddRange(batches.Current.Offsets());
+            }
         }
 
         var waiting = LeaveBatchLoop(batches);
@@ -745,7 +772,9 @@ public sealed class ConsumeBatchSkipTests
         for (var round = 0; round < 2; round++)
         {
             for (var i = 0; i < partitionCount; i++)
+            {
                 fetches.Add(CreatePendingFetch(new TopicPartition(Topic, i), 100L * i + round, 1));
+            }
         }
 
         await using var consumer = CreateConsumer([.. fetches]);
@@ -754,6 +783,7 @@ public sealed class ConsumeBatchSkipTests
         try
         {
             await using var batches = Open(consumer, raw, CancellationToken.None);
+
             static bool Holds(int partition) => partition % 2 == 0;
 
             // First pass: even partitions are skipped once (held), odd ones processed in order.
@@ -764,9 +794,13 @@ public sealed class ConsumeBatchSkipTests
                 await Assert.That(await batches.MoveNextAsync()).IsTrue();
                 var partition = batches.Current.Partition.Partition;
                 if (Holds(partition))
+                {
                     heldYields.Add(partition);
+                }
                 else
+                {
                     processed.AddRange(batches.Current.Offsets());
+                }
             }
 
             var odd = Enumerable.Range(0, partitionCount).Where(static p => !Holds(p)).ToArray();
@@ -1157,77 +1191,89 @@ public sealed class ConsumeBatchSkipTests
         {
             case EofApi.Batch:
             case EofApi.RawBatch:
-            {
-                await using var batches = Open(consumer, api == EofApi.RawBatch, cts.Token);
-                await Assert.That(await batches.MoveNextAsync()).IsTrue();
-                offsets.AddRange(batches.Current.Offsets());
-                // Only an absent EOF needs a window; an expected one is awaited without a deadline.
-                if (!expectEof)
-                    cts.CancelAfter(TimeSpan.FromMilliseconds(300));
-                try
                 {
-                    if (await batches.MoveNextAsync() && batches.Current.IsEof)
-                        eofOffset = batches.Current.EofOffset;
-                }
-                catch (OperationCanceledException)
-                {
-                }
-
-                break;
-            }
-            case EofApi.ConsumeAsync:
-            {
-                await using var records = consumer.ConsumeAsync(cts.Token).GetAsyncEnumerator(cts.Token);
-                try
-                {
-                    while (await records.MoveNextAsync())
+                    await using var batches = Open(consumer, api == EofApi.RawBatch, cts.Token);
+                    await Assert.That(await batches.MoveNextAsync()).IsTrue();
+                    offsets.AddRange(batches.Current.Offsets());
+                    // Only an absent EOF needs a window; an expected one is awaited without a deadline.
+                    if (!expectEof)
                     {
-                        if (records.Current.IsPartitionEof)
+                        cts.CancelAfter(TimeSpan.FromMilliseconds(300));
+                    }
+                    try
+                    {
+                        if (await batches.MoveNextAsync() && batches.Current.IsEof)
                         {
-                            eofOffset = records.Current.Offset;
+                            eofOffset = batches.Current.EofOffset;
+                        }
+                    }
+                    catch (OperationCanceledException)
+                    {
+                    }
+
+                    break;
+                }
+            case EofApi.ConsumeAsync:
+                {
+                    await using var records = consumer.ConsumeAsync(cts.Token).GetAsyncEnumerator(cts.Token);
+                    try
+                    {
+                        while (await records.MoveNextAsync())
+                        {
+                            if (records.Current.IsPartitionEof)
+                            {
+                                eofOffset = records.Current.Offset;
+                                break;
+                            }
+
+                            offsets.Add(records.Current.Offset);
+                            if (offsets.Count == recordCount && !expectEof)
+                            {
+                                cts.CancelAfter(TimeSpan.FromMilliseconds(300));
+                            }
+                        }
+                    }
+                    catch (OperationCanceledException)
+                    {
+                    }
+
+                    break;
+                }
+            case EofApi.ConsumeOne:
+                {
+                    while (true)
+                    {
+                        var timeout = offsets.Count < recordCount || expectEof
+                            ? Timeout.InfiniteTimeSpan
+                            : TimeSpan.FromMilliseconds(300);
+                        var result = await consumer.ConsumeOneAsync(timeout, CancellationToken.None);
+                        if (result is null)
+                        {
+                            break;
+                        }
+                        if (result.Value.IsPartitionEof)
+                        {
+                            eofOffset = result.Value.Offset;
                             break;
                         }
 
-                        offsets.Add(records.Current.Offset);
-                        if (offsets.Count == recordCount && !expectEof)
-                            cts.CancelAfter(TimeSpan.FromMilliseconds(300));
-                    }
-                }
-                catch (OperationCanceledException)
-                {
-                }
-
-                break;
-            }
-            case EofApi.ConsumeOne:
-            {
-                while (true)
-                {
-                    var timeout = offsets.Count < recordCount || expectEof
-                        ? Timeout.InfiniteTimeSpan
-                        : TimeSpan.FromMilliseconds(300);
-                    var result = await consumer.ConsumeOneAsync(timeout, CancellationToken.None);
-                    if (result is null)
-                        break;
-                    if (result.Value.IsPartitionEof)
-                    {
-                        eofOffset = result.Value.Offset;
-                        break;
+                        offsets.Add(result.Value.Offset);
                     }
 
-                    offsets.Add(result.Value.Offset);
+                    break;
                 }
-
-                break;
-            }
         }
 
         await Assert.That(offsets.SequenceEqual(Enumerable.Range(10, recordCount).Select(static o => (long)o))).IsTrue();
         await Assert.That(GetDictionary(consumer, "_positions")[Partition0]).IsEqualTo(10L + recordCount);
         if (expectEof)
+        {
             await Assert.That(eofOffset).IsEqualTo(20L);
+        }
         else
+        {
             await Assert.That(eofOffset).IsNull();
+        }
         await Assert.That(GetEofEvents(consumer)).IsEmpty();
     }
 
@@ -1264,9 +1310,18 @@ public sealed class ConsumeBatchSkipTests
         bool isEof,
         long? eofOffset)
     {
-        public TopicPartition Partition { get; } = partition;
-        public bool IsEof { get; } = isEof;
-        public long? EofOffset { get; } = eofOffset;
+        public TopicPartition Partition
+        {
+            get;
+        } = partition;
+        public bool IsEof
+        {
+            get;
+        } = isEof;
+        public long? EofOffset
+        {
+            get;
+        } = eofOffset;
         public long[] Offsets() => offsets();
         public void CreateEnumeratorOnly() => createEnumerator();
     }
@@ -1288,7 +1343,9 @@ public sealed class ConsumeBatchSkipTests
             return result;
         }
 
-        public void OnCommit(IReadOnlyList<TopicPartitionOffset> offsets) { }
+        public void OnCommit(IReadOnlyList<TopicPartitionOffset> offsets)
+        {
+        }
     }
 
     private static KafkaConsumer<string, string> CreateConsumer(params PendingFetchData[] fetches) =>
@@ -1347,12 +1404,16 @@ public sealed class ConsumeBatchSkipTests
             var start = fetch.GetBatches()[0].BaseOffset;
             fetchPositions.TryAdd(fetch.TopicPartition, start);
             if (fetch.TopicPartition != unknownPosition)
+            {
                 positions.TryAdd(fetch.TopicPartition, start);
+            }
             pendingFetches.Enqueue(fetch);
         }
         GetField("_pendingFetchDepth").SetValue(consumer, fetches.Length);
         if (prefetch)
+        {
             GetField("_prefetchTask").SetValue(consumer, Task.CompletedTask);
+        }
         return consumer;
     }
 

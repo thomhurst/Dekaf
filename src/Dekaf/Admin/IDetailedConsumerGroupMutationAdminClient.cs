@@ -25,7 +25,10 @@ public interface IDetailedConsumerGroupMutationAdminClient
 /// <summary>Deadline for a detailed consumer-group mutation, including discovery and retries.</summary>
 public sealed class ConsumerGroupMutationOptions
 {
-    public int TimeoutMs { get; init; } = 30000;
+    public int TimeoutMs
+    {
+        get; init;
+    } = 30000;
 }
 
 /// <summary>Detailed consumer-group mutations for compatible <see cref="IAdminClient"/> implementations.</summary>

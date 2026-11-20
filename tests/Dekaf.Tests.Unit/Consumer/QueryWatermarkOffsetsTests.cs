@@ -52,14 +52,22 @@ public sealed class QueryWatermarkOffsetsTests
             var currentLeaderEpoch = request.Topics[0].Partitions[0].CurrentLeaderEpoch;
 
             if (currentLeaderEpoch != 3)
+            {
                 throw new InvalidOperationException($"Unexpected CurrentLeaderEpoch {currentLeaderEpoch}");
+            }
 
             if (timestamp == EarliestOffsetTimestamp)
+            {
                 earliestStarted.TrySetResult();
+            }
             else if (timestamp == LatestOffsetTimestamp)
+            {
                 latestStarted.TrySetResult();
+            }
             else
+            {
                 throw new InvalidOperationException($"Unexpected ListOffsets timestamp {timestamp}");
+            }
 
             return new ValueTask<ListOffsetsResponse>(CreateListOffsetsResponseAsync(timestamp, releaseResponses.Task));
         };
@@ -356,7 +364,9 @@ public sealed class QueryWatermarkOffsetsTests
             if (requestNumber <= 2)
             {
                 if (requestNumber == 2)
+                {
                     oldRequestsStarted.TrySetResult();
+                }
                 await releaseOldResponses.Task.ConfigureAwait(false);
                 return CreateListOffsetsResponse(
                     request,
@@ -487,7 +497,9 @@ public sealed class QueryWatermarkOffsetsTests
         connection.BeforeWriteHandler = async request =>
         {
             if (Interlocked.CompareExchange(ref delayedRequest, request, null) is not null)
+            {
                 return;
+            }
 
             firstWriteReached.SetResult();
             await releaseFirstWrite.Task.ConfigureAwait(false);
@@ -543,7 +555,9 @@ public sealed class QueryWatermarkOffsetsTests
         connection.SendHandler = async request =>
         {
             if (Interlocked.Increment(ref requestCount) == 1)
+            {
                 requestsStarted.TrySetResult();
+            }
             await releaseResponses.Task.ConfigureAwait(false);
             return CreateListOffsetsResponse(request);
         };
@@ -659,7 +673,9 @@ public sealed class QueryWatermarkOffsetsTests
         {
             var timestamp = request.Topics[0].Partitions[0].Timestamp;
             if (timestamp is EarliestOffsetTimestamp or LatestOffsetTimestamp)
+            {
                 return CreateListOffsetsResponse(request);
+            }
 
             resetStarted.TrySetResult();
             await releaseReset.Task.ConfigureAwait(false);
@@ -720,7 +736,9 @@ public sealed class QueryWatermarkOffsetsTests
         connection.SendHandler = async request =>
         {
             if (Interlocked.Increment(ref requestCount) == 2)
+            {
                 requestsStarted.TrySetResult();
+            }
             await releaseResponses.Task.ConfigureAwait(false);
             return CreateListOffsetsResponse(request);
         };
@@ -775,7 +793,9 @@ public sealed class QueryWatermarkOffsetsTests
         connection.SendHandler = async request =>
         {
             if (Interlocked.Increment(ref requestCount) == 2)
+            {
                 requestsStarted.TrySetResult();
+            }
             await releaseResponses.Task.ConfigureAwait(false);
             return CreateListOffsetsResponse(request);
         };
@@ -905,7 +925,9 @@ public sealed class QueryWatermarkOffsetsTests
             .Returns(_ =>
             {
                 if (Interlocked.Increment(ref leaseRequestCount) != 1)
+                {
                     return ValueTask.FromResult(connection);
+                }
 
                 firstLeaseRequested.SetResult();
                 return new ValueTask<IKafkaConnection>(releaseFirstLease.Task);
@@ -981,7 +1003,9 @@ public sealed class QueryWatermarkOffsetsTests
             ?? throw new InvalidOperationException("HandleTopicIdentityChangesAsync method not found.");
         var result = method.Invoke(consumer, [CancellationToken.None, null, Guid.Empty]);
         if (result is not ValueTask valueTask)
+        {
             throw new InvalidOperationException("HandleTopicIdentityChangesAsync returned unexpected type.");
+        }
 
         await valueTask.ConfigureAwait(false);
     }
@@ -995,8 +1019,14 @@ public sealed class QueryWatermarkOffsetsTests
         private int _leaseAcquisitionCount;
         private int _sendCount;
 
-        public Func<ListOffsetsRequest, ValueTask>? BeforeWriteHandler { get; set; }
-        public Func<ListOffsetsRequest, ValueTask<ListOffsetsResponse>>? SendHandler { get; set; }
+        public Func<ListOffsetsRequest, ValueTask>? BeforeWriteHandler
+        {
+            get; set;
+        }
+        public Func<ListOffsetsRequest, ValueTask<ListOffsetsResponse>>? SendHandler
+        {
+            get; set;
+        }
         public int BrokerId => 0;
         public string Host => "localhost";
         public int Port => 9092;
@@ -1014,8 +1044,12 @@ public sealed class QueryWatermarkOffsetsTests
         }
 
         public void ReleaseLease() => Interlocked.Decrement(ref _leaseCount);
-        public void BeginRetirement() { }
-        public void CompleteRetirement() { }
+        public void BeginRetirement()
+        {
+        }
+        public void CompleteRetirement()
+        {
+        }
         public ValueTask ConnectAsync(CancellationToken cancellationToken = default) => ValueTask.CompletedTask;
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
 
@@ -1034,7 +1068,9 @@ public sealed class QueryWatermarkOffsetsTests
             }
 
             if (BeforeWriteHandler is not null)
+            {
                 await BeforeWriteHandler(listOffsetsRequest);
+            }
 
             return await SendCoreAsync<TResponse>(listOffsetsRequest);
         }
@@ -1055,7 +1091,9 @@ public sealed class QueryWatermarkOffsetsTests
             }
 
             if (BeforeWriteHandler is not null)
+            {
                 await BeforeWriteHandler(listOffsetsRequest);
+            }
 
             requestWriteStarted();
             return await SendCoreAsync<TResponse>(listOffsetsRequest);

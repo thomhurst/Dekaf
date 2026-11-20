@@ -14,12 +14,18 @@ public sealed class DeleteRecordsResponse : IKafkaResponse
     /// The duration in milliseconds for which the request was throttled due to quota violation
     /// (zero if not throttled).
     /// </summary>
-    public int ThrottleTimeMs { get; init; }
+    public int ThrottleTimeMs
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Results for each topic.
     /// </summary>
-    public required IReadOnlyList<DeleteRecordsResponseTopic> Topics { get; init; }
+    public required IReadOnlyList<DeleteRecordsResponseTopic> Topics
+    {
+        get; init;
+    }
 
     public static IKafkaResponse Read(ref KafkaProtocolReader reader, short version)
     {
@@ -49,12 +55,18 @@ public sealed class DeleteRecordsResponseTopic
     /// <summary>
     /// The topic name.
     /// </summary>
-    public required string Name { get; init; }
+    public required string Name
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Results for each partition.
     /// </summary>
-    public required IReadOnlyList<DeleteRecordsResponsePartition> Partitions { get; init; }
+    public required IReadOnlyList<DeleteRecordsResponsePartition> Partitions
+    {
+        get; init;
+    }
 
     public static DeleteRecordsResponseTopic Read(ref KafkaProtocolReader reader, short version)
     {
@@ -84,17 +96,26 @@ public sealed class DeleteRecordsResponsePartition
     /// <summary>
     /// The partition index.
     /// </summary>
-    public required int PartitionIndex { get; init; }
+    public required int PartitionIndex
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The partition low watermark after the delete.
     /// </summary>
-    public long LowWatermark { get; init; }
+    public long LowWatermark
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The error code, or 0 if there was no error.
     /// </summary>
-    public ErrorCode ErrorCode { get; init; }
+    public ErrorCode ErrorCode
+    {
+        get; init;
+    }
 
     public static DeleteRecordsResponsePartition Read(ref KafkaProtocolReader reader, short version)
     {

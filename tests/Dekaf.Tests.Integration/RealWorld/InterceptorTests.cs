@@ -155,7 +155,10 @@ public sealed class InterceptorTests(KafkaTestContainer kafka) : KafkaIntegratio
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))
         {
             messages.Add(msg);
-            if (messages.Count >= 5) break;
+            if (messages.Count >= 5)
+            {
+                break;
+            }
         }
 
         await Assert.That(interceptor.ConsumeCount).IsEqualTo(5);
@@ -199,7 +202,10 @@ public sealed class InterceptorTests(KafkaTestContainer kafka) : KafkaIntegratio
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))
         {
             count++;
-            if (count >= 3) break;
+            if (count >= 3)
+            {
+                break;
+            }
         }
 
         await consumer.CommitAsync();
@@ -258,7 +264,10 @@ public sealed class InterceptorTests(KafkaTestContainer kafka) : KafkaIntegratio
     {
         private int _sendCount;
         public int SendCount => _sendCount;
-        public string? LastTraceId { get; private set; }
+        public string? LastTraceId
+        {
+            get; private set;
+        }
 
         public ProducerMessage<string, string> OnSend(ProducerMessage<string, string> message)
         {
@@ -273,7 +282,9 @@ public sealed class InterceptorTests(KafkaTestContainer kafka) : KafkaIntegratio
             return message with { Headers = headers };
         }
 
-        public void OnAcknowledgement(RecordMetadata metadata, Exception? exception) { }
+        public void OnAcknowledgement(RecordMetadata metadata, Exception? exception)
+        {
+        }
     }
 
     private sealed class DeliveryTrackingInterceptor : IProducerInterceptor<string, string>
@@ -295,9 +306,13 @@ public sealed class InterceptorTests(KafkaTestContainer kafka) : KafkaIntegratio
         public void OnAcknowledgement(RecordMetadata metadata, Exception? exception)
         {
             if (exception is null)
+            {
                 Interlocked.Increment(ref _successCount);
+            }
             else
+            {
                 Interlocked.Increment(ref _errorCount);
+            }
         }
     }
 
@@ -311,7 +326,9 @@ public sealed class InterceptorTests(KafkaTestContainer kafka) : KafkaIntegratio
             return message with { Headers = headers };
         }
 
-        public void OnAcknowledgement(RecordMetadata metadata, Exception? exception) { }
+        public void OnAcknowledgement(RecordMetadata metadata, Exception? exception)
+        {
+        }
     }
 
     private sealed class MessageCountingConsumerInterceptor : IConsumerInterceptor<string, string>
@@ -329,7 +346,9 @@ public sealed class InterceptorTests(KafkaTestContainer kafka) : KafkaIntegratio
             return result;
         }
 
-        public void OnCommit(IReadOnlyList<TopicPartitionOffset> offsets) { }
+        public void OnCommit(IReadOnlyList<TopicPartitionOffset> offsets)
+        {
+        }
     }
 
     private sealed class CommitTrackingConsumerInterceptor : IConsumerInterceptor<string, string>
@@ -369,6 +388,8 @@ public sealed class InterceptorTests(KafkaTestContainer kafka) : KafkaIntegratio
             return result;
         }
 
-        public void OnCommit(IReadOnlyList<TopicPartitionOffset> offsets) { }
+        public void OnCommit(IReadOnlyList<TopicPartitionOffset> offsets)
+        {
+        }
     }
 }

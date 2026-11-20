@@ -61,7 +61,10 @@ public class ConsumeOneBufferedFastPathBenchmarks
     }
 
     [Params(100, 1000)]
-    public int MessageSize { get; set; }
+    public int MessageSize
+    {
+        get; set;
+    }
 
     private Record[][] _batchRecords = null!;
     private KafkaConsumer<ReadOnlyMemory<byte>, ReadOnlyMemory<byte>> _groupedConsumer = null!;

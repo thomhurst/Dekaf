@@ -34,7 +34,9 @@ public sealed class PartitionedNullKeyTests
     private static async Task VerifyAsync<TKey>(IDeserializer<TKey> deserializer)
     {
         var lane = new PartitionLane<TKey, string>(new TopicPartition("topic", 0), 8,
-            static (_, _) => ValueTask.CompletedTask, static _ => { }, static (_, error) => throw error);
+            static (_, _) => ValueTask.CompletedTask, static _ =>
+            {
+            }, static (_, error) => throw error);
         var context = new PartitionProcessorContext<TKey, string>(lane);
         var firstStarted = NewSignal();
         var releaseFirst = NewSignal();
@@ -75,7 +77,10 @@ public sealed class PartitionedNullKeyTests
         {
             releaseFirst.TrySetResult();
             await timeout.CancelAsync();
-            try { await running; }
+            try
+            {
+                await running;
+            }
             catch (OperationCanceledException) when (timeout.IsCancellationRequested)
             {
                 await Assert.That(running.IsCanceled).IsTrue();

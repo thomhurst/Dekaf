@@ -110,12 +110,16 @@ public sealed class ProducerMemoryLeakGateTests
         try
         {
             for (var cycle = 0; cycle < WarmupCycles; cycle++)
+            {
                 await RunProduceDrainCycleAsync(accumulator, completionPool, cancellationToken);
+            }
 
             var baseline = LeakGateHarness.GetStableHeapBytes();
 
             for (var cycle = 0; cycle < MeasuredCycles; cycle++)
+            {
                 await RunProduceDrainCycleAsync(accumulator, completionPool, cancellationToken);
+            }
 
             var retainedGrowth = LeakGateHarness.GetStableHeapBytes() - baseline;
 
@@ -174,7 +178,9 @@ public sealed class ProducerMemoryLeakGateTests
             }
 
             if (!accepted)
+            {
                 throw new InvalidOperationException($"Append {i} rejected — accumulator disposed?");
+            }
         }
 
         // Flush seals every current batch; drain inline as the simulated sender.
@@ -184,13 +190,17 @@ public sealed class ProducerMemoryLeakGateTests
         {
             cancellationToken.ThrowIfCancellationRequested();
             if (!LeakGateHarness.TryDrainAndRetireOne(accumulator, counters, failEveryNthBatch: 0))
+            {
                 await accumulator.WaitForWakeupAsync(10);
+            }
         }
 
         await flushTask.WaitAsync(cancellationToken);
 
         foreach (var task in completionTasks)
+        {
             _ = await task.WaitAsync(cancellationToken);
+        }
 
         return counters;
     }

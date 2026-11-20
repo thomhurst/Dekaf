@@ -96,7 +96,9 @@ public sealed class ReadyBatchDeliveryMetricsTests
             onLong: (_, _, tags, _) =>
             {
                 if (AccumulatorTestHelpers.GetTag(tags, DekafDiagnostics.MessagingDestinationName) == topic)
+                {
                     throw new InvalidOperationException("exporter blew up");
+                }
             });
 
         await using var pool = new ValueTaskSourcePool<RecordMetadata>();
@@ -124,14 +126,20 @@ public sealed class ReadyBatchDeliveryMetricsTests
             onLong: (instrument, measurement, tags, _) =>
             {
                 if (AccumulatorTestHelpers.GetTag(tags, DekafDiagnostics.MessagingDestinationName) != topic)
+                {
                     return;
+                }
 
                 onMeasurement?.Invoke();
 
                 if (instrument.Name == "messaging.client.sent.messages")
+                {
                     counters.Messages += measurement;
+                }
                 else
+                {
                     counters.Bytes += measurement;
+                }
             });
 
         return (listener, counters);

@@ -81,12 +81,16 @@ internal sealed class PrefetchFailureTracker
     private static bool PositionsEqual(PrefetchPosition[] left, PrefetchPosition[] right)
     {
         if (left.Length != right.Length)
+        {
             return false;
+        }
 
         for (var i = 0; i < left.Length; i++)
         {
             if (left[i] != right[i])
+            {
                 return false;
+            }
         }
 
         return true;

@@ -469,15 +469,15 @@ public sealed class AdminClientStreamsGroupTests
         sbyte topologyDescriptionStatus,
         StreamsTopologyDescriptionData? topologyDescription,
         string? assignorName = null) => new()
-    {
-        ErrorCode = ErrorCode.None,
-        GroupId = groupId,
-        GroupState = "Stable",
-        Members = [],
-        TopologyDescription = topologyDescription,
-        TopologyDescriptionStatus = topologyDescriptionStatus,
-        AssignorName = assignorName
-    };
+        {
+            ErrorCode = ErrorCode.None,
+            GroupId = groupId,
+            GroupState = "Stable",
+            Members = [],
+            TopologyDescription = topologyDescription,
+            TopologyDescriptionStatus = topologyDescriptionStatus,
+            AssignorName = assignorName
+        };
 
     // Encodes and decodes at the negotiated version, so a v0 exchange drops the v1-only fields.
     private static StreamsGroupDescribeResponse RoundTrip(StreamsGroupDescribeResponse response, short version)
@@ -496,14 +496,14 @@ public sealed class AdminClientStreamsGroupTests
         string? sinkTopic = null,
         IReadOnlyList<string>? stores = null,
         IReadOnlyList<string>? successors = null) => new()
-    {
-        Name = name,
-        NodeType = nodeType,
-        SourceTopics = sourceTopics ?? [],
-        SinkTopic = sinkTopic,
-        Stores = stores ?? [],
-        Successors = successors ?? []
-    };
+        {
+            Name = name,
+            NodeType = nodeType,
+            SourceTopics = sourceTopics ?? [],
+            SinkTopic = sinkTopic,
+            Stores = stores ?? [],
+            Successors = successors ?? []
+        };
 
     private static ListGroupsResponseGroup Group(string groupId, string groupType, string state) => new()
     {

@@ -121,9 +121,15 @@ public sealed class ConsumerLastFetchedEpochTests
         {
         }
 
-        public List<(long FetchOffset, int LastFetchedEpoch)> Requests { get; } = [];
+        public List<(long FetchOffset, int LastFetchedEpoch)> Requests
+        {
+            get;
+        } = [];
 
-        public int DivergingResponses { get; private set; }
+        public int DivergingResponses
+        {
+            get; private set;
+        }
 
         public void ReplaceLog(params (int Epoch, long EndOffset)[] log) => _log = log;
 
@@ -163,7 +169,9 @@ public sealed class ConsumerLastFetchedEpochTests
             foreach (var segment in _log)
             {
                 if (segment.Epoch > lastFetchedEpoch)
+                {
                     break;
+                }
                 epoch = segment.Epoch;
                 endOffset = segment.EndOffset;
             }
@@ -183,7 +191,9 @@ public sealed class ConsumerLastFetchedEpochTests
                 {
                     var records = new Record[segment.EndOffset - first];
                     for (var i = 0; i < records.Length; i++)
+                    {
                         records[i] = new Record { OffsetDelta = i, Value = "value"u8.ToArray() };
+                    }
 
                     (batches ??= []).Add(new RecordBatch
                     {
@@ -211,7 +221,10 @@ public sealed class ConsumerLastFetchedEpochTests
             _metadataManager = metadataManager;
         }
 
-        public KafkaConsumer<string, string> Consumer { get; }
+        public KafkaConsumer<string, string> Consumer
+        {
+            get;
+        }
 
         public static Task<Harness> CreateAsync(EpochAwareBroker broker, AutoOffsetReset autoOffsetReset)
         {

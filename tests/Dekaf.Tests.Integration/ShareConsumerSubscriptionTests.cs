@@ -33,10 +33,15 @@ public sealed class ShareConsumerSubscriptionTests(KafkaTestContainer kafka) : K
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithLinger(TimeSpan.FromMinutes(1)).BuildAsync();
         for (var index = 0; index < 128; index++)
+        {
             await producer.FireAsync(new ProducerMessage<int, byte[]>
             {
-                Topic = topic, Partition = index % 2, Key = index, Value = [(byte)index]
+                Topic = topic,
+                Partition = index % 2,
+                Key = index,
+                Value = [(byte)index]
             });
+        }
         await producer.FlushAsync(timeout.Token);
         await using var consumer = await Kafka.CreateShareConsumer<int, ReadOnlyMemory<byte>>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers).WithGroupId(group)
@@ -59,7 +64,10 @@ public sealed class ShareConsumerSubscriptionTests(KafkaTestContainer kafka) : K
             await Assert.That(record.Value.Span[0]).IsEqualTo((byte)record.Key);
             await Assert.That(() => consumer.Acknowledge(first, AcknowledgeType.Renew)).Throws<InvalidOperationException>();
             consumer.Acknowledge(record);
-            if (received.Count == 128) break;
+            if (received.Count == 128)
+            {
+                break;
+            }
         }
         await Assert.That(received.Count).IsEqualTo(128);
         await consumer.CommitAsync(timeout.Token);
@@ -100,7 +108,9 @@ public sealed class ShareConsumerSubscriptionTests(KafkaTestContainer kafka) : K
                 await Assert.That(await batches.MoveNextAsync()).IsTrue();
                 await Assert.That(batches.Current.TopicPartition.Topic).IsEqualTo(topic);
                 foreach (var record in batches.Current)
+                {
                     batches.Current.Acknowledge(record);
+                }
             }
             else
             {
@@ -154,7 +164,9 @@ public sealed class ShareConsumerSubscriptionTests(KafkaTestContainer kafka) : K
         {
             consumer.Acknowledge(record);
             if (++received == 3)
+            {
                 break;
+            }
         }
 
         await Assert.That(received).IsEqualTo(3);
@@ -193,7 +205,9 @@ public sealed class ShareConsumerSubscriptionTests(KafkaTestContainer kafka) : K
 
         // Join before the topic exists so its assignment arrives on a later heartbeat.
         while (!await HasMemberAsync())
+        {
             await Task.Delay(100, timeout.Token);
+        }
 
         await KafkaContainer.CreateTopicAsync(topic);
         await using var producer = await Kafka.CreateProducer<string, string>()
@@ -225,7 +239,9 @@ public sealed class ShareConsumerSubscriptionTests(KafkaTestContainer kafka) : K
             {
                 received.Add(record.Value);
                 if (received.Count == 5)
+                {
                     return;
+                }
             }
         }
     }
@@ -257,7 +273,9 @@ public sealed class ShareConsumerSubscriptionTests(KafkaTestContainer kafka) : K
         // Idle through several join deadlines; a join timeout would complete the poll.
         var idle = Task.Delay(TimeSpan.FromMilliseconds(joinDeadlineMs * 3), timeout.Token);
         if (await Task.WhenAny(poll, idle) == poll)
+        {
             await poll;
+        }
 
         var status = ((IKafkaClientStatusProvider)consumer).GetStatus().ConsumerGroup!;
         await Assert.That(status.State).IsEqualTo(CoordinatorState.Stable);
@@ -279,7 +297,9 @@ public sealed class ShareConsumerSubscriptionTests(KafkaTestContainer kafka) : K
             {
                 received.Add(record.Value);
                 if (received.Count == 5)
+                {
                     return;
+                }
             }
         }
     }

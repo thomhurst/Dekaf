@@ -64,14 +64,22 @@ public sealed class ConsumerBatchedOffsetResetTests(KafkaTestContainer kafka) : 
             .WithOffsetCommitMode(OffsetCommitMode.Manual)
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory());
         if (byDuration)
+        {
             builder.WithAutoOffsetResetByDuration(TimeSpan.FromHours(1));
+        }
         else
+        {
             builder.WithAutoOffsetReset(AutoOffsetReset.Earliest);
+        }
         await using var consumer = await builder.BuildAsync(cancellation.Token);
         if (manualAssignment)
+        {
             consumer.Assign(partitions);
+        }
         else
+        {
             consumer.Subscribe(topic);
+        }
 
         await AssertEveryPartitionAsync();
         consumer.SeekToBeginning(partitions);

@@ -5,13 +5,25 @@ namespace Dekaf.Protocol.Messages;
 /// </summary>
 public sealed class NodeEndpoint
 {
-    public int NodeId { get; init; }
+    public int NodeId
+    {
+        get; init;
+    }
 
-    public required string Host { get; init; }
+    public required string Host
+    {
+        get; init;
+    }
 
-    public int Port { get; init; }
+    public int Port
+    {
+        get; init;
+    }
 
-    public string? Rack { get; init; }
+    public string? Rack
+    {
+        get; init;
+    }
 
     public static NodeEndpoint Read(ref KafkaProtocolReader reader)
     {
@@ -84,7 +96,9 @@ internal static class LeaderDiscoveryFields
         for (var i = 0; i < nodeEndpoints.Count; i++)
         {
             if (nodeEndpoints[i].NodeId == nodeId)
+            {
                 return nodeEndpoints[i];
+            }
         }
 
         return null;

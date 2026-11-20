@@ -147,13 +147,19 @@ public class MpscFetchBufferTests
         buffer = new MpscFetchBuffer(2, afterProducerWaiterCountIncrementedForTesting: () =>
         {
             if (Interlocked.Increment(ref callbackCount) != 1)
+            {
                 return;
+            }
 
             if (!buffer!.TryRead(out readFirst))
+            {
                 throw new InvalidOperationException("Expected first read to free a slot.");
+            }
 
             if (!buffer.TryRead(out readSecond))
+            {
                 throw new InvalidOperationException("Expected second read to free a slot.");
+            }
         });
 
         var first = CreateDummy("topic", 0);
@@ -456,7 +462,9 @@ public class MpscFetchBufferTests
             try
             {
                 if (timeoutThread is not null)
+                {
                     await timeoutThreadFinished.Task.WaitAsync(TimeSpan.FromSeconds(5));
+                }
             }
             finally
             {
@@ -594,7 +602,9 @@ public class MpscFetchBufferTests
         }
 
         if (failure is not null)
+        {
             ExceptionDispatchInfo.Capture(failure).Throw();
+        }
     }
 
     [Test]
@@ -1036,9 +1046,13 @@ public class MpscFetchBufferTests
             }
 
             if (firstWriteFailure is not null)
+            {
                 ExceptionDispatchInfo.Capture(firstWriteFailure).Throw();
+            }
             if (secondWriteFailure is not null)
+            {
                 ExceptionDispatchInfo.Capture(secondWriteFailure).Throw();
+            }
 
             await Assert.That(firstWritten).IsTrue();
             // firstWrite completion proves slot 0 was published and its reader wake was queued.

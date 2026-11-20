@@ -21,7 +21,9 @@ public sealed class TransactionListingIntegrationTests(KafkaTestContainer kafka)
         await using var transaction = producer.BeginTransaction();
         await transaction.ProduceAsync(new ProducerMessage<string, string>
         {
-            Topic = topic, Key = "key", Value = "value"
+            Topic = topic,
+            Key = "key",
+            Value = "value"
         }, cancellationToken);
         await using var admin = KafkaContainer.CreateAdminClient();
         var ongoing = await admin.ListTransactionsAsync(new ListTransactionsOptions
@@ -39,13 +41,15 @@ public sealed class TransactionListingIntegrationTests(KafkaTestContainer kafka)
         {
             var result = await admin.ListTransactionsAsync(new ListTransactionsOptions
             {
-                ProducerIdFilters = [listed.ProducerId], StateFilters = ["CompleteCommit"]
+                ProducerIdFilters = [listed.ProducerId],
+                StateFilters = ["CompleteCommit"]
             }, cancellationToken);
             return result.Transactions.Any(item => item.TransactionalId == transactionId);
         }, static ready => ready, description: "committed transaction appears in ListTransactions");
         var remaining = await admin.ListTransactionsAsync(new ListTransactionsOptions
         {
-            ProducerIdFilters = [listed.ProducerId], StateFilters = ["Ongoing"]
+            ProducerIdFilters = [listed.ProducerId],
+            StateFilters = ["Ongoing"]
         }, cancellationToken);
         await Assert.That(remaining.Transactions).IsEmpty();
     }

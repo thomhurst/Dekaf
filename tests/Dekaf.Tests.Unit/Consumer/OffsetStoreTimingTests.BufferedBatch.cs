@@ -17,8 +17,12 @@ public sealed partial class OffsetStoreTimingTests
                 await Assert.That(batch.Count).IsEqualTo(6);
                 // Failing after processing part of the application batch proves none of it.
                 foreach (var record in batch)
+                {
                     if (record.Partition == 1)
+                    {
                         throw new InvalidOperationException("batch processing failed");
+                    }
+                }
             }
         }).Throws<InvalidOperationException>();
 
@@ -51,8 +55,12 @@ public sealed partial class OffsetStoreTimingTests
         await Assert.That(async () =>
         {
             await foreach (var batch in consumer.ConsumeAsync().Batch(3))
+            {
                 if (++batchCount == 2)
+                {
                     throw new InvalidOperationException("second batch failed");
+                }
+            }
         }).Throws<InvalidOperationException>();
         await Assert.That(GetDirtyStoredOffsets(consumer)[new TopicPartition(Topic, 0)]).IsEqualTo(3L);
     }
@@ -92,7 +100,9 @@ public sealed partial class OffsetStoreTimingTests
     {
         await using var consumer = CreateBufferedBatchConsumer(BufferedFetch(0, 0, 2), BufferedFetch(1, 0, 2));
         await foreach (var batch in consumer.ConsumeAsync().Batch(4))
+        {
             break;
+        }
 
         consumer.StageExplicitCommitOffsetsForTesting();
         await Assert.That(GetDirtyStoredOffsets(consumer)[new TopicPartition(Topic, 0)]).IsEqualTo(2L);
@@ -138,7 +148,9 @@ public sealed partial class OffsetStoreTimingTests
             .Batch(4, sourceCancellation ? default : cancellation.Token);
         await Assert.That(async () =>
         {
-            await foreach (var _ in stream) { }
+            await foreach (var _ in stream)
+            {
+            }
         }).Throws<OperationCanceledException>();
         await Assert.That(GetDirtyStoredOffsets(consumer)).IsEmpty();
     }
@@ -148,8 +160,10 @@ public sealed partial class OffsetStoreTimingTests
     {
         await using var consumer = new KafkaConsumer<string, string>(new ConsumerOptions
         {
-            BootstrapServers = ["localhost:9092"], OffsetCommitMode = OffsetCommitMode.Auto,
-            QueuedMinMessages = 1, RecordFilter = new RejectOddOffsets()
+            BootstrapServers = ["localhost:9092"],
+            OffsetCommitMode = OffsetCommitMode.Auto,
+            QueuedMinMessages = 1,
+            RecordFilter = new RejectOddOffsets()
         }, Dekaf.Serialization.Serializers.String, Dekaf.Serialization.Serializers.String);
         SetInitialized(consumer);
         InjectPendingFetch(consumer, BufferedFetch(0, 0, 6));
@@ -195,7 +209,9 @@ public sealed partial class OffsetStoreTimingTests
     {
         await using var consumer = CreateBufferedBatchConsumer(BufferedFetch(0, 0, 2), BufferedFetch(1, 0, 8));
         await foreach (var _ in consumer.ConsumeAsync().Batch(3))
+        {
             break;
+        }
         await Assert.That(GetDirtyStoredOffsets(consumer)).IsEmpty();
 
         if (nextBatchStream)
@@ -226,19 +242,27 @@ public sealed partial class OffsetStoreTimingTests
     {
         await using var consumer = CreateBufferedBatchConsumer(BufferedFetch(0, 0, 2), BufferedFetch(0, 2, 6));
         await foreach (var _ in consumer.ConsumeAsync().Batch(3))
+        {
             break;
+        }
 
         using var cancellation = new CancellationTokenSource();
         if (nextBatchStream)
         {
             await foreach (var _ in consumer.ConsumeAsync(cancellation.Token).Batch(5))
+            {
                 cancellation.Cancel();
+            }
         }
         else
         {
             await foreach (var record in consumer.ConsumeAsync(cancellation.Token))
+            {
                 if (record.Offset == 7)
+                {
                     cancellation.Cancel();
+                }
+            }
         }
 
         await Assert.That(GetDirtyStoredOffsets(consumer)[new TopicPartition(Topic, 0)]).IsEqualTo(8L);
@@ -255,8 +279,10 @@ public sealed partial class OffsetStoreTimingTests
         var filter = new RejectAfterOffset(unfinishedBatch ? 0 : -1) { Cancellation = cancellation };
         await using var consumer = new KafkaConsumer<string, string>(new ConsumerOptions
         {
-            BootstrapServers = ["localhost:9092"], OffsetCommitMode = OffsetCommitMode.Auto,
-            QueuedMinMessages = 1, RecordFilter = filter
+            BootstrapServers = ["localhost:9092"],
+            OffsetCommitMode = OffsetCommitMode.Auto,
+            QueuedMinMessages = 1,
+            RecordFilter = filter
         }, Dekaf.Serialization.Serializers.String, Dekaf.Serialization.Serializers.String);
         SetInitialized(consumer);
         consumer.Assign(new TopicPartition(Topic, 0));
@@ -269,23 +295,34 @@ public sealed partial class OffsetStoreTimingTests
 
         await Assert.That(async () =>
         {
-            await foreach (var _ in consumer.ConsumeAsync(cancellation.Token).Batch(8)) { }
+            await foreach (var _ in consumer.ConsumeAsync(cancellation.Token).Batch(8))
+            {
+            }
         }).Throws<OperationCanceledException>();
 
         var offsets = GetDirtyStoredOffsets(consumer);
         if (unfinishedBatch)
+        {
             await Assert.That(offsets).IsEmpty();
+        }
         else
+        {
             await Assert.That(offsets[new TopicPartition(Topic, 0)]).IsEqualTo(4L);
+        }
     }
 
     private sealed class RejectAfterOffset(long acceptedOffset) : IConsumerRecordFilter
     {
-        public CancellationTokenSource? Cancellation { get; set; }
+        public CancellationTokenSource? Cancellation
+        {
+            get; set;
+        }
         public bool ShouldDeserialize(in ConsumerRecordFilterContext record)
         {
             if (record.Offset == 4)
+            {
                 Cancellation?.Cancel();
+            }
             return record.Offset == acceptedOffset;
         }
     }
@@ -313,7 +350,9 @@ public sealed partial class OffsetStoreTimingTests
     {
         var records = new Dekaf.Protocol.Records.Record[count];
         for (var i = 0; i < count; i++)
+        {
             records[i] = CreateRecord(i, "key", "value");
+        }
         var batch = CreateBatch(offset, records);
         batch.LastOffsetDelta = lastOffsetDelta ?? count - 1;
         return PendingFetchData.Create(Topic, partition, [batch]);

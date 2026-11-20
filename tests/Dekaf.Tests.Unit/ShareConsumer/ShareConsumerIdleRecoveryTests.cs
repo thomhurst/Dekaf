@@ -31,18 +31,26 @@ public sealed partial class ShareConsumerRenewalTests
             Brokers = [new BrokerMetadata { NodeId = 1, Host = "localhost", Port = 9092 }],
             Topics = [new TopicMetadata
             {
-                ErrorCode = ErrorCode.None, Name = "topic", TopicId = TopicId,
+                ErrorCode = ErrorCode.None,
+                Name = "topic",
+                TopicId = TopicId,
                 Partitions =
                 [
                     new PartitionMetadata
                     {
-                        ErrorCode = ErrorCode.None, PartitionIndex = 0, LeaderId = -1,
-                        ReplicaNodes = [1], IsrNodes = [1]
+                        ErrorCode = ErrorCode.None,
+                        PartitionIndex = 0,
+                        LeaderId = -1,
+                        ReplicaNodes = [1],
+                        IsrNodes = [1]
                     },
                     new PartitionMetadata
                     {
-                        ErrorCode = ErrorCode.None, PartitionIndex = 1, LeaderId = 1,
-                        ReplicaNodes = [1], IsrNodes = [1]
+                        ErrorCode = ErrorCode.None,
+                        PartitionIndex = 1,
+                        LeaderId = 1,
+                        ReplicaNodes = [1],
+                        IsrNodes = [1]
                     }
                 ]
             }]
@@ -57,13 +65,17 @@ public sealed partial class ShareConsumerRenewalTests
             OnSend = () => requested.TrySetResult(),
             MetadataHandler = delayedMetadata ? async token =>
             {
-                try { return await release.Task.WaitAsync(token); }
+                try
+                {
+                    return await release.Task.WaitAsync(token);
+                }
                 catch (OperationCanceledException)
                 {
                     stopped.TrySetResult();
                     throw;
                 }
-            } : null
+            }
+            : null
         };
         await using var fixture = CreateFixture(connection, retryBackoffMs: 60_000);
         fixture.MetadataManager.Metadata.Update(missing);
@@ -79,9 +91,15 @@ public sealed partial class ShareConsumerRenewalTests
             await Assert.That(pending.IsCompleted).IsFalse();
             switch (action)
             {
-                case "unsubscribe": fixture.Consumer.Unsubscribe(); break;
-                case "close": await fixture.Consumer.CloseAsync(); break;
-                case "dispose": await fixture.Consumer.DisposeAsync(); break;
+                case "unsubscribe":
+                    fixture.Consumer.Unsubscribe();
+                    break;
+                case "close":
+                    await fixture.Consumer.CloseAsync();
+                    break;
+                case "dispose":
+                    await fixture.Consumer.DisposeAsync();
+                    break;
                 case "reassign":
                     typeof(ShareConsumerCoordinator)
                         .GetMethod("ProcessShareGroupAssignment", BindingFlags.Instance | BindingFlags.NonPublic)!
@@ -90,22 +108,34 @@ public sealed partial class ShareConsumerRenewalTests
                             TopicPartitions = [new ShareGroupHeartbeatTopicPartitions { TopicId = TopicId, Partitions = [1] }]
                         }]);
                     break;
-                default: throw new ArgumentOutOfRangeException(nameof(action));
+                default:
+                    throw new ArgumentOutOfRangeException(nameof(action));
             }
             await Assert.That(await pending.WaitAsync(TimeSpan.FromSeconds(3))).IsEqualTo(action == "reassign");
             if (delayedMetadata)
+            {
                 await Assert.That(stopped.Task.IsCompletedSuccessfully).IsTrue();
+            }
             if (action == "reassign")
             {
-                if (batch) await Assert.That(batches.Current.Count).IsEqualTo(1);
-                else await Assert.That(records.Current.Offset).IsEqualTo(43L);
+                if (batch)
+                {
+                    await Assert.That(batches.Current.Count).IsEqualTo(1);
+                }
+                else
+                {
+                    await Assert.That(records.Current.Offset).IsEqualTo(43L);
+                }
             }
         }
         finally
         {
             await cancellation.CancelAsync();
             release.TrySetResult(missing);
-            try { await pending; }
+            try
+            {
+                await pending;
+            }
             catch (OperationCanceledException) { }
         }
     }

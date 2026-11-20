@@ -126,7 +126,10 @@ public sealed class AdminClientControllerBootstrapTests
         await Assert.That(activeControllerStatus.ConnectionCount).IsEqualTo(0);
         await Assert.That(result.ControllerId).IsEqualTo(2);
         await Assert.That(result.Nodes.Select(static node => node.NodeId)).IsEquivalentTo([1, 2]);
-        await Assert.That(async () => { _ = await context.Pool.GetConnectionAsync(1); })
+        await Assert.That(async () =>
+            {
+                _ = await context.Pool.GetConnectionAsync(1);
+            })
             .Throws<InvalidOperationException>();
         await Assert.That(context.DiscoveryRequests).IsEqualTo(1);
         await Assert.That(context.LastDiscoveryRequest!.EndpointType)
@@ -349,7 +352,9 @@ public sealed class AdminClientControllerBootstrapTests
         finally
         {
             if (lockHeld)
+            {
                 refreshLock.Release();
+            }
         }
     }
 
@@ -557,7 +562,9 @@ public sealed class AdminClientControllerBootstrapTests
             .Returns(_ =>
             {
                 if (Interlocked.Increment(ref calls) <= 5)
+                {
                     throw new System.Net.Sockets.SocketException((int)System.Net.Sockets.SocketError.ConnectionRefused);
+                }
 
                 return ValueTask.FromResult(CreateQuorumResponse(leaderId: 2));
             });
@@ -659,22 +666,22 @@ public sealed class AdminClientControllerBootstrapTests
         string controllerOneHost = "controller-1",
         int controllerOnePort = 19093,
         int controllerOneNodeId = 1) => new()
-    {
-        ErrorCode = ErrorCode.None,
-        EndpointType = DescribeClusterEndpointType.Controller,
-        ClusterId = "cluster-a",
-        ControllerId = activeControllerId,
-        Nodes =
-        [
-            new DescribeClusterNode
-            {
-                NodeId = controllerOneNodeId,
-                Host = controllerOneHost,
-                Port = controllerOnePort
-            },
+        {
+            ErrorCode = ErrorCode.None,
+            EndpointType = DescribeClusterEndpointType.Controller,
+            ClusterId = "cluster-a",
+            ControllerId = activeControllerId,
+            Nodes =
+            [
+                new DescribeClusterNode
+                {
+                    NodeId = controllerOneNodeId,
+                    Host = controllerOneHost,
+                    Port = controllerOnePort
+                },
             new DescribeClusterNode { NodeId = 2, Host = "controller-2", Port = 19094 }
-        ]
-    };
+            ]
+        };
 
     private static async ValueTask<DescribeClusterResponse> WaitForDiscoveryCancellationAsync(
         CancellationToken cancellationToken)
@@ -712,7 +719,9 @@ public sealed class AdminClientControllerBootstrapTests
                 });
 
             if (firstDiscoveryFailure is not null)
+            {
                 _discoveryOutcomes.Enqueue(firstDiscoveryFailure);
+            }
             _discoveryOutcomes.Enqueue(discoveryResponse ?? CreateDiscoveryResponse(activeControllerId: 2));
             ConfigureDiscovery(BootstrapController);
             ConfigureDiscovery(ActiveController);
@@ -746,14 +755,38 @@ public sealed class AdminClientControllerBootstrapTests
                 });
         }
 
-        internal AdminClient Client { get; }
-        internal IConnectionPool Pool { get; }
-        internal IKafkaConnection BootstrapController { get; }
-        internal IKafkaConnection ActiveController { get; }
-        internal IKafkaConnection OtherController { get; }
-        internal int DiscoveryRequests { get; private set; }
-        internal DescribeClusterRequest? LastDiscoveryRequest { get; private set; }
-        internal short LastDiscoveryVersion { get; private set; }
+        internal AdminClient Client
+        {
+            get;
+        }
+        internal IConnectionPool Pool
+        {
+            get;
+        }
+        internal IKafkaConnection BootstrapController
+        {
+            get;
+        }
+        internal IKafkaConnection ActiveController
+        {
+            get;
+        }
+        internal IKafkaConnection OtherController
+        {
+            get;
+        }
+        internal int DiscoveryRequests
+        {
+            get; private set;
+        }
+        internal DescribeClusterRequest? LastDiscoveryRequest
+        {
+            get; private set;
+        }
+        internal short LastDiscoveryVersion
+        {
+            get; private set;
+        }
 
         internal ConnectionStatusEndpointAlias[] GetDiscoveryAliases(int controllerId)
         {

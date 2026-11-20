@@ -13,12 +13,18 @@ public sealed class DescribeGroupsRequest : IKafkaRequest<DescribeGroupsResponse
     /// <summary>
     /// The group IDs to describe.
     /// </summary>
-    public required IReadOnlyList<string> Groups { get; init; }
+    public required IReadOnlyList<string> Groups
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Whether to include authorized operations (v3+).
     /// </summary>
-    public bool IncludeAuthorizedOperations { get; init; }
+    public bool IncludeAuthorizedOperations
+    {
+        get; init;
+    }
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {

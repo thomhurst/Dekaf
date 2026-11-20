@@ -18,8 +18,10 @@ public sealed partial class InMemoryAdminClient : IControllerRegistrationAdminCl
         ThrowIfDisposed();
         // Zero is an already-expired deadline, as in AdminClient.
         if (timeoutMs == 0)
+        {
             throw new KafkaTimeoutException(TimeoutKind.Api, TimeSpan.Zero, TimeSpan.Zero,
                 $"{nameof(UnregisterControllerAsync)} timed out after 0 ms.");
+        }
 
         await ExecuteWithTimeoutAsync(async token =>
         {

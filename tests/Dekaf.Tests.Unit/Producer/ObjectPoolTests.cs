@@ -10,9 +10,18 @@ public class ObjectPoolTests
 {
     private sealed class TestItem
     {
-        public int Id { get; set; }
-        public bool WasReset { get; set; }
-        public bool WasDestroyed { get; set; }
+        public int Id
+        {
+            get; set;
+        }
+        public bool WasReset
+        {
+            get; set;
+        }
+        public bool WasDestroyed
+        {
+            get; set;
+        }
     }
 
     private sealed class TestPool(int maxPoolSize) : ObjectPool<TestItem>(maxPoolSize)
@@ -252,7 +261,9 @@ public class ObjectPoolTests
             {
                 var item = pool.Rent();
                 if (item.WasDestroyed)
+                {
                     Interlocked.Increment(ref corruptedRents);
+                }
 
                 pool.Return(item);
             }

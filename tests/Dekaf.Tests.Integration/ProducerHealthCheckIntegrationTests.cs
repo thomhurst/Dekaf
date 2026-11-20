@@ -111,8 +111,12 @@ public sealed class ProducerHealthKafkaContainer : KafkaContainerDefault
         using var client = new DockerClientBuilder().Build();
         var containerId = ContainerInstance!.Id;
         if (paused)
+        {
             await client.Containers.PauseContainerAsync(containerId);
+        }
         else
+        {
             await client.Containers.UnpauseContainerAsync(containerId);
+        }
     }
 }

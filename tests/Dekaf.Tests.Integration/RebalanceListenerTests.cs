@@ -132,7 +132,9 @@ public class RebalanceListenerTests(KafkaTestContainer kafka) : KafkaIntegration
 
         // The heartbeat loop reports the loss; the next polls rejoin the group.
         while (!listener.ReassignedAfterLoss.IsCompleted)
+        {
             await consumer.ConsumeOneAsync(TimeSpan.FromMilliseconds(500), deadline.Token);
+        }
 
         // Lost comes first, and nothing is assigned or revoked before it.
         var afterEviction = listener.Callbacks.Skip(callbacksBeforeEviction).ToArray();
@@ -149,7 +151,9 @@ public class RebalanceListenerTests(KafkaTestContainer kafka) : KafkaIntegration
             var result = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(30), deadline.Token);
             await Assert.That(result).IsNotNull();
             if (result!.Value.Value == "after")
+            {
                 break;
+            }
         }
 
         await consumer.CommitAsync(deadline.Token);
@@ -219,7 +223,9 @@ public class RebalanceListenerTests(KafkaTestContainer kafka) : KafkaIntegration
             CancellationToken cancellationToken)
         {
             if (!partitions.Any())
+            {
                 return;
+            }
             if (Interlocked.Increment(ref _assignedCalls) == 1)
             {
                 var removal = await admin.RemoveMembersFromConsumerGroupAsync(groupId, new ConsumerGroupMemberRemovalOptions
@@ -228,12 +234,16 @@ public class RebalanceListenerTests(KafkaTestContainer kafka) : KafkaIntegration
                     Reason = "fenced position initialization integration test"
                 }, cancellationToken);
                 if (!removal.Succeeded)
+                {
                     throw new InvalidOperationException("Member removal failed.");
+                }
                 return;
             }
 
             if (Lost)
+            {
                 consumer.Seek(seek);
+            }
         }
 
         public ValueTask OnPartitionsRevokedAsync(
@@ -257,7 +267,10 @@ public class RebalanceListenerTests(KafkaTestContainer kafka) : KafkaIntegration
             new(TaskCreationOptions.RunContinuationsAsynchronously);
         private bool _lost;
 
-        public ConcurrentQueue<string> Callbacks { get; } = new();
+        public ConcurrentQueue<string> Callbacks
+        {
+            get;
+        } = new();
 
         public Task ReassignedAfterLoss => _reassignedAfterLoss.Task;
 
@@ -265,7 +278,9 @@ public class RebalanceListenerTests(KafkaTestContainer kafka) : KafkaIntegration
         {
             Record("assigned", partitions);
             if (Volatile.Read(ref _lost) && partitions.Any())
+            {
                 _reassignedAfterLoss.TrySetResult();
+            }
             return ValueTask.CompletedTask;
         }
 

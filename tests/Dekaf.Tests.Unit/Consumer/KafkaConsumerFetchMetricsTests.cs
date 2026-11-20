@@ -109,7 +109,9 @@ public sealed class KafkaConsumerFetchMetricsTests
         foreach (var tag in tags)
         {
             if (tag.Key == key)
+            {
                 return tag.Value;
+            }
         }
 
         return null;

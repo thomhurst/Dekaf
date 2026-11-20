@@ -91,7 +91,10 @@ public class NewConsumerProtocolTests(KafkaTestContainer kafka) : KafkaIntegrati
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))
         {
             messages.Add(msg);
-            if (messages.Count >= 3) break;
+            if (messages.Count >= 3)
+            {
+                break;
+            }
         }
 
         await Assert.That(messages).Count().IsEqualTo(3);
@@ -137,7 +140,10 @@ public class NewConsumerProtocolTests(KafkaTestContainer kafka) : KafkaIntegrati
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))
         {
             messages.Add(msg);
-            if (messages.Count >= 5) break;
+            if (messages.Count >= 5)
+            {
+                break;
+            }
         }
 
         await Assert.That(messages).Count().IsEqualTo(5);
@@ -185,7 +191,10 @@ public class NewConsumerProtocolTests(KafkaTestContainer kafka) : KafkaIntegrati
             await foreach (var msg in consumer1.ConsumeAsync(cts.Token))
             {
                 messages.Add(msg);
-                if (messages.Count >= 3) break;
+                if (messages.Count >= 3)
+                {
+                    break;
+                }
             }
 
             await consumer1.CommitAsync([new TopicPartitionOffset(topic, 0, 3)]);
@@ -257,7 +266,10 @@ public class NewConsumerProtocolTests(KafkaTestContainer kafka) : KafkaIntegrati
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))
         {
             messages.Add(msg);
-            if (messages.Count >= 2) break;
+            if (messages.Count >= 2)
+            {
+                break;
+            }
         }
 
         await Assert.That(messages).Count().IsEqualTo(2);
@@ -392,7 +404,10 @@ public class NewConsumerProtocolTests(KafkaTestContainer kafka) : KafkaIntegrati
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))
         {
             messages.Add(msg);
-            if (messages.Count >= 3) break;
+            if (messages.Count >= 3)
+            {
+                break;
+            }
         }
 
         // Single consumer with uniform assignor should get all 3 partitions
@@ -439,7 +454,10 @@ public class NewConsumerProtocolTests(KafkaTestContainer kafka) : KafkaIntegrati
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))
         {
             messages.Add(msg);
-            if (messages.Count >= 3) break;
+            if (messages.Count >= 3)
+            {
+                break;
+            }
         }
 
         await consumer.CommitAsync([new TopicPartitionOffset(topic, 0, 3)]);
@@ -487,7 +505,10 @@ public class NewConsumerProtocolTests(KafkaTestContainer kafka) : KafkaIntegrati
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))
         {
             count++;
-            if (count >= 3) break;
+            if (count >= 3)
+            {
+                break;
+            }
         }
 
         var position = consumer.GetPosition(new TopicPartition(topic, 0));
@@ -533,7 +554,10 @@ public class NewConsumerProtocolTests(KafkaTestContainer kafka) : KafkaIntegrati
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))
         {
             messages.Add(msg);
-            if (messages.Count >= 3) break;
+            if (messages.Count >= 3)
+            {
+                break;
+            }
         }
 
         // Seek back to beginning
@@ -652,7 +676,10 @@ public class NewConsumerProtocolTests(KafkaTestContainer kafka) : KafkaIntegrati
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))
         {
             messages.Add(msg);
-            if (messages.Count >= messageCount) break;
+            if (messages.Count >= messageCount)
+            {
+                break;
+            }
         }
 
         await Assert.That(messages).Count().IsEqualTo(messageCount);
@@ -737,7 +764,9 @@ public class NewConsumerProtocolTests(KafkaTestContainer kafka) : KafkaIntegrati
 
         // Join before the topic exists so its assignment arrives on a later heartbeat.
         while (!await HasMemberAsync())
+        {
             await Task.Delay(100, cts.Token);
+        }
 
         await KafkaContainer.CreateTopicAsync(topic);
         await using var producer = await Kafka.CreateProducer<string, string>()
@@ -779,7 +808,9 @@ public class NewConsumerProtocolTests(KafkaTestContainer kafka) : KafkaIntegrati
             {
                 received.Add(msg.Value);
                 if (received.Count == 5)
+                {
                     return;
+                }
             }
         }
     }

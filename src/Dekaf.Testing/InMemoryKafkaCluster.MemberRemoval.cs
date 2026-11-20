@@ -14,15 +14,19 @@ public sealed partial class InMemoryKafkaCluster
             if (!_consumerGroupMembers.TryGetValue(groupId, out var members))
             {
                 if (_consumerGroupOffsets.ContainsKey(groupId) || _consumerGroupGenerations.ContainsKey(groupId))
+                {
                     return [];
+                }
                 throw new GroupException(ErrorCode.GroupIdNotFound, $"Consumer group '{groupId}' does not exist.") { GroupId = groupId };
             }
             var snapshot = new ConsumerGroupMemberIdentity[members.Count];
             var index = 0;
             foreach (var entry in members)
+            {
                 snapshot[index++] = entry.Value.GroupInstanceId is { } instanceId
                     ? new ConsumerGroupMemberIdentity { GroupInstanceId = instanceId }
                     : new ConsumerGroupMemberIdentity { MemberId = entry.Key };
+            }
             return snapshot;
         }
     }
@@ -42,7 +46,9 @@ public sealed partial class InMemoryKafkaCluster
                 var identity = requested[index];
                 var memberId = identity.MemberId;
                 if (identity.GroupInstanceId is { } instanceId)
+                {
                     memberId = _staticConsumerGroupMembers?.GetValueOrDefault((groupId, instanceId));
+                }
                 results[index] = new ConsumerGroupMemberRemovalResult
                 {
                     GroupInstanceId = identity.GroupInstanceId ?? string.Empty,
@@ -58,7 +64,9 @@ public sealed partial class InMemoryKafkaCluster
                 {
                     changed = true;
                     if (member.GroupInstanceId is { } removedInstance)
+                    {
                         _staticConsumerGroupMembers!.Remove((groupId, removedInstance));
+                    }
                 }
             }
             if (changed)
@@ -84,6 +92,8 @@ public sealed partial class InMemoryKafkaCluster
     {
         if (_streamsGroupIds?.Contains(groupId) == true || _shareGroupMembers.ContainsKey(groupId)
             || _shareGroupsWithMemberHistory.Contains(groupId))
+        {
             throw new GroupException(ErrorCode.UnsupportedVersion, "Member removal requires a consumer group.") { GroupId = groupId };
+        }
     }
 }

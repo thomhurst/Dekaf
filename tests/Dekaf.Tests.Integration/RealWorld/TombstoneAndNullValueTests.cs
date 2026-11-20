@@ -139,7 +139,10 @@ public sealed class TombstoneAndNullValueTests(KafkaTestContainer kafka) : Kafka
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))
         {
             messages.Add(msg);
-            if (messages.Count >= 5) break;
+            if (messages.Count >= 5)
+            {
+                break;
+            }
         }
 
         await Assert.That(messages).Count().IsEqualTo(5);
@@ -241,7 +244,10 @@ public sealed class TombstoneAndNullValueTests(KafkaTestContainer kafka) : Kafka
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))
         {
             messages.Add(msg);
-            if (messages.Count >= 2) break;
+            if (messages.Count >= 2)
+            {
+                break;
+            }
         }
 
         await Assert.That(messages).Count().IsEqualTo(2);
@@ -297,7 +303,10 @@ public sealed class TombstoneAndNullValueTests(KafkaTestContainer kafka) : Kafka
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))
         {
             messages.Add(msg);
-            if (messages.Count >= 2) break;
+            if (messages.Count >= 2)
+            {
+                break;
+            }
         }
 
         await Assert.That(messages).Count().IsEqualTo(2);

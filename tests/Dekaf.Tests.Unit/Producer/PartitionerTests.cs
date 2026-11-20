@@ -400,14 +400,18 @@ public class DefaultPartitionerTests
         uniform.SetPartitionQueueByteProvider(
             static (_, partition) => partition == backedUpPartition ? 32L * 1024 * 1024 : 0);
         if (rackLocal)
+        {
             uniform.SetRackLocalPartitionsProvider((_, _, _) => allPartitions);
+        }
 
         // Each new topic makes one initial weighted choice; one partitioner keeps one random stream.
         // Every healthy partition carries ~1% of the weight, so 4,000 draws miss one with
         // probability below 1e-15.
         var selected = new HashSet<int>();
         for (var i = 0; i < 4_000; i++)
+        {
             selected.Add(partitioner.Partition($"topic-{i}", ReadOnlySpan<byte>.Empty, keyIsNull: true, partitionCount));
+        }
 
         await Assert.That(selected.Count(static partition => partition >= 64 && partition < backedUpPartition)).IsEqualTo(35);
     }
@@ -418,7 +422,9 @@ public class DefaultPartitionerTests
         var selector = new RandomPartitionSelector();
         var sawHighBits = false;
         for (var i = 0; i < 64 && !sawHighBits; i++)
+        {
             sawHighBits = selector.NextUInt64() > uint.MaxValue;
+        }
 
         await Assert.That(sawHighBits).IsTrue();
     }
@@ -518,7 +524,9 @@ public class DefaultPartitionerTests
                         keyIsNull: true,
                         partitionCount);
                     if (actual != expected)
+                    {
                         Interlocked.Exchange(ref statePreserved, 0);
+                    }
 
                     uniform.OnRecordAppended(topic, actual, bytes: 1, partitionCount);
                 }
@@ -976,9 +984,13 @@ public class SinglePartitionFastPathTests
     private static IPartitioner CreatePartitioner(Type partitionerType)
     {
         if (partitionerType == typeof(DefaultPartitioner))
+        {
             return new DefaultPartitioner();
+        }
         if (partitionerType == typeof(StickyPartitioner))
+        {
             return new StickyPartitioner();
+        }
 
         return (IPartitioner)(Activator.CreateInstance(partitionerType)
             ?? throw new InvalidOperationException($"Could not create {partitionerType.Name}."));
@@ -990,7 +1002,9 @@ public class SinglePartitionFastPathTests
             "_randomPartitionSelector",
             BindingFlags.NonPublic | BindingFlags.Instance);
         if (selectorField?.GetValue(partitioner) is not { } selector)
+        {
             return;
+        }
 
         var stateField = selector.GetType().GetField(
             "_state",

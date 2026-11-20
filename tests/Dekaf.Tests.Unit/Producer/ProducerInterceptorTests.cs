@@ -268,7 +268,9 @@ public sealed class ProducerInterceptorTests
     private sealed class NoOpProducerInterceptor : IProducerInterceptor<string, string>
     {
         public ProducerMessage<string, string> OnSend(ProducerMessage<string, string> message) => message;
-        public void OnAcknowledgement(RecordMetadata metadata, Exception? exception) { }
+        public void OnAcknowledgement(RecordMetadata metadata, Exception? exception)
+        {
+        }
     }
 
     private sealed class HeaderAddingInterceptor : IProducerInterceptor<string, string>
@@ -289,7 +291,9 @@ public sealed class ProducerInterceptorTests
             return message with { Headers = headers };
         }
 
-        public void OnAcknowledgement(RecordMetadata metadata, Exception? exception) { }
+        public void OnAcknowledgement(RecordMetadata metadata, Exception? exception)
+        {
+        }
     }
 
     private sealed class ValueTransformingInterceptor : IProducerInterceptor<string, string>
@@ -299,7 +303,9 @@ public sealed class ProducerInterceptorTests
             return message with { Value = message.Value.ToUpperInvariant() };
         }
 
-        public void OnAcknowledgement(RecordMetadata metadata, Exception? exception) { }
+        public void OnAcknowledgement(RecordMetadata metadata, Exception? exception)
+        {
+        }
     }
 
     private sealed class OrderTrackingInterceptor : IProducerInterceptor<string, string>
@@ -319,7 +325,9 @@ public sealed class ProducerInterceptorTests
             return message;
         }
 
-        public void OnAcknowledgement(RecordMetadata metadata, Exception? exception) { }
+        public void OnAcknowledgement(RecordMetadata metadata, Exception? exception)
+        {
+        }
     }
 
     private sealed class ThrowingOnSendInterceptor : IProducerInterceptor<string, string>
@@ -329,12 +337,17 @@ public sealed class ProducerInterceptorTests
             throw new InvalidOperationException("Interceptor error on send");
         }
 
-        public void OnAcknowledgement(RecordMetadata metadata, Exception? exception) { }
+        public void OnAcknowledgement(RecordMetadata metadata, Exception? exception)
+        {
+        }
     }
 
     private sealed class AcknowledgementTrackingInterceptor : IProducerInterceptor<string, string>
     {
-        public List<(RecordMetadata Metadata, Exception? Exception)> Acknowledgements { get; } = [];
+        public List<(RecordMetadata Metadata, Exception? Exception)> Acknowledgements
+        {
+            get;
+        } = [];
 
         public ProducerMessage<string, string> OnSend(ProducerMessage<string, string> message) => message;
 

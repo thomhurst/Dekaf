@@ -61,17 +61,24 @@ internal static class SchemaIdRoutingSmoke
     private static void Require(bool condition, string message)
     {
         if (!condition)
+        {
             throw new InvalidOperationException(message);
+        }
     }
 
     private abstract record RoutedEvent(byte Value);
+
     private sealed record FirstEvent(byte Value) : RoutedEvent(Value);
+
     private sealed record SecondEvent(byte Value) : RoutedEvent(Value);
 
     private sealed class PreparingRoute<T>(Func<byte, T> create) : IDeserializer<T>, IAsyncDeserializerPreparer<T>
     {
         private bool _prepared;
-        public ReadOnlyMemory<byte> LastFrame { get; private set; }
+        public ReadOnlyMemory<byte> LastFrame
+        {
+            get; private set;
+        }
 
         public T Deserialize(ReadOnlyMemory<byte> data, SerializationContext context)
         {

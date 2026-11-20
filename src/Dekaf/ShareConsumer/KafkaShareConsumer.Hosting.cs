@@ -1,7 +1,7 @@
 using System.Diagnostics.CodeAnalysis;
+using System.Runtime.CompilerServices;
 using Dekaf.Networking;
 using Dekaf.Protocol;
-using System.Runtime.CompilerServices;
 
 namespace Dekaf.ShareConsumer;
 
@@ -43,7 +43,9 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue>
     private KafkaRequestWriteContext? GetHostedRequestContext(int brokerId)
     {
         if (!_hostedRequestCancellationToken.CanBeCanceled)
+        {
             return null;
+        }
         var contexts = _hostedRequestContexts ??= [];
         if (!contexts.TryGetValue(brokerId, out var context))
         {
@@ -65,8 +67,10 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue>
         if (context is not null && context.ResponseCancellationToken.CanBeCanceled)
         {
             if (connection is IKafkaRequestCancellationConnection controlled)
+            {
                 return controlled.SendWithResponseCancellationAsync<TRequest, TResponse>(
                     request, version, context, cancellationToken);
+            }
 
             // Custom connections without response-cancellation support use the caller's token.
             context.MarkWriteStarted();
@@ -86,8 +90,10 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue>
         where TResponse : IKafkaResponse
     {
         if (context is not null && connection is IKafkaRequestWriteObserverConnection observed)
+        {
             return observed.SendWithWriteObservationAsync<TRequest, TResponse>(
                 request, version, context.WriteStartedCallback, cancellationToken);
+        }
 
         // Custom connections cannot prove their write boundary. Keep caller cancellation and
         // treat a failure after handing them the request as potentially submitted.

@@ -58,7 +58,10 @@ public class KafkaWithSchemaRegistryContainer : IAsyncInitializer, IAsyncDisposa
     /// CI pre-pulls the images, so startup there takes well under a minute; local runs may first
     /// have to pull about 2.5 GB of images.
     /// </summary>
-    internal static TimeSpan StartupDeadline { get; } = ResolveStartupDeadline(
+    internal static TimeSpan StartupDeadline
+    {
+        get;
+    } = ResolveStartupDeadline(
         Environment.GetEnvironmentVariable("DEKAF_TEST_SCHEMA_REGISTRY_STARTUP_SECONDS"),
         Environment.GetEnvironmentVariable("CI"));
 
@@ -130,7 +133,9 @@ public class KafkaWithSchemaRegistryContainer : IAsyncInitializer, IAsyncDisposa
     internal async Task<string> DescribeSchemaRegistryContainerAsync()
     {
         if (_schemaRegistryContainer is null)
+        {
             return string.Empty;
+        }
 
         try
         {
@@ -267,7 +272,9 @@ public class KafkaWithSchemaRegistryContainer : IAsyncInitializer, IAsyncDisposa
                 await admin.DescribeTopicsAsync(["_schemas"], cancellationToken).ConfigureAwait(false);
                 var result = await admin.ListOffsetsAsync(offsets, cancellationToken: cancellationToken).ConfigureAwait(false);
                 if (result.TryGetValue(partition, out var offset) && offset.Offset >= 0)
+                {
                     return;
+                }
             }
             catch (KafkaException exception) when (exception.IsRetriable)
             {
@@ -433,7 +440,9 @@ public class KafkaWithSchemaRegistryContainer : IAsyncInitializer, IAsyncDisposa
         try
         {
             if (schemaRegistry is not null)
+            {
                 await schemaRegistry.DisposeAsync().ConfigureAwait(false);
+            }
         }
         catch (Exception exception)
         {
@@ -443,7 +452,9 @@ public class KafkaWithSchemaRegistryContainer : IAsyncInitializer, IAsyncDisposa
         try
         {
             if (kafka is not null)
+            {
                 await kafka.DisposeAsync().ConfigureAwait(false);
+            }
         }
         catch (Exception exception)
         {
@@ -453,7 +464,9 @@ public class KafkaWithSchemaRegistryContainer : IAsyncInitializer, IAsyncDisposa
         try
         {
             if (network is not null)
+            {
                 await network.DisposeAsync().ConfigureAwait(false);
+            }
         }
         catch (Exception exception)
         {
@@ -461,7 +474,9 @@ public class KafkaWithSchemaRegistryContainer : IAsyncInitializer, IAsyncDisposa
         }
 
         if (firstError is not null)
+        {
             throw firstError;
+        }
     }
 }
 

@@ -35,11 +35,17 @@ internal static class AvroPocoRuleSupport
         bool migrations)
     {
         if (ruleExecutor is not null)
+        {
             throw CreateNotSupportedException("RuleExecutor");
+        }
         if (validationRulesExecution != ValidationRulesExecution.Disabled)
+        {
             throw CreateNotSupportedException("ValidationRulesExecution");
+        }
         if (migrations)
+        {
             throw CreateNotSupportedException("UseLatestVersion");
+        }
     }
 
     internal static NotSupportedException CreateNotSupportedException(string setting = "Schema Registry rules") =>

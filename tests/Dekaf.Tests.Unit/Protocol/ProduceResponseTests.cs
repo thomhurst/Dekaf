@@ -418,12 +418,16 @@ public class ProduceResponseTests
     public async Task FetchResponseRead_LegacySpanPathAllocatesZeroBytesAfterWarmup()
     {
         for (var i = 0; i < 64; i++)
+        {
             _ = ParseLegacyFetchResponseFromSpan();
+        }
 
         var before = GC.GetAllocatedBytesForCurrentThread();
         var topicCount = 0;
         for (var i = 0; i < 16; i++)
+        {
             topicCount += ParseLegacyFetchResponseFromSpan();
+        }
         var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
 
         await Assert.That(topicCount).IsEqualTo(16);

@@ -18,7 +18,10 @@ public class NetStandardBufferWriterBenchmarks
     private byte[] _payload = null!;
 
     [Params(64, 4096)]
-    public int PayloadSize { get; set; }
+    public int PayloadSize
+    {
+        get; set;
+    }
 
     [GlobalSetup]
     public void Setup()
@@ -35,7 +38,9 @@ public class NetStandardBufferWriterBenchmarks
         _payload = new byte[PayloadSize];
         _payload.AsSpan().Fill(42);
         if (!WriteAndReset().Span.SequenceEqual(_payload))
+        {
             throw new InvalidOperationException("The compatibility writer did not preserve the payload.");
+        }
     }
 
     [Benchmark]

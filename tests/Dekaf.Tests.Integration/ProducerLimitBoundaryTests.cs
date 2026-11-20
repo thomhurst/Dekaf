@@ -48,14 +48,20 @@ public sealed class ProducerLimitBoundaryTests(KafkaTestContainer kafka) : Kafka
                 }, (metadata, error) =>
                 {
                     if (error is not null)
+                    {
                         delivery.TrySetException(error);
+                    }
                     else
+                    {
                         delivery.TrySetResult(metadata);
+                    }
                 }).AsTask().WaitAsync(TimeSpan.FromSeconds(10));
                 await delivery.Task.WaitAsync(TimeSpan.FromSeconds(10));
             }
             else
+            {
                 await producer.ProduceAsync(topic, null, new byte[4096]).AsTask().WaitAsync(TimeSpan.FromSeconds(10));
+            }
         }).Throws<ProduceException>();
 
         await Assert.That(exception!.ErrorCode).IsEqualTo(ErrorCode.MessageTooLarge);
@@ -208,9 +214,13 @@ public sealed class ProducerLimitBoundaryTests(KafkaTestContainer kafka) : Kafka
         {
             var encodedSize = GetEncodedBatchSize(payloadLength);
             if (encodedSize == targetSize)
+            {
                 return new byte[payloadLength];
+            }
             if (encodedSize > targetSize)
+            {
                 break;
+            }
         }
 
         throw new InvalidOperationException($"No single-record payload encodes to exactly {targetSize} bytes.");

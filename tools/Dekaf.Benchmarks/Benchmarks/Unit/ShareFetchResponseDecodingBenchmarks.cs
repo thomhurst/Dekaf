@@ -24,10 +24,16 @@ public class ShareFetchResponseDecodingBenchmarks
     private Action<ShareFetchResponse> _release = null!;
 
     [Params(false, true)]
-    public bool Pooled { get; set; }
+    public bool Pooled
+    {
+        get; set;
+    }
 
     [Params(0, 4096, 65536, 131072)]
-    public int PayloadBytes { get; set; }
+    public int PayloadBytes
+    {
+        get; set;
+    }
 
     [GlobalSetup]
     public void Setup()
@@ -43,14 +49,18 @@ public class ShareFetchResponseDecodingBenchmarks
         // Older decoders release the frame before returning; newer responses own it.
         // Both revisions measure decode/consume/release, with reflection confined to setup.
         _release = typeof(ShareFetchResponse).GetMethod("Dispose", Type.EmptyTypes)?
-            .CreateDelegate<Action<ShareFetchResponse>>() ?? (static _ => { });
+            .CreateDelegate<Action<ShareFetchResponse>>() ?? (static _ =>
+        {
+        });
 
         var response = _parse(new PooledResponseBuffer(_encoded, _encoded.Length, false), 1, false, null);
         try
         {
             Validate(response);
             if (!response.Responses[0].Partitions[0].RecordBytes.Span.SequenceEqual(payload))
+            {
                 throw new InvalidOperationException("ShareFetch payload changed.");
+            }
         }
         finally
         {
@@ -60,7 +70,9 @@ public class ShareFetchResponseDecodingBenchmarks
         DecodeAndRelease();
         if (Pooled && _encoded.Length >= ResponseBufferPool.NativeMemoryThresholdBytes
             && _pool.RetainedNativeBufferCount != 1)
+        {
             throw new InvalidOperationException("The decoded native frame was not returned to its pool.");
+        }
     }
 
     [GlobalCleanup]
@@ -102,17 +114,23 @@ public class ShareFetchResponseDecodingBenchmarks
     {
         if (response.ErrorCode != ErrorCode.None || response.AcquisitionLockTimeoutMs != 30000
             || response.Responses.Count != 1 || response.NodeEndpoints.Count != 0)
+        {
             throw new InvalidOperationException("ShareFetch response metadata changed.");
+        }
         var topic = response.Responses[0];
         if (topic.TopicId != TopicId || topic.Partitions.Count != 1)
+        {
             throw new InvalidOperationException("ShareFetch topic metadata changed.");
+        }
         var partition = topic.Partitions[0];
         if (partition.PartitionIndex != 0 || partition.ErrorCode != ErrorCode.None
             || partition.RecordBytes.Length != PayloadBytes || partition.AcquiredRecords.Count != (PayloadBytes == 0 ? 0 : 1)
             || PayloadBytes != 0 && (partition.AcquiredRecords[0].FirstOffset != 0
                                     || partition.AcquiredRecords[0].LastOffset != 0
                                     || partition.AcquiredRecords[0].DeliveryCount != 1))
+        {
             throw new InvalidOperationException("ShareFetch partition metadata changed.");
+        }
         return partition.RecordBytes.Length;
     }
 

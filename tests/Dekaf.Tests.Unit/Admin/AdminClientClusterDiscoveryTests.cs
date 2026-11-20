@@ -172,7 +172,8 @@ public sealed class AdminClientClusterDiscoveryTests
             Arg.Any<DescribeClusterRequest>(), Arg.Any<short>(), Arg.Any<CancellationToken>())
             .Returns(call => ValueTask.FromResult(new DescribeClusterResponse
             {
-                ClusterId = "cluster", ControllerId = 1,
+                ClusterId = "cluster",
+                ControllerId = 1,
                 Nodes = call.Arg<DescribeClusterRequest>().IncludeFencedBrokers
                     ? [new() { NodeId = 1, Host = "localhost", Port = 9092 }, new() { NodeId = 2, Host = "fenced", Port = 9093, Rack = "rack-b", IsFenced = true }]
                     : [new() { NodeId = 1, Host = "localhost", Port = 9092 }]

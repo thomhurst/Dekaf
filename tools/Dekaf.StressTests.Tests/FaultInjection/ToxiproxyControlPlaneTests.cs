@@ -176,7 +176,10 @@ public class ToxiproxyControlPlaneTests
 
     private sealed class StubHttpClientFactory(QueueHttpMessageHandler handler) : IHttpClientFactory
     {
-        public Uri BaseUrl { get; } = new("http://toxiproxy.test");
+        public Uri BaseUrl
+        {
+            get;
+        } = new("http://toxiproxy.test");
 
         public HttpClient Create() => new(handler, disposeHandler: false)
         {

@@ -58,7 +58,10 @@ public sealed class ExponentialBackoffRetryPolicy : IRetryPolicy
     /// Whether to add random jitter (0.5x to 1.5x) to the computed delay. Default is <c>true</c>.
     /// The final delay is always clamped to <see cref="MaxDelay"/>, so jitter cannot exceed it.
     /// </summary>
-    public bool Jitter { get; init; } = true;
+    public bool Jitter
+    {
+        get; init;
+    } = true;
 
     /// <inheritdoc />
     /// <exception cref="ArgumentOutOfRangeException"><paramref name="attemptNumber"/> is less than one.</exception>
@@ -98,10 +101,16 @@ public sealed class ExponentialBackoffRetryPolicy : IRetryPolicy
         // For positive delays below the cap, this is the first exponent whose product
         // reaches MaxDelay. The division and logarithm happen only during initialization.
         if (baseTicks == 0)
+        {
             _saturationExponent = int.MaxValue;
+        }
         else if (baseTicks >= maxTicks)
+        {
             _saturationExponent = 0;
+        }
         else
+        {
             _saturationExponent = BitOperations.Log2((ulong)((maxTicks - 1) / baseTicks)) + 1;
+        }
     }
 }

@@ -36,8 +36,12 @@ public sealed class MutationProjectLinkTests
                 .Select(match => match.Groups[1].Value.Replace('\\', '/'))
                 .ToHashSet(StringComparer.Ordinal);
             foreach (var initializer in initializers)
+            {
                 if (!linked.Contains(initializer))
+                {
                     missing.Add($"{Path.GetFileName(project)}: {initializer}");
+                }
+            }
         }
 
         await Assert.That(missing).IsEmpty()
@@ -58,8 +62,12 @@ public sealed class MutationProjectLinkTests
     private static string FindRepositoryRoot()
     {
         for (var directory = new DirectoryInfo(AppContext.BaseDirectory); directory is not null; directory = directory.Parent)
+        {
             if (Directory.Exists(Path.Combine(directory.FullName, "tests", "Dekaf.Tests.Unit")))
+            {
                 return directory.FullName;
+            }
+        }
         throw new DirectoryNotFoundException("Cannot find tests/Dekaf.Tests.Unit above the test output directory.");
     }
 }

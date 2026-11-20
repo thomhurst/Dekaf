@@ -198,7 +198,9 @@ public sealed class ProducerMinInSyncReplicasIntegrationTests(RackAwareKafkaCont
             .ConfigureAwait(false);
         var warmUp = await ProduceAsync(producer, topic, 0, cancellationToken).ConfigureAwait(false);
         if (warmUp.Offset != 0)
+        {
             throw new InvalidOperationException($"Warm-up record landed at offset {warmUp.Offset}.");
+        }
     }
 
     private async ValueTask<IKafkaProducer<string, string>> CreateProducerAsync(
@@ -254,7 +256,9 @@ public sealed class ProducerMinInSyncReplicasIntegrationTests(RackAwareKafkaCont
     private async Task RestoreBrokersAsync(string topic, List<int> stoppedBrokers)
     {
         if (stoppedBrokers.Count == 0)
+        {
             return;
+        }
 
         var brokersToStart = stoppedBrokers.ToArray();
         await kafka.StartBrokersAsync(brokersToStart, CancellationToken.None).ConfigureAwait(false);
@@ -272,7 +276,9 @@ public sealed class ProducerMinInSyncReplicasIntegrationTests(RackAwareKafkaCont
         {
             cancellationToken.ThrowIfCancellationRequested();
             if (Stopwatch.GetTimestamp() >= deadline)
+            {
                 throw new TimeoutException("Producer did not issue a request while ISR was below min.insync.replicas.");
+            }
 
             await Task.Delay(25, cancellationToken).ConfigureAwait(false);
         }
@@ -336,6 +342,8 @@ public sealed class ProducerMinInSyncReplicasIntegrationTests(RackAwareKafkaCont
         var extra = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(2), cancellationToken)
             .ConfigureAwait(false);
         if (extra is not null)
+        {
             throw new InvalidOperationException($"Unexpected duplicate at offset {extra.Value.Offset}.");
+        }
     }
 }

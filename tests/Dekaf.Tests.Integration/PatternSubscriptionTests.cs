@@ -58,7 +58,9 @@ public class PatternSubscriptionTests(KafkaTestContainer kafka) : KafkaIntegrati
         {
             messages.Add(record.Value);
             if (messages.Count >= 2)
+            {
                 break;
+            }
         }
 
         await Assert.That(messages).Count().IsEqualTo(2);

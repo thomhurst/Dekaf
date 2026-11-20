@@ -21,22 +21,34 @@ public sealed class OutboxModelOptions
     /// <summary>
     /// Database schema for all three outbox tables, or null for the provider default.
     /// </summary>
-    public string? Schema { get; init; }
+    public string? Schema
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Name of the pending-messages table.
     /// </summary>
-    public string MessagesTableName { get; init; } = DefaultMessagesTableName;
+    public string MessagesTableName
+    {
+        get; init;
+    } = DefaultMessagesTableName;
 
     /// <summary>
     /// Name of the bucket-leases table.
     /// </summary>
-    public string LeasesTableName { get; init; } = DefaultLeasesTableName;
+    public string LeasesTableName
+    {
+        get; init;
+    } = DefaultLeasesTableName;
 
     /// <summary>
     /// Name of the relay-heartbeats table.
     /// </summary>
-    public string RelaysTableName { get; init; } = DefaultRelaysTableName;
+    public string RelaysTableName
+    {
+        get; init;
+    } = DefaultRelaysTableName;
 
     internal void Validate()
     {

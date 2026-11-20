@@ -60,7 +60,10 @@ public class ShareConsumerSerializationContextTests(KafkaTestContainer kafka) : 
                 unexpectedPendingMove = move.AsTask();
                 throw new InvalidOperationException("The acquired nested record must be available synchronously.");
             }
-            if (!move.GetAwaiter().GetResult()) throw new InvalidOperationException("Missing acquired nested record.");
+            if (!move.GetAwaiter().GetResult())
+            {
+                throw new InvalidOperationException("Missing acquired nested record.");
+            }
         });
         var outerValue = new TopicCapturingDeserializer(prepared);
         await using var outer = await Kafka.CreateShareConsumer<string, string>()
@@ -85,7 +88,10 @@ public class ShareConsumerSerializationContextTests(KafkaTestContainer kafka) : 
             if (unexpectedPendingMove is not null)
             {
                 await timeout.CancelAsync();
-                try { await unexpectedPendingMove; }
+                try
+                {
+                    await unexpectedPendingMove;
+                }
                 catch (OperationCanceledException) when (timeout.IsCancellationRequested) { }
             }
         }
@@ -104,7 +110,10 @@ public class ShareConsumerSerializationContextTests(KafkaTestContainer kafka) : 
         IAsyncDeserializerPreparer<string>, IAsyncDeserializerPreparationRequirement
     {
         public bool RequiresPreparation => prepared;
-        internal string? Topic { get; private set; }
+        internal string? Topic
+        {
+            get; private set;
+        }
         public string Deserialize(ReadOnlyMemory<byte> data, SerializationContext context)
         {
             Topic = context.Topic;

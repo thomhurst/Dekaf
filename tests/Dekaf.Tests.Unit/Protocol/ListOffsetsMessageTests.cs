@@ -34,7 +34,9 @@ public sealed class ListOffsetsMessageTests
         await Assert.That(isolationLevel).IsEqualTo((sbyte)IsolationLevel.ReadUncommitted);
         await Assert.That(topicsLength).IsEqualTo(1);
         if (hasTimeout)
+        {
             await Assert.That(timeoutMs).IsEqualTo(12_345);
+        }
         await Assert.That(remaining).IsEqualTo(0);
     }
 }

@@ -85,12 +85,16 @@ internal sealed class SaslSessionState
         get
         {
             if (_sessionLifetimeMs <= 0)
+            {
                 return null;
+            }
 
             var authenticationTimeUtc = _authenticationTime.ToUniversalTime();
             var availableTicks = DateTimeOffset.MaxValue.Ticks - authenticationTimeUtc.Ticks;
             if (_sessionLifetimeMs > availableTicks / TimeSpan.TicksPerMillisecond)
+            {
                 return DateTimeOffset.MaxValue;
+            }
 
             return authenticationTimeUtc.AddTicks(_sessionLifetimeMs * TimeSpan.TicksPerMillisecond);
         }

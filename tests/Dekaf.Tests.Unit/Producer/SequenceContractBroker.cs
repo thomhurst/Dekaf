@@ -84,12 +84,16 @@ internal sealed class SequenceContractBroker
             var entry = GetEntry(partition, producerId);
 
             if (epoch < entry.Epoch)
+            {
                 return (ErrorCode.InvalidProducerEpoch, -1);
+            }
 
             if (epoch > entry.Epoch)
             {
                 if (baseSequence != 0)
+                {
                     return (ErrorCode.OutOfOrderSequenceNumber, -1);
+                }
 
                 entry.Epoch = epoch;
                 entry.Recent.Clear();
@@ -108,7 +112,9 @@ internal sealed class SequenceContractBroker
             }
 
             if (baseSequence == NextSequenceAfter(entry.LastSequence))
+            {
                 return (ErrorCode.None, AppendLocked(partition, entry, producerId, epoch, baseSequence, recordCount, firstOrdinal));
+            }
 
             // Entirely at or before the last appended sequence, but no longer cached.
             return IsAtOrBefore(lastSequence, entry.LastSequence)
@@ -126,7 +132,9 @@ internal sealed class SequenceContractBroker
         lock (_lock)
         {
             if (!_partitions.TryGetValue(topicPartition, out var partition))
+            {
                 return false;
+            }
 
             foreach (var appended in partition.Appended)
             {
@@ -147,7 +155,9 @@ internal sealed class SequenceContractBroker
     public AppendedBatch[] GetLog(TopicPartition topicPartition)
     {
         lock (_lock)
+        {
             return _partitions.TryGetValue(topicPartition, out var partition) ? [.. partition.Appended] : [];
+        }
     }
 
     private static long AppendLocked(
@@ -165,7 +175,9 @@ internal sealed class SequenceContractBroker
         partition.Appended.Add(appended);
         entry.LastSequence = LastSequenceOf(baseSequence, recordCount);
         if (entry.Recent.Count == DuplicateCacheSize)
+        {
             entry.Recent.Dequeue();
+        }
         entry.Recent.Enqueue(appended);
         return baseOffset;
     }
@@ -173,14 +185,18 @@ internal sealed class SequenceContractBroker
     private PartitionLog GetPartition(TopicPartition topicPartition)
     {
         if (!_partitions.TryGetValue(topicPartition, out var partition))
+        {
             _partitions[topicPartition] = partition = new PartitionLog();
+        }
         return partition;
     }
 
     private static ProducerEntry GetEntry(PartitionLog partition, long producerId)
     {
         if (!partition.Producers.TryGetValue(producerId, out var entry))
+        {
             partition.Producers[producerId] = entry = new ProducerEntry();
+        }
         return entry;
     }
 

@@ -13,7 +13,10 @@ public sealed class GetTelemetrySubscriptionsRequest : IKafkaRequest<GetTelemetr
     /// <summary>
     /// The assigned client instance ID. Use Guid.Empty on the first request.
     /// </summary>
-    public Guid ClientInstanceId { get; init; } = Guid.Empty;
+    public Guid ClientInstanceId
+    {
+        get; init;
+    } = Guid.Empty;
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {

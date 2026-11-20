@@ -106,7 +106,9 @@ public sealed class ConnectionPoolTests
                 {
                     var status = ((IConnectionPoolStatusSource)pool).GetBrokerConnectionStatus();
                     if (status.Count != 1 || status[0].BrokerId != 7)
+                    {
                         throw new InvalidOperationException("Broker status snapshot was inconsistent.");
+                    }
                 }
             }))
             .ToArray();
@@ -825,7 +827,9 @@ public sealed class ConnectionPoolTests
             {
                 var connection = CreateConnectedConnection(brokerId, host, port);
                 lock (connections)
+                {
                     connections.Add(connection);
+                }
                 if (host == "host-a")
                 {
                     setupEntered.TrySetResult();
@@ -853,10 +857,14 @@ public sealed class ConnectionPoolTests
             await Assert.That(await pool.GetConnectionByIndexAsync(1, 0, cancellationToken)).IsSameReferenceAs(sibling);
             IKafkaConnection[] stale;
             lock (connections)
+            {
                 stale = connections.Where(connection => connection.Host == "host-a").ToArray();
+            }
             await Assert.That(stale).Count().IsGreaterThan(0);
             foreach (var connection in stale)
+            {
                 await connection.Received(1).DisposeAsync();
+            }
         }
     }
 
@@ -1090,7 +1098,9 @@ public sealed class ConnectionPoolTests
             connectionFactory: async (_, host, port, _, _) =>
             {
                 if (Interlocked.Increment(ref factoryCalls) == 2)
+                {
                     bothFactoriesEntered.TrySetResult();
+                }
                 // Ignores its token, like a handshake that finishes after the pool is gone.
                 await releaseFactory.Task.ConfigureAwait(false);
                 var connection = new TestIdleConnection(1, host, port);
@@ -1116,7 +1126,9 @@ public sealed class ConnectionPoolTests
         using var lateDisposalDeadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         lateDisposalDeadline.CancelAfter(TimeSpan.FromSeconds(5));
         while (created.Count < 2 || created.Any(static connection => connection.DisposeCount == 0))
+        {
             await Task.Delay(10, lateDisposalDeadline.Token);
+        }
     }
 
     // A scale-up that published after disposal began, but before CloseAllAsync walked the groups,
@@ -1224,7 +1236,9 @@ public sealed class ConnectionPoolTests
                 // finishing, so the result lands after CloseAllAsync has already run.
                 disposal ??= pool.DisposeAsync().AsTask();
                 if (index == 0)
+                {
                     return ValueTask.FromResult<IKafkaConnection>(connection);
+                }
 
                 var sibling = new TestIdleConnection(1, "host-a", 9092);
                 siblings.Add(sibling);
@@ -1238,7 +1252,9 @@ public sealed class ConnectionPoolTests
         await disposal!.WaitAsync(cancellationToken);
         await Assert.That(connection.DisposeCount).IsGreaterThanOrEqualTo(1);
         foreach (var sibling in siblings)
+        {
             await Assert.That(sibling.DisposeCount).IsGreaterThanOrEqualTo(1);
+        }
     }
 
     [Test]
@@ -1862,7 +1878,9 @@ public sealed class ConnectionPoolTests
                 "RecordConnectionReapDiagnostic",
                 BindingFlags.Instance | BindingFlags.NonPublic)!;
             for (var i = 0; i < 513; i++)
+            {
                 recordDiagnostic.Invoke(pool, [i, 0, 1_000L + i]);
+            }
 
             var diagnostics = pool.GetConnectionReapDiagnosticsSnapshot();
 
@@ -2008,7 +2026,9 @@ public sealed class ConnectionPoolTests
             {
                 var connection = CreateConnectedConnection(brokerId, host, port);
                 if (Volatile.Read(ref captureScaledConnections) != 0)
+                {
                     scaledConnections[index] = connection;
+                }
                 return new ValueTask<IKafkaConnection>(connection);
             });
 
@@ -2060,8 +2080,10 @@ public sealed class ConnectionPoolTests
             connectionFactory: (brokerId, host, port, _, _) =>
             {
                 if (Interlocked.Increment(ref attempts) <= connectionsPerBroker)
+                {
                     return new ValueTask<IKafkaConnection>(Task.FromException<IKafkaConnection>(
                         new InvalidOperationException("broker down")));
+                }
 
                 return new ValueTask<IKafkaConnection>(CreateConnectedConnection(brokerId, host, port));
             },
@@ -2249,7 +2271,9 @@ public sealed class ConnectionPoolTests
             connectionFactory: (brokerId, host, port, _, _) =>
             {
                 if (Interlocked.Increment(ref attempts) == 1)
+                {
                     throw new InvalidOperationException("broker down");
+                }
 
                 return ValueTask.FromResult(CreateConnectedConnection(brokerId, host, port));
             });
@@ -2448,7 +2472,9 @@ public sealed class ConnectionPoolTests
             connectionFactory: async (brokerId, host, port, _, _) =>
             {
                 if (Interlocked.Increment(ref attempts) == 2)
+                {
                     return CreateConnectedConnection(brokerId, host, port);
+                }
 
                 await releaseFactory.Task;
                 return CreateConnectedConnection(brokerId, host, port);
@@ -2696,7 +2722,9 @@ public sealed class ConnectionPoolTests
             connectionFactory: async (brokerId, host, port, _, cancellationToken) =>
             {
                 if (!Volatile.Read(ref blockSetups))
+                {
                     return CreateConnectedConnection(brokerId, host, port);
+                }
 
                 // A black-holed handshake: the setup only ends when its token is cancelled.
                 factoryEntered.TrySetResult();
@@ -2789,7 +2817,9 @@ public sealed class ConnectionPoolTests
             connectionFactory: (brokerId, host, port, _, _) =>
             {
                 if (Interlocked.Increment(ref attempts) == 1)
+                {
                     throw new InvalidOperationException("broker down");
+                }
                 return new ValueTask<IKafkaConnection>(CreateConnectedConnection(brokerId, host, port));
             },
             timeoutObserver: observedTimeouts.Add);
@@ -2888,7 +2918,9 @@ public sealed class ConnectionPoolTests
             connectionFactory: (brokerId, host, port, _, _) =>
             {
                 if (Interlocked.Increment(ref attempts) <= connectionsPerBroker)
+                {
                     throw new InvalidOperationException("broker down");
+                }
 
                 return ValueTask.FromResult(CreateConnectedConnection(brokerId, host, port));
             },
@@ -3031,7 +3063,9 @@ public sealed class ConnectionPoolTests
                     await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
                 }
                 if (attempt == 2)
+                {
                     throw new InvalidOperationException("broker down");
+                }
                 return CreateConnectedConnection(brokerId, host, port);
             },
             timeoutObserver: observedTimeouts.Add);
@@ -3062,7 +3096,9 @@ public sealed class ConnectionPoolTests
             timeoutObserver: timeout =>
             {
                 lock (observerLock)
+                {
                     observedTimeouts.Add(timeout);
+                }
             });
 
         var attempts = Enumerable.Range(0, 4)
@@ -3293,8 +3329,10 @@ public sealed class ConnectionPoolTests
             connectionFactory: (brokerId, host, port, _, _) =>
             {
                 if (Interlocked.Increment(ref attempts) <= 2)
+                {
                     return new ValueTask<IKafkaConnection>(Task.FromException<IKafkaConnection>(
                         new InvalidOperationException("broker down")));
+                }
 
                 return new ValueTask<IKafkaConnection>(CreateConnectedConnection(brokerId, host, port));
             });
@@ -3599,9 +3637,18 @@ public sealed class ConnectionPoolTests
         private long _lastSuccessfulRequestTimestampMs;
         private long _lastConnectionStateChangeTimestampMs = MonotonicClock.GetMilliseconds();
 
-        public int BrokerId { get; } = brokerId;
-        public string Host { get; } = host;
-        public int Port { get; } = port;
+        public int BrokerId
+        {
+            get;
+        } = brokerId;
+        public string Host
+        {
+            get;
+        } = host;
+        public int Port
+        {
+            get;
+        } = port;
         public bool IsConnected
         {
             get
@@ -3611,7 +3658,10 @@ public sealed class ConnectionPoolTests
             }
         }
 
-        public Action? IsConnectedRead { get; init; }
+        public Action? IsConnectedRead
+        {
+            get; init;
+        }
 
         public int DisposeCount => Volatile.Read(ref _disposeCount);
         public int RetirementState => Volatile.Read(ref _retirementState);
@@ -3628,11 +3678,20 @@ public sealed class ConnectionPoolTests
             set => Volatile.Write(ref _pendingRequestCount, value);
         }
 
-        public Func<int>? PendingRequestCountProvider { get; set; }
+        public Func<int>? PendingRequestCountProvider
+        {
+            get; set;
+        }
 
-        public TaskCompletionSource? DisposalStarted { get; init; }
+        public TaskCompletionSource? DisposalStarted
+        {
+            get; init;
+        }
 
-        public Task? DisposalRelease { get; init; }
+        public Task? DisposalRelease
+        {
+            get; init;
+        }
 
         public long LastSuccessfulRequestTimestampMs
         {
@@ -3660,11 +3719,15 @@ public sealed class ConnectionPoolTests
         bool IRetirableKafkaConnection.TryAcquireLease()
         {
             if (Volatile.Read(ref _retirementState) != 0)
+            {
                 return false;
+            }
 
             Interlocked.Increment(ref _leaseCount);
             if (Volatile.Read(ref _retirementState) == 0)
+            {
                 return true;
+            }
 
             Interlocked.Decrement(ref _leaseCount);
             return false;

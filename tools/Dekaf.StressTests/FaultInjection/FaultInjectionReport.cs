@@ -9,15 +9,42 @@ internal sealed class FaultInjectionReport
         WriteIndented = true
     };
 
-    public required DateTime StartedAtUtc { get; init; }
-    public DateTime CompletedAtUtc { get; set; }
-    public required string MachineName { get; init; }
-    public required string Profile { get; init; }
-    public required int BrokerCount { get; init; }
-    public required int PartitionCount { get; init; }
-    public required int MessageSizeBytes { get; init; }
-    public required int FaultDurationSeconds { get; init; }
-    public List<FaultWindowRunResult> Windows { get; } = [];
+    public required DateTime StartedAtUtc
+    {
+        get; init;
+    }
+    public DateTime CompletedAtUtc
+    {
+        get; set;
+    }
+    public required string MachineName
+    {
+        get; init;
+    }
+    public required string Profile
+    {
+        get; init;
+    }
+    public required int BrokerCount
+    {
+        get; init;
+    }
+    public required int PartitionCount
+    {
+        get; init;
+    }
+    public required int MessageSizeBytes
+    {
+        get; init;
+    }
+    public required int FaultDurationSeconds
+    {
+        get; init;
+    }
+    public List<FaultWindowRunResult> Windows
+    {
+        get;
+    } = [];
 
     internal async Task SaveAsync(string path, CancellationToken cancellationToken)
     {
@@ -35,34 +62,118 @@ internal sealed class FaultInjectionReport
 
 internal sealed class FaultWindowRunResult
 {
-    public required string Name { get; init; }
-    public required DateTime StartedAtUtc { get; init; }
-    public DateTime CompletedAtUtc { get; set; }
-    public bool Succeeded { get; set; }
-    public long AcceptedMessages { get; set; }
-    public long DeliveryErrors { get; set; }
-    public long DeliveryCallbacks { get; set; }
-    public long BrokerDeliveredMessages { get; set; }
-    public long OracleConsumedMessages { get; set; }
-    public long LiveConsumerMessages { get; set; }
-    public bool LiveConsumerRecoveryFailed { get; set; }
-    public bool LiveConsumerShutdownFailed { get; set; }
-    public long JoiningConsumerMessages { get; set; }
-    public bool JoiningConsumerRecoveryFailed { get; set; }
-    public int TransactionsCommitted { get; set; }
-    public int TransactionsAborted { get; set; }
-    public int TransactionsUnknown { get; set; }
-    public int TransactionsCommittedAfterHeal { get; set; }
-    public bool TransactionalProducerRecoveryFailed { get; set; }
-    public IReadOnlyList<string> TransactionViolations { get; set; } = [];
-    public long UnexplainedLoss { get; set; }
-    public long Duplicates { get; set; }
-    public long OracleCountMismatch { get; set; }
-    public IReadOnlyList<long> MissingIds { get; set; } = [];
-    public IReadOnlyList<long> DuplicateIds { get; set; } = [];
-    public IReadOnlyList<long> UnexpectedIds { get; set; } = [];
-    public IReadOnlyList<DeliveryErrorSample> DeliveryErrorSamples { get; set; } = [];
-    public string? Failure { get; set; }
+    public required string Name
+    {
+        get; init;
+    }
+    public required DateTime StartedAtUtc
+    {
+        get; init;
+    }
+    public DateTime CompletedAtUtc
+    {
+        get; set;
+    }
+    public bool Succeeded
+    {
+        get; set;
+    }
+    public long AcceptedMessages
+    {
+        get; set;
+    }
+    public long DeliveryErrors
+    {
+        get; set;
+    }
+    public long DeliveryCallbacks
+    {
+        get; set;
+    }
+    public long BrokerDeliveredMessages
+    {
+        get; set;
+    }
+    public long OracleConsumedMessages
+    {
+        get; set;
+    }
+    public long LiveConsumerMessages
+    {
+        get; set;
+    }
+    public bool LiveConsumerRecoveryFailed
+    {
+        get; set;
+    }
+    public bool LiveConsumerShutdownFailed
+    {
+        get; set;
+    }
+    public long JoiningConsumerMessages
+    {
+        get; set;
+    }
+    public bool JoiningConsumerRecoveryFailed
+    {
+        get; set;
+    }
+    public int TransactionsCommitted
+    {
+        get; set;
+    }
+    public int TransactionsAborted
+    {
+        get; set;
+    }
+    public int TransactionsUnknown
+    {
+        get; set;
+    }
+    public int TransactionsCommittedAfterHeal
+    {
+        get; set;
+    }
+    public bool TransactionalProducerRecoveryFailed
+    {
+        get; set;
+    }
+    public IReadOnlyList<string> TransactionViolations
+    {
+        get; set;
+    } = [];
+    public long UnexplainedLoss
+    {
+        get; set;
+    }
+    public long Duplicates
+    {
+        get; set;
+    }
+    public long OracleCountMismatch
+    {
+        get; set;
+    }
+    public IReadOnlyList<long> MissingIds
+    {
+        get; set;
+    } = [];
+    public IReadOnlyList<long> DuplicateIds
+    {
+        get; set;
+    } = [];
+    public IReadOnlyList<long> UnexpectedIds
+    {
+        get; set;
+    } = [];
+    public IReadOnlyList<DeliveryErrorSample> DeliveryErrorSamples
+    {
+        get; set;
+    } = [];
+    public string? Failure
+    {
+        get; set;
+    }
 }
 
 internal sealed record DeliveryErrorSample(long MessageId, string Error);

@@ -37,11 +37,16 @@ public class AppendWorkerAffinityTests
         var tryGetValueMethod = deques.GetType().GetMethod("TryGetValue");
         var parameters = new object[] { tp, null! };
         var found = (bool)tryGetValueMethod!.Invoke(deques, parameters)!;
-        if (!found) return false;
+        if (!found)
+        {
+            return false;
+        }
         var pd = parameters[1]!;
         var currentBatch = pd.GetType().GetField("CurrentBatch")!.GetValue(pd);
         if (currentBatch is not null)
+        {
             return true;
+        }
 
         var readyCount = (int)pd.GetType().GetProperty("Count")!.GetValue(pd)!;
         return readyCount > 0;
@@ -53,7 +58,9 @@ public class AppendWorkerAffinityTests
         var parameters = new object[] { tp, null! };
         var found = (bool)tryGetValueMethod!.Invoke(deques, parameters)!;
         if (!found)
+        {
             return 0;
+        }
 
         return (int)parameters[1]!.GetType().GetField("SlowPathAppendCount")!.GetValue(parameters[1])!;
     }
@@ -558,7 +565,9 @@ public class AppendWorkerAffinityTests
                 for (var p = 0; p < partitionCount; p++)
                 {
                     if (!HasBatchForPartition(deques, new TopicPartition("test-topic", p)))
+                    {
                         return false;
+                    }
                 }
                 return true;
             },

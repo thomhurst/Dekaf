@@ -17,11 +17,17 @@ public sealed class ConsumerConnectionScalingTests
             .WithBootstrapServers("localhost:9092");
 
         if (setConnectionsFirst)
+        {
             builder.WithConnectionsPerBroker(6);
+        }
         if (!adaptiveConnections)
+        {
             builder.WithoutAdaptiveConnections();
+        }
         if (!setConnectionsFirst)
+        {
             builder.WithConnectionsPerBroker(6);
+        }
 
         await using var consumer = builder.Build();
         var options = ((KafkaConsumer<string, string>)consumer).Options;
@@ -43,10 +49,14 @@ public sealed class ConsumerConnectionScalingTests
             .WithBootstrapServers("localhost:9092");
 
         if (setMaximumFirst)
+        {
             builder.WithAdaptiveConnections(4);
+        }
         builder.WithConnectionsPerBroker(6);
         if (!setMaximumFirst)
+        {
             builder.WithAdaptiveConnections(4);
+        }
 
         if (adaptiveConnections)
         {

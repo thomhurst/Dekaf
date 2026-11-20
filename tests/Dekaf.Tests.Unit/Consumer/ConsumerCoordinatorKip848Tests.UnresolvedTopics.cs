@@ -248,7 +248,9 @@ public sealed partial class ConsumerCoordinatorKip848Tests
             count =>
             {
                 if (count != 1)
+                {
                     return ValueTask.FromResult(CreateLateTopicMetadata(includeLateTopic: false));
+                }
                 refreshStarted.TrySetResult();
                 return new ValueTask<MetadataResponse>(firstRefresh.Task);
             },
@@ -316,7 +318,9 @@ public sealed partial class ConsumerCoordinatorKip848Tests
     {
         Task task;
         while (!(task = coordinator.UnresolvedAssignmentRefreshTask).IsCompleted)
+        {
             await task.WaitAsync(TimeSpan.FromSeconds(30));
+        }
     }
 
     /// <summary>
@@ -377,9 +381,13 @@ public sealed partial class ConsumerCoordinatorKip848Tests
     {
         List<TopicMetadata> topics = [];
         if (includeTestTopic)
+        {
             topics.Add(CreateTopic("test-topic", testTopicId ?? TestTopicId));
+        }
         if (includeLateTopic)
+        {
             topics.Add(CreateTopic("late-topic", LateTopicId));
+        }
 
         return new MetadataResponse
         {
@@ -396,11 +404,19 @@ public sealed partial class ConsumerCoordinatorKip848Tests
             [
                 new PartitionMetadata
                 {
-                    PartitionIndex = 0, LeaderId = 0, ErrorCode = ErrorCode.None, ReplicaNodes = [0], IsrNodes = [0]
+                    PartitionIndex = 0,
+                    LeaderId = 0,
+                    ErrorCode = ErrorCode.None,
+                    ReplicaNodes = [0],
+                    IsrNodes = [0]
                 },
                 new PartitionMetadata
                 {
-                    PartitionIndex = 1, LeaderId = 0, ErrorCode = ErrorCode.None, ReplicaNodes = [0], IsrNodes = [0]
+                    PartitionIndex = 1,
+                    LeaderId = 0,
+                    ErrorCode = ErrorCode.None,
+                    ReplicaNodes = [0],
+                    IsrNodes = [0]
                 }
             ]
         };

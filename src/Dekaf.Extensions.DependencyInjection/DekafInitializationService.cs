@@ -28,7 +28,9 @@ internal sealed partial class DekafInitializationService : IHostedService
     {
         var hostedServiceOwned = new HashSet<object>(ReferenceEqualityComparer.Instance);
         foreach (var owned in _hostedServiceOwnedClients)
+        {
             hostedServiceOwned.Add(owned.Client);
+        }
 
         foreach (var client in _clients)
         {

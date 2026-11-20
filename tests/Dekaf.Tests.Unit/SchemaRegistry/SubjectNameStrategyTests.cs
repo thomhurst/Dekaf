@@ -463,7 +463,9 @@ public sealed class SubjectNameStrategyTests
                 serializer.Serialize(record, ref buffer, context);
                 var actualId = BinaryPrimitives.ReadInt32BigEndian(buffer.WrittenSpan.Slice(1, 4));
                 if (actualId != expectedId)
+                {
                     Interlocked.Increment(ref mismatches);
+                }
             }
         }, CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default);
 
@@ -514,7 +516,9 @@ public sealed class SubjectNameStrategyTests
 
             var prepareBefore = GC.GetAllocatedBytesForCurrentThread();
             for (var i = 0; i < prepareRecords.Length; i++)
+            {
                 serializer.PrepareAsync(prepareRecords[i], context).GetAwaiter().GetResult();
+            }
             minPrepareAllocated = Math.Min(
                 minPrepareAllocated,
                 GC.GetAllocatedBytesForCurrentThread() - prepareBefore);
@@ -616,7 +620,9 @@ public sealed class SubjectNameStrategyTests
             serializer.Serialize(record, ref buffer, context);
             var schemaId = BinaryPrimitives.ReadInt32BigEndian(buffer.WrittenSpan.Slice(1, 4));
             if (i == 0)
+            {
                 firstSchemaId = schemaId;
+            }
             if (i == 9)
             {
                 overflowRecord = record;
@@ -809,7 +815,9 @@ public sealed class SubjectNameStrategyTests
         var recordReference = SerializeTransientRecord(serializer, CreateContext("retention-topic"));
 
         for (var i = 0; i < 3; i++)
+        {
             ForceFullCollection();
+        }
 
         await Assert.That(recordReference.TryGetTarget(out _)).IsFalse();
     }
@@ -838,7 +846,9 @@ public sealed class SubjectNameStrategyTests
         }
 
         for (var i = 0; i < 3; i++)
+        {
             ForceFullCollection();
+        }
 
         await Assert.That(overflowReferences.Record.TryGetTarget(out _)).IsFalse();
         await Assert.That(overflowReferences.Schema.TryGetTarget(out _)).IsFalse();
@@ -938,7 +948,9 @@ public sealed class SubjectNameStrategyTests
             {
                 var span = writer.GetSpan(value.Length);
                 for (var i = 0; i < value.Length; i++)
+                {
                     span[i] = (byte)value[i];
+                }
                 writer.Advance(value.Length);
             },
             subject =>

@@ -53,7 +53,10 @@ internal sealed class KeyValueStore<TKey, TValue> : IKeyValueStore<TKey, TValue>
         _valueContext = new SerializationContext { Topic = topic, Component = SerializationComponent.Value };
     }
 
-    public string Name { get; }
+    public string Name
+    {
+        get;
+    }
 
     public long Count => _bytes.Count;
 
@@ -208,7 +211,6 @@ internal sealed class WindowStore<TKey, TValue> : IRestorableStore, IWindowEntry
                 ? BinaryPrimitives.ReadInt64BigEndian(bytes.Span)
                 : -1;
         }
-
         set
         {
             Span<byte> marker = stackalloc byte[sizeof(long)];

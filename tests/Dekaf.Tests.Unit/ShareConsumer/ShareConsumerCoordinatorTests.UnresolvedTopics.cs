@@ -227,7 +227,9 @@ public sealed partial class ShareConsumerCoordinatorTests
         // Joins with the late topic pending, then the heartbeat loop is fenced.
         await coordinator.EnsureActiveGroupAsync(cancellationToken);
         while (coordinator.State != CoordinatorState.Unjoined)
+        {
             await Task.Delay(1, cancellationToken);
+        }
         await coordinator.StopHeartbeatAsync();
         await coordinator.UnresolvedAssignmentRefreshTask.WaitAsync(cancellationToken);
 
@@ -361,9 +363,13 @@ public sealed partial class ShareConsumerCoordinatorTests
     {
         List<TopicMetadata> topics = [];
         if (includeFirstTopic)
+        {
             topics.Add(CreateTopic("first", firstTopicId ?? KnownTopicId));
+        }
         if (includeLateTopic)
+        {
             topics.Add(CreateTopic("late", LateTopicId));
+        }
 
         return new MetadataResponse
         {
@@ -380,11 +386,19 @@ public sealed partial class ShareConsumerCoordinatorTests
             [
                 new PartitionMetadata
                 {
-                    ErrorCode = ErrorCode.None, PartitionIndex = 0, LeaderId = 0, ReplicaNodes = [0], IsrNodes = [0]
+                    ErrorCode = ErrorCode.None,
+                    PartitionIndex = 0,
+                    LeaderId = 0,
+                    ReplicaNodes = [0],
+                    IsrNodes = [0]
                 },
                 new PartitionMetadata
                 {
-                    ErrorCode = ErrorCode.None, PartitionIndex = 1, LeaderId = 0, ReplicaNodes = [0], IsrNodes = [0]
+                    ErrorCode = ErrorCode.None,
+                    PartitionIndex = 1,
+                    LeaderId = 0,
+                    ReplicaNodes = [0],
+                    IsrNodes = [0]
                 }
             ]
         };
@@ -416,7 +430,11 @@ public sealed partial class ShareConsumerCoordinatorTests
                 {
                     Coordinators = [new Coordinator
                     {
-                        Key = groupId, NodeId = 0, Host = "broker-0", Port = 9092, ErrorCode = ErrorCode.None
+                        Key = groupId,
+                        NodeId = 0,
+                        Host = "broker-0",
+                        Port = 9092,
+                        ErrorCode = ErrorCode.None
                     }]
                 }));
             connection.SendAsync<ShareGroupHeartbeatRequest, ShareGroupHeartbeatResponse>(
@@ -445,14 +463,26 @@ public sealed partial class ShareConsumerCoordinatorTests
                 .Returns(ValueTask.FromResult(connection));
         }
 
-        public ShareConsumerOptions Options { get; }
+        public ShareConsumerOptions Options
+        {
+            get;
+        }
 
-        public IConnectionPool Pool { get; }
+        public IConnectionPool Pool
+        {
+            get;
+        }
 
-        public Func<int, ValueTask<ShareGroupHeartbeatResponse>> Heartbeat { get; set; } =
+        public Func<int, ValueTask<ShareGroupHeartbeatResponse>> Heartbeat
+        {
+            get; set;
+        } =
             static _ => throw new InvalidOperationException("No heartbeat response scripted.");
 
-        public Func<int, ValueTask<MetadataResponse>> Metadata { get; set; } =
+        public Func<int, ValueTask<MetadataResponse>> Metadata
+        {
+            get; set;
+        } =
             static _ => throw new InvalidOperationException("No metadata response scripted.");
 
         public int HeartbeatRequests => Volatile.Read(ref _heartbeatRequests);

@@ -41,7 +41,9 @@ public sealed class AdminClientTransportRetryTests
             .Returns(_ =>
             {
                 if (Interlocked.Increment(ref calls) <= 5)
+                {
                     throw new SocketException((int)SocketError.ConnectionRefused);
+                }
 
                 return ValueTask.FromResult(new ConsumerGroupDescribeResponse
                 {
@@ -82,7 +84,9 @@ public sealed class AdminClientTransportRetryTests
             .Returns(_ =>
             {
                 if (Interlocked.Increment(ref calls) <= 5)
+                {
                     throw new IOException("connection reset by peer");
+                }
 
                 return ValueTask.FromResult(new DescribeConfigsResponse
                 {
@@ -644,9 +648,13 @@ public sealed class AdminClientTransportRetryTests
         var exception = await Assert.ThrowsAsync<KafkaTimeoutException>(async () =>
         {
             if (api == nameof(IAdminClient.FenceProducersAsync))
+            {
                 await admin.FenceProducersAsync(["txn-1"]);
+            }
             else
+            {
                 await admin.ForceTerminateTransactionAsync("txn-1");
+            }
         });
 
         await Assert.That(exception!.TimeoutKind).IsEqualTo(TimeoutKind.Api);

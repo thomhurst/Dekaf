@@ -40,7 +40,9 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue>
     private Dictionary<int, List<TopicPartition>>? TakePollPartitionGroups(int partitionCount)
     {
         if (_pollPartitionGroupsInUse)
+        {
             return null;
+        }
         if (partitionCount < _peakGroupedPartitions / 4)
         {
             _pollPartitionGroups = null;
@@ -55,7 +57,9 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue>
     private void ReturnPollPartitionGroups()
     {
         if (!_pollPartitionGroupsInUse)
+        {
             return;
+        }
         foreach (var list in _pollPartitionGroups!.Values)
         {
             list.Clear();
@@ -68,7 +72,9 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue>
     private void AbandonPollPartitionGroups()
     {
         if (!_pollPartitionGroupsInUse)
+        {
             return;
+        }
         // Abandoned requests may still read these lists; let them go instead of reusing them.
         _pollPartitionGroups = null;
         _pollPartitionGroupsInUse = false;
@@ -76,12 +82,18 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue>
 
     private bool RemoveBufferedRecordsOutsideAssignment(TopicPartitionSet assignment)
     {
-        if (ReferenceEquals(_bufferedAssignment, assignment)) return false;
+        if (ReferenceEquals(_bufferedAssignment, assignment))
+        {
+            return false;
+        }
         _bufferedAssignment = assignment;
         // Assignment changes are infrequent. Release undisclosed ranges before the
         // next fetch, whose inline acknowledgements only cover assigned partitions.
         var released = _pendingFetches is not null && ReleasePendingFetchAcquisitions(assignment);
-        if (_bufferedPartitions is null) return released;
+        if (_bufferedPartitions is null)
+        {
+            return released;
+        }
 
         var retainedCount = 0;
         for (var index = _bufferedPartitionIndex; index < _bufferedPartitions.Count; index++)
@@ -90,7 +102,9 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue>
             var firstRecord = index == _bufferedPartitionIndex ? _bufferedRecordIndex : partition.FirstRecord;
             var record = partition.Records[firstRecord];
             if (assignment.Contains(new TopicPartition(record.Topic, record.Partition)))
+            {
                 _bufferedPartitions[retainedCount++] = partition with { FirstRecord = firstRecord };
+            }
             else
             {
                 ReleaseBufferedAcquisitions(partition, firstRecord);
@@ -101,7 +115,9 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue>
         }
         _bufferedPartitions.RemoveRange(retainedCount, _bufferedPartitions.Count - retainedCount);
         if (retainedCount == 0)
+        {
             _bufferedBatchOwners?.Clear();
+        }
         _bufferedPartitionIndex = 0;
         _bufferedRecordIndex = retainedCount == 0 ? 0 : _bufferedPartitions[0].FirstRecord;
         return released;
@@ -171,9 +187,13 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue>
 
                 if (_pendingParserState.CurrentBatch is null &&
                     _pendingParserState.NextBatchByteOffset >= partition.RecordBytes.Length)
+                {
                     AdvancePendingPartition();
+                }
                 if (parsed.Count != 0)
+                {
                     return true;
+                }
                 continue;
             }
             else if (partition.AcquiredRecords.Count != 0)
@@ -199,7 +219,10 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue>
 
     private void RestoreRawBuffer(int writtenCount)
     {
-        if (_rawBuffer is null) return;
+        if (_rawBuffer is null)
+        {
+            return;
+        }
         // Failed preparation disclosed no new slices. Keep earlier partitions readable
         // without accumulating another copy of the failed prefix on every cancellation.
         _rawBuffer.ResetWrittenCount();
@@ -259,7 +282,9 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue>
                     hasRetainedKey,
                     retainedKey);
                 if (pendingPreparation is null)
+                {
                     break;
+                }
 
                 if (previousPreparationOffset == pendingPreparation.Offset &&
                     previousPreparationComponent == pendingPreparation.Component)
@@ -316,17 +341,17 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue>
 
     private static DeserializerPreparationParserState CreateParserCheckpoint(
         in DeserializerPreparationParserState parserState) => new()
-    {
-        // A cancelled window is undisclosed. Decode its first batch again on retry,
-        // skipping records from earlier successful windows without deserializing them.
-        NextBatchByteOffset = parserState.CurrentBatch is { } batch
-            ? parserState.NextBatchByteOffset - RecordBatch.BatchBodyOffset - batch.BatchLength
-            : parserState.NextBatchByteOffset,
-        RecordIndex = parserState.RecordIndex,
-        AcquiredRecordIndex = parserState.AcquiredRecordIndex,
-        NextGapOffset = parserState.NextGapOffset,
-        GapRangeIndex = parserState.GapRangeIndex
-    };
+        {
+            // A cancelled window is undisclosed. Decode its first batch again on retry,
+            // skipping records from earlier successful windows without deserializing them.
+            NextBatchByteOffset = parserState.CurrentBatch is { } batch
+                ? parserState.NextBatchByteOffset - RecordBatch.BatchBodyOffset - batch.BatchLength
+                : parserState.NextBatchByteOffset,
+            RecordIndex = parserState.RecordIndex,
+            AcquiredRecordIndex = parserState.AcquiredRecordIndex,
+            NextGapOffset = parserState.NextGapOffset,
+            GapRangeIndex = parserState.GapRangeIndex
+        };
 
     private void CompleteBufferedParsing(ref DeserializerPreparationParserState parserState,
         in DeserializerPreparationParserState checkpoint, List<Task<ShareFetchBrokerResult>> pendingFetches,
@@ -338,7 +363,9 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue>
         {
             _pendingParserState = completed ? parserState : checkpoint;
             if (completed)
+            {
                 parserState = default;
+            }
         }
         parserState.DisposeCurrentBatch();
     }
@@ -348,7 +375,9 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue>
         if (_rawRecords is not null)
         {
             foreach (var record in parsed)
+            {
                 _rawRecords.Remove(new TopicPartitionOffset(record.Topic, record.Partition, record.Offset));
+            }
         }
         ReleaseUndisclosedBatchOwners(firstOwner);
     }
@@ -377,7 +406,9 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue>
                 while (_pendingTopicIndex < response.Responses.Count)
                 {
                     if (_pendingPartitionIndex < response.Responses[_pendingTopicIndex].Partitions.Count)
+                    {
                         return;
+                    }
                     _pendingTopicIndex++;
                     _pendingPartitionIndex = 0;
                 }
@@ -393,7 +424,10 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue>
 
     private void RemoveBufferedRenewalDuplicates(int remaining)
     {
-        if (_bufferedPartitions is null) return;
+        if (_bufferedPartitions is null)
+        {
+            return;
+        }
         for (var index = _bufferedPartitionIndex; index < _bufferedPartitions.Count && remaining > 0; index++)
         {
             var partition = _bufferedPartitions[index];
@@ -439,7 +473,9 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue>
             {
                 var owner = result.RetainedBatchOwner;
                 if (owner is { Generation: 0 } && pinnedOwner is not null && pinnedOwner.SharesStorageWith(owner))
+                {
                     owner = pinnedOwner;
+                }
                 if (owner is not null && !ReferenceEquals(owner, pinnedOwner))
                 {
                     // One reference per delivered batch in this round, not per record.
@@ -449,13 +485,17 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue>
                     pinnedOwner = owner;
                 }
                 if (owner is not null)
+                {
                     result.AttachBatchOwner(owner);
+                }
             }
             _acquisitionStartedTimestamp = partition.ReceivedTimestamp;
             _bufferedRecordIndex = recordIndex + 1;
             _bufferedRecordCount--;
             if (_bufferedRecordIndex == partition.Records.Count)
+            {
                 FinishBufferedPartition(partition);
+            }
             return true;
         }
 
@@ -488,18 +528,26 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue>
         if (_pendingFetches is not null)
         {
             if (releaseAcquisitions)
+            {
                 ReleasePendingFetchAcquisitions();
+            }
             if (_recordBatchScopes != 0)
             {
                 if (_deferredFetchDisposal is null)
+                {
                     _deferredFetchDisposal = _pendingFetches;
+                }
                 else
+                {
                     _deferredFetchDisposal.AddRange(_pendingFetches);
+                }
             }
             else
             {
                 foreach (var task in _pendingFetches)
+                {
                     task.GetAwaiter().GetResult().Response?.Dispose();
+                }
             }
             _pendingFetches = null;
         }
@@ -508,7 +556,10 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue>
         _pendingTopicIndex = 0;
         _pendingPartitionIndex = 0;
         _bufferedAssignment = null;
-        if (_bufferedPartitions is null) return;
+        if (_bufferedPartitions is null)
+        {
+            return;
+        }
         for (var index = _bufferedPartitionIndex; index < _bufferedPartitions.Count; index++)
         {
             var partition = _bufferedPartitions[index];
@@ -529,9 +580,14 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue>
 
     private void DisposeDeferredFetches()
     {
-        if (_deferredFetchDisposal is null) return;
+        if (_deferredFetchDisposal is null)
+        {
+            return;
+        }
         foreach (var task in _deferredFetchDisposal)
+        {
             task.GetAwaiter().GetResult().Response?.Dispose();
+        }
         _deferredFetchDisposal = null;
     }
 
@@ -541,21 +597,33 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue>
         for (var brokerIndex = _pendingBrokerIndex; brokerIndex < _pendingFetches!.Count; brokerIndex++)
         {
             var response = _pendingFetches[brokerIndex].GetAwaiter().GetResult().Response;
-            if (response is null || response.ErrorCode != ErrorCode.None) continue;
+            if (response is null || response.ErrorCode != ErrorCode.None)
+            {
+                continue;
+            }
             var firstTopic = brokerIndex == _pendingBrokerIndex ? _pendingTopicIndex : 0;
             for (var topicIndex = firstTopic; topicIndex < response.Responses.Count; topicIndex++)
             {
                 var topic = response.Responses[topicIndex];
                 var topicInfo = _metadataManager.Metadata.GetTopic(topic.TopicId);
-                if (topicInfo is null) continue;
+                if (topicInfo is null)
+                {
+                    continue;
+                }
                 var firstPartition = brokerIndex == _pendingBrokerIndex && topicIndex == _pendingTopicIndex
                     ? _pendingPartitionIndex : 0;
                 for (var partitionIndex = firstPartition; partitionIndex < topic.Partitions.Count; partitionIndex++)
                 {
                     var partition = topic.Partitions[partitionIndex];
-                    if (partition.ErrorCode != ErrorCode.None) continue;
+                    if (partition.ErrorCode != ErrorCode.None)
+                    {
+                        continue;
+                    }
                     var tp = new TopicPartition(topicInfo.Name, partition.PartitionIndex);
-                    if (retainedAssignment is not null && retainedAssignment.Contains(tp)) continue;
+                    if (retainedAssignment is not null && retainedAssignment.Contains(tp))
+                    {
+                        continue;
+                    }
                     for (var rangeIndex = 0; rangeIndex < partition.AcquiredRecords.Count; rangeIndex++)
                     {
                         var range = partition.AcquiredRecords[rangeIndex];
@@ -566,7 +634,9 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue>
                             // Parsed-but-undisclosed records are released from the buffered
                             // lists below. Do not release an already disclosed prefix again.
                             if (_pendingPartitionLastParsedOffset >= range.LastOffset)
+                            {
                                 continue;
+                            }
                             firstOffset = Math.Max(firstOffset, _pendingPartitionLastParsedOffset + 1);
                         }
                         _ackTracker.ReleaseUndeliveredRecords(tp, firstOffset, range.LastOffset);

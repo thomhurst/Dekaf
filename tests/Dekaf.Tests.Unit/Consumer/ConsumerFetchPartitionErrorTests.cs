@@ -188,9 +188,15 @@ public sealed class ConsumerFetchPartitionErrorTests
                 .Returns(_ => OnMetadataConnectionRequested());
         }
 
-        public IConnectionPool Pool { get; }
+        public IConnectionPool Pool
+        {
+            get;
+        }
 
-        public TaskCompletionSource MetadataRefreshRequested { get; } =
+        public TaskCompletionSource MetadataRefreshRequested
+        {
+            get;
+        } =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         public MetadataManager CreateMetadataManager()
@@ -316,7 +322,9 @@ public sealed class ConsumerFetchPartitionErrorTests
             consumer,
             [1, new List<TopicPartition> { Partition0, Partition1 }, GetFetchBufferEpoch(consumer), CancellationToken.None]);
         if (result is not ValueTask<List<PendingFetchData>?> valueTask)
+        {
             throw new InvalidOperationException("FetchFromBrokerAsync returned unexpected type");
+        }
 
         return await valueTask.ConfigureAwait(false);
     }
@@ -333,7 +341,9 @@ public sealed class ConsumerFetchPartitionErrorTests
             consumer,
             [1, new List<TopicPartition> { Partition0 }, 0, 1, 0, GetFetchBufferEpoch(consumer), CancellationToken.None]);
         if (result is not ValueTask valueTask)
+        {
             throw new InvalidOperationException("PrefetchFromBrokerAsync returned unexpected type");
+        }
 
         await valueTask.ConfigureAwait(false);
     }
@@ -347,7 +357,9 @@ public sealed class ConsumerFetchPartitionErrorTests
 
         var result = method.Invoke(consumer, [CancellationToken.None]);
         if (result is not ValueTask<Dictionary<int, List<TopicPartition>>> valueTask)
+        {
             throw new InvalidOperationException("GroupPartitionsByBrokerAsync returned unexpected type");
+        }
 
         return await valueTask.ConfigureAwait(false);
     }
@@ -369,7 +381,9 @@ public sealed class ConsumerFetchPartitionErrorTests
         lock (cacheLock)
         {
             foreach (var partition in backoffs.Keys.ToList())
+            {
                 backoffs[partition] = 0;
+            }
         }
 
         var cacheField = type.GetField("_cachedPartitionsByBroker", BindingFlags.NonPublic | BindingFlags.Instance)
@@ -380,7 +394,9 @@ public sealed class ConsumerFetchPartitionErrorTests
         var expiry = entryType.GetProperty("ExpiresAtTimestamp")
             ?? throw new InvalidOperationException("ExpiresAtTimestamp not found");
         if ((long)expiry.GetValue(cached)! == long.MaxValue)
+        {
             throw new InvalidOperationException("Cached grouping does not record the backoff expiry");
+        }
 
         lock (cacheLock)
         {
@@ -411,18 +427,24 @@ public sealed class ConsumerFetchPartitionErrorTests
 
         var pending = (ConcurrentDictionary<string, Task>)field.GetValue(consumer)!;
         if (pending.TryGetValue(Topic, out var task))
+        {
             await task.ConfigureAwait(false);
+        }
     }
 
     private static void DisposeAndReturn(List<PendingFetchData>? pendingItems)
     {
         if (pendingItems is null)
+        {
             return;
+        }
 
         try
         {
             foreach (var pending in pendingItems)
+            {
                 pending.Dispose();
+            }
         }
         finally
         {

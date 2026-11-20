@@ -27,7 +27,10 @@ public abstract class KafkaTestContainer : IAsyncInitializer, IAsyncDisposable
         "size=$(wc -c < /testcontainers.sh); sleep 0.1; done; " +
         "exec /bin/sh /testcontainers.sh";
 
-    internal static ComposableEnumerable<string> StartupCommandOverride { get; } =
+    internal static ComposableEnumerable<string> StartupCommandOverride
+    {
+        get;
+    } =
         new OverwriteEnumerable<string>([StartupCommand]);
 
     private KafkaContainer? _container;
@@ -56,13 +59,22 @@ public abstract class KafkaTestContainer : IAsyncInitializer, IAsyncDisposable
 
     private readonly ConcurrentDictionary<string, byte> _createdTopics = new();
 
-    public abstract string ContainerName { get; }
-    public abstract int Version { get; }
+    public abstract string ContainerName
+    {
+        get;
+    }
+    public abstract int Version
+    {
+        get;
+    }
 
     /// <summary>
     /// The Kafka bootstrap servers connection string.
     /// </summary>
-    public string BootstrapServers { get; protected set; } = string.Empty;
+    public string BootstrapServers
+    {
+        get; protected set;
+    } = string.Empty;
 
     /// <summary>
     /// Hook to customize the <see cref="KafkaBuilder"/> before the container is built.
@@ -331,6 +343,8 @@ public abstract class KafkaTestContainer : IAsyncInitializer, IAsyncDisposable
         _container = null;
 
         if (container is not null)
+        {
             await container.DisposeAsync().ConfigureAwait(false);
+        }
     }
 }

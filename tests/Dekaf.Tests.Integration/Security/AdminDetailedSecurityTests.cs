@@ -56,7 +56,9 @@ public sealed class AdminDetailedSecurityTests(AclKafkaContainer kafka)
             {
                 described = await admin.DescribeAclsAsync(filter, cancellationToken: timeout.Token);
                 if (described.Count == 0)
+                {
                     await Task.Delay(100, timeout.Token);
+                }
             } while (described.Count == 0);
             await AssertBindingAsync(described.Single(), binding);
 
@@ -135,6 +137,9 @@ public sealed class AdminDetailedSecurityTests(AclKafkaContainer kafka)
 
     private static UserScramCredentialUpsertion Upsert(string user, int iterations) => new()
     {
-        User = user, Mechanism = ScramMechanism.ScramSha256, Iterations = iterations, Password = "integration-fixture-password"
+        User = user,
+        Mechanism = ScramMechanism.ScramSha256,
+        Iterations = iterations,
+        Password = "integration-fixture-password"
     };
 }

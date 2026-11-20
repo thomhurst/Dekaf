@@ -197,17 +197,26 @@ public sealed class ResourcePattern
     /// <summary>
     /// The resource type.
     /// </summary>
-    public required ResourceType Type { get; init; }
+    public required ResourceType Type
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The resource name.
     /// </summary>
-    public required string Name { get; init; }
+    public required string Name
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The pattern type.
     /// </summary>
-    public PatternType PatternType { get; init; } = PatternType.Literal;
+    public PatternType PatternType
+    {
+        get; init;
+    } = PatternType.Literal;
 
     /// <summary>
     /// Creates a resource pattern for a topic.
@@ -248,23 +257,35 @@ public sealed class AccessControlEntry
     /// <summary>
     /// The principal (e.g., "User:alice").
     /// </summary>
-    public required string Principal { get; init; }
+    public required string Principal
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The host from which the principal is allowed/denied access.
     /// Use "*" for all hosts.
     /// </summary>
-    public string Host { get; init; } = "*";
+    public string Host
+    {
+        get; init;
+    } = "*";
 
     /// <summary>
     /// The operation being allowed or denied.
     /// </summary>
-    public required AclOperation Operation { get; init; }
+    public required AclOperation Operation
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The permission type (Allow or Deny).
     /// </summary>
-    public required AclPermissionType Permission { get; init; }
+    public required AclPermissionType Permission
+    {
+        get; init;
+    }
 }
 
 /// <summary>
@@ -275,12 +296,18 @@ public sealed class AclBinding
     /// <summary>
     /// The resource pattern this ACL applies to.
     /// </summary>
-    public required ResourcePattern Pattern { get; init; }
+    public required ResourcePattern Pattern
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The access control entry.
     /// </summary>
-    public required AccessControlEntry Entry { get; init; }
+    public required AccessControlEntry Entry
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Creates an ACL binding that allows the specified operation.
@@ -323,37 +350,58 @@ public sealed class AclBindingFilter
     /// <summary>
     /// The resource type to filter on, or Any to match all.
     /// </summary>
-    public ResourceType ResourceType { get; init; } = ResourceType.Any;
+    public ResourceType ResourceType
+    {
+        get; init;
+    } = ResourceType.Any;
 
     /// <summary>
     /// The resource name to filter on, or null to match all.
     /// </summary>
-    public string? ResourceName { get; init; }
+    public string? ResourceName
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The pattern type to filter on, or Any to match all.
     /// </summary>
-    public PatternType PatternType { get; init; } = PatternType.Any;
+    public PatternType PatternType
+    {
+        get; init;
+    } = PatternType.Any;
 
     /// <summary>
     /// The principal to filter on, or null to match all.
     /// </summary>
-    public string? Principal { get; init; }
+    public string? Principal
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The host to filter on, or null to match all.
     /// </summary>
-    public string? Host { get; init; }
+    public string? Host
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The operation to filter on, or Any to match all.
     /// </summary>
-    public AclOperation Operation { get; init; } = AclOperation.Any;
+    public AclOperation Operation
+    {
+        get; init;
+    } = AclOperation.Any;
 
     /// <summary>
     /// The permission type to filter on, or Any to match all.
     /// </summary>
-    public AclPermissionType Permission { get; init; } = AclPermissionType.Any;
+    public AclPermissionType Permission
+    {
+        get; init;
+    } = AclPermissionType.Any;
 
     /// <summary>
     /// Creates a filter that matches all ACLs.
@@ -386,7 +434,10 @@ public sealed class CreateAclsOptions
     /// <summary>
     /// The timeout in milliseconds for the request.
     /// </summary>
-    public int TimeoutMs { get; init; } = 30000;
+    public int TimeoutMs
+    {
+        get; init;
+    } = 30000;
 }
 
 /// <summary>
@@ -397,7 +448,10 @@ public sealed class DeleteAclsOptions
     /// <summary>
     /// The timeout in milliseconds for the request.
     /// </summary>
-    public int TimeoutMs { get; init; } = 30000;
+    public int TimeoutMs
+    {
+        get; init;
+    } = 30000;
 }
 
 /// <summary>
@@ -408,5 +462,8 @@ public sealed class DescribeAclsOptions
     /// <summary>
     /// The timeout in milliseconds for the request.
     /// </summary>
-    public int TimeoutMs { get; init; } = 30000;
+    public int TimeoutMs
+    {
+        get; init;
+    } = 30000;
 }

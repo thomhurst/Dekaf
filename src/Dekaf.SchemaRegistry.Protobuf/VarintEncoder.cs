@@ -76,10 +76,14 @@ internal static class VarintEncoder
         ArgumentNullException.ThrowIfNull(values);
 
         if (values.Length == 0)
+        {
             throw new ArgumentException("Message index array cannot be empty.", nameof(values));
+        }
 
         if (values.Length == 1 && values[0] == 0)
+        {
             return [0x00];
+        }
 
         var bytes = new byte[CalculateMessageIndexArraySize(values, useDeprecatedFormat)];
         WriteMessageIndexArray(bytes, values, useDeprecatedFormat);

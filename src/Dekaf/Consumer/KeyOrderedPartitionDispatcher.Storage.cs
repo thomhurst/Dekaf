@@ -35,7 +35,10 @@ internal sealed partial class KeyOrderedPartitionDispatcher<TKey, TValue>
         if (UseCompactKeys)
         {
             var lane = Unsafe.As<KeyLane>(_freeLanes);
-            if (lane is null) return new KeyLane();
+            if (lane is null)
+            {
+                return new KeyLane();
+            }
             _freeLanes = lane.StorageOrNext;
             lane.StorageOrNext = null;
             return lane;
@@ -66,12 +69,16 @@ internal sealed partial class KeyOrderedPartitionDispatcher<TKey, TValue>
             // A displaced compact lane retains storage in the completed worker,
             // because its storage slot cannot also carry a free-pool link.
             foreach (var worker in _freeWorkers)
+            {
                 worker.Lane?.ReleaseKey();
+            }
         }
         else
         {
             foreach (var lane in Unsafe.As<Stack<KeyLane>>(_freeLanes!))
+            {
                 lane.ReleaseKey();
+            }
         }
     }
 
@@ -83,8 +90,14 @@ internal sealed partial class KeyOrderedPartitionDispatcher<TKey, TValue>
 
     private void AddLane(PartitionMessageKey<TKey> key, KeyLane lane)
     {
-        if (UseCompactKeys) CompactLanes.Add(new(key), lane);
-        else StandardLanes.Add(key, lane);
+        if (UseCompactKeys)
+        {
+            CompactLanes.Add(new(key), lane);
+        }
+        else
+        {
+            StandardLanes.Add(key, lane);
+        }
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -95,7 +108,9 @@ internal sealed partial class KeyOrderedPartitionDispatcher<TKey, TValue>
     private ref KeyLane? GetLaneEntry(PartitionMessageKey<TKey> key)
     {
         if (UseCompactKeys)
+        {
             return ref CollectionsMarshal.GetValueRefOrAddDefault(CompactLanes, new(key), out _);
+        }
         return ref CollectionsMarshal.GetValueRefOrAddDefault(StandardLanes, key, out _);
     }
 
@@ -109,13 +124,19 @@ internal sealed partial class KeyOrderedPartitionDispatcher<TKey, TValue>
         if (UseCompactKeys)
         {
             var lanes = CompactLanes;
-            foreach (var lane in lanes.Values) lane?.ReleaseKey();
+            foreach (var lane in lanes.Values)
+            {
+                lane?.ReleaseKey();
+            }
             lanes.Clear();
         }
         else
         {
             var lanes = StandardLanes;
-            foreach (var lane in lanes.Values) lane?.ReleaseKey();
+            foreach (var lane in lanes.Values)
+            {
+                lane?.ReleaseKey();
+            }
             lanes.Clear();
         }
     }

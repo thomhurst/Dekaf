@@ -10,7 +10,10 @@ namespace Dekaf.Benchmarks.Benchmarks.Unit;
 public class OutboxHintDrainBenchmarks
 {
     [Params(8, 1024, 8193, 1000001)]
-    public int BucketCount { get; set; }
+    public int BucketCount
+    {
+        get; set;
+    }
 
     private Action<int> _add = null!;
     private Action _addUnknown = null!;
@@ -18,6 +21,7 @@ public class OutboxHintDrainBenchmarks
     private readonly int[] _output = new int[1];
     private int _bucket;
     private ServiceProvider _provider = null!;
+
     private delegate int DrainHints(Span<int> destination, out bool unknown);
 
     [GlobalSetup]

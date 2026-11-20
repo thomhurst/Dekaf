@@ -111,7 +111,9 @@ public sealed class ProtobufSchemaRegistryDeserializer<T>
         CancellationToken cancellationToken)
     {
         if (context is { IsNull: true, Component: SerializationComponent.Value })
+        {
             return default;
+        }
 
         if (_config.SchemaIdStrategy == SchemaIdDeserializerStrategy.Prefix)
         {
@@ -278,7 +280,9 @@ public sealed class ProtobufSchemaRegistryDeserializer<T>
     void IRecordHeaderRoutingProvider.CollectHeaderNames(List<string> names)
     {
         if (_config.SchemaIdStrategy == SchemaIdDeserializerStrategy.Prefix)
+        {
             return;
+        }
 
         AddHeaderName(names, SchemaIdentityHeaderNames.Key);
         AddHeaderName(names, SchemaIdentityHeaderNames.Value);
@@ -291,7 +295,9 @@ public sealed class ProtobufSchemaRegistryDeserializer<T>
         string? preparedSubject)
     {
         if (context is { IsNull: true, Component: SerializationComponent.Value })
+        {
             return default!;
+        }
 
         var identity = SchemaIdentityFraming.Read(
             data.Span,
@@ -326,7 +332,9 @@ public sealed class ProtobufSchemaRegistryDeserializer<T>
             ? GetGuidSchemaCached(schemaGuid, context)
             : null;
         if (guidSchema is not null)
+        {
             schemaId = guidSchema.SchemaId;
+        }
 
         // Optionally validate the schema exists (with timeout to prevent indefinite hang)
         Schema? schema = guidSchema?.Schema;
@@ -352,8 +360,7 @@ public sealed class ProtobufSchemaRegistryDeserializer<T>
                     schema = _schemaRegistry.GetSchemaSync(schemaId, SchemaRegistryTimeout);
                 }
             }
-            catch (Exception exception) when (
-                _config.SkipSchemaValidation &&
+            catch (Exception exception) when (_config.SkipSchemaValidation &&
                 _inlineRuleExecutor is not null &&
                 _config.RuleExecutor is null &&
                 _migrationRunner is null &&
@@ -363,7 +370,9 @@ public sealed class ProtobufSchemaRegistryDeserializer<T>
             }
 
             if (!_config.SkipSchemaValidation && schema!.SchemaType != SchemaType.Protobuf)
+            {
                 throw new InvalidOperationException($"Schema {schemaId} is not a Protobuf schema (type: {schema.SchemaType})");
+            }
         }
 
         // Read the message indexes (varints)
@@ -373,14 +382,18 @@ public sealed class ProtobufSchemaRegistryDeserializer<T>
         var indexes = indexesMemory.Span;
         var (indexCount, bytesRead) = ReadVarint(indexes, _config.UseDeprecatedFormat);
         if (indexCount < 0)
+        {
             throw new InvalidOperationException("Message index array length cannot be negative");
+        }
 
         // Skip past the index array
         for (var i = 0; i < indexCount; i++)
         {
             var (index, indexBytesRead) = ReadVarint(indexes[bytesRead..], _config.UseDeprecatedFormat);
             if (index < 0)
+            {
                 throw new InvalidOperationException("Message index cannot be negative");
+            }
             bytesRead += indexBytesRead;
         }
 
@@ -414,7 +427,9 @@ public sealed class ProtobufSchemaRegistryDeserializer<T>
         {
             var subject = validationSubject ?? GetSubjectName(schemaId, schema, context);
             if (guidSchema is null && schema is not null && ruleSubject is null)
+            {
                 schema = _schemaRegistry.GetSchemaSync(schemaId, subject, SchemaRegistryTimeout);
+            }
             if (_migrationRunner is null)
             {
                 var ruleContext = SchemaRegistryRuleContext.Rent(
@@ -594,7 +609,9 @@ public sealed class ProtobufSchemaRegistryDeserializer<T>
         }
 
         if (_ruleExecutor is null && _inlineRuleExecutor is null && _migrationRunner is null)
+        {
             return new GuidResolvedSchema(-1, null, unscopedSchema);
+        }
 
         var subject = _subjectNames is null
             ? SubjectNameResolver.GetTopicSubjectName(key.Topic, key.IsKey)
@@ -642,7 +659,9 @@ public sealed class ProtobufSchemaRegistryDeserializer<T>
     private static void AddHeaderName(List<string> names, string name)
     {
         if (!names.Contains(name))
+        {
             names.Add(name);
+        }
     }
 
     private static string GetIdentityHeaderName(SerializationComponent component) => component switch
@@ -703,11 +722,15 @@ public sealed class ProtobufSchemaRegistryDeserializer<T>
             bytesRead++;
             rawValue |= (ulong)(b & 0x7F) << shift;
             if ((b & 0x80) == 0)
+            {
                 return (DecodeVarint(rawValue, useDeprecatedFormat), bytesRead);
+            }
             shift += 7;
 
             if (shift >= 35)
+            {
                 throw new InvalidOperationException("Varint is too long");
+            }
         }
 
         throw new InvalidOperationException("Varint is truncated");
@@ -718,17 +741,23 @@ public sealed class ProtobufSchemaRegistryDeserializer<T>
         if (useDeprecatedFormat)
         {
             if (rawValue > int.MaxValue)
+            {
                 throw new InvalidOperationException("Varint value is too large");
+            }
 
             return (int)rawValue;
         }
 
         var decoded = (long)(rawValue >> 1);
         if ((rawValue & 1) != 0)
+        {
             decoded = ~decoded;
+        }
 
         if (decoded is < int.MinValue or > int.MaxValue)
+        {
             throw new InvalidOperationException("Varint value is too large");
+        }
 
         return (int)decoded;
     }
@@ -737,7 +766,9 @@ public sealed class ProtobufSchemaRegistryDeserializer<T>
     public ValueTask DisposeAsync()
     {
         if (_ownsClient)
+        {
             _schemaRegistry.Dispose();
+        }
         return ValueTask.CompletedTask;
     }
 }

@@ -16,7 +16,10 @@ namespace Dekaf.Benchmarks.Benchmarks.Unit;
 public class OutboxPendingDiscoveryBenchmarks
 {
     [Params(0, 1000, 100000)]
-    public int PendingRows { get; set; }
+    public int PendingRows
+    {
+        get; set;
+    }
 
     private SqliteConnection _connection = null!;
     private EfCoreOutboxStore<Context> _store = null!;
@@ -34,7 +37,9 @@ public class OutboxPendingDiscoveryBenchmarks
         _store = new EfCoreOutboxStore<Context>(factory);
         await _store.AcquireBucketLeasesAsync(new OutboxLeaseRequest
         {
-            RelayId = "benchmark", BucketCount = 8, LeaseDuration = TimeSpan.FromHours(1)
+            RelayId = "benchmark",
+            BucketCount = 8,
+            LeaseDuration = TimeSpan.FromHours(1)
         });
         using var transaction = _connection.BeginTransaction();
         using var command = _connection.CreateCommand();
@@ -53,7 +58,9 @@ public class OutboxPendingDiscoveryBenchmarks
         transaction.Commit();
         var pending = await Probe();
         if (pending.Count != (PendingRows == 0 ? 0 : 8))
+        {
             throw new InvalidOperationException("Unexpected pending bucket count.");
+        }
     }
 
     [Benchmark]

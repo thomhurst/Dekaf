@@ -15,29 +15,44 @@ public sealed class ShareAcknowledgeRequest : IKafkaRequest<ShareAcknowledgeResp
     /// <summary>
     /// The group ID.
     /// </summary>
-    public required string GroupId { get; init; }
+    public required string GroupId
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The member ID.
     /// </summary>
-    public required string MemberId { get; init; }
+    public required string MemberId
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The current share session epoch.
     /// </summary>
-    public int ShareSessionEpoch { get; init; }
+    public int ShareSessionEpoch
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Whether this is a renew acknowledgement (v2+ only).
     /// When true, the broker treats the acknowledgement as a renewal of previously
     /// sent acknowledgements rather than new ones.
     /// </summary>
-    public bool IsRenewAck { get; init; }
+    public bool IsRenewAck
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The topics containing the partitions to acknowledge.
     /// </summary>
-    public required IReadOnlyList<ShareAcknowledgeTopic> Topics { get; init; }
+    public required IReadOnlyList<ShareAcknowledgeTopic> Topics
+    {
+        get; init;
+    }
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {
@@ -66,12 +81,18 @@ public sealed class ShareAcknowledgeTopic
     /// <summary>
     /// The topic ID (UUID).
     /// </summary>
-    public required Guid TopicId { get; init; }
+    public required Guid TopicId
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The partitions containing acknowledgement batches.
     /// </summary>
-    public required IReadOnlyList<ShareAcknowledgePartition> Partitions { get; init; }
+    public required IReadOnlyList<ShareAcknowledgePartition> Partitions
+    {
+        get; init;
+    }
 
     public void Write(ref KafkaProtocolWriter writer)
     {
@@ -106,12 +127,18 @@ public sealed class ShareAcknowledgePartition
     /// <summary>
     /// The partition index.
     /// </summary>
-    public int PartitionIndex { get; init; }
+    public int PartitionIndex
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The acknowledgement batches for this partition.
     /// </summary>
-    public required IReadOnlyList<ShareAcknowledgeBatch> AcknowledgementBatches { get; init; }
+    public required IReadOnlyList<ShareAcknowledgeBatch> AcknowledgementBatches
+    {
+        get; init;
+    }
 
     public void Write(ref KafkaProtocolWriter writer)
     {
@@ -147,18 +174,27 @@ public sealed class ShareAcknowledgeBatch
     /// <summary>
     /// The first offset in this acknowledgement batch.
     /// </summary>
-    public long FirstOffset { get; init; }
+    public long FirstOffset
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The last offset in this acknowledgement batch.
     /// </summary>
-    public long LastOffset { get; init; }
+    public long LastOffset
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The acknowledge types for each offset in the range.
     /// Each byte represents the acknowledge type for the corresponding offset.
     /// </summary>
-    public required IReadOnlyList<byte> AcknowledgeTypes { get; init; }
+    public required IReadOnlyList<byte> AcknowledgeTypes
+    {
+        get; init;
+    }
 
     public void Write(ref KafkaProtocolWriter writer)
     {

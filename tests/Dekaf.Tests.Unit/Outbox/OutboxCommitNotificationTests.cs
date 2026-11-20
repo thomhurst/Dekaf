@@ -92,9 +92,13 @@ public sealed class OutboxCommitNotificationTests
         using var database = new Database();
         await using var context = database.CreateContext();
         for (var index = 1; index <= 1024; index++)
+        {
             context.Attach(new BusinessRow { Id = index });
+        }
         if (outboxRow)
+        {
             context.Set<OutboxMessage>().Add(Row());
+        }
         var detectionPasses = 0;
         context.ChangeTracker.DetectedAllChanges += (_, _) => detectionPasses++;
 
@@ -114,9 +118,13 @@ public sealed class OutboxCommitNotificationTests
         var row = Row();
         context.Set<OutboxMessage>().Add(row);
         if (asynchronous)
+        {
             await context.SaveChangesAsync(acceptAllChangesOnSuccess: false);
+        }
         else
+        {
             context.SaveChanges(acceptAllChangesOnSuccess: false);
+        }
 
         await Assert.That(database.Notifier.Count).IsEqualTo(1);
         await Assert.That(context.Entry(row).State).IsEqualTo(EntityState.Added);
@@ -150,7 +158,9 @@ public sealed class OutboxCommitNotificationTests
         using var database = new Database();
         await using var context = database.CreateContext();
         for (var index = 0; index < 1024; index++)
+        {
             context.Attach(Row(index + 1));
+        }
         context.Add(new BusinessRow { Id = 1 });
 
         await context.SaveChangesAsync();
@@ -177,7 +187,9 @@ public sealed class OutboxCommitNotificationTests
         {
             await using var context = await factory.CreateDbContextAsync();
             if (iteration == 1)
+            {
                 await context.Database.EnsureCreatedAsync();
+            }
             await Assert.That(context.ContextId.Lease).IsGreaterThan(previousLease);
             previousLease = context.ContextId.Lease;
             await SaveAsync(context, asynchronous);
@@ -202,9 +214,13 @@ public sealed class OutboxCommitNotificationTests
         observer.ObserveAmbientCommit(transaction);
         await Assert.That(notifier.Count).IsEqualTo(0);
         if (rollback)
+        {
             transaction.Rollback();
+        }
         else
+        {
             transaction.Commit();
+        }
         await Assert.That(notifier.Count).IsEqualTo(rollback ? 0 : 1);
     }
 
@@ -262,14 +278,22 @@ public sealed class OutboxCommitNotificationTests
         if (rollback)
         {
             if (asynchronous)
+            {
                 await transaction.RollbackAsync();
+            }
             else
+            {
                 transaction.Rollback();
+            }
         }
         else if (asynchronous)
+        {
             await transaction.CommitAsync();
+        }
         else
+        {
             transaction.Commit();
+        }
 
         await Assert.That(database.Notifier.Count).IsEqualTo(rollback ? 0 : 1);
         await Assert.That(await context.Set<OutboxMessage>().CountAsync()).IsEqualTo(rollback ? 0 : 2);
@@ -334,7 +358,10 @@ public sealed class OutboxCommitNotificationTests
         var nested = false;
         context.SavedChanges += (_, _) =>
         {
-            if (nested) return;
+            if (nested)
+            {
+                return;
+            }
             nested = true;
             context.SaveChanges();
         };
@@ -373,22 +400,31 @@ public sealed class OutboxCommitNotificationTests
     private static Task SaveAsync(DbContext context, bool asynchronous)
     {
         if (asynchronous)
+        {
             return context.SaveChangesAsync();
+        }
         context.SaveChanges();
         return Task.CompletedTask;
     }
 
     private static OutboxMessage Row(long id = 0) => new()
     {
-        Id = id, MessageId = Guid.NewGuid(), Topic = "outbox-notification", Bucket = 0,
-        Value = [1], CreatedAtUtc = DateTimeOffset.UnixEpoch
+        Id = id,
+        MessageId = Guid.NewGuid(),
+        Topic = "outbox-notification",
+        Bucket = 0,
+        Value = [1],
+        CreatedAtUtc = DateTimeOffset.UnixEpoch
     };
 
     private sealed class Database : IDisposable
     {
         private readonly SqliteConnection _connection = new("Data Source=:memory:");
         private readonly DbContextOptions<Context> _options;
-        public CountingNotifier Notifier { get; } = new();
+        public CountingNotifier Notifier
+        {
+            get;
+        } = new();
 
         public Database(params IInterceptor[] interceptors)
         {
@@ -416,8 +452,14 @@ public sealed class OutboxCommitNotificationTests
 
     private sealed class BusinessRow
     {
-        public int Id { get; set; }
-        public List<OutboxMessage> OutboxMessages { get; } = [];
+        public int Id
+        {
+            get; set;
+        }
+        public List<OutboxMessage> OutboxMessages
+        {
+            get;
+        } = [];
     }
 
     private sealed class CancelFirstSaveCommand : DbCommandInterceptor
@@ -442,7 +484,10 @@ public sealed class OutboxCommitNotificationTests
 
     private sealed class CountingNotifier : IOutboxNotifier
     {
-        public int Count { get; private set; }
+        public int Count
+        {
+            get; private set;
+        }
         public void NotifyCommitted() => Count++;
         public ValueTask WaitAsync(TimeSpan timeout, CancellationToken cancellationToken = default)
             => throw new NotSupportedException();

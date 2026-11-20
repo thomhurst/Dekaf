@@ -334,7 +334,9 @@ public sealed class SchemaRegistryGuidTests
         {
             var guid = GuidFromInt(index);
             if (client.TryGetCachedSchema(guid, null, out var schema))
+            {
                 mismatches += Guid.Parse(schema.SchemaString) == guid ? 0 : 1;
+            }
         }
 
         await Assert.That(mismatches).IsEqualTo(0);
@@ -489,7 +491,10 @@ public sealed class SchemaRegistryGuidTests
     private sealed class RecordingHandler(
         Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>>? send = null) : HttpMessageHandler
     {
-        public List<HttpRequestMessage> Requests { get; } = [];
+        public List<HttpRequestMessage> Requests
+        {
+            get;
+        } = [];
 
         protected override Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request,

@@ -17,7 +17,10 @@ public class AcknowledgementCommitCallbackBenchmarks
     private List<AcknowledgementBatchData> _batches = null!;
 
     [Params(1, 1_000)]
-    public int RecordCount { get; set; }
+    public int RecordCount
+    {
+        get; set;
+    }
 
     [GlobalSetup]
     public void Setup()
@@ -72,7 +75,9 @@ public class AcknowledgementCommitCallbackBenchmarks
         for (var resultIndex = 0; resultIndex < results.Length; resultIndex++)
         {
             foreach (var offset in results[resultIndex].Offsets)
+            {
                 checksum += offset;
+            }
         }
 
         Volatile.Write(ref s_checksum, checksum);
@@ -82,7 +87,9 @@ public class AcknowledgementCommitCallbackBenchmarks
     {
         var count = 0;
         for (var batchIndex = 0; batchIndex < batches.Count; batchIndex++)
+        {
             count = checked(count + batches[batchIndex].AcknowledgeTypes.Length);
+        }
 
         var offsets = new long[count];
         var index = 0;
@@ -90,7 +97,9 @@ public class AcknowledgementCommitCallbackBenchmarks
         {
             var batch = batches[batchIndex];
             for (var offsetIndex = 0; offsetIndex < batch.AcknowledgeTypes.Length; offsetIndex++)
+            {
                 offsets[index++] = batch.FirstOffset + offsetIndex;
+            }
         }
 
         return offsets;
@@ -111,7 +120,9 @@ public class AcknowledgementCommitCallbackBenchmarks
         {
             var offsets = results[resultIndex].Offsets;
             for (var offsetIndex = 0; offsetIndex < offsets.Length; offsetIndex++)
+            {
                 checksum += offsets[offsetIndex];
+            }
         }
 
         Volatile.Write(ref s_checksum, checksum);

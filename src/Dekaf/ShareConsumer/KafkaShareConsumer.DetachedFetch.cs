@@ -40,7 +40,9 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue>
         // Custom connections cannot separate the write from the response wait. Without a
         // context to observe, treat a failure after handing them the request as potentially submitted.
         if (requestContext is null)
+        {
             fetchContext.MarkWriteStarted();
+        }
         return SendHostedRequestAsync<ShareFetchRequest, ShareFetchResponse>(
             connection, request, version, requestContext, cancellationToken);
     }
@@ -56,7 +58,9 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue>
         ShareFetchBrokerResult[] results;
         // A hosted stop keeps waiting so that close can release what the replies acquired.
         if (_hostedProcessing || !cancellationToken.CanBeCanceled)
+        {
             results = await fetches.ConfigureAwait(false);
+        }
         else
         {
             try
@@ -71,7 +75,9 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue>
             }
         }
         if (resumed)
+        {
             ForgetDetachedCancellation(results);
+        }
         return results;
     }
 
@@ -83,7 +89,9 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue>
         for (var index = 0; index < results.Length; index++)
         {
             if (results[index].Error is OperationCanceledException)
+            {
                 results[index] = results[index].WithoutRequestError();
+            }
         }
     }
 
@@ -104,10 +112,14 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue>
     private async ValueTask SettleDetachedFetchAsync(CancellationToken cancellationToken)
     {
         if (_detachedFetch is not { Results: null } detached)
+        {
             return;
+        }
         var results = await Task.WhenAll(detached.Tasks).WaitAsync(cancellationToken).ConfigureAwait(false);
         if (!ReferenceEquals(_detachedFetch, detached) || detached.Results is not null)
+        {
             return;
+        }
         ForgetDetachedCancellation(results);
         detached.Results = results;
         ReturnPollPartitionGroups();
@@ -127,7 +139,9 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue>
     private async ValueTask CloseDetachedFetchAsync(CancellationToken cancellationToken)
     {
         if (_detachedFetch is null)
+        {
             return;
+        }
         try
         {
             await SettleDetachedFetchAsync(cancellationToken).ConfigureAwait(false);
@@ -146,7 +160,9 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue>
     private void AbandonDetachedFetch()
     {
         if (TakeDetachedFetch() is not { } detached)
+        {
             return;
+        }
         if (detached.Results is null)
         {
             // In-flight requests still read the routing scratch and acknowledgement lists.
@@ -170,10 +186,22 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue>
         Dictionary<TopicPartition, List<AcknowledgementBatchData>>? pendingAcks,
         int sentAcknowledgementPartitionCount)
     {
-        internal List<Task<ShareFetchBrokerResult>> Tasks { get; } = tasks;
-        internal Dictionary<TopicPartition, List<AcknowledgementBatchData>>? PendingAcks { get; } = pendingAcks;
-        internal int SentAcknowledgementPartitionCount { get; } = sentAcknowledgementPartitionCount;
+        internal List<Task<ShareFetchBrokerResult>> Tasks
+        {
+            get;
+        } = tasks;
+        internal Dictionary<TopicPartition, List<AcknowledgementBatchData>>? PendingAcks
+        {
+            get;
+        } = pendingAcks;
+        internal int SentAcknowledgementPartitionCount
+        {
+            get;
+        } = sentAcknowledgementPartitionCount;
         // Set once CompletePollFetch has processed the responses outside a poll.
-        internal ShareFetchBrokerResult[]? Results { get; set; }
+        internal ShareFetchBrokerResult[]? Results
+        {
+            get; set;
+        }
     }
 }

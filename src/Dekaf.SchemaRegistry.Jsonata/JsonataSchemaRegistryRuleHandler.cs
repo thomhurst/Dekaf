@@ -70,7 +70,9 @@ public sealed class JsonataSchemaRegistryRuleHandler : ISchemaRegistryRuleTransf
             var input = JToken.Parse(StrictUtf8.GetString(payload.Span));
             var compiledRule = _rules.GetValue(rule, static configuredRule => Compile(configuredRule));
             if (compiledRule.PreservesPayloadRepresentation)
+            {
                 return payload;
+            }
 
             result = compiledRule.Query.Eval(input);
         }
@@ -100,7 +102,9 @@ public sealed class JsonataSchemaRegistryRuleHandler : ISchemaRegistryRuleTransf
             }
 
             if (!(bool)result)
+            {
                 throw new SchemaRegistryRuleException($"JSONata condition rule '{rule.Name}' evaluated to false.");
+            }
 
             return payload;
         }
@@ -126,7 +130,9 @@ public sealed class JsonataSchemaRegistryRuleHandler : ISchemaRegistryRuleTransf
     private static CompiledRule Compile(SchemaRule rule)
     {
         if (string.IsNullOrWhiteSpace(rule.Expr))
+        {
             throw new SchemaRegistryRuleException($"JSONata rule '{rule.Name}' has no expression.");
+        }
 
         try
         {

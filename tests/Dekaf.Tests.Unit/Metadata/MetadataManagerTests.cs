@@ -630,7 +630,9 @@ public class MetadataManagerTests
             .Returns(_ =>
             {
                 if (Interlocked.Increment(ref attempts) == 2)
+                {
                     retried.TrySetResult();
+                }
                 return ValueTask.FromException<IKafkaConnection>(
                     new SocketException((int)SocketError.ConnectionRefused));
             });
@@ -670,7 +672,9 @@ public class MetadataManagerTests
             .Returns(_ =>
             {
                 if (Interlocked.Increment(ref attempts) == 2)
+                {
                     retried.TrySetResult();
+                }
                 return ValueTask.FromException<IKafkaConnection>(CreateDnsFailure("localhost", 9092));
             });
         await using var manager = new MetadataManager(
@@ -863,7 +867,9 @@ public class MetadataManagerTests
                 // so the fetch has a cause to report, whatever the scheduling delays.
                 if (!call.Arg<CancellationToken>().IsCancellationRequested
                     && Interlocked.Increment(ref fetchAttempts) == 2)
+                {
                     _ = Volatile.Read(ref endBudget)!.CancelAsync();
+                }
                 return ValueTask.FromException<IKafkaConnection>(
                     new SocketException((int)SocketError.ConnectionRefused));
             });
@@ -963,11 +969,17 @@ public class MetadataManagerTests
 
         // Each lookup path needs a cold cache, so each gets its own manager.
         await using (var manager = new MetadataManager(pool, ["localhost:9092"], options))
+        {
             await Assert.That(await manager.GetTopicMetadataAsync("orders", cancellationToken)).IsNotNull();
+        }
         await using (var manager = new MetadataManager(pool, ["localhost:9092"], options))
+        {
             await Assert.That(manager.WaitForTopicMetadataSync("orders", 30_000)).IsNotNull();
+        }
         await using (var manager = new MetadataManager(pool, ["localhost:9092"], options))
+        {
             await manager.RefreshMetadataAsync(["orders"], cancellationToken: cancellationToken);
+        }
 
         var topicRequests = connection.ReceivedCalls()
             .Select(call => call.GetArguments()[0])
@@ -1826,7 +1838,10 @@ public class MetadataManagerTests
         public string Host => "localhost";
         public int Port => 9092;
         public bool IsConnected => true;
-        public bool AllRequestsLeased { get; private set; } = true;
+        public bool AllRequestsLeased
+        {
+            get; private set;
+        } = true;
         public int LeaseCount => Volatile.Read(ref _leaseCount);
         int IRetirableKafkaConnection.ActiveOperationCount => 0;
 
@@ -1901,8 +1916,12 @@ public class MetadataManagerTests
         }
 
         void IRetirableKafkaConnection.ReleaseLease() => Interlocked.Decrement(ref _leaseCount);
-        void IRetirableKafkaConnection.BeginRetirement() { }
-        void IRetirableKafkaConnection.CompleteRetirement() { }
+        void IRetirableKafkaConnection.BeginRetirement()
+        {
+        }
+        void IRetirableKafkaConnection.CompleteRetirement()
+        {
+        }
     }
 
     private sealed class CapturingLogger<T> : ILogger<T>
@@ -1915,7 +1934,9 @@ public class MetadataManagerTests
             get
             {
                 lock (_gate)
+                {
                     return _entries.ToArray();
+                }
             }
         }
 
@@ -1931,7 +1952,9 @@ public class MetadataManagerTests
             Func<TState, Exception?, string> formatter)
         {
             lock (_gate)
+            {
                 _entries.Add(new LogEntry(logLevel, formatter(state, exception)));
+            }
         }
     }
 
@@ -1984,7 +2007,9 @@ public class MetadataManagerTests
             connectionFactory: async (_, host, _, _, ct) =>
             {
                 if (host == "broker-1")
+                {
                     return healthy;
+                }
 
                 Interlocked.Increment(ref silentAttempts);
                 await Task.Delay(Timeout.Infinite, ct);
@@ -2000,7 +2025,9 @@ public class MetadataManagerTests
         var attemptsAfterInitialize = Volatile.Read(ref silentAttempts);
 
         for (var i = 0; i < 3; i++)
+        {
             await manager.RefreshMetadataAsync(cancellationToken);
+        }
 
         // No new attempt on the silent broker means no refresh paid its setup timeout.
         await Assert.That(attemptsAfterInitialize).IsEqualTo(1);
@@ -2071,9 +2098,11 @@ public class MetadataManagerTests
         CancellationToken cancellationToken)
     {
         var misrouted = false;
+
         MetadataResponse Respond() => Volatile.Read(ref misrouted)
             ? new MetadataResponse { ErrorCode = ErrorCode.RebootstrapRequired, Brokers = [], Topics = [] }
             : CreateMetadataResponse((0, "broker-0", 9092), (1, "broker-1", 9093));
+
         var bootstrap = CreateRespondingConnection(-1, "kafka.example", 9092, Respond);
         var brokerZero = CreateRespondingConnection(0, "broker-0", 9092, Respond);
         var brokerOne = CreateRespondingConnection(1, "broker-1", 9093, Respond);
@@ -2166,6 +2195,7 @@ public class MetadataManagerTests
         const int Initializing = 0, BootstrapUnavailable = 1, BrokerZeroMisrouted = 2;
         var phase = Initializing;
         var brokerZeroRequests = 0;
+
         MetadataResponse ClusterMetadata() =>
             CreateMetadataResponse((0, "broker-0", 9092), (1, "broker-1", 9093));
 
@@ -2245,7 +2275,9 @@ public class MetadataManagerTests
             connectionFactory: async (_, host, port, _, token) =>
             {
                 lock (connectedHosts)
+                {
                     connectedHosts.Add(host);
+                }
 
                 // Mirror KafkaConnection: connect to the first address in DNS order and make it
                 // the preference once TCP is accepted, then run the handshake against it.
@@ -2253,7 +2285,9 @@ public class MetadataManagerTests
                 var address = endpoints[0].Address;
                 resolver.MarkSuccessful(host, port, ClientDnsLookup.UseAllDnsIps, address);
                 if (address.Equals(IPAddress.Parse("10.0.0.1")))
+                {
                     throw new SocketException((int)SocketError.ConnectionReset);
+                }
 
                 return secondAddress;
             });
@@ -2299,9 +2333,13 @@ public class MetadataManagerTests
                 var endpoints = await resolver.ResolveAsync(host, port, ClientDnsLookup.UseAllDnsIps, token);
                 var address = endpoints[0].Address;
                 lock (connectedAddresses)
+                {
                     connectedAddresses.Add(address.ToString());
+                }
                 if (address.Equals(IPAddress.Parse("10.0.0.2")))
+                {
                     throw new SocketException((int)SocketError.ConnectionReset);
+                }
 
                 resolver.MarkSuccessful(host, port, ClientDnsLookup.UseAllDnsIps, address);
                 return healthy;

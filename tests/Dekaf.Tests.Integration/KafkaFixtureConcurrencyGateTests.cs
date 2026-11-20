@@ -26,7 +26,9 @@ public sealed class KafkaFixtureConcurrencyGateTests
         var gate = KafkaFixtureConcurrencyGate.Get(fixture);
 
         for (var i = 0; i < KafkaFixtureConcurrencyGate.MaximumConcurrencyPerFixture; i++)
+        {
             await gate.WaitAsync();
+        }
 
         var waiting = gate.WaitAsync();
         await Assert.That(waiting.IsCompleted).IsFalse();
@@ -35,7 +37,9 @@ public sealed class KafkaFixtureConcurrencyGateTests
         await waiting.WaitAsync(TimeSpan.FromSeconds(1));
 
         for (var i = 0; i < KafkaFixtureConcurrencyGate.MaximumConcurrencyPerFixture; i++)
+        {
             gate.Release();
+        }
     }
 
     private sealed class StubKafkaTestContainer(string name) : KafkaTestContainer

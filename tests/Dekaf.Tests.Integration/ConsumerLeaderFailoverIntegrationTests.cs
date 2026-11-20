@@ -57,7 +57,9 @@ public sealed class ConsumerLeaderFailoverIntegrationTests(RackAwareKafkaContain
         {
             scenarioCancellation.Cancel();
             if (stoppedBrokerId is { } brokerId)
+            {
                 await kafka.StartBrokerAsync(brokerId, CancellationToken.None).ConfigureAwait(false);
+            }
         }
     }
 
@@ -119,7 +121,9 @@ public sealed class ConsumerLeaderFailoverIntegrationTests(RackAwareKafkaContain
         {
             scenarioCancellation.Cancel();
             if (stoppedBrokerId is { } brokerId)
+            {
                 await kafka.StartBrokerAsync(brokerId, CancellationToken.None).ConfigureAwait(false);
+            }
         }
     }
 
@@ -172,7 +176,9 @@ public sealed class ConsumerLeaderFailoverIntegrationTests(RackAwareKafkaContain
             await ConsumeUntilAsync(consumer, consumed, beforeLeaderChange, scenarioCancellation.Token)
                 .ConfigureAwait(false);
             if (consumer.GetPosition(partition) != beforeLeaderChange)
+            {
                 throw new InvalidOperationException($"Expected position {beforeLeaderChange} before the leader change.");
+            }
 
             stoppedBrokerId = await kafka.GetPartitionLeaderIdAsync(topic, scenarioCancellation.Token)
                 .ConfigureAwait(false);
@@ -209,7 +215,9 @@ public sealed class ConsumerLeaderFailoverIntegrationTests(RackAwareKafkaContain
         {
             scenarioCancellation.Cancel();
             if (stoppedBrokerId is { } brokerId)
+            {
                 await kafka.StartBrokerAsync(brokerId, CancellationToken.None).ConfigureAwait(false);
+            }
         }
 
         for (var index = 0; index < total; index++)
@@ -244,7 +252,9 @@ public sealed class ConsumerLeaderFailoverIntegrationTests(RackAwareKafkaContain
             var result = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(5), cancellationToken)
                 .ConfigureAwait(false);
             if (result is not null)
+            {
                 consumed.Add(result.Value);
+            }
         }
     }
 
@@ -261,7 +271,9 @@ public sealed class ConsumerLeaderFailoverIntegrationTests(RackAwareKafkaContain
         try
         {
             while (consumer.GetWatermarkOffsets(partition) is not { } watermarks || watermarks.High < highWatermark)
+            {
                 await Task.Delay(50, bound.Token).ConfigureAwait(false);
+            }
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
@@ -321,7 +333,9 @@ public sealed class ConsumerLeaderFailoverIntegrationTests(RackAwareKafkaContain
             var result = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(5), cancellationToken)
                 .ConfigureAwait(false);
             if (result is null)
+            {
                 continue;
+            }
 
             results.Add(result.Value);
             firstConsumed.TrySetResult();
@@ -333,7 +347,9 @@ public sealed class ConsumerLeaderFailoverIntegrationTests(RackAwareKafkaContain
     private static void AssertCompleteSequence(IReadOnlyList<ConsumeResult<string, string>> consumed)
     {
         if (consumed.Count != MessageCount)
+        {
             throw new InvalidOperationException($"Expected {MessageCount} records, actual {consumed.Count}.");
+        }
 
         for (var index = 0; index < MessageCount; index++)
         {

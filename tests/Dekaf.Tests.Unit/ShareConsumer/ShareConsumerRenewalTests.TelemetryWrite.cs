@@ -48,9 +48,12 @@ public sealed partial class ShareConsumerRenewalTests
                 await releaseLease.Task.WaitAsync(token);
                 return connection;
             }
-            : null);
+        : null);
         var metrics = EnableShareTelemetry(fixture.Consumer);
-        if (subscribeDuringLease) metrics.Disable();
+        if (subscribeDuringLease)
+        {
+            metrics.Disable();
+        }
         using var requestCancellation = new CancellationTokenSource();
         var request = InvokeTelemetryRequest(fixture.Consumer, kind, requestCancellation.Token);
         var canceled = false;
@@ -65,7 +68,10 @@ public sealed partial class ShareConsumerRenewalTests
             await gate.Entered.Task.WaitAsync(cancellationToken);
             await Assert.That(gate.ObservedToken).IsEqualTo(requestCancellation.Token);
             await requestCancellation.CancelAsync();
-            try { await request.WaitAsync(cancellationToken); }
+            try
+            {
+                await request.WaitAsync(cancellationToken);
+            }
             catch (OperationCanceledException) when (requestCancellation.IsCancellationRequested
                 && !cancellationToken.IsCancellationRequested) { canceled = true; }
         }
@@ -77,7 +83,9 @@ public sealed partial class ShareConsumerRenewalTests
         }
 
         if (kind is TelemetryRequestKind.Fetch or TelemetryRequestKind.InlineAcknowledgements)
+        {
             await Assert.That(canceled).IsTrue();
+        }
         var fetches = kind == TelemetryRequestKind.StandaloneAcknowledgements ? 0d : 1d;
         var acknowledgements = kind is TelemetryRequestKind.InlineAcknowledgements
             or TelemetryRequestKind.StandaloneAcknowledgements ? 2d : 0d;
@@ -93,7 +101,13 @@ public sealed partial class ShareConsumerRenewalTests
         await Assert.That(ShareMetricValue(metrics, "acknowledgements.error.total")).IsEqualTo(afterWrite ? acknowledgements : 0d);
     }
 
-    public enum TelemetryRequestKind { Fetch, InlineAcknowledgements, StandaloneAcknowledgements, SessionClose }
+    public enum TelemetryRequestKind
+    {
+        Fetch,
+        InlineAcknowledgements,
+        StandaloneAcknowledgements,
+        SessionClose
+    }
 
     [Test]
     [Arguments(false)]
@@ -114,7 +128,10 @@ public sealed partial class ShareConsumerRenewalTests
         var failures = new List<Exception?>();
         await using var fixture = CreateFixture(connection, acknowledgementCommitCallback: results =>
         {
-            foreach (ref readonly var result in results) failures.Add(result.Exception);
+            foreach (ref readonly var result in results)
+            {
+                failures.Add(result.Exception);
+            }
         });
         var metrics = EnableShareTelemetry(fixture.Consumer);
         PrepareForPoll(fixture.Consumer);
@@ -144,8 +161,10 @@ public sealed partial class ShareConsumerRenewalTests
         var partition = new TopicPartition("topic", 0);
         var acknowledgements = new Dictionary<TopicPartition, List<AcknowledgementBatchData>>();
         if (kind is TelemetryRequestKind.InlineAcknowledgements or TelemetryRequestKind.StandaloneAcknowledgements)
+        {
             acknowledgements.Add(partition,
                 [new AcknowledgementBatchData(42, 44, [(byte)AcknowledgeType.Accept, (byte)AcknowledgeType.Gap, (byte)AcknowledgeType.Release])]);
+        }
         return kind switch
         {
             TelemetryRequestKind.StandaloneAcknowledgements => (Task)InvokePrivate(
@@ -161,13 +180,22 @@ public sealed partial class ShareConsumerRenewalTests
     {
         private readonly TaskCompletionSource _release = new(TaskCreationOptions.RunContinuationsAsynchronously);
         private bool _active = true;
-        internal TaskCompletionSource Entered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        internal CancellationToken ObservedToken { get; private set; }
+        internal TaskCompletionSource Entered
+        {
+            get;
+        } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        internal CancellationToken ObservedToken
+        {
+            get; private set;
+        }
         internal ValueTask BeforeWriteAsync(CancellationToken token) => afterWrite ? default : WaitAsync(token);
         internal ValueTask BeforeResponseAsync(CancellationToken token) => afterWrite ? WaitAsync(token) : default;
         private async ValueTask WaitAsync(CancellationToken token)
         {
-            if (!_active) return;
+            if (!_active)
+            {
+                return;
+            }
             ObservedToken = token;
             Entered.TrySetResult();
             await _release.Task.WaitAsync(token);

@@ -85,7 +85,9 @@ public sealed class PooledValueTaskSource<T> : IValueTaskSource<T>
     public void SetResult(T result)
     {
         if (Interlocked.CompareExchange(ref _hasCompleted, Completed, Pending) != Pending)
+        {
             return; // Already completed
+        }
         _core.SetResult(result);
     }
 
@@ -115,7 +117,9 @@ public sealed class PooledValueTaskSource<T> : IValueTaskSource<T>
     public void SetException(Exception exception)
     {
         if (Interlocked.CompareExchange(ref _hasCompleted, Completed, Pending) != Pending)
+        {
             return; // Already completed
+        }
         _core.SetException(exception);
     }
 
@@ -164,7 +168,9 @@ public sealed class PooledValueTaskSource<T> : IValueTaskSource<T>
     private void CancelFromRegistration(CancellationToken cancellationToken)
     {
         if (Interlocked.CompareExchange(ref _hasCompleted, CanceledByRegistration, Pending) != Pending)
+        {
             return;
+        }
 
         _core.SetException(new OperationCanceledException(cancellationToken));
     }
@@ -173,7 +179,9 @@ public sealed class PooledValueTaskSource<T> : IValueTaskSource<T>
     internal void RegisterCancellation(CancellationToken cancellationToken)
     {
         if (!cancellationToken.CanBeCanceled)
+        {
             return;
+        }
 
         _cancellationRegistration.Dispose();
 #if NET

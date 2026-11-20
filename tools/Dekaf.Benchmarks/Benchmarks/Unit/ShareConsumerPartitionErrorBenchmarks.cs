@@ -13,18 +13,26 @@ public class ShareConsumerPartitionErrorBenchmarks
     private ShareConsumerPollBenchmarks _poll = null!;
 
     [Params(1, 1024)]
-    public int RecordCount { get; set; }
+    public int RecordCount
+    {
+        get; set;
+    }
 
     [Params(false, true)]
-    public bool AsynchronousResponse { get; set; }
+    public bool AsynchronousResponse
+    {
+        get; set;
+    }
 
     [GlobalSetup]
     public ValueTask Setup()
     {
         _poll = new ShareConsumerPollBenchmarks
         {
-            RecordCount = RecordCount, BatchCount = 1,
-            AsynchronousResponse = AsynchronousResponse, StalePartitionError = true
+            RecordCount = RecordCount,
+            BatchCount = 1,
+            AsynchronousResponse = AsynchronousResponse,
+            StalePartitionError = true
         };
         return _poll.Setup();
     }

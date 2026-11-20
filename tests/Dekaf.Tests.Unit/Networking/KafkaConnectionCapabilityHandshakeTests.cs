@@ -3,9 +3,9 @@ using System.Buffers.Binary;
 using System.Collections.Concurrent;
 using System.Net;
 using System.Net.Sockets;
+using Dekaf.Errors;
 using Dekaf.Metadata;
 using Dekaf.Networking;
-using Dekaf.Errors;
 using Dekaf.Protocol;
 using Dekaf.Protocol.Messages;
 

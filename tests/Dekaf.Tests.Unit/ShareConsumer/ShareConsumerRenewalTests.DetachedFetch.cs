@@ -20,7 +20,9 @@ public sealed partial class ShareConsumerRenewalTests
             ShareFetchHandler = async (request, _) =>
             {
                 if (request.ShareSessionEpoch != 0)
+                {
                     return CreateFetchResponse(0, 200);
+                }
                 sent.TrySetResult();
                 await respond.Task;
                 return CreateFetchResponse(0, 100);
@@ -61,7 +63,9 @@ public sealed partial class ShareConsumerRenewalTests
             ShareFetchHandler = async (request, _) =>
             {
                 if (request.ShareSessionEpoch != 1)
+                {
                     return CreateFetchResponse(0, 200);
+                }
                 sent.TrySetResult();
                 await respond.Task;
                 return CreateFetchResponse(0, 100);
@@ -211,7 +215,9 @@ public sealed partial class ShareConsumerRenewalTests
             ShareFetchHandler = async (request, _) =>
             {
                 if (request.ShareSessionEpoch != 0)
+                {
                     return CreateFetchResponse(0, 200);
+                }
                 sent.TrySetResult();
                 await respond.Task;
                 return CreateFetchResponse(1, 100);
@@ -240,7 +246,9 @@ public sealed partial class ShareConsumerRenewalTests
         await Assert.That(poll.Current.TopicPartition).IsEqualTo(new TopicPartition("topic", 0));
         var offsets = new List<long>();
         foreach (var record in poll.Current)
+        {
             offsets.Add(record.Offset);
+        }
         await Assert.That(offsets).IsEquivalentTo([200L]);
     }
 
@@ -255,7 +263,9 @@ public sealed partial class ShareConsumerRenewalTests
             BeforeWrite = async token =>
             {
                 if (!blockWrites)
+                {
                     return;
+                }
                 waiting.TrySetResult();
                 await Task.Delay(Timeout.Infinite, token);
             },
@@ -303,7 +313,9 @@ public sealed partial class ShareConsumerRenewalTests
             ShareFetchHandler = async (request, _) =>
             {
                 if (request.ShareSessionEpoch != 1)
+                {
                     return CreateFetchResponse(0, 200);
+                }
                 sent.TrySetResult();
                 await respond.Task;
                 return CreateFetchResponse(0, 100);

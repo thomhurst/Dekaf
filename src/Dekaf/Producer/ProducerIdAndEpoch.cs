@@ -20,7 +20,13 @@ internal sealed class ProducerIdAndEpoch
         Epoch = epoch;
     }
 
-    public long ProducerId { get; }
+    public long ProducerId
+    {
+        get;
+    }
 
-    public short Epoch { get; }
+    public short Epoch
+    {
+        get;
+    }
 }

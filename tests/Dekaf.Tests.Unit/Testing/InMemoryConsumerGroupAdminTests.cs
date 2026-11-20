@@ -79,14 +79,23 @@ public sealed class InMemoryConsumerGroupAdminTests
     {
         var cluster = new InMemoryKafkaCluster();
         if (liveMembership)
+        {
             cluster.RegisterConsumerGroupMember("group", "live", [], out _);
+        }
         cluster.SetClassicGroupDescription(new()
         {
-            GroupId = "group", ProtocolType = "consumer", ProtocolData = "range", State = "Stable",
-            CoordinatorId = 12, AuthorizedOperations = 123,
+            GroupId = "group",
+            ProtocolType = "consumer",
+            ProtocolData = "range",
+            State = "Stable",
+            CoordinatorId = 12,
+            AuthorizedOperations = 123,
             Members = [new()
             {
-                MemberId = "seeded", GroupInstanceId = "instance", ClientId = "client", ClientHost = "host",
+                MemberId = "seeded",
+                GroupInstanceId = "instance",
+                ClientId = "client",
+                ClientHost = "host",
                 AssignmentData = AdminClientClassicGroupDescriptionTests.AssignmentBytes()
             }]
         });

@@ -91,12 +91,16 @@ internal sealed class PipeMemoryPool : MemoryPool<byte>
         lock (s_sharedPoolsLock)
         {
             if (s_sharedPools.TryGetValue(configuration, out var sharedPool))
+            {
                 return sharedPool;
+            }
 
             sharedPool = new PipeMemoryPool(maxArrayLength, maxArraysPerBucket);
 
             if (s_sharedPools.Count == MaxSharedPoolConfigurations)
+            {
                 s_sharedPools.Remove(s_sharedPoolOrder.Dequeue());
+            }
 
             s_sharedPools.Add(configuration, sharedPool);
             s_sharedPoolOrder.Enqueue(configuration);
@@ -109,7 +113,9 @@ internal sealed class PipeMemoryPool : MemoryPool<byte>
         get
         {
             lock (s_sharedPoolsLock)
+            {
                 return s_sharedPools.Count;
+            }
         }
     }
 
@@ -123,7 +129,9 @@ internal sealed class PipeMemoryPool : MemoryPool<byte>
         ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
 
         if (minBufferSize < 0)
+        {
             minBufferSize = 4096;
+        }
 
         var owner = _ownerPool.Rent();
         owner.Initialize(minBufferSize);
@@ -146,7 +154,9 @@ internal sealed class PipeMemoryPool : MemoryPool<byte>
         // has no Dispose method — it will be collected by the GC along with all
         // its retained arrays once no more IMemoryOwner references are alive.
         if (Interlocked.Exchange(ref _disposed, 1) != 0)
+        {
             return;
+        }
 
         _ownerPool.Dispose();
     }
@@ -198,7 +208,9 @@ internal sealed class PipeMemoryPool : MemoryPool<byte>
         public PooledMemoryOwner Create() => new(owner);
 
         // The byte array has already been returned before its owner enters this pool.
-        public void Destroy(PooledMemoryOwner item) { }
+        public void Destroy(PooledMemoryOwner item)
+        {
+        }
 
         public bool TryReset(PooledMemoryOwner item) => true;
     }

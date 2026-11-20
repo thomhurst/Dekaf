@@ -44,7 +44,10 @@ public class FetchRequestSerializationBenchmarks
     };
 
     [Params((short)6, (short)16, (short)18)]
-    public short Version { get; set; }
+    public short Version
+    {
+        get; set;
+    }
 
     [Benchmark]
     public int WriteConsumerRequest()

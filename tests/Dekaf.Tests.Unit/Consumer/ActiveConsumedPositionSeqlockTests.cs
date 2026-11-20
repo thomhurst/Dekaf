@@ -16,7 +16,9 @@ namespace Dekaf.Tests.Unit.Consumer;
 public sealed class ActiveConsumedPositionSeqlockTests
 {
     private delegate void PublishDelegate(TopicPartition partition, long position, int leaderEpoch);
+
     private delegate bool TryReadDelegate(out TopicPartition partition, out long position, out int leaderEpoch, out int version);
+
     private delegate void ClearDelegate(TopicPartition partition, long position);
 
     [Test]
@@ -83,7 +85,9 @@ public sealed class ActiveConsumedPositionSeqlockTests
             lock (violationLock)
             {
                 if (violations.Count < 10)
+                {
                     violations.Add(message);
+                }
             }
         }
 
@@ -92,7 +96,9 @@ public sealed class ActiveConsumedPositionSeqlockTests
             while (!workersStop.IsCancellationRequested)
             {
                 if (!tryRead(out var partition, out var position, out var leaderEpoch, out _))
+                {
                     continue;
+                }
 
                 if (observedPositions.TryAdd(position, 0)
                     && Interlocked.Increment(ref distinctPositionCount) == requiredDistinctPositions)
@@ -115,7 +121,9 @@ public sealed class ActiveConsumedPositionSeqlockTests
             while (!workersStop.IsCancellationRequested)
             {
                 if (tryRead(out var partition, out var position, out _, out _))
+                {
                     clear(partition, position);
+                }
             }
         });
 

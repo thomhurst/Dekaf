@@ -173,9 +173,13 @@ public class AdminConcurrencyTests
                 {
                     // If topic exists, it must be fully initialized
                     if (string.IsNullOrEmpty(topic.Name))
+                    {
                         errors.Add($"Iteration {i}: Topic has empty name");
+                    }
                     if (topic.Partitions is null)
+                    {
                         errors.Add($"Iteration {i}: Topic has null partitions");
+                    }
                 }
             });
 

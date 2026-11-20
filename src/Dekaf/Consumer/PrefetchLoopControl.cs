@@ -46,7 +46,9 @@ internal static class PrefetchLoopControl
         bool hasInFlight)
     {
         if (started > 0)
+        {
             return new PrefetchLoopDecision(PrefetchLoopAction.Continue, ReportBacklog: false, RecordFetchWait: false);
+        }
 
         if (hasInFlight)
         {

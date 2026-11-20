@@ -23,7 +23,9 @@ internal sealed class OutboxBucketHints(int bucketCount)
         // A set bit already covers this committed write. If a drain races after this
         // read, its subsequent fetch covers the write; if it races before, set again.
         if ((Volatile.Read(ref word) & bit) == 0)
+        {
             Interlocked.Or(ref word, bit);
+        }
     }
 
     public int Drain(Span<int> destination, out bool unknown)
@@ -35,7 +37,9 @@ internal sealed class OutboxBucketHints(int bucketCount)
             // Leave a concurrently arriving hint for the next signalled cycle. Empty
             // sweeps need no write barrier or cache-line invalidation.
             if (Volatile.Read(ref _words[index]) == 0)
+            {
                 continue;
+            }
             var bits = (ulong)Interlocked.Exchange(ref _words[index], 0);
             while (bits != 0)
             {

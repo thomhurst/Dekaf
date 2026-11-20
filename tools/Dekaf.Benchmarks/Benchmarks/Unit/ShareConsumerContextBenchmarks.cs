@@ -9,17 +9,25 @@ public class ShareConsumerContextBenchmarks
     private ShareConsumerParsingBenchmarks _parsing = null!;
 
     [Params(64, 1024)]
-    public int RecordCount { get; set; }
+    public int RecordCount
+    {
+        get; set;
+    }
 
     [Params(0, 2)]
-    public int HeaderCount { get; set; }
+    public int HeaderCount
+    {
+        get; set;
+    }
 
     [GlobalSetup]
     public ValueTask Setup()
     {
         _parsing = new ShareConsumerParsingBenchmarks
         {
-            RecordCount = RecordCount, HeaderCount = HeaderCount, ContextDependentDeserialization = true
+            RecordCount = RecordCount,
+            HeaderCount = HeaderCount,
+            ContextDependentDeserialization = true
         };
         return _parsing.Setup();
     }

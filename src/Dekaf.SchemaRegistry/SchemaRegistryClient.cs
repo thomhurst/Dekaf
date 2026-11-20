@@ -91,11 +91,17 @@ public sealed partial class SchemaRegistryClient : IFormattedSchemaRegistryClien
         catch
         {
             if (httpClient is not null)
+            {
                 httpClient.Dispose();
+            }
             else if (authHandler is not null)
+            {
                 authHandler.Dispose();
+            }
             else
+            {
                 handler.Dispose();
+            }
             throw;
         }
 
@@ -130,10 +136,14 @@ public sealed partial class SchemaRegistryClient : IFormattedSchemaRegistryClien
             };
 
             if (tlsConfig is not null)
+            {
                 ConfigureTls(handler, tlsConfig, certificateMaterial!);
+            }
 
             if (certificateMaterial is null)
+            {
                 return handler;
+            }
 
             return new CertificateOwningHttpMessageHandler(handler, certificateMaterial);
         }
@@ -184,7 +194,9 @@ public sealed partial class SchemaRegistryClient : IFormattedSchemaRegistryClien
         }
 
         if (!config.UseProxy && config.Proxy is not null)
+        {
             throw new ArgumentException("Proxy cannot be supplied when UseProxy is false.", nameof(config));
+        }
 
         if (config.Tls is not null && config.ClientCertificate is not null)
         {
@@ -225,7 +237,9 @@ public sealed partial class SchemaRegistryClient : IFormattedSchemaRegistryClien
         };
 
         if (config.EnabledSslProtocols is not null)
+        {
             sslOptions.EnabledSslProtocols = config.EnabledSslProtocols.Value;
+        }
 
         if (material.ClientCertificate is not null)
         {
@@ -290,7 +304,9 @@ public sealed partial class SchemaRegistryClient : IFormattedSchemaRegistryClien
         headers.Add(AcceptUnknownPropertiesHeader, "true");
 
         if (config.DefaultHeaders is null)
+        {
             return;
+        }
 
         foreach (var (name, value) in config.DefaultHeaders)
         {
@@ -334,7 +350,9 @@ public sealed partial class SchemaRegistryClient : IFormattedSchemaRegistryClien
             .ToArray();
 
         if (baseUris.Length == 0)
+        {
             throw new ArgumentException("At least one Schema Registry URL is required.", nameof(config));
+        }
 
         return baseUris;
     }
@@ -342,7 +360,9 @@ public sealed partial class SchemaRegistryClient : IFormattedSchemaRegistryClien
     private static string WithNormalizeQuery(string path, bool normalize)
     {
         if (!normalize)
+        {
             return path;
+        }
 
         return path.Contains('?', StringComparison.Ordinal)
             ? path + "&normalize=true"
@@ -353,7 +373,9 @@ public sealed partial class SchemaRegistryClient : IFormattedSchemaRegistryClien
     {
         StringBuilder? builder = null;
         foreach (var (name, value) in parameters)
+        {
             AppendQueryParameter(ref builder, path, name, value);
+        }
 
         return builder?.ToString() ?? path;
     }
@@ -373,7 +395,9 @@ public sealed partial class SchemaRegistryClient : IFormattedSchemaRegistryClien
         if (associationTypes is not null)
         {
             for (var index = 0; index < associationTypes.Count; index++)
+            {
                 AppendQueryParameter(ref builder, path, "associationType", associationTypes[index]);
+            }
         }
 
         AppendQueryParameter(ref builder, path, "lifecycle", lifecycle);
@@ -394,7 +418,9 @@ public sealed partial class SchemaRegistryClient : IFormattedSchemaRegistryClien
         string? value)
     {
         if (value is null)
+        {
             return;
+        }
 
         builder ??= new StringBuilder(path);
         builder.Append(builder.Length == path.Length ? '?' : '&');
@@ -452,7 +478,9 @@ public sealed partial class SchemaRegistryClient : IFormattedSchemaRegistryClien
                 }
 
                 if (attempt == _baseUris.Length - 1)
+                {
                     return response;
+                }
 
                 response.Dispose();
             }
@@ -463,7 +491,9 @@ public sealed partial class SchemaRegistryClient : IFormattedSchemaRegistryClien
         }
 
         if (lastException is not null)
+        {
             throw lastException;
+        }
 
         throw new SchemaRegistryException(0, "Schema Registry request failed before receiving a response.");
     }
@@ -491,7 +521,9 @@ public sealed partial class SchemaRegistryClient : IFormattedSchemaRegistryClien
         var effectiveNormalize = normalize || _config.NormalizeSchemas;
         var cacheKey = (subject, schema, effectiveNormalize);
         if (_idBySchemaCache.TryGetValue(cacheKey, out var cachedId))
+        {
             return cachedId;
+        }
 
         using var cacheRequest = BeginSubjectCacheRequest(subject);
         var request = CreateRegisterSchemaRequest(schema);
@@ -524,7 +556,9 @@ public sealed partial class SchemaRegistryClient : IFormattedSchemaRegistryClien
     public async Task<Schema> GetSchemaAsync(int id, CancellationToken cancellationToken = default)
     {
         if (_schemaByIdCache.TryGetValue(id, out var cached))
+        {
             return cached;
+        }
 
         using var response = await GetWithFailoverAsync(
             $"schemas/ids/{id}",
@@ -535,7 +569,9 @@ public sealed partial class SchemaRegistryClient : IFormattedSchemaRegistryClien
         var result = await response.Content.ReadFromJsonAsync<GetSchemaResponse>(
             SchemaRegistryJsonContext.Default.GetSchemaResponse, cancellationToken).ConfigureAwait(false);
         if (result is null)
+        {
             throw new SchemaRegistryException((int)response.StatusCode, "Schema Registry returned an empty schema response");
+        }
 
         var schema = CreateSchema(result);
 
@@ -550,12 +586,16 @@ public sealed partial class SchemaRegistryClient : IFormattedSchemaRegistryClien
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(guid);
         if (!Guid.TryParse(guid, out var parsedGuid))
+        {
             throw new ArgumentException("The schema GUID is not valid.", nameof(guid));
+        }
 
         format = NormalizeFormat(format);
         var cacheKey = (parsedGuid, format);
         if (_schemaByGuidCache.TryGetValue(cacheKey, out var cached))
+        {
             return cached;
+        }
 
         using var response = await GetWithFailoverAsync(
             WithQuery(
@@ -568,7 +608,9 @@ public sealed partial class SchemaRegistryClient : IFormattedSchemaRegistryClien
         var result = await response.Content.ReadFromJsonAsync<GetSchemaResponse>(
             SchemaRegistryJsonContext.Default.GetSchemaResponse, cancellationToken).ConfigureAwait(false);
         if (result is null)
+        {
             throw new SchemaRegistryException((int)response.StatusCode, "Schema Registry returned an empty schema response");
+        }
 
         var schema = CreateSchema(result);
         CacheGuidSchema(parsedGuid, format, schema);
@@ -604,7 +646,9 @@ public sealed partial class SchemaRegistryClient : IFormattedSchemaRegistryClien
         format = NormalizeFormat(format);
         var key = (id, subject, format);
         if (_schemaBySubjectAndIdCache.TryGetValue(key, out var cached))
+        {
             return cached;
+        }
 
         using var cacheRequest = BeginSubjectCacheRequest(subject);
         using var response = await GetWithFailoverAsync(
@@ -619,7 +663,9 @@ public sealed partial class SchemaRegistryClient : IFormattedSchemaRegistryClien
         var result = await response.Content.ReadFromJsonAsync<GetSchemaResponse>(
             SchemaRegistryJsonContext.Default.GetSchemaResponse, cancellationToken).ConfigureAwait(false);
         if (result is null)
+        {
             throw new SchemaRegistryException((int)response.StatusCode, "Schema Registry returned an empty schema response");
+        }
 
         var schema = CreateSchema(result);
         CacheSubjectSchema(id, subject, format, schema, cacheRequest.Generation);
@@ -678,7 +724,9 @@ public sealed partial class SchemaRegistryClient : IFormattedSchemaRegistryClien
         var result = await response.Content.ReadFromJsonAsync<GetSubjectVersionResponse>(
             SchemaRegistryJsonContext.Default.GetSubjectVersionResponse, cancellationToken).ConfigureAwait(false);
         if (result is null)
+        {
             throw new SchemaRegistryException((int)response.StatusCode, "Schema Registry returned an empty schema response");
+        }
 
         var schema = CreateSchema(result);
         var schemaGuid = ParseSchemaGuid(result.Guid);
@@ -691,9 +739,13 @@ public sealed partial class SchemaRegistryClient : IFormattedSchemaRegistryClien
         {
             // A deleted-inclusive lookup does not prove active subject membership.
             if (ignoreDeletedSchemas)
+            {
                 CacheSubjectSchema(result.Id, subject, format, schema, cacheRequest.Generation);
+            }
             if (schemaGuid is { } guid)
+            {
                 CacheGuidSchema(guid, format, schema);
+            }
         }
 
         return new RegisteredSchema
@@ -733,7 +785,9 @@ public sealed partial class SchemaRegistryClient : IFormattedSchemaRegistryClien
             SchemaRegistryJsonContext.Default.GetSubjectVersionResponse,
             cancellationToken).ConfigureAwait(false);
         if (result is null)
+        {
             throw new SchemaRegistryException((int)response.StatusCode, "Schema Registry returned an empty schema response");
+        }
 
         var registeredSchema = CreateSchema(result);
         var schemaGuid = ParseSchemaGuid(result.Guid);
@@ -771,7 +825,9 @@ public sealed partial class SchemaRegistryClient : IFormattedSchemaRegistryClien
         var effectiveNormalize = normalize || _config.NormalizeSchemas;
         var cacheKey = (subject, schema, effectiveNormalize);
         if (_idBySchemaCache.TryGetValue(cacheKey, out var cachedId))
+        {
             return cachedId;
+        }
 
         using var cacheRequest = BeginSubjectCacheRequest(subject);
         // Try to get existing schema first
@@ -798,7 +854,9 @@ public sealed partial class SchemaRegistryClient : IFormattedSchemaRegistryClien
         var result = await response.Content.ReadFromJsonAsync<GetSubjectVersionResponse>(
             SchemaRegistryJsonContext.Default.GetSubjectVersionResponse, cancellationToken).ConfigureAwait(false);
         if (result is null)
+        {
             throw new SchemaRegistryException((int)response.StatusCode, "Schema Registry returned an empty schema response");
+        }
 
         var registeredSchema = CreateSchema(result);
         var schemaGuid = ParseSchemaGuid(result.Guid);
@@ -824,34 +882,46 @@ public sealed partial class SchemaRegistryClient : IFormattedSchemaRegistryClien
         long? subjectCacheGeneration = null)
     {
         if (_maxCachedSchemas == 0)
+        {
             return;
+        }
 
         lock (_cacheLock)
         {
             ClearCachesIfFull();
 
             if (schemaById is not null)
+            {
                 _schemaByIdCache[id] = schemaById;
+            }
             else
+            {
                 _schemaByIdCache.TryAdd(id, schema);
+            }
             if (subject is not null && IsSubjectCacheRequestCurrent(subject, subjectCacheGeneration))
             {
                 _idBySchemaCache.TryAdd((subject, schema, normalize), id);
             }
             if (schemaGuid is { } guid)
+            {
                 _schemaByGuidCache.TryAdd((guid, null), schemaById ?? schema);
+            }
         }
     }
 
     private void CacheSubjectSchema(int id, string subject, string? format, Schema schema, long cacheGeneration)
     {
         if (_maxCachedSchemas == 0)
+        {
             return;
+        }
 
         lock (_cacheLock)
         {
             if (!IsSubjectCacheRequestCurrent(subject, cacheGeneration))
+            {
                 return;
+            }
 
             ClearCachesIfFull();
 
@@ -862,13 +932,17 @@ public sealed partial class SchemaRegistryClient : IFormattedSchemaRegistryClien
     internal void CacheGuidSchema(Guid guid, string? format, Schema schema)
     {
         if (_maxCachedSchemas == 0)
+        {
             return;
+        }
 
         var cacheKey = (guid, NormalizeFormat(format));
         lock (_cacheLock)
         {
             if (_schemaByGuidCache.ContainsKey(cacheKey))
+            {
                 return;
+            }
 
             ClearCachesIfFull();
 
@@ -885,7 +959,9 @@ public sealed partial class SchemaRegistryClient : IFormattedSchemaRegistryClien
             _schemaBySubjectAndIdCache.Count < _maxCachedSchemas &&
             _idBySchemaCache.Count < _maxCachedSchemas &&
             _schemaByGuidCache.Count < _maxCachedSchemas)
+        {
             return;
+        }
 
         _schemaByIdCache.Clear();
         _schemaBySubjectAndIdCache.Clear();
@@ -896,10 +972,14 @@ public sealed partial class SchemaRegistryClient : IFormattedSchemaRegistryClien
     private static Guid? ParseSchemaGuid(string? guid)
     {
         if (guid is null)
+        {
             return null;
+        }
 
         if (Guid.TryParse(guid, out var parsedGuid))
+        {
             return parsedGuid;
+        }
 
         throw new SchemaRegistryException(0, "Schema Registry returned an invalid schema GUID.");
     }
@@ -953,8 +1033,7 @@ public sealed partial class SchemaRegistryClient : IFormattedSchemaRegistryClien
         {
             await EnsureSuccessAsync(response, cancellationToken).ConfigureAwait(false);
         }
-        catch (SchemaRegistryException exception) when (
-            response.StatusCode == HttpStatusCode.NotFound && exception.ErrorCode == 40401)
+        catch (SchemaRegistryException exception) when (response.StatusCode == HttpStatusCode.NotFound && exception.ErrorCode == 40401)
         {
             // Preserve the new-subject convenience only for a verified missing subject.
             return true;
@@ -972,7 +1051,9 @@ public sealed partial class SchemaRegistryClient : IFormattedSchemaRegistryClien
         }
 
         if (result is null)
+        {
             throw new SchemaRegistryException(0, "Schema Registry returned a null compatibility response.");
+        }
 
         return result.IsCompatible;
     }
@@ -1020,7 +1101,9 @@ public sealed partial class SchemaRegistryClient : IFormattedSchemaRegistryClien
     {
         var url = $"subjects/{Uri.EscapeDataString(subject)}";
         if (permanent)
+        {
             url += "?permanent=true";
+        }
 
         using var response = await DeleteWithFailoverAsync(url, cancellationToken).ConfigureAwait(false);
         await EnsureSuccessAsync(response, cancellationToken).ConfigureAwait(false);
@@ -1065,11 +1148,15 @@ public sealed partial class SchemaRegistryClient : IFormattedSchemaRegistryClien
             SchemaRegistryJsonContext.Default.ListAssociationDto,
             cancellationToken).ConfigureAwait(false);
         if (result is null or { Count: 0 })
+        {
             return [];
+        }
 
         var associations = new Association[result.Count];
         for (var index = 0; index < result.Count; index++)
+        {
             associations[index] = ToAssociation(result[index]);
+        }
         return associations;
     }
 
@@ -1123,10 +1210,14 @@ public sealed partial class SchemaRegistryClient : IFormattedSchemaRegistryClien
     private static string GetCompatibilityPath(string? subject)
     {
         if (subject is null)
+        {
             return "config";
+        }
 
         if (string.IsNullOrWhiteSpace(subject))
+        {
             throw new ArgumentException("Subject cannot be empty or whitespace. Use null for global configuration.", nameof(subject));
+        }
 
         return $"config/{Uri.EscapeDataString(subject)}";
     }
@@ -1195,7 +1286,9 @@ public sealed partial class SchemaRegistryClient : IFormattedSchemaRegistryClien
         var result = await response.Content.ReadFromJsonAsync<KekDto>(
             SchemaRegistryJsonContext.Default.KekDto, cancellationToken).ConfigureAwait(false);
         if (result is null)
+        {
             throw new SchemaRegistryException((int)response.StatusCode, "Schema Registry returned an empty KEK response");
+        }
 
         return ToKek(result);
     }
@@ -1216,7 +1309,9 @@ public sealed partial class SchemaRegistryClient : IFormattedSchemaRegistryClien
         var result = await response.Content.ReadFromJsonAsync<KekDto>(
             SchemaRegistryJsonContext.Default.KekDto, cancellationToken).ConfigureAwait(false);
         if (result is null)
+        {
             throw new SchemaRegistryException((int)response.StatusCode, "Schema Registry returned an empty KEK response");
+        }
 
         return ToKek(result);
     }
@@ -1274,7 +1369,9 @@ public sealed partial class SchemaRegistryClient : IFormattedSchemaRegistryClien
         var result = await response.Content.ReadFromJsonAsync<DekDto>(
             SchemaRegistryJsonContext.Default.DekDto, cancellationToken).ConfigureAwait(false);
         if (result is null)
+        {
             throw new SchemaRegistryException((int)response.StatusCode, "Schema Registry returned an empty DEK response");
+        }
 
         return ToDek(result);
     }
@@ -1298,7 +1395,9 @@ public sealed partial class SchemaRegistryClient : IFormattedSchemaRegistryClien
         var result = await response.Content.ReadFromJsonAsync<DekDto>(
             SchemaRegistryJsonContext.Default.DekDto, cancellationToken).ConfigureAwait(false);
         if (result is null)
+        {
             throw new SchemaRegistryException((int)response.StatusCode, "Schema Registry returned an empty DEK response");
+        }
 
         return ToDek(result);
     }
@@ -1321,7 +1420,9 @@ public sealed partial class SchemaRegistryClient : IFormattedSchemaRegistryClien
         var result = await response.Content.ReadFromJsonAsync<DekDto>(
             SchemaRegistryJsonContext.Default.DekDto, cancellationToken).ConfigureAwait(false);
         if (result is null)
+        {
             throw new SchemaRegistryException((int)response.StatusCode, "Schema Registry returned an empty DEK response");
+        }
 
         return ToDek(result);
     }
@@ -1346,7 +1447,9 @@ public sealed partial class SchemaRegistryClient : IFormattedSchemaRegistryClien
         var result = await response.Content.ReadFromJsonAsync<DekDto>(
             SchemaRegistryJsonContext.Default.DekDto, cancellationToken).ConfigureAwait(false);
         if (result is null)
+        {
             throw new SchemaRegistryException((int)response.StatusCode, "Schema Registry returned an empty DEK response");
+        }
 
         return ToDek(result);
     }
@@ -1524,7 +1627,9 @@ public sealed partial class SchemaRegistryClient : IFormattedSchemaRegistryClien
     private static SchemaMetadataDto? ToMetadataDto(SchemaMetadata? metadata)
     {
         if (metadata is null)
+        {
             return null;
+        }
 
         return new SchemaMetadataDto
         {
@@ -1543,7 +1648,9 @@ public sealed partial class SchemaRegistryClient : IFormattedSchemaRegistryClien
     private static SchemaMetadata? ToMetadata(SchemaMetadataDto? metadata)
     {
         if (metadata is null)
+        {
             return null;
+        }
 
         return new SchemaMetadata
         {
@@ -1559,7 +1666,9 @@ public sealed partial class SchemaRegistryClient : IFormattedSchemaRegistryClien
     private static SchemaRuleSetDto? ToRuleSetDto(SchemaRuleSet? ruleSet)
     {
         if (ruleSet is null)
+        {
             return null;
+        }
 
         return new SchemaRuleSetDto
         {
@@ -1573,7 +1682,9 @@ public sealed partial class SchemaRegistryClient : IFormattedSchemaRegistryClien
     private static SchemaRuleSet? ToRuleSet(SchemaRuleSetDto? ruleSet)
     {
         if (ruleSet is null)
+        {
             return null;
+        }
 
         return new SchemaRuleSet
         {
@@ -1680,70 +1791,69 @@ public sealed partial class SchemaRegistryClient : IFormattedSchemaRegistryClien
         };
     }
 
-    private static string FormatRuleKind(SchemaRuleKind kind)
-        => kind switch
-        {
-            SchemaRuleKind.Condition => "CONDITION",
-            _ => "TRANSFORM"
-        };
+    private static string FormatRuleKind(SchemaRuleKind kind) => kind switch
+    {
+        SchemaRuleKind.Condition => "CONDITION",
+        _ => "TRANSFORM"
+    };
 
     private static SchemaRuleKind ParseRuleKind(string? kind)
         => string.Equals(kind, "CONDITION", StringComparison.OrdinalIgnoreCase)
             ? SchemaRuleKind.Condition
             : SchemaRuleKind.Transform;
 
-    private static string FormatRuleMode(SchemaRuleMode mode)
-        => mode switch
-        {
-            SchemaRuleMode.Upgrade => "UPGRADE",
-            SchemaRuleMode.Downgrade => "DOWNGRADE",
-            SchemaRuleMode.UpDown => "UPDOWN",
-            SchemaRuleMode.Read => "READ",
-            SchemaRuleMode.Write => "WRITE",
-            SchemaRuleMode.WriteRead => "WRITEREAD",
-            _ => "WRITE"
-        };
+    private static string FormatRuleMode(SchemaRuleMode mode) => mode switch
+    {
+        SchemaRuleMode.Upgrade => "UPGRADE",
+        SchemaRuleMode.Downgrade => "DOWNGRADE",
+        SchemaRuleMode.UpDown => "UPDOWN",
+        SchemaRuleMode.Read => "READ",
+        SchemaRuleMode.Write => "WRITE",
+        SchemaRuleMode.WriteRead => "WRITEREAD",
+        _ => "WRITE"
+    };
 
-    private static SchemaRuleMode ParseRuleMode(string? mode)
-        => mode?.ToUpperInvariant() switch
-        {
-            "UPGRADE" => SchemaRuleMode.Upgrade,
-            "DOWNGRADE" => SchemaRuleMode.Downgrade,
-            "UPDOWN" => SchemaRuleMode.UpDown,
-            "READ" => SchemaRuleMode.Read,
-            "WRITEREAD" => SchemaRuleMode.WriteRead,
-            _ => SchemaRuleMode.Write
-        };
+    private static SchemaRuleMode ParseRuleMode(string? mode) => mode?.ToUpperInvariant() switch
+    {
+        "UPGRADE" => SchemaRuleMode.Upgrade,
+        "DOWNGRADE" => SchemaRuleMode.Downgrade,
+        "UPDOWN" => SchemaRuleMode.UpDown,
+        "READ" => SchemaRuleMode.Read,
+        "WRITEREAD" => SchemaRuleMode.WriteRead,
+        _ => SchemaRuleMode.Write
+    };
 
     private static string? FormatDekAlgorithm(DekAlgorithm? algorithm)
         => algorithm.HasValue ? FormatDekAlgorithm(algorithm.Value) : null;
 
-    private static string FormatDekAlgorithm(DekAlgorithm algorithm)
-        => algorithm switch
-        {
-            DekAlgorithm.Aes128Gcm => "AES128_GCM",
-            DekAlgorithm.Aes256Gcm => "AES256_GCM",
-            DekAlgorithm.Aes256Siv => "AES256_SIV",
-            _ => throw new ArgumentOutOfRangeException(nameof(algorithm), algorithm, "Unsupported DEK algorithm.")
-        };
+    private static string FormatDekAlgorithm(DekAlgorithm algorithm) => algorithm switch
+    {
+        DekAlgorithm.Aes128Gcm => "AES128_GCM",
+        DekAlgorithm.Aes256Gcm => "AES256_GCM",
+        DekAlgorithm.Aes256Siv => "AES256_SIV",
+        _ => throw new ArgumentOutOfRangeException(nameof(algorithm), algorithm, "Unsupported DEK algorithm.")
+    };
 
-    private static DekAlgorithm ParseDekAlgorithm(string? algorithm)
-        => algorithm?.ToUpperInvariant() switch
-        {
-            "AES128_GCM" => DekAlgorithm.Aes128Gcm,
-            "AES256_GCM" => DekAlgorithm.Aes256Gcm,
-            "AES256_SIV" => DekAlgorithm.Aes256Siv,
-            _ => DekAlgorithm.Unknown
-        };
+    private static DekAlgorithm ParseDekAlgorithm(string? algorithm) => algorithm?.ToUpperInvariant() switch
+    {
+        "AES128_GCM" => DekAlgorithm.Aes128Gcm,
+        "AES256_GCM" => DekAlgorithm.Aes256Gcm,
+        "AES256_SIV" => DekAlgorithm.Aes256Siv,
+        _ => DekAlgorithm.Unknown
+    };
 
     private static long? ReadTimestamp(JsonElement? value)
     {
         if (!value.HasValue)
+        {
             return null;
+        }
 
         var element = value.Value;
         if (element.ValueKind == JsonValueKind.Number && element.TryGetInt64(out var timestamp))
+        {
             return timestamp;
+        }
 
         if (element.ValueKind == JsonValueKind.Object &&
             element.TryGetProperty("timestamp", out var timestampElement) &&
@@ -1759,7 +1869,9 @@ public sealed partial class SchemaRegistryClient : IFormattedSchemaRegistryClien
     private static async Task EnsureSuccessAsync(HttpResponseMessage response, CancellationToken cancellationToken)
     {
         if (response.IsSuccessStatusCode)
+        {
             return;
+        }
 
         string? errorMessage = null;
         int? errorCode = null;
@@ -1783,7 +1895,10 @@ public sealed partial class SchemaRegistryClient : IFormattedSchemaRegistryClien
 
     public void Dispose()
     {
-        if (_disposed) return;
+        if (_disposed)
+        {
+            return;
+        }
         _disposed = true;
         _httpClient.Dispose();
     }
@@ -1799,91 +1914,139 @@ public sealed class SchemaRegistryConfig
     /// Schema Registry URL. Multiple failover URLs may be provided as a
     /// comma-separated list.
     /// </summary>
-    public required string Url { get; init; }
+    public required string Url
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Optional Schema Registry failover URLs. When set, this takes precedence
     /// over <see cref="Url"/>.
     /// </summary>
-    public IReadOnlyList<string>? Urls { get; init; }
+    public IReadOnlyList<string>? Urls
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Basic auth credentials in format "username:password".
     /// </summary>
-    public string? BasicAuthUserInfo { get; init; }
+    public string? BasicAuthUserInfo
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Static bearer token for Schema Registry requests. Takes precedence over
     /// <see cref="BasicAuthUserInfo"/> and <see cref="OAuthBearerConfig"/>.
     /// </summary>
-    public string? BearerAuthToken { get; init; }
+    public string? BearerAuthToken
+    {
+        get; init;
+    }
 
     /// <summary>
     /// OAuth 2.0 / OIDC client-credentials configuration used to fetch Schema
     /// Registry bearer tokens.
     /// </summary>
-    public OAuthBearerConfig? OAuthBearerConfig { get; init; }
+    public OAuthBearerConfig? OAuthBearerConfig
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Custom bearer token provider for Schema Registry requests. Takes
     /// precedence over static tokens and <see cref="OAuthBearerConfig"/>.
     /// </summary>
-    public Func<CancellationToken, ValueTask<OAuthBearerToken>>? OAuthBearerTokenProvider { get; init; }
+    public Func<CancellationToken, ValueTask<OAuthBearerToken>>? OAuthBearerTokenProvider
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Client certificate presented during TLS handshake for mutual TLS.
     /// </summary>
-    public X509Certificate2? ClientCertificate { get; init; }
+    public X509Certificate2? ClientCertificate
+    {
+        get; init;
+    }
 
     /// <summary>
     /// TLS certificate, trust, validation, and protocol settings for the default HTTP pipeline.
     /// Cannot be combined with a caller-supplied HTTP handler.
     /// </summary>
-    public SchemaRegistryTlsConfig? Tls { get; init; }
+    public SchemaRegistryTlsConfig? Tls
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Whether the default pipeline uses a proxy. Default is true, which uses the platform proxy.
     /// Cannot be configured when a caller supplies the HTTP pipeline.
     /// </summary>
-    public bool UseProxy { get; init; } = true;
+    public bool UseProxy
+    {
+        get; init;
+    } = true;
 
     /// <summary>
     /// Proxy used by the default HTTP pipeline.
     /// </summary>
-    public IWebProxy? Proxy { get; init; }
+    public IWebProxy? Proxy
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Default request headers applied to every Schema Registry request.
     /// Content headers, Accept, and User-Agent are rejected.
     /// </summary>
-    public IReadOnlyDictionary<string, string>? DefaultHeaders { get; init; }
+    public IReadOnlyDictionary<string, string>? DefaultHeaders
+    {
+        get; init;
+    }
 
     /// <summary>
     /// User-Agent header value. Defaults to a versioned Dekaf.SchemaRegistry product value.
     /// </summary>
-    public string? UserAgent { get; init; }
+    public string? UserAgent
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Request timeout in milliseconds. Use -1 for an infinite timeout.
     /// </summary>
-    public int RequestTimeoutMs { get; init; } = 30000;
+    public int RequestTimeoutMs
+    {
+        get; init;
+    } = 30000;
 
     /// <summary>
     /// Maximum number of schemas to cache.
     /// </summary>
-    public int MaxCachedSchemas { get; init; } = 1000;
+    public int MaxCachedSchemas
+    {
+        get; init;
+    } = 1000;
 
     /// <summary>
     /// TTL in seconds for caches holding latest schemas. Use -1 for no expiry.
     /// Default is -1.
     /// </summary>
-    public int LatestCacheTtlSecs { get; init; } = -1;
+    public int LatestCacheTtlSecs
+    {
+        get; init;
+    } = -1;
 
     /// <summary>
     /// Whether schema registration, lookup, and compatibility requests should
     /// include normalize=true.
     /// </summary>
-    public bool NormalizeSchemas { get; init; }
+    public bool NormalizeSchemas
+    {
+        get; init;
+    }
 }
 
 /// <summary>
@@ -1894,7 +2057,10 @@ public sealed class SchemaRegistryException : Exception
     /// <summary>
     /// The Schema Registry error code.
     /// </summary>
-    public int ErrorCode { get; }
+    public int ErrorCode
+    {
+        get;
+    }
 
     public SchemaRegistryException(int errorCode, string message)
         : base(message)

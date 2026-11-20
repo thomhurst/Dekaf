@@ -146,7 +146,9 @@ public sealed class DynamoDbLeasePlannerTests
 
         await Assert.That(Join(Plan(4, relays, "pod-a", leases).Claim)).IsEqualTo("2");
         foreach (var relay in new[] { "pod-m", "pod-n", "pod-p", "pod-q" })
+        {
             await Assert.That(Plan(4, relays, relay, leases).Claim).IsEmpty();
+        }
     }
 
     [Test]
@@ -160,7 +162,9 @@ public sealed class DynamoDbLeasePlannerTests
 
         var released = 0;
         foreach (var relay in relays)
+        {
             released += Plan(8, relays, relay, leases).Release.Count;
+        }
 
         await Assert.That(released).IsEqualTo(1);
         await Assert.That(Plan(8, relays, "d", leases).Release.Count).IsEqualTo(1);
@@ -244,7 +248,9 @@ public sealed class DynamoDbLeasePlannerTests
                     for (var bucket = 0; bucket < bucketCount; bucket++)
                     {
                         if (leases[bucket].Owner == leaving)
+                        {
                             leases[bucket] = default;
+                        }
                     }
                 }
                 else
@@ -260,9 +266,13 @@ public sealed class DynamoDbLeasePlannerTests
                         var before = Owned(leases, relay);
                         var plan = Plan(bucketCount, relays, relay, leases);
                         foreach (var bucket in plan.Release)
+                        {
                             leases[bucket] = default;
+                        }
                         foreach (var bucket in plan.Claim)
+                        {
                             leases[bucket] = new DynamoDbLeaseState(relay, Expired: false);
+                        }
 
                         // Whatever a relay keeps is a bucket it held: nothing is swapped.
                         await Assert.That(plan.Keep.All(before.Contains)).IsTrue();
@@ -332,7 +342,9 @@ public sealed class DynamoDbLeasePlannerTests
             }
 
             if (writes == 0)
+            {
                 settledAfter = round;
+            }
         }
 
         await Assert.That(settledAfter).IsGreaterThan(0);
@@ -351,7 +363,10 @@ public sealed class DynamoDbLeasePlannerTests
         private readonly string?[] _owners = new string?[bucketCount];
         private readonly int[] _versions = new int[bucketCount];
 
-        public int Refused { get; set; }
+        public int Refused
+        {
+            get; set;
+        }
 
         public string? Owner(int bucket) => _owners[bucket];
 
@@ -365,16 +380,22 @@ public sealed class DynamoDbLeasePlannerTests
             foreach (var bucket in plan.Keep)
             {
                 if (Write(bucket, _owners[bucket] == relay && _versions[bucket] == read.Versions[bucket], relay))
+                {
                     owned.Add(bucket);
+                }
             }
 
             foreach (var bucket in plan.Release)
+            {
                 Write(bucket, _owners[bucket] == relay && _versions[bucket] == read.Versions[bucket], owner: null);
+            }
 
             foreach (var bucket in plan.Claim)
             {
                 if (Write(bucket, _owners[bucket] is null, relay))
+                {
                     owned.Add(bucket);
+                }
             }
 
             return owned;
@@ -407,7 +428,9 @@ public sealed class DynamoDbLeasePlannerTests
         foreach (var (owner, first, last) in ranges)
         {
             for (var bucket = first; bucket <= last; bucket++)
+            {
                 leases[bucket] = new DynamoDbLeaseState(owner, Expired: false);
+            }
         }
 
         return leases;

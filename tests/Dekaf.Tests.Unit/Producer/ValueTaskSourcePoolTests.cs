@@ -202,7 +202,9 @@ public class ValueTaskSourcePoolTests
             var rented = pool.Rent();
             secondRent.Add(rented);
             if (originalSources.Contains(rented))
+            {
                 reusedCount++;
+            }
         }
 
         await Assert.That(reusedCount).IsEqualTo(maxSize);

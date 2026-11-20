@@ -46,11 +46,15 @@ internal sealed class OutboxDynamoDbCallInterceptor(
     {
         var fault = await beforeCall(executionContext.RequestContext.OriginalRequest);
         if (fault == OutboxDynamoDbFault.Throttled)
+        {
             throw new ProvisionedThroughputExceededException("Injected: the table is throttled.");
+        }
 
         var response = await base.InvokeAsync<T>(executionContext);
         if (fault == OutboxDynamoDbFault.AppliedThenLost)
+        {
             throw new AmazonServiceException("Injected: the request was applied and its answer was lost.");
+        }
 
         return response;
     }

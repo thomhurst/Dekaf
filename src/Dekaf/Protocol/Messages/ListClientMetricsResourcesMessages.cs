@@ -27,9 +27,18 @@ public sealed class ListClientMetricsResourcesResponse : IKafkaResponse
     public static short LowestSupportedVersion => 0;
     public static short HighestSupportedVersion => 0;
 
-    public int ThrottleTimeMs { get; init; }
-    public ErrorCode ErrorCode { get; init; }
-    public IReadOnlyList<ListClientMetricsResource> ClientMetricsResources { get; init; } = [];
+    public int ThrottleTimeMs
+    {
+        get; init;
+    }
+    public ErrorCode ErrorCode
+    {
+        get; init;
+    }
+    public IReadOnlyList<ListClientMetricsResource> ClientMetricsResources
+    {
+        get; init;
+    } = [];
 
     public static IKafkaResponse Read(ref KafkaProtocolReader reader, short version)
     {
@@ -56,7 +65,10 @@ public sealed class ListClientMetricsResourcesResponse : IKafkaResponse
 /// </summary>
 public sealed class ListClientMetricsResource
 {
-    public required string Name { get; init; }
+    public required string Name
+    {
+        get; init;
+    }
 
     public static ListClientMetricsResource Read(ref KafkaProtocolReader reader)
     {

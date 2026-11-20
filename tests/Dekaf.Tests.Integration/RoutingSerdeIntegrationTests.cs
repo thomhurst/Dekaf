@@ -98,7 +98,9 @@ public sealed class RoutingSerdeIntegrationTests(KafkaWithSchemaRegistryContaine
         {
             events.Add(message.Value);
             if (events.Count == 2)
+            {
                 break;
+            }
         }
 
         await Assert.That(v1SchemaId).IsNotEqualTo(v2SchemaId);
@@ -163,7 +165,9 @@ public sealed class RoutingSerdeIntegrationTests(KafkaWithSchemaRegistryContaine
         record.Add("id", id);
         record.Add("name", name);
         if (category is not null)
+        {
             record.Add("category", category);
+        }
         return record;
     }
 
@@ -185,7 +189,9 @@ public sealed class RoutingSerdeIntegrationTests(KafkaWithSchemaRegistryContaine
     };
 
     private abstract record RoutedEvent(long Id, string Key);
+
     private sealed record V1Event(long Id, string Key) : RoutedEvent(Id, Key);
+
     private sealed record V2Event(long Id, string Category, string Key) : RoutedEvent(Id, Key);
 
     // Completes asynchronously until warmed, so serialization fails unless the producer prepares the route.

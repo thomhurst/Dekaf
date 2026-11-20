@@ -110,7 +110,10 @@ public sealed class OutboxLeaseOwnershipTests
         var events = new ConcurrentQueue<string>();
         var store = new OwnershipStore
         {
-            HasPending = true, Events = events, BatchSize = 3, FirstMarkWaitsForCancellation = true
+            HasPending = true,
+            Events = events,
+            BatchSize = 3,
+            FirstMarkWaitsForCancellation = true
         };
         var publisher = new GatedPublisher { Events = events };
         publisher.Gate.SetResult();
@@ -286,7 +289,10 @@ public sealed class OutboxLeaseOwnershipTests
         new(store, publisher,
             new OutboxRelayOptions
             {
-                RelayId = "relay-a", BucketCount = 4, PollInterval = RenewInterval, LeaseRenewInterval = RenewInterval
+                RelayId = "relay-a",
+                BucketCount = 4,
+                PollInterval = RenewInterval,
+                LeaseRenewInterval = RenewInterval
             },
             NullLogger<OutboxRelayService>.Instance, time);
 
@@ -296,18 +302,38 @@ public sealed class OutboxLeaseOwnershipTests
     /// </summary>
     private sealed class GatedPublisher : IOutboxPublisher
     {
-        internal TaskCompletionSource Entered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        internal TaskCompletionSource Gate { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        internal ConcurrentQueue<string>? Events { get; init; }
-        internal bool BlockInitialization { get; init; }
-        internal Action? OnPublish { get; init; }
+        internal TaskCompletionSource Entered
+        {
+            get;
+        } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        internal TaskCompletionSource Gate
+        {
+            get;
+        } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        internal ConcurrentQueue<string>? Events
+        {
+            get; init;
+        }
+        internal bool BlockInitialization
+        {
+            get; init;
+        }
+        internal Action? OnPublish
+        {
+            get; init;
+        }
         /// <summary>Rows acknowledged per publish; the whole batch when null.</summary>
-        internal int? AckedCount { get; init; }
+        internal int? AckedCount
+        {
+            get; init;
+        }
 
         public async ValueTask InitializeAsync(CancellationToken cancellationToken = default)
         {
             if (!BlockInitialization)
+            {
                 return;
+            }
             Entered.TrySetResult();
             await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
         }
@@ -334,25 +360,67 @@ public sealed class OutboxLeaseOwnershipTests
         private int _pendingProbeCount;
         private int _markCount;
 
-        internal bool HasPending { get; init; }
-        internal int BatchSize { get; init; } = 1;
-        internal bool FailFirstPendingProbe { get; init; }
+        internal bool HasPending
+        {
+            get; init;
+        }
+        internal int BatchSize
+        {
+            get; init;
+        } = 1;
+        internal bool FailFirstPendingProbe
+        {
+            get; init;
+        }
         /// <summary>The first mark waits for its token and then fails as a stopped delete does.</summary>
-        internal bool FirstMarkWaitsForCancellation { get; init; }
-        internal TaskCompletionSource MarkEntered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        internal bool FirstMarkWaitsForCancellation
+        {
+            get; init;
+        }
+        internal TaskCompletionSource MarkEntered
+        {
+            get;
+        } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         /// <summary>The one-based acquisition that throws after recording its hint.</summary>
-        internal int FailingAcquisition { get; init; }
+        internal int FailingAcquisition
+        {
+            get; init;
+        }
         internal int AcquisitionCount => Volatile.Read(ref _acquisitionCount);
-        internal TaskCompletionSource SecondProbe { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        internal bool ReleaseThrows { get; init; }
-        internal bool ReleaseNeverCompletes { get; init; }
-        internal TaskCompletionSource ReleaseEntered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        internal ConcurrentQueue<string>? Events { get; init; }
-        internal Channel<IReadOnlyList<int>> Acquisitions { get; } = Channel.CreateUnbounded<IReadOnlyList<int>>();
+        internal TaskCompletionSource SecondProbe
+        {
+            get;
+        } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        internal bool ReleaseThrows
+        {
+            get; init;
+        }
+        internal bool ReleaseNeverCompletes
+        {
+            get; init;
+        }
+        internal TaskCompletionSource ReleaseEntered
+        {
+            get;
+        } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        internal ConcurrentQueue<string>? Events
+        {
+            get; init;
+        }
+        internal Channel<IReadOnlyList<int>> Acquisitions
+        {
+            get;
+        } = Channel.CreateUnbounded<IReadOnlyList<int>>();
         internal int LegacyAcquisitionCount => Volatile.Read(ref _legacyAcquisitionCount);
         internal int ReleaseCount => Volatile.Read(ref _releaseCount);
-        internal IReadOnlyList<int>? Released { get; private set; }
-        internal OutboxLeaseRequest? ReleaseRequest { get; private set; }
+        internal IReadOnlyList<int>? Released
+        {
+            get; private set;
+        }
+        internal OutboxLeaseRequest? ReleaseRequest
+        {
+            get; private set;
+        }
 
         public ValueTask<IReadOnlyList<int>> AcquireBucketLeasesAsync(OutboxLeaseRequest request,
             CancellationToken cancellationToken = default)
@@ -379,7 +447,9 @@ public sealed class OutboxLeaseOwnershipTests
             Events?.Enqueue("released");
             ReleaseEntered.TrySetResult();
             if (ReleaseNeverCompletes)
+            {
                 return new ValueTask(new TaskCompletionSource().Task);
+            }
             return ReleaseThrows
                 ? ValueTask.FromException(new InvalidOperationException("release failed"))
                 : ValueTask.CompletedTask;
@@ -393,9 +463,13 @@ public sealed class OutboxLeaseOwnershipTests
         {
             var probe = Interlocked.Increment(ref _pendingProbeCount);
             if (probe == 2)
+            {
                 SecondProbe.TrySetResult();
+            }
             if (FailFirstPendingProbe && probe == 1)
+            {
                 return ValueTask.FromException<IReadOnlyList<int>>(new InvalidOperationException("probe failed"));
+            }
             return ValueTask.FromResult<IReadOnlyList<int>>(HasPending ? [1] : []);
         }
 
@@ -407,7 +481,10 @@ public sealed class OutboxLeaseOwnershipTests
             {
                 batch[index] = new OutboxMessage
                 {
-                    Id = index + 1, MessageId = Guid.NewGuid(), Bucket = 1, Topic = "topic",
+                    Id = index + 1,
+                    MessageId = Guid.NewGuid(),
+                    Bucket = 1,
+                    Topic = "topic",
                     CreatedAtUtc = DateTimeOffset.UnixEpoch
                 };
             }

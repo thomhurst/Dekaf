@@ -41,9 +41,13 @@ internal sealed class ShareBatchAcknowledgements<TKey, TValue> : IDisposable
         ThrowIfDisposed();
         var storage = batch.Storage;
         if (storage.Tracker is not null)
+        {
             throw new InvalidOperationException("The batch is already tracked.");
+        }
         if (storage.Count == 0)
+        {
             return;
+        }
         if (!_partitions.TryGetValue(storage.TopicPartition, out var partition))
         {
             partition = PartitionIndex.Rent(this);
@@ -53,7 +57,9 @@ internal sealed class ShareBatchAcknowledgements<TKey, TValue> : IDisposable
         storage.PartitionIndex = partition;
         storage.TrackerIndex = _storages.Count;
         if (storage.PendingCount != 0)
+        {
             AddPendingStorage();
+        }
         _storages.Add(storage);
         partition.Add(storage);
     }
@@ -81,7 +87,9 @@ internal sealed class ShareBatchAcknowledgements<TKey, TValue> : IDisposable
         {
             var batches = index.Flush(releaseImplicit);
             if (batches is not null)
+            {
                 result.Add(partition, batches);
+            }
         }
         return result;
     }
@@ -102,13 +110,19 @@ internal sealed class ShareBatchAcknowledgements<TKey, TValue> : IDisposable
         bool dropRenewals = false)
     {
         if (acknowledgements is null)
+        {
             return;
+        }
         foreach (var (partition, batches) in acknowledgements)
         {
             if (!_partitions.TryGetValue(partition, out var index))
+            {
                 continue;
+            }
             foreach (var batch in batches)
+            {
                 index.Complete(batch, successful, dropRenewals);
+            }
         }
     }
 
@@ -122,13 +136,17 @@ internal sealed class ShareBatchAcknowledgements<TKey, TValue> : IDisposable
 
     internal readonly struct DeliveryScope : IDisposable
     {
-        public void Dispose() { }
+        public void Dispose()
+        {
+        }
     }
 
     internal void Prune()
     {
         foreach (var partition in _partitions.Values)
+        {
             partition.Prune();
+        }
     }
 
     internal List<ShareConsumeBatch<TKey, TValue>>? GetReplays(int maxRecords)
@@ -138,7 +156,9 @@ internal sealed class ShareBatchAcknowledgements<TKey, TValue> : IDisposable
         foreach (var storage in _storages)
         {
             if (maxRecords <= 0)
+            {
                 break;
+            }
             int[]? indices = null;
             var count = 0;
             for (var index = storage.ReplayStart; index < storage.Count && count < maxRecords; index++)
@@ -147,7 +167,9 @@ internal sealed class ShareBatchAcknowledgements<TKey, TValue> : IDisposable
                 if (!entry.Renewed || entry.Superseded)
                 {
                     if (indices is null)
+                    {
                         storage.ReplayStart = index + 1;
+                    }
                     continue;
                 }
                 // Keep the first eligible record until its disposition changes. An
@@ -156,7 +178,9 @@ internal sealed class ShareBatchAcknowledgements<TKey, TValue> : IDisposable
                 indices[count++] = index;
             }
             if (indices is null)
+            {
                 continue;
+            }
             (batches ??= []).Add(new ShareConsumeBatch<TKey, TValue>(storage, indices, count));
             maxRecords -= count;
         }
@@ -182,7 +206,9 @@ internal sealed class ShareBatchAcknowledgements<TKey, TValue> : IDisposable
     public void Dispose()
     {
         if (_disposed)
+        {
             return;
+        }
         _disposed = true;
         Clear();
     }
@@ -193,18 +219,26 @@ internal sealed class ShareBatchAcknowledgements<TKey, TValue> : IDisposable
         foreach (var topicPartition in _partitions.Keys)
         {
             if (assignment.Contains(topicPartition))
+            {
                 continue;
+            }
             (removed ??= []).Add(topicPartition);
         }
         if (removed is null)
+        {
             return;
+        }
         for (var storageIndex = _storages.Count - 1; storageIndex >= 0; storageIndex--)
         {
             var storage = _storages[storageIndex];
             if (assignment.Contains(storage.TopicPartition))
+            {
                 continue;
+            }
             for (var index = 0; index < storage.Count; index++)
+            {
                 storage.Supersede(index);
+            }
             storage.TrackedCount = 0;
             ReleaseCompletedStorage(storage);
         }
@@ -220,21 +254,27 @@ internal sealed class ShareBatchAcknowledgements<TKey, TValue> : IDisposable
         foreach (var storage in _storages)
         {
             for (var index = 0; index < storage.Count; index++)
+            {
                 storage.Supersede(index);
+            }
             storage.TrackedCount = 0;
             storage.PartitionIndex = null;
             storage.Release();
         }
         _storages.Clear();
         foreach (var partition in _partitions.Values)
+        {
             partition.Dispose();
+        }
         _partitions.Clear();
     }
 
     internal void ReleaseActiveAcquisitions()
     {
         foreach (var storage in _storages)
+        {
             storage.ReleaseActiveAcquisitions();
+        }
     }
 
     private readonly record struct IndexedRecord(long Offset, ShareBatchStorage<TKey, TValue>? Storage, int Index);
@@ -244,7 +284,10 @@ internal sealed class ShareBatchAcknowledgements<TKey, TValue> : IDisposable
         // Index bookkeeping is per assigned partition. Reuse the cleared object across
         // consumer lifetimes; the bounded pool retains neither payloads nor consumer owners.
         private static readonly Reservoir.ObjectPool<PartitionIndex, IndexPolicy> s_pool = new(new(), 128);
-        internal ShareBatchAcknowledgements<TKey, TValue> Owner { get; private set; } = null!;
+        internal ShareBatchAcknowledgements<TKey, TValue> Owner
+        {
+            get; private set;
+        } = null!;
         private IndexedRecord[] _records = [];
         private int _start;
         private int _count;
@@ -284,7 +327,9 @@ internal sealed class ShareBatchAcknowledgements<TKey, TValue> : IDisposable
         {
             var start = gaps.Count;
             while (start > 0 && gaps[start - 1].LastOffset + 1 >= firstOffset)
+            {
                 start--;
+            }
             var end = start;
             while (end < gaps.Count && gaps[end].FirstOffset <= lastOffset + 1)
             {
@@ -304,7 +349,9 @@ internal sealed class ShareBatchAcknowledgements<TKey, TValue> : IDisposable
         private List<AcknowledgementBatchData>? TakeGaps(List<AcknowledgementBatchData>? batches)
         {
             if (_gaps is not { Count: > 0 } gaps)
+            {
                 return batches;
+            }
             Owner._gapPartitionCount--;
             if (batches is null)
             {
@@ -318,7 +365,9 @@ internal sealed class ShareBatchAcknowledgements<TKey, TValue> : IDisposable
                 gaps.Clear();
             }
             if (batches.Count > 1)
+            {
                 batches.Sort(static (left, right) => left.FirstOffset.CompareTo(right.FirstOffset));
+            }
             return batches;
         }
 
@@ -333,7 +382,9 @@ internal sealed class ShareBatchAcknowledgements<TKey, TValue> : IDisposable
         {
             _pendingCount -= count;
             if (_pendingCount != 0)
+            {
                 return;
+            }
             _firstPending = long.MaxValue;
             _lastPending = long.MinValue;
         }
@@ -343,14 +394,18 @@ internal sealed class ShareBatchAcknowledgements<TKey, TValue> : IDisposable
             // Reclaim tombstones only when capacity needs them and at least half the
             // index is dead. Repeated small completions cannot trigger full compaction.
             if (_records.Length < (long)_count + storage.Count && _liveCount <= _count / 2)
+            {
                 Compact();
+            }
             var required = checked(_count + storage.Count);
             if (_records.Length < required)
             {
                 var larger = ArrayPool<IndexedRecord>.Shared.Rent(required);
                 _records.AsSpan(0, _count).CopyTo(larger);
                 if (_records.Length != 0)
+                {
                     ArrayPool<IndexedRecord>.Shared.Return(_records, clearArray: true);
+                }
                 _records = larger;
             }
 
@@ -360,8 +415,10 @@ internal sealed class ShareBatchAcknowledgements<TKey, TValue> : IDisposable
                 // Normal response batches extend the ordered index. Only overlaps need
                 // the merge below; copying the entire prefix for each batch is quadratic.
                 for (var index = 0; index < storage.Count; index++)
+                {
                     _records[_count++] = new IndexedRecord(
                         storage.BaseOffset + storage.Entries[index].Raw.OffsetDelta, storage, index);
+                }
                 storage.TrackedCount = storage.Count;
                 _liveCount += storage.Count;
                 RegisterPending(storage);
@@ -389,7 +446,9 @@ internal sealed class ShareBatchAcknowledgements<TKey, TValue> : IDisposable
                         previousStorage.TrackedCount--;
                         _liveCount--;
                         if (previousStorage.TrackedCount == 0)
+                        {
                             Owner.ReleaseCompletedStorage(previousStorage);
+                        }
                     }
                     existing--;
                 }
@@ -402,7 +461,9 @@ internal sealed class ShareBatchAcknowledgements<TKey, TValue> : IDisposable
                 incoming--;
             }
             while (existing >= 0)
+            {
                 _records[destination--] = _records[existing--];
+            }
 
             _count = required - destination - 1;
             _start = 0;
@@ -416,25 +477,37 @@ internal sealed class ShareBatchAcknowledgements<TKey, TValue> : IDisposable
         private void RegisterPending(ShareBatchStorage<TKey, TValue> storage)
         {
             if (storage.PendingCount == 0)
+            {
                 return;
+            }
             for (var index = 0; index < storage.Count; index++)
+            {
                 if (storage.Entries[index].PendingAcknowledgement != 0)
+                {
                     AddPending(storage.BaseOffset + storage.Entries[index].Raw.OffsetDelta);
+                }
+            }
         }
 
         internal List<AcknowledgementBatchData>? Flush(bool releaseImplicit)
         {
             if (_pendingCount == 0)
+            {
                 return TakeGaps(null);
+            }
             List<AcknowledgementBatchData>? batches = null;
             var index = LowerBound(_firstPending);
             var lastOffset = _lastPending;
             while (index < _count && _records[index].Offset <= lastOffset)
             {
                 while (index < _count && _records[index].Offset <= lastOffset && Pending(index) == 0)
+                {
                     index++;
+                }
                 if (index == _count || _records[index].Offset > lastOffset)
+                {
                     break;
+                }
                 var first = index;
                 // A zero type is GAP on the wire, which archives the record. End the run at
                 // the first entry without a pending disposition instead of spanning it.
@@ -442,14 +515,18 @@ internal sealed class ShareBatchAcknowledgements<TKey, TValue> : IDisposable
                     && _records[index + 1].Offset <= lastOffset
                     && _records[index + 1].Offset == _records[index].Offset + 1
                     && Pending(index + 1) != 0)
+                {
                     index++;
+                }
                 var lastPending = index;
                 var types = new byte[lastPending - first + 1];
                 for (var item = first; item <= lastPending; item++)
                 {
                     var type = Pending(item);
                     if (type == ShareBatchStorage<TKey, TValue>.ImplicitDelivery)
+                    {
                         type = (byte)(releaseImplicit ? AcknowledgeType.Release : AcknowledgeType.Accept);
+                    }
                     types[item - first] = type;
                     var record = _records[item];
                     record.Storage!.Submit(record.Index, type, types);
@@ -466,7 +543,9 @@ internal sealed class ShareBatchAcknowledgements<TKey, TValue> : IDisposable
             if (batch.IsGapOnly)
             {
                 if (!successful)
+                {
                     AddGap(batch.FirstOffset, batch.LastOffset);
+                }
                 return;
             }
             var index = LowerBound(batch.FirstOffset);
@@ -475,10 +554,14 @@ internal sealed class ShareBatchAcknowledgements<TKey, TValue> : IDisposable
                 var position = index++;
                 var record = _records[position];
                 if (record.Storage is null)
+                {
                     continue;
+                }
                 var typeIndex = record.Offset - batch.FirstOffset;
                 if ((ulong)typeIndex >= (ulong)batch.OffsetCount)
+                {
                     continue;
+                }
                 var type = batch.GetAcknowledgeType((int)typeIndex);
                 if (type != 0)
                 {
@@ -497,9 +580,13 @@ internal sealed class ShareBatchAcknowledgements<TKey, TValue> : IDisposable
             {
                 var middle = low + ((high - low) >> 1);
                 if (_records[middle].Offset < offset)
+                {
                     low = middle + 1;
+                }
                 else
+                {
                     high = middle;
+                }
             }
             return low;
         }
@@ -522,8 +609,12 @@ internal sealed class ShareBatchAcknowledgements<TKey, TValue> : IDisposable
             // Any other open lease contains only renewal entries, which retain their
             // renewal/pending/submission state. Original unread entries can be removed now.
             for (var index = first; index < _count && _records[index].Offset <= lastOffset; index++)
+            {
                 if (ReferenceEquals(_records[index].Storage, storage))
+                {
                     PruneRecord(index, originalLeaseClosed: true);
+                }
+            }
             AdvanceStart();
         }
 
@@ -536,49 +627,67 @@ internal sealed class ShareBatchAcknowledgements<TKey, TValue> : IDisposable
             {
                 var record = _records[index];
                 if (record.Storage is null)
+                {
                     continue;
+                }
                 ref readonly var entry = ref storage.Entries[record.Index];
                 if (entry.Settled || entry.Superseded || (entry.PendingAcknowledgement == 0
                     && entry.SubmittedAcknowledgement == 0 && !entry.Renewed))
+                {
                     continue;
+                }
                 _records[retained++] = record;
             }
             _records.AsSpan(retained, _count - retained).Clear();
             _start = 0;
             _count = _liveCount = storage.TrackedCount = retained;
             if (retained == 0)
+            {
                 Owner.ReleaseCompletedStorage(storage);
+            }
         }
 
         private void PruneRecord(int index, bool originalLeaseClosed = false)
         {
             var record = _records[index];
             if (record.Storage is not { } storage)
+            {
                 return;
+            }
             ref readonly var entry = ref storage.Entries[record.Index];
             if (!entry.Settled && !entry.Superseded &&
                 ((!originalLeaseClosed && storage.OpenLeases != 0) || entry.PendingAcknowledgement != 0
                     || entry.SubmittedAcknowledgement != 0 || entry.Renewed))
+            {
                 return;
+            }
             _records[index] = new IndexedRecord(record.Offset, null, 0);
             _liveCount--;
             storage.TrackedCount--;
             if (storage.TrackedCount == 0)
+            {
                 Owner.ReleaseCompletedStorage(storage);
+            }
         }
 
         private void AdvanceStart()
         {
             while (_start < _count && _records[_start].Storage is null)
+            {
                 _start++;
+            }
             if (_start == _count)
+            {
                 _start = _count = 0;
+            }
         }
 
         internal void Prune()
         {
             for (var index = _start; index < _count; index++)
+            {
                 PruneRecord(index);
+            }
             Compact();
         }
 
@@ -586,8 +695,12 @@ internal sealed class ShareBatchAcknowledgements<TKey, TValue> : IDisposable
         {
             var retained = 0;
             for (var index = _start; index < _count; index++)
+            {
                 if (_records[index].Storage is not null)
+                {
                     _records[retained++] = _records[index];
+                }
+            }
             _records.AsSpan(retained, _count - retained).Clear();
             _start = 0;
             _count = retained;
@@ -596,9 +709,13 @@ internal sealed class ShareBatchAcknowledgements<TKey, TValue> : IDisposable
         public void Dispose()
         {
             if (Owner is null)
+            {
                 return;
+            }
             if (_records.Length != 0)
+            {
                 ArrayPool<IndexedRecord>.Shared.Return(_records, clearArray: true);
+            }
             _records = [];
             _count = 0;
             _start = 0;
@@ -607,7 +724,9 @@ internal sealed class ShareBatchAcknowledgements<TKey, TValue> : IDisposable
             _firstPending = long.MaxValue;
             _lastPending = long.MinValue;
             if (_gaps is { Count: > 0 })
+            {
                 Owner._gapPartitionCount--;
+            }
             _gaps = null;
             Owner = null!;
             s_pool.Return(this);
@@ -617,7 +736,9 @@ internal sealed class ShareBatchAcknowledgements<TKey, TValue> : IDisposable
         {
             public PartitionIndex Create() => new();
             public bool TryReset(PartitionIndex item) => true;
-            public void Destroy(PartitionIndex item) { }
+            public void Destroy(PartitionIndex item)
+            {
+            }
         }
     }
 }

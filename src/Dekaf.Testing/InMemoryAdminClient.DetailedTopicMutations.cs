@@ -36,7 +36,10 @@ public sealed partial class InMemoryAdminClient : IDetailedTopicMutationAdminCli
         cancellationToken.ThrowIfCancellationRequested();
         var ids = AdminClient.SnapshotMutationKeys(topicIds, nameof(topicIds), static id =>
         {
-            if (id == Guid.Empty) throw new ArgumentException("Topic IDs cannot contain the empty UUID.", nameof(topicIds));
+            if (id == Guid.Empty)
+            {
+                throw new ArgumentException("Topic IDs cannot contain the empty UUID.", nameof(topicIds));
+            }
         });
         return ExecuteInMemoryMutationAsync(ids, static id => id, id => (_cluster.GetTopicName(id), null),
             id => _cluster.DeleteTopic(id) ? ErrorCode.None : ErrorCode.UnknownTopicId,
@@ -91,17 +94,29 @@ public sealed partial class InMemoryAdminClient : IDetailedTopicMutationAdminCli
         ThrowIfDisposed();
         ArgumentOutOfRangeException.ThrowIfNegative(timeoutMs);
         var results = new Dictionary<TKey, AdminMutationResult>(items.Count);
-        if (items.Count == 0) return results;
+        if (items.Count == 0)
+        {
+            return results;
+        }
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        if (timeoutMs == 0) deadline.Cancel();
-        else deadline.CancelAfter(timeoutMs);
+        if (timeoutMs == 0)
+        {
+            deadline.Cancel();
+        }
+        else
+        {
+            deadline.CancelAfter(timeoutMs);
+        }
         var token = deadline.Token;
         if (shareGroupId is not null)
         {
             var groupResult = await CheckShareGroupMutationAsync(shareGroupId, allowMissingShareGroup, deadline, timeoutMs, cancellationToken).ConfigureAwait(false);
             if (!groupResult.IsSuccess)
             {
-                foreach (var item in items) results.Add(key(item), groupResult);
+                foreach (var item in items)
+                {
+                    results.Add(key(item), groupResult);
+                }
                 return results;
             }
         }
@@ -115,7 +130,9 @@ public sealed partial class InMemoryAdminClient : IDetailedTopicMutationAdminCli
                 {
                     token.ThrowIfCancellationRequested();
                     if (applyFault is not null)
+                    {
                         await applyFault(item, token).ConfigureAwait(false);
+                    }
                     else
                     {
                         var target = scope(item);
@@ -133,15 +150,22 @@ public sealed partial class InMemoryAdminClient : IDetailedTopicMutationAdminCli
                 {
                     var failure = AdminClient.MutationFailure(exception, deadline, timeoutMs, "Detailed admin mutation", cancellationToken);
                     if (exception is KafkaException { ErrorCode: { } code } brokerFailure)
+                    {
                         result = AdminMutationResult.FromResponse(code, brokerFailure.Message);
+                    }
                     else
+                    {
                         result = AdminMutationResult.Unconfirmed(exception is OperationCanceledException
                             ? AdminMutationOutcome.NotAttempted : AdminMutationOutcome.Unknown,
                             "The simulated mutation did not receive a definitive response.", failure);
+                    }
                 }
                 results[identifier] = result;
                 var canRetry = shareGroupId is null && getGroupId is null ? AdminMutationResult.IsSafeControllerRetry(result) : AdminMutationResult.IsSafeCoordinatorRetry(result);
-                if (!canRetry || attempt >= RetryHelper.MaxRetries || token.IsCancellationRequested) break;
+                if (!canRetry || attempt >= RetryHelper.MaxRetries || token.IsCancellationRequested)
+                {
+                    break;
+                }
                 try
                 {
                     await Task.Delay(1, token).ConfigureAwait(false);

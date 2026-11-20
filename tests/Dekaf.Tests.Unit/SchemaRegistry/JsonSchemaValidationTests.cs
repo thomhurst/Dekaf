@@ -2,10 +2,10 @@ using System.Buffers;
 using System.Buffers.Binary;
 using System.Net;
 using System.Text;
+using Dekaf.Errors;
 using Dekaf.SchemaRegistry;
 using Dekaf.SchemaRegistry.Json;
 using Dekaf.Serialization;
-using Dekaf.Errors;
 using NSubstitute;
 
 namespace Dekaf.Tests.Unit.SchemaRegistry;
@@ -594,8 +594,7 @@ public sealed class JsonSchemaValidationTests
             """{ "type": "object", "properties": { "id": { "type": "string" } }, "required": ["id"] }""";
         using var registry = new MockSchemaRegistryClient();
         var strategy = new FixedAsyncSubjectNameStrategy("validation-value");
-        var typeInfo = (System.Text.Json.Serialization.Metadata.JsonTypeInfo<ValidationPayload>)
-            System.Text.Json.JsonSerializerOptions.Default.GetTypeInfo(typeof(ValidationPayload));
+        var typeInfo = (System.Text.Json.Serialization.Metadata.JsonTypeInfo<ValidationPayload>)System.Text.Json.JsonSerializerOptions.Default.GetTypeInfo(typeof(ValidationPayload));
         await using var serializer = new JsonSchemaRegistrySerializer<ValidationPayload>(
             registry,
             strategy,
@@ -635,8 +634,7 @@ public sealed class JsonSchemaValidationTests
             Mode = JsonSchemaValidationMode.None,
             ValidationRulesExecution = ValidationRulesExecution.BeforeDomainRules
         };
-        var typeInfo = (System.Text.Json.Serialization.Metadata.JsonTypeInfo<NamePayload>)
-            System.Text.Json.JsonSerializerOptions.Default.GetTypeInfo(typeof(NamePayload));
+        var typeInfo = (System.Text.Json.Serialization.Metadata.JsonTypeInfo<NamePayload>)System.Text.Json.JsonSerializerOptions.Default.GetTypeInfo(typeof(NamePayload));
         await using var serializer = useTypeInfo
             ? new JsonSchemaRegistrySerializer<NamePayload>(
                 registry,
@@ -692,8 +690,7 @@ public sealed class JsonSchemaValidationTests
             ValidationRulesExecution = ValidationRulesExecution.BeforeDomainRules
         };
         var config = new JsonSchemaSerializerConfig();
-        var typeInfo = (System.Text.Json.Serialization.Metadata.JsonTypeInfo<NamePayload>)
-            System.Text.Json.JsonSerializerOptions.Default.GetTypeInfo(typeof(NamePayload));
+        var typeInfo = (System.Text.Json.Serialization.Metadata.JsonTypeInfo<NamePayload>)System.Text.Json.JsonSerializerOptions.Default.GetTypeInfo(typeof(NamePayload));
         await using var serializer = useTypeInfo
             ? new JsonSchemaRegistrySerializer<NamePayload>(
                 registry,
@@ -2146,8 +2143,7 @@ public sealed class JsonSchemaValidationTests
         {
             RuleExecutor = new PassThroughRuleExecutor()
         };
-        var typeInfo = (System.Text.Json.Serialization.Metadata.JsonTypeInfo<NamePayload>)
-            System.Text.Json.JsonSerializerOptions.Default.GetTypeInfo(typeof(NamePayload));
+        var typeInfo = (System.Text.Json.Serialization.Metadata.JsonTypeInfo<NamePayload>)System.Text.Json.JsonSerializerOptions.Default.GetTypeInfo(typeof(NamePayload));
 
         Assert.Throws<NotSupportedException>(() =>
         {
@@ -2955,9 +2951,13 @@ public sealed class JsonSchemaValidationTests
                 validationRulesFailFast: false);
 
         if (shouldFail)
+        {
             Assert.Throws<ValidationRulesFailedException>(Transform);
+        }
         else
+        {
             Transform();
+        }
         await Assert.That(calls).IsEquivalentTo(["upgrade"]);
     }
 
@@ -3087,14 +3087,20 @@ public sealed class JsonSchemaValidationTests
         var json = new StringBuilder(depth * 48);
         json.Append("{\"left\":");
         for (var index = 0; index < depth; index++)
+        {
             json.Append("{\"value\":");
+        }
         json.Append('1');
         for (var index = 0; index < depth; index++)
+        {
             json.Append(",\"tag\":1}");
+        }
 
         json.Append(",\"right\":");
         for (var index = 0; index < depth; index++)
+        {
             json.Append("{\"tag\":1,\"value\":");
+        }
         json.Append(rightLeaf);
         json.Append('}', depth);
         json.Append('}');
@@ -3116,7 +3122,9 @@ public sealed class JsonSchemaValidationTests
             if (index != 0)
             {
                 if (declaredProperties)
+                {
                     schema.Append(',');
+                }
                 payload.Append(',');
             }
             if (declaredProperties)
@@ -3128,9 +3136,13 @@ public sealed class JsonSchemaValidationTests
             payload.Append("\"p").Append(index).Append("\":0");
         }
         if (declaredProperties)
+        {
             schema.Append("}}");
+        }
         for (var index = 0; index < propertyCount; index++)
+        {
             payload.Append(",\"p").Append(index).Append("\":1");
+        }
         payload.Append('}');
         return (schema.ToString(), Encoding.UTF8.GetBytes(payload.ToString()));
     }
@@ -3162,7 +3174,9 @@ public sealed class JsonSchemaValidationTests
         for (var index = 0; index < branchCount; index++)
         {
             if (index != 0)
+            {
                 schema.Append(',');
+            }
             schema.Append(
                 "{\"type\":\"integer\",\"confluent:rules\":[{\"name\":\"positive\",\"expr\":\"this > 0\"}]}");
         }
@@ -3180,8 +3194,11 @@ public sealed class JsonSchemaValidationTests
     }
 
     private sealed record ValidationPayload(int Id);
+
     private sealed record NamePayload(string Name);
+
     private sealed record ReferencedPayload(AddressPayload Address);
+
     private sealed record AddressPayload(string Postcode);
 
     private sealed class FixedAsyncSubjectNameStrategy(string subject) : IAsyncSubjectNameStrategy
@@ -3279,7 +3296,10 @@ public sealed class JsonSchemaValidationTests
     {
         private readonly Queue<string> _responses = new(responses);
 
-        internal int RequestCount { get; private set; }
+        internal int RequestCount
+        {
+            get; private set;
+        }
 
         protected override Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request,

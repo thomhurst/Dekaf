@@ -308,7 +308,9 @@ public sealed class RetryHelperTests
                 () =>
                 {
                     if (Interlocked.Increment(ref attempts) == 3)
+                    {
                         operationDeadline.Cancel();
+                    }
                     return ValueTask.FromException<int>(failure);
                 },
                 metadataManager,
@@ -600,7 +602,9 @@ public sealed class RetryHelperTests
         RunOnce();
         var before = GC.GetAllocatedBytesForCurrentThread();
         for (var i = 0; i < 100; i++)
+        {
             RunOnce();
+        }
         return GC.GetAllocatedBytesForCurrentThread() - before;
 
         void RunOnce()
@@ -613,7 +617,9 @@ public sealed class RetryHelperTests
                 shouldRefreshMetadata: shouldRefreshMetadata,
                 deadline: deadline);
             if (!voidCall.IsCompletedSuccessfully)
+            {
                 throw new InvalidOperationException("The void deadline call did not complete synchronously.");
+            }
             voidCall.GetAwaiter().GetResult();
 
             var resultCall = RetryHelper.WithRetryAsync(
@@ -624,7 +630,9 @@ public sealed class RetryHelperTests
                 shouldRefreshMetadata: shouldRefreshMetadata,
                 deadline: deadline);
             if (!resultCall.IsCompletedSuccessfully)
+            {
                 throw new InvalidOperationException("The result deadline call did not complete synchronously.");
+            }
             _ = resultCall.GetAwaiter().GetResult();
         }
     }

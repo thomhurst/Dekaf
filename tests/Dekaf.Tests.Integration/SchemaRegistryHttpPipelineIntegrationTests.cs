@@ -59,8 +59,14 @@ public sealed class SchemaRegistryHttpPipelineIntegrationTests(KafkaWithSchemaRe
     private sealed class CapturingDelegatingHandler(HttpMessageHandler innerHandler)
         : DelegatingHandler(innerHandler)
     {
-        internal string? UserAgent { get; private set; }
-        internal string? Authorization { get; private set; }
+        internal string? UserAgent
+        {
+            get; private set;
+        }
+        internal string? Authorization
+        {
+            get; private set;
+        }
 
         protected override Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request,
@@ -86,7 +92,10 @@ public sealed class SchemaRegistryHttpPipelineIntegrationTests(KafkaWithSchemaRe
             _serving = ServeAsync();
         }
 
-        public string Url { get; }
+        public string Url
+        {
+            get;
+        }
         public int RequestCount => Volatile.Read(ref _requestCount);
 
         private async Task ServeAsync()
@@ -100,11 +109,15 @@ public sealed class SchemaRegistryHttpPipelineIntegrationTests(KafkaWithSchemaRe
                 while (await reader.ReadLineAsync(_stopping.Token) is { Length: > 0 } line)
                 {
                     if (line.StartsWith("Content-Length:", StringComparison.OrdinalIgnoreCase))
+                    {
                         contentLength = int.Parse(line.AsSpan("Content-Length:".Length), System.Globalization.CultureInfo.InvariantCulture);
+                    }
                 }
                 var body = new char[contentLength];
                 if (await reader.ReadBlockAsync(body.AsMemory(), _stopping.Token) != contentLength)
+                {
                     throw new EndOfStreamException("Incomplete token request body.");
+                }
                 var count = Interlocked.Increment(ref _requestCount);
                 var json = $"{{\"access_token\":\"token-{count}\",\"expires_in\":120}}";
                 var response = Encoding.ASCII.GetBytes(
@@ -426,12 +439,16 @@ public sealed class SchemaRegistryTlsIntegrationTests
             await File.WriteAllTextAsync(caPath, firstRoot.ExportCertificatePem());
             await using (var server = new LocalTlsServer(firstServerCertificate, "localhost"))
             using (var client = CreateFileTrustClient(server.Url, caPath))
+            {
                 _ = await SendAsync(client, server);
+            }
 
             await File.WriteAllTextAsync(caPath, secondRoot.ExportCertificatePem());
             await using (var server = new LocalTlsServer(secondServerCertificate, "localhost"))
             using (var client = CreateFileTrustClient(server.Url, caPath))
+            {
                 _ = await SendAsync(client, server);
+            }
         }
         finally
         {
@@ -521,7 +538,9 @@ public sealed class SchemaRegistryTlsIntegrationTests
     {
         var request = client.GetAllSubjectsAsync();
         if (await Task.WhenAny(request, server.Completion) == server.Completion && server.Completion.IsFaulted)
+        {
             await server.Completion;
+        }
 
         return await request;
     }
@@ -681,10 +700,22 @@ public sealed class SchemaRegistryTlsIntegrationTests
             Completion = ServeAsync();
         }
 
-        internal string Url { get; }
-        internal Task Completion { get; }
-        internal bool SawClientCertificate { get; private set; }
-        internal string? RequestText { get; private set; }
+        internal string Url
+        {
+            get;
+        }
+        internal Task Completion
+        {
+            get;
+        }
+        internal bool SawClientCertificate
+        {
+            get; private set;
+        }
+        internal string? RequestText
+        {
+            get; private set;
+        }
 
         private async Task ServeAsync()
         {
@@ -710,11 +741,15 @@ public sealed class SchemaRegistryTlsIntegrationTests
             {
                 var read = await stream.ReadAsync(buffer.AsMemory(received), _stopping.Token);
                 if (read == 0)
+                {
                     return;
+                }
 
                 received += read;
                 if (ContainsHeaderTerminator(buffer.AsSpan(0, received)))
+                {
                     break;
+                }
             }
 
             RequestText = Encoding.ASCII.GetString(buffer, 0, received);
@@ -729,10 +764,14 @@ public sealed class SchemaRegistryTlsIntegrationTests
         {
             SawClientCertificate = certificate is not null;
             if (!_requireClientCertificate)
+            {
                 return true;
+            }
 
             if (certificate is null || _trustedClientRoot is null)
+            {
                 return false;
+            }
 
             X509Certificate2? ownedCertificate = null;
             try
@@ -747,7 +786,9 @@ public sealed class SchemaRegistryTlsIntegrationTests
                 if (presentedChain is not null)
                 {
                     for (var index = 1; index < presentedChain.ChainElements.Count; index++)
+                    {
                         chain.ChainPolicy.ExtraStore.Add(presentedChain.ChainElements[index].Certificate);
+                    }
                 }
 
                 return chain.Build(certificate2);
@@ -790,7 +831,10 @@ public sealed class SchemaRegistryTlsIntegrationTests
             _completion = RejectConnectionsAsync();
         }
 
-        internal string Url { get; }
+        internal string Url
+        {
+            get;
+        }
 
         private async Task RejectConnectionsAsync()
         {

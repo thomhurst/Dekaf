@@ -46,7 +46,9 @@ public sealed class InMemoryConfigTests
         var cluster = new InMemoryKafkaCluster();
         cluster.CreateTopic("orders", configs: new Dictionary<string, string>
         {
-            ["retention.ms"] = "1000", ["cleanup.policy"] = "delete", ["segment.ms"] = "5000"
+            ["retention.ms"] = "1000",
+            ["cleanup.policy"] = "delete",
+            ["segment.ms"] = "5000"
         });
         await using var admin = new InMemoryAdminClient(cluster);
         await using var otherAdmin = new InMemoryAdminClient(cluster);
@@ -84,9 +86,13 @@ public sealed class InMemoryConfigTests
         };
 
         if (detailed)
+        {
             await Assert.That((await admin.IncrementalAlterConfigsDetailedAsync(incremental))[resource].IsSuccess).IsTrue();
+        }
         else
+        {
             await admin.IncrementalAlterConfigsAsync(incremental);
+        }
 
         var configs = (await admin.DescribeConfigsAsync([resource]))[resource];
         await Assert.That(configs.Count).IsEqualTo(3);
@@ -219,8 +225,12 @@ public sealed class InMemoryConfigTests
         CancellationToken cancellationToken = default)
     {
         if (alter)
+        {
             await admin.AlterConfigsAsync(Changes(resource, new ConfigEntry() { Name = "retention.ms", Value = "2000" }), cancellationToken: cancellationToken);
+        }
         else
+        {
             await admin.DescribeConfigsAsync([resource], cancellationToken: cancellationToken);
+        }
     }
 }

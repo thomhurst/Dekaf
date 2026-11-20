@@ -23,10 +23,16 @@ public class PartitionBatchRotationBenchmarks
     private long _timestamp;
 
     [Params(16_384, 1_048_576)]
-    public int BatchSize { get; set; }
+    public int BatchSize
+    {
+        get; set;
+    }
 
     [Params(BufferMemoryAllocationStrategy.Full, BufferMemoryAllocationStrategy.Incremental)]
-    public BufferMemoryAllocationStrategy AllocationStrategy { get; set; }
+    public BufferMemoryAllocationStrategy AllocationStrategy
+    {
+        get; set;
+    }
 
     [GlobalSetup]
     public void Setup()
@@ -60,7 +66,9 @@ public class PartitionBatchRotationBenchmarks
         _batchPool.PreWarm(16);
 
         for (var i = 0; i < 10_000; i++)
+        {
             RotateOne();
+        }
     }
 
     [Benchmark(OperationsPerInvoke = OperationsPerInvoke)]
@@ -68,7 +76,9 @@ public class PartitionBatchRotationBenchmarks
     {
         var records = 0;
         for (var i = 0; i < OperationsPerInvoke; i++)
+        {
             records += RotateOne();
+        }
 
         return records;
     }

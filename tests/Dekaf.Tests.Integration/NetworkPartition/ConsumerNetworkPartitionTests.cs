@@ -213,7 +213,9 @@ public class ConsumerNetworkPartitionTests(NetworkPartitionKafkaContainer kafka)
         while (consumer.GetPosition(partition) != 1)
         {
             if (consumeTask.IsCompleted)
+            {
                 _ = await consumeTask.ConfigureAwait(false);
+            }
 
             await Task.Delay(TimeSpan.FromMilliseconds(50), recoveryCts.Token).ConfigureAwait(false);
         }
@@ -281,7 +283,9 @@ public class ConsumerNetworkPartitionTests(NetworkPartitionKafkaContainer kafka)
         {
             prePartitionMessages.Add(msg.Value!);
             if (prePartitionMessages.Count >= 5)
+            {
                 break;
+            }
         }
 
         await Assert.That(prePartitionMessages).Count().IsEqualTo(5);
@@ -372,7 +376,9 @@ public class ConsumerNetworkPartitionTests(NetworkPartitionKafkaContainer kafka)
         {
             initialMessages.Add(msg.Value!);
             if (initialMessages.Count >= 6)
+            {
                 break;
+            }
         }
 
         await Assert.That(initialMessages).Count().IsEqualTo(6);
@@ -474,7 +480,9 @@ public class ConsumerNetworkPartitionTests(NetworkPartitionKafkaContainer kafka)
                     }
 
                     if (values.Count >= expectedCount)
+                    {
                         return values;
+                    }
                 }
             }
             catch (ConsumeException ex) when (ex.IsRetriable)

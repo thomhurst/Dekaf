@@ -26,7 +26,9 @@ public sealed class AdminClientIdempotentRetryTests
             .Returns(_ =>
             {
                 if (Interlocked.Increment(ref calls) == 1)
+                {
                     throw new KafkaException(ErrorCode.RequestTimedOut, "simulated timeout");
+                }
 
                 return ValueTask.FromResult(CreateUnknownTopicResponse());
             });
@@ -119,7 +121,9 @@ public sealed class AdminClientIdempotentRetryTests
             .Returns(_ =>
             {
                 if (Interlocked.Increment(ref calls) == 1)
+                {
                     throw new KafkaException(ErrorCode.RequestTimedOut, "simulated timeout");
+                }
 
                 return ValueTask.FromResult(new DeleteGroupsResponse
                 {
@@ -222,7 +226,9 @@ public sealed class AdminClientIdempotentRetryTests
             .Returns(_ =>
             {
                 if (Interlocked.Increment(ref calls) == 1)
+                {
                     throw new KafkaException(ErrorCode.RequestTimedOut, "simulated timeout");
+                }
 
                 return ValueTask.FromResult(new CreatePartitionsResponse
                 {
@@ -293,7 +299,9 @@ public sealed class AdminClientIdempotentRetryTests
             .Returns(_ =>
             {
                 if (Interlocked.Increment(ref calls) == 1)
+                {
                     throw new KafkaException(ErrorCode.RequestTimedOut, "simulated timeout");
+                }
 
                 return ValueTask.FromResult(new OffsetDeleteResponse
                 {
@@ -347,7 +355,9 @@ public sealed class AdminClientIdempotentRetryTests
             .Returns(_ =>
             {
                 if (Interlocked.Increment(ref calls) == 1)
+                {
                     throw new KafkaException(ErrorCode.RequestTimedOut, "simulated timeout");
+                }
 
                 return ValueTask.FromResult(new DeleteShareGroupOffsetsResponse
                 {
@@ -400,7 +410,9 @@ public sealed class AdminClientIdempotentRetryTests
             .Returns(_ =>
             {
                 if (Interlocked.Increment(ref calls) == 1)
+                {
                     throw new KafkaException(ErrorCode.RequestTimedOut, "simulated timeout");
+                }
 
                 return ValueTask.FromResult(new ElectLeadersResponse
                 {
@@ -487,7 +499,9 @@ public sealed class AdminClientIdempotentRetryTests
                 // A replay would match nothing and report an empty result, hiding what the
                 // lost request deleted.
                 if (Interlocked.Increment(ref calls) == 1)
+                {
                     throw lostResponse;
+                }
 
                 return ValueTask.FromResult(new DeleteAclsResponse
                 {
@@ -593,7 +607,9 @@ public sealed class AdminClientIdempotentRetryTests
         observed!.DeleteAclsHandler = (writeStarted, _) =>
             {
                 if (Interlocked.Increment(ref calls) == 1)
+                {
                     throw new ObjectDisposedException("KafkaConnection", "Connection has been retired");
+                }
 
                 writeStarted();
                 return ValueTask.FromResult(new DeleteAclsResponse
@@ -798,7 +814,9 @@ public sealed class AdminClientIdempotentRetryTests
             .Returns<ValueTask<ExpireDelegationTokenResponse>>(_ =>
             {
                 if (Interlocked.Increment(ref calls) == 1)
+                {
                     throw new IOException("response lost");
+                }
 
                 return ValueTask.FromResult(new ExpireDelegationTokenResponse
                 {
@@ -829,7 +847,9 @@ public sealed class AdminClientIdempotentRetryTests
         observed!.ExpireDelegationTokenHandler = (writeStarted, _) =>
         {
             if (Interlocked.Increment(ref calls) == 1)
+            {
                 throw new ObjectDisposedException("KafkaConnection", "Connection has been retired");
+            }
 
             writeStarted();
             return ValueTask.FromResult(new ExpireDelegationTokenResponse
@@ -859,7 +879,9 @@ public sealed class AdminClientIdempotentRetryTests
         {
             writeStarted();
             if (Interlocked.Increment(ref calls) == 1)
+            {
                 throw new IOException("response lost");
+            }
 
             return ValueTask.FromResult(new ExpireDelegationTokenResponse
             {
@@ -931,9 +953,13 @@ public sealed class AdminClientIdempotentRetryTests
             .Returns(_ =>
             {
                 if (!outage.IsRunning)
+                {
                     outage.Start();
+                }
                 if (outage.Elapsed >= TimeSpan.FromMilliseconds(800))
+                {
                     return ValueTask.FromResult(quorum);
+                }
 
                 Interlocked.Increment(ref failedQuorumReads);
                 return ValueTask.FromException<DescribeQuorumResponse>(new IOException("controller unreachable"));
@@ -1090,7 +1116,9 @@ public sealed class AdminClientIdempotentRetryTests
             .Returns<ValueTask<RemoveRaftVoterResponse>>(_ =>
             {
                 if (Interlocked.Increment(ref calls) == 1)
+                {
                     throw new IOException("response lost");
+                }
 
                 return ValueTask.FromResult(new RemoveRaftVoterResponse { ErrorCode = ErrorCode.VoterNotFound });
             });
@@ -1116,7 +1144,9 @@ public sealed class AdminClientIdempotentRetryTests
             .Returns<ValueTask<RemoveRaftVoterResponse>>(_ =>
             {
                 if (Interlocked.Increment(ref calls) == 1)
+                {
                     throw new IOException("response lost");
+                }
 
                 return ValueTask.FromResult(new RemoveRaftVoterResponse { ErrorCode = ErrorCode.VoterNotFound });
             });
@@ -1171,7 +1201,9 @@ public sealed class AdminClientIdempotentRetryTests
             {
                 sent.AddRange(request.GroupsNames);
                 if (request.GroupsNames.Contains("group-b") && groupBFailures++ == 0)
+                {
                     throw new ObjectDisposedException("KafkaConnection", "Connection has been retired");
+                }
 
                 writeStarted();
                 var results = new List<DeleteGroupsResponseResult>();
@@ -1213,7 +1245,9 @@ public sealed class AdminClientIdempotentRetryTests
             if (request.GroupsNames.Contains("group-b"))
             {
                 if (Interlocked.Increment(ref groupBAttempts) == 1)
+                {
                     throw new ObjectDisposedException("KafkaConnection", "Connection has been retired");
+                }
 
                 writeStarted();
                 return ValueTask.FromResult(new DeleteGroupsResponse
@@ -1292,7 +1326,9 @@ public sealed class AdminClientIdempotentRetryTests
             .Returns<ValueTask<UnregisterBrokerResponse>>(_ =>
             {
                 if (Interlocked.Increment(ref calls) == 1)
+                {
                     throw new IOException("response lost");
+                }
 
                 return ValueTask.FromResult(new UnregisterBrokerResponse { ErrorCode = ErrorCode.BrokerIdNotRegistered });
             });
@@ -1466,7 +1502,9 @@ public sealed class AdminClientIdempotentRetryTests
             {
                 var names = call.ArgAt<CreateTopicsRequest>(0).Topics.Select(static topic => topic.Name).ToArray();
                 lock (requests)
+                {
                     requests.Add(names);
+                }
                 var first = requests.Count == 1;
                 return ValueTask.FromResult(new CreateTopicsResponse
                 {
@@ -1499,7 +1537,9 @@ public sealed class AdminClientIdempotentRetryTests
             .Returns<ValueTask<AlterUserScramCredentialsResponse>>(_ =>
             {
                 if (Interlocked.Increment(ref calls) == 1)
+                {
                     throw new IOException("response lost");
+                }
 
                 return ValueTask.FromResult(new AlterUserScramCredentialsResponse
                 {
@@ -1526,7 +1566,9 @@ public sealed class AdminClientIdempotentRetryTests
             .Returns<ValueTask<AlterUserScramCredentialsResponse>>(_ =>
             {
                 if (Interlocked.Increment(ref calls) == 1)
+                {
                     throw new IOException("response lost");
+                }
 
                 return ValueTask.FromResult(new AlterUserScramCredentialsResponse
                 {
@@ -1566,7 +1608,9 @@ public sealed class AdminClientIdempotentRetryTests
             .Returns<ValueTask<AlterUserScramCredentialsResponse>>(_ =>
             {
                 if (Interlocked.Increment(ref calls) == 1)
+                {
                     throw new IOException("response lost");
+                }
 
                 return ValueTask.FromResult(new AlterUserScramCredentialsResponse
                 {
@@ -1610,7 +1654,9 @@ public sealed class AdminClientIdempotentRetryTests
             .Returns<ValueTask<AddRaftVoterResponse>>(_ =>
             {
                 if (Interlocked.Increment(ref calls) == 1)
+                {
                     throw new IOException("response lost");
+                }
 
                 return ValueTask.FromResult(new AddRaftVoterResponse { ErrorCode = ErrorCode.DuplicateVoter });
             });
@@ -1752,7 +1798,9 @@ public sealed class AdminClientIdempotentRetryTests
         metadataManager.SetApiVersion(ApiKey.FindCoordinator, 4, 5);
 
         foreach (var apiKey in extraApiKeys)
+        {
             metadataManager.SetApiVersion(apiKey, 0, 99);
+        }
 
         connection.SendAsync<MetadataRequest, MetadataResponse>(
                 Arg.Any<MetadataRequest>(),
@@ -1841,13 +1889,22 @@ public sealed class AdminClientIdempotentRetryTests
     private sealed class WriteObservingConnection(IKafkaConnection inner)
         : IKafkaConnection, IKafkaRequestWriteObserverConnection
     {
-        public Func<Action, CancellationToken, ValueTask<DeleteAclsResponse>>? DeleteAclsHandler { get; set; }
+        public Func<Action, CancellationToken, ValueTask<DeleteAclsResponse>>? DeleteAclsHandler
+        {
+            get; set;
+        }
 
         // Also serves plain SendAsync, with a write start nobody observes, so a caller that does
         // not use the write observation sees the same broker.
-        public Func<Action, CancellationToken, ValueTask<ExpireDelegationTokenResponse>>? ExpireDelegationTokenHandler { get; set; }
+        public Func<Action, CancellationToken, ValueTask<ExpireDelegationTokenResponse>>? ExpireDelegationTokenHandler
+        {
+            get; set;
+        }
 
-        public Func<DeleteGroupsRequest, Action, CancellationToken, ValueTask<DeleteGroupsResponse>>? DeleteGroupsHandler { get; set; }
+        public Func<DeleteGroupsRequest, Action, CancellationToken, ValueTask<DeleteGroupsResponse>>? DeleteGroupsHandler
+        {
+            get; set;
+        }
 
         public int BrokerId => inner.BrokerId;
         public string Host => inner.Host;
@@ -1859,9 +1916,20 @@ public sealed class AdminClientIdempotentRetryTests
             where TRequest : IKafkaRequest<TResponse>
             where TResponse : IKafkaResponse =>
             request is ExpireDelegationTokenRequest && ExpireDelegationTokenHandler is { } expire
-                ? (ValueTask<TResponse>)(object)expire(static () => { }, cancellationToken)
+                ? (ValueTask<TResponse>)(object)expire(
+                    static () =>
+                    {
+                    },
+                    cancellationToken
+                )
                 : request is DeleteGroupsRequest deleteGroups && DeleteGroupsHandler is { } deleteGroupsHandler
-                    ? (ValueTask<TResponse>)(object)deleteGroupsHandler(deleteGroups, static () => { }, cancellationToken)
+                    ? (ValueTask<TResponse>)(object)deleteGroupsHandler(
+                        deleteGroups,
+                        static () =>
+                        {
+                        },
+                        cancellationToken
+                    )
                     : inner.SendAsync<TRequest, TResponse>(request, apiVersion, cancellationToken);
 
         public ValueTask<TResponse> SendWithWriteObservationAsync<TRequest, TResponse>(
@@ -1870,11 +1938,17 @@ public sealed class AdminClientIdempotentRetryTests
             where TResponse : IKafkaResponse
         {
             if (request is DeleteAclsRequest && DeleteAclsHandler is { } handler)
+            {
                 return (ValueTask<TResponse>)(object)handler(requestWriteStarted, cancellationToken);
+            }
             if (request is ExpireDelegationTokenRequest && ExpireDelegationTokenHandler is { } expire)
+            {
                 return (ValueTask<TResponse>)(object)expire(requestWriteStarted, cancellationToken);
+            }
             if (request is DeleteGroupsRequest deleteGroups && DeleteGroupsHandler is { } deleteGroupsHandler)
+            {
                 return (ValueTask<TResponse>)(object)deleteGroupsHandler(deleteGroups, requestWriteStarted, cancellationToken);
+            }
 
             requestWriteStarted();
             return inner.SendAsync<TRequest, TResponse>(request, apiVersion, cancellationToken);

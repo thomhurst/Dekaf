@@ -280,8 +280,7 @@ public sealed class AvroPocoSchemaRegistryTests
                 ],
                 RuleSet = new SchemaRuleSet { DomainRules = [] }
             });
-        var evictionSchemaIds = new int[
-            AvroPocoSchemaRegistryDeserializer<PocoReferencedRoot, PocoReferencedRoot.AvroCodec>.MaxCachedPlans];
+        var evictionSchemaIds = new int[AvroPocoSchemaRegistryDeserializer<PocoReferencedRoot, PocoReferencedRoot.AvroCodec>.MaxCachedPlans];
         for (var index = 0; index < evictionSchemaIds.Length; index++)
         {
             evictionSchemaIds[index] = await registry.RegisterSchemaAsync(
@@ -310,7 +309,9 @@ public sealed class AvroPocoSchemaRegistryTests
             .Returns(async call =>
             {
                 foreach (var schemaId in evictionSchemaIds)
+                {
                     await deserializer.WarmupAsync(schemaId);
+                }
                 evictedDuringPreparation = true;
                 return await registry.GetSchemaAsync(
                     rootSchemaId,
@@ -329,7 +330,9 @@ public sealed class AvroPocoSchemaRegistryTests
         ruleExecutor.BeforeDeserialize = () =>
         {
             foreach (var schemaId in evictionSchemaIds)
+            {
                 deserializer.WarmupAsync(schemaId).GetAwaiter().GetResult();
+            }
             nonCachingRegistry.ClearReceivedCalls();
         };
         var actual = deserializer.Deserialize(wire.AsMemory(0, wireLength), context);
@@ -438,8 +441,7 @@ public sealed class AvroPocoSchemaRegistryTests
                 ],
                 RuleSet = new SchemaRuleSet { MigrationRules = [migrationRule] }
             });
-        var evictionSchemaIds = new int[
-            AvroPocoSchemaRegistryDeserializer<PocoReferencedRoot, PocoReferencedRoot.AvroCodec>.MaxCachedPlans];
+        var evictionSchemaIds = new int[AvroPocoSchemaRegistryDeserializer<PocoReferencedRoot, PocoReferencedRoot.AvroCodec>.MaxCachedPlans];
         for (var index = 0; index < evictionSchemaIds.Length; index++)
         {
             evictionSchemaIds[index] = await registry.RegisterSchemaAsync(
@@ -485,7 +487,9 @@ public sealed class AvroPocoSchemaRegistryTests
         handler.BeforeDeserialize = () =>
         {
             foreach (var schemaId in evictionSchemaIds)
+            {
                 deserializer.WarmupAsync(schemaId).GetAwaiter().GetResult();
+            }
             nonCachingRegistry.ClearReceivedCalls();
         };
         var actual = deserializer.Deserialize(wire.AsMemory(0, wireLength), context);
@@ -1020,7 +1024,9 @@ public sealed class AvroPocoSchemaRegistryTests
         BinaryPrimitives.WriteInt32BigEndian(payload.AsSpan(1, 4), schemaId);
         var writer = new AvroValueWriter(payload.AsSpan(5));
         for (var index = 0; index < blockCount; index++)
+        {
             writer.WriteBlockCount(1);
+        }
         writer.WriteBlockEnd();
         Array.Resize(ref payload, 5 + writer.WrittenCount);
 
@@ -1198,7 +1204,9 @@ public sealed class AvroPocoSchemaRegistryTests
         var writer = new AvroValueWriter(payload.AsSpan(5));
         writer.WriteBlockCount(itemCount);
         for (var index = 0; index < itemCount; index++)
+        {
             writer.WriteString(value);
+        }
         writer.WriteBlockEnd();
         Array.Resize(ref payload, 5 + writer.WrittenCount);
 
@@ -1235,7 +1243,9 @@ public sealed class AvroPocoSchemaRegistryTests
         var writer = new AvroValueWriter(payload.AsSpan(5));
         writer.WriteBlockCount(itemCount);
         for (var index = 0; index < itemCount; index++)
+        {
             writer.WriteBytes(value);
+        }
         writer.WriteBlockEnd();
         Array.Resize(ref payload, 5 + writer.WrittenCount);
 
@@ -1632,7 +1642,9 @@ public sealed class AvroPocoSchemaRegistryTests
         serializer.Serialize(expected, ref destination, context);
         var lookupCountBeforeDeserialize = registry.LookupSchemaCallCount;
         for (var index = 0; index < 32; index++)
+        {
             headers.Add(new Header($"application-{index}", ReadOnlyMemory<byte>.Empty));
+        }
         await Assert.That(() => deserializer.Deserialize(destination.WrittenMemory, context))
             .Throws<InvalidOperationException>()
             .WithMessageContaining("not cached");
@@ -2065,11 +2077,15 @@ public sealed class AvroPocoSchemaRegistryTests
         // Cross the tiered-compilation call-count threshold before measuring. A short
         // warmup made the generated generic read path promote during the allocation window.
         for (var index = 0; index < AllocationWarmupCount; index++)
+        {
             _ = deserializer.Deserialize(destination.WrittenMemory, context);
+        }
 
         var before = GC.GetAllocatedBytesForCurrentThread();
         for (var index = 0; index < 1_000; index++)
+        {
             _ = deserializer.Deserialize(destination.WrittenMemory, context);
+        }
         var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
 
         await Assert.That(allocated).IsEqualTo(0);
@@ -2114,7 +2130,9 @@ public sealed class AvroPocoSchemaRegistryTests
                 try
                 {
                     for (var index = 0; index < AllocationWarmupCount; index++)
+                    {
                         _ = deserializer.Deserialize(destination.WrittenMemory, context);
+                    }
                 }
                 finally
                 {
@@ -2124,7 +2142,9 @@ public sealed class AvroPocoSchemaRegistryTests
                 start.Wait();
                 var before = GC.GetAllocatedBytesForCurrentThread();
                 for (var index = 0; index < 1_000; index++)
+                {
                     _ = deserializer.Deserialize(destination.WrittenMemory, context);
+                }
                 return GC.GetAllocatedBytesForCurrentThread() - before;
             });
         }
@@ -2133,7 +2153,9 @@ public sealed class AvroPocoSchemaRegistryTests
         start.Set();
         var allocations = await Task.WhenAll(tasks);
         for (var index = 0; index < allocations.Length; index++)
+        {
             await Assert.That(allocations[index]).IsEqualTo(0);
+        }
     }
 
     [Test]
@@ -2192,7 +2214,9 @@ public sealed class AvroPocoSchemaRegistryTests
         BinaryPrimitives.WriteInt32BigEndian(payload.AsSpan(1, 4), schemaId);
         var writer = new AvroValueWriter(payload.AsSpan(5));
         for (var fieldIndex = 0; fieldIndex < 3; fieldIndex++)
+        {
             writer.WriteInt64(fieldIndex == invalidFieldIndex ? (long)int.MaxValue + 1 : 0);
+        }
         Array.Resize(ref payload, 5 + writer.WrittenCount);
 
         await Assert.That(() => reader.Deserialize(payload, context))
@@ -2895,17 +2919,20 @@ public sealed class AvroPocoSchemaRegistryTests
             SchemaType = Dekaf.SchemaRegistry.SchemaType.Avro,
             SchemaString = PocoWireRecord.AvroCodec.SchemaJson
         };
-        var schemaIds = new int[
-            AvroPocoSchemaRegistryDeserializer<PocoWireRecord, PocoWireRecord.AvroCodec>.MaxCachedPlans + 1];
+        var schemaIds = new int[AvroPocoSchemaRegistryDeserializer<PocoWireRecord, PocoWireRecord.AvroCodec>.MaxCachedPlans + 1];
         for (var index = 0; index < schemaIds.Length; index++)
+        {
             schemaIds[index] = await registry.RegisterSchemaAsync("poco-plan-eviction-value", schema);
+        }
 
         var nonCachingRegistry = CreateNonCachingRegistry(registry);
         await using var reader = PocoWireRecord.CreateAvroDeserializer(
             nonCachingRegistry,
             new AvroDeserializerConfig { RuleExecutor = PassThroughRuleExecutor.Instance });
         for (var index = 0; index < schemaIds.Length; index++)
+        {
             await reader.WarmupAsync(schemaIds[index]);
+        }
 
         var payload = new byte[64];
         BinaryPrimitives.WriteInt32BigEndian(payload.AsSpan(1, 4), schemaIds[0]);
@@ -3218,7 +3245,9 @@ public sealed class AvroPocoSchemaRegistryTests
         BinaryPrimitives.WriteInt32BigEndian(payload.AsSpan(1, 4), schemaId);
         var writer = new AvroValueWriter(payload.AsSpan(5));
         if (writerUnion)
+        {
             writer.WriteIndex(1);
+        }
         writer.WriteInt64(1234);
         var context = new SerializationContext
         {
@@ -3851,9 +3880,18 @@ public sealed class AvroPocoSchemaRegistryTests
 
     private sealed class CapturingTaggedFieldRuleExecutor : ISchemaRegistryRuleExecutor
     {
-        internal bool SerializedContextHadTransformer { get; private set; }
-        internal bool DeserializedContextHadTransformer { get; private set; }
-        internal Action? BeforeDeserialize { get; set; }
+        internal bool SerializedContextHadTransformer
+        {
+            get; private set;
+        }
+        internal bool DeserializedContextHadTransformer
+        {
+            get; private set;
+        }
+        internal Action? BeforeDeserialize
+        {
+            get; set;
+        }
 
         public ReadOnlyMemory<byte> TransformSerializedPayload(
             ReadOnlyMemory<byte> payload,
@@ -3875,7 +3913,10 @@ public sealed class AvroPocoSchemaRegistryTests
 
     private sealed class PassThroughRuleExecutor : ISchemaRegistryRuleExecutor
     {
-        internal static PassThroughRuleExecutor Instance { get; } = new();
+        internal static PassThroughRuleExecutor Instance
+        {
+            get;
+        } = new();
 
         public ReadOnlyMemory<byte> TransformSerializedPayload(
             ReadOnlyMemory<byte> payload,
@@ -3888,7 +3929,10 @@ public sealed class AvroPocoSchemaRegistryTests
 
     private sealed class CapturingPayloadCapacityRuleExecutor : ISchemaRegistryRuleExecutor
     {
-        internal int LastPayloadBufferCapacity { get; private set; }
+        internal int LastPayloadBufferCapacity
+        {
+            get; private set;
+        }
 
         public ReadOnlyMemory<byte> TransformSerializedPayload(
             ReadOnlyMemory<byte> payload,
@@ -3907,7 +3951,10 @@ public sealed class AvroPocoSchemaRegistryTests
 
     private sealed class FixedAsyncSubjectNameStrategy(string subject) : IAsyncSubjectNameStrategy
     {
-        internal int CallCount { get; private set; }
+        internal int CallCount
+        {
+            get; private set;
+        }
 
         public ValueTask<string> GetSubjectNameAsync(
             string topic,
@@ -3924,14 +3971,19 @@ public sealed class AvroPocoSchemaRegistryTests
     {
         private bool _isReentrant;
 
-        internal Action? Reenter { get; set; }
+        internal Action? Reenter
+        {
+            get; set;
+        }
 
         public ReadOnlyMemory<byte> TransformSerializedPayload(
             ReadOnlyMemory<byte> payload,
             SchemaRegistryRuleContext context)
         {
             if (_isReentrant)
+            {
                 return payload;
+            }
 
             _isReentrant = true;
             try
@@ -3956,8 +4008,14 @@ public sealed class AvroPocoSchemaRegistryTests
         internal const string RuleType = "FIXED_AVRO_PAYLOAD";
 
         public string Type => RuleType;
-        internal bool ContextHadTaggedFieldTransformer { get; private set; }
-        internal Action? BeforeDeserialize { get; set; }
+        internal bool ContextHadTaggedFieldTransformer
+        {
+            get; private set;
+        }
+        internal Action? BeforeDeserialize
+        {
+            get; set;
+        }
 
         public ReadOnlyMemory<byte> TransformSerializedPayload(
             ReadOnlyMemory<byte> source,
@@ -3981,14 +4039,25 @@ public sealed class AvroPocoSchemaRegistryTests
     {
         private readonly byte[] _buffer = GC.AllocateUninitializedArray<byte>(capacity);
 
-        public int WrittenCount { get; private set; }
-        public int GetMemoryCallCount { get; private set; }
-        public int LastMemorySizeHint { get; private set; }
+        public int WrittenCount
+        {
+            get; private set;
+        }
+        public int GetMemoryCallCount
+        {
+            get; private set;
+        }
+        public int LastMemorySizeHint
+        {
+            get; private set;
+        }
 
         public void Advance(int count)
         {
             if ((uint)count > (uint)(_buffer.Length - WrittenCount))
+            {
                 throw new ArgumentOutOfRangeException(nameof(count));
+            }
             WrittenCount += count;
         }
 
@@ -4014,7 +4083,9 @@ public sealed class AvroPocoSchemaRegistryTests
             ArgumentOutOfRangeException.ThrowIfNegative(sizeHint);
             var length = Math.Max(sizeHint, 1);
             if (length > _buffer.Length - WrittenCount)
+            {
                 throw new ArgumentException("Requested buffer exceeds remaining capacity.", nameof(sizeHint));
+            }
             return length;
         }
     }
@@ -4024,50 +4095,92 @@ public sealed class AvroPocoSchemaRegistryTests
 internal sealed partial class PocoOrder
 {
     [AvroField(Order = 0)]
-    public required int Id { get; init; }
+    public required int Id
+    {
+        get; init;
+    }
 
     [AvroField(Order = 1)]
-    public required string Customer { get; init; }
+    public required string Customer
+    {
+        get; init;
+    }
 
     [AvroField(Order = 2, DefaultJson = "null")]
-    public string? OptionalNote { get; init; }
+    public string? OptionalNote
+    {
+        get; init;
+    }
 
     [AvroField(Order = 3)]
-    public PocoStatus Status { get; init; }
+    public PocoStatus Status
+    {
+        get; init;
+    }
 
     [AvroField(Order = 4)]
-    public required int[] Scores { get; init; }
+    public required int[] Scores
+    {
+        get; init;
+    }
 
     [AvroField(Order = 5)]
-    public required List<string> Tags { get; init; }
+    public required List<string> Tags
+    {
+        get; init;
+    }
 
     [AvroField(Order = 6)]
-    public required Dictionary<string, long> Totals { get; init; }
+    public required Dictionary<string, long> Totals
+    {
+        get; init;
+    }
 
     [AvroField(Order = 7)]
-    public required PocoAddress Address { get; init; }
+    public required PocoAddress Address
+    {
+        get; init;
+    }
 
     [AvroField(Order = 8)]
-    public DateTime Created { get; init; }
+    public DateTime Created
+    {
+        get; init;
+    }
 
     [AvroField(Order = 9)]
-    public Guid CorrelationId { get; init; }
+    public Guid CorrelationId
+    {
+        get; init;
+    }
 
     [AvroField(Order = 10, Precision = 10, Scale = 2)]
-    public decimal Amount { get; init; }
+    public decimal Amount
+    {
+        get; init;
+    }
 }
 
 [AvroRecord(Name = "PocoAddress", Namespace = "Dekaf.Tests")]
 internal sealed partial record PocoAddress
 {
-    public required string City { get; init; }
-    public required string PostCode { get; init; }
+    public required string City
+    {
+        get; init;
+    }
+    public required string PostCode
+    {
+        get; init;
+    }
 }
 
 [AvroRecord(Name = "PocoReferencedRoot", Namespace = "Dekaf.Tests")]
 internal sealed partial class PocoReferencedRoot
 {
-    public required PocoAddress Address { get; init; }
+    public required PocoAddress Address
+    {
+        get; init;
+    }
 }
 
 internal enum PocoStatus
@@ -4086,24 +4199,36 @@ internal enum PocoNarrowStatus
 internal sealed partial class PocoEnumEvolution
 {
     [AvroField(Name = "status", Order = 0)]
-    public PocoNarrowStatus Status { get; init; }
+    public PocoNarrowStatus Status
+    {
+        get; init;
+    }
 }
 
 [AvroRecord(Name = "PocoEnvelope", Namespace = "Dekaf.Tests")]
 internal sealed partial class PocoEnvelope
 {
     [AvroField(UnionTypes = [typeof(PocoAddress), typeof(PocoContact)])]
-    public required object Party { get; init; }
+    public required object Party
+    {
+        get; init;
+    }
 }
 
 [AvroRecord(Name = "PocoStringBytesUnion", Namespace = "Dekaf.Tests")]
 internal sealed partial class PocoStringBytesUnion
 {
     [AvroField(UnionTypes = [typeof(byte[]), typeof(string)])]
-    public required object BytesFirst { get; init; }
+    public required object BytesFirst
+    {
+        get; init;
+    }
 
     [AvroField(UnionTypes = [typeof(string), typeof(byte[])])]
-    public required object StringFirst { get; init; }
+    public required object StringFirst
+    {
+        get; init;
+    }
 }
 
 internal readonly struct PocoUnionResolutionCodec : IAvroPocoCodec<object>
@@ -4112,7 +4237,10 @@ internal readonly struct PocoUnionResolutionCodec : IAvroPocoCodec<object>
     public static ReadOnlySpan<byte> SchemaUtf8 => throw new NotSupportedException();
     public static long ParsingFingerprint64 => 0;
     public static string FullName => "Dekaf.Tests.PocoUnionResolution";
-    public static ReadOnlyMemory<AvroPocoField> Fields { get; } = new AvroPocoField[]
+    public static ReadOnlyMemory<AvroPocoField> Fields
+    {
+        get;
+    } = new AvroPocoField[]
     {
         new("Exact", default, null, new AvroPocoType(AvroPocoTypeKind.Union, branches: new AvroPocoType[]
         {
@@ -4135,8 +4263,14 @@ internal readonly struct PocoUnionResolutionCodec : IAvroPocoCodec<object>
 [AvroRecord(Name = "PocoContact", Namespace = "Dekaf.Tests")]
 internal sealed partial record PocoContact
 {
-    public required string Name { get; init; }
-    public required string Email { get; init; }
+    public required string Name
+    {
+        get; init;
+    }
+    public required string Email
+    {
+        get; init;
+    }
 }
 
 [AvroRecord(Name = "PocoEvolved", Namespace = "Dekaf.Tests")]
@@ -4145,159 +4279,258 @@ internal sealed partial class PocoEvolved
 #pragma warning disable CA1861 // Attribute arrays are emitted as metadata, not allocated per call.
     [AvroField(Name = "id", Aliases = ["legacy_id"], Order = 0)]
 #pragma warning restore CA1861
-    public long Id { get; init; }
+    public long Id
+    {
+        get; init;
+    }
 
     [AvroField(Name = "note", DefaultJson = "\"added-by-reader\"", Order = 1)]
-    public required string Note { get; init; }
+    public required string Note
+    {
+        get; init;
+    }
 }
 
 [AvroRecord(Name = "PocoDecimal", Namespace = "Dekaf.Tests")]
 internal sealed partial class PocoDecimal
 {
     [AvroField(Precision = 10, Scale = 2)]
-    public decimal Amount { get; init; }
+    public decimal Amount
+    {
+        get; init;
+    }
 }
 
 [AvroRecord(Name = "PocoWireRecord", Namespace = "Dekaf.Tests")]
 internal sealed partial class PocoWireRecord
 {
     [AvroField(Name = "id", Order = 0)]
-    public int Id { get; init; }
+    public int Id
+    {
+        get; init;
+    }
 
     [AvroField(Name = "name", Order = 1)]
-    public required string Name { get; init; }
+    public required string Name
+    {
+        get; init;
+    }
 }
 
 [AvroRecord(Name = "PocoBlocks", Namespace = "Dekaf.Tests")]
 internal sealed partial class PocoBlocks
 {
     [AvroField(Name = "items", Order = 0)]
-    public required int[] Items { get; init; }
+    public required int[] Items
+    {
+        get; init;
+    }
 
     [AvroField(Name = "names", Order = 1)]
-    public required List<string> Names { get; init; }
+    public required List<string> Names
+    {
+        get; init;
+    }
 
     [AvroField(Name = "values", Order = 2)]
-    public required Dictionary<string, long> Values { get; init; }
+    public required Dictionary<string, long> Values
+    {
+        get; init;
+    }
 }
 
 [AvroRecord(Name = "PocoZeroWidthCollection", Namespace = "Dekaf.Tests")]
 internal sealed partial class PocoZeroWidthCollection
 {
     [AvroField(Name = "items", Order = 0)]
-    public required PocoZeroWidthItem[] Items { get; init; }
+    public required PocoZeroWidthItem[] Items
+    {
+        get; init;
+    }
 }
 
 [AvroRecord(Name = "PocoZeroWidthItem", Namespace = "Dekaf.Tests")]
 internal sealed partial class PocoZeroWidthItem
 {
     [AvroField(DefaultJson = "\"reader-default\"")]
-    public required string Value { get; init; }
+    public required string Value
+    {
+        get; init;
+    }
 }
 
 [AvroRecord(Name = "PocoLargeZeroWidthCollection", Namespace = "Dekaf.Tests")]
 internal sealed partial class PocoLargeZeroWidthCollection
 {
     [AvroField(Name = "items")]
-    public required PocoLargeZeroWidthItem[] Items { get; init; }
+    public required PocoLargeZeroWidthItem[] Items
+    {
+        get; init;
+    }
 }
 
 [AvroRecord(Name = "PocoLargeZeroWidthReferenceCollection", Namespace = "Dekaf.Tests")]
 internal sealed partial class PocoLargeZeroWidthReferenceCollection
 {
     [AvroField(Name = "items")]
-    public required PocoLargeZeroWidthReferenceItem[] Items { get; init; }
+    public required PocoLargeZeroWidthReferenceItem[] Items
+    {
+        get; init;
+    }
 }
 
 [AvroRecord(Name = "PocoLargeZeroWidthReferenceItem", Namespace = "Dekaf.Tests")]
 internal sealed partial class PocoLargeZeroWidthReferenceItem
 {
     [AvroField(DefaultJson = "0", Order = 0)]
-    public long Field0 { get; init; }
+    public long Field0
+    {
+        get; init;
+    }
 
     [AvroField(DefaultJson = "0", Order = 1)]
-    public long Field1 { get; init; }
+    public long Field1
+    {
+        get; init;
+    }
 
     [AvroField(DefaultJson = "0", Order = 2)]
-    public long Field2 { get; init; }
+    public long Field2
+    {
+        get; init;
+    }
 
     [AvroField(DefaultJson = "0", Order = 3)]
-    public long Field3 { get; init; }
+    public long Field3
+    {
+        get; init;
+    }
 
     [AvroField(DefaultJson = "0", Order = 4)]
-    public long Field4 { get; init; }
+    public long Field4
+    {
+        get; init;
+    }
 
     [AvroField(DefaultJson = "0", Order = 5)]
-    public long Field5 { get; init; }
+    public long Field5
+    {
+        get; init;
+    }
 
     [AvroField(DefaultJson = "0", Order = 6)]
-    public long Field6 { get; init; }
+    public long Field6
+    {
+        get; init;
+    }
 
     [AvroField(DefaultJson = "0", Order = 7)]
-    public long Field7 { get; init; }
+    public long Field7
+    {
+        get; init;
+    }
 }
 
 [AvroRecord(Name = "PocoNestedZeroWidthReferenceCollection", Namespace = "Dekaf.Tests")]
 internal sealed partial class PocoNestedZeroWidthReferenceCollection
 {
     [AvroField(Name = "items")]
-    public required PocoNestedZeroWidthReferenceItem[] Items { get; init; }
+    public required PocoNestedZeroWidthReferenceItem[] Items
+    {
+        get; init;
+    }
 }
 
 [AvroRecord(Name = "PocoNestedZeroWidthReferenceItem", Namespace = "Dekaf.Tests")]
 internal sealed partial class PocoNestedZeroWidthReferenceItem
 {
     [AvroField(Name = "child")]
-    public required PocoNestedZeroWidthReferenceChild Child { get; init; }
+    public required PocoNestedZeroWidthReferenceChild Child
+    {
+        get; init;
+    }
 }
 
 [AvroRecord(Name = "PocoNestedZeroWidthReferenceChild", Namespace = "Dekaf.Tests")]
 internal sealed partial class PocoNestedZeroWidthReferenceChild
 {
     [AvroField(DefaultJson = "0", Order = 0)]
-    public long Field0 { get; init; }
+    public long Field0
+    {
+        get; init;
+    }
 
     [AvroField(DefaultJson = "0", Order = 1)]
-    public long Field1 { get; init; }
+    public long Field1
+    {
+        get; init;
+    }
 
     [AvroField(DefaultJson = "0", Order = 2)]
-    public long Field2 { get; init; }
+    public long Field2
+    {
+        get; init;
+    }
 
     [AvroField(DefaultJson = "0", Order = 3)]
-    public long Field3 { get; init; }
+    public long Field3
+    {
+        get; init;
+    }
 
     [AvroField(DefaultJson = "0", Order = 4)]
-    public long Field4 { get; init; }
+    public long Field4
+    {
+        get; init;
+    }
 
     [AvroField(DefaultJson = "0", Order = 5)]
-    public long Field5 { get; init; }
+    public long Field5
+    {
+        get; init;
+    }
 
     [AvroField(DefaultJson = "0", Order = 6)]
-    public long Field6 { get; init; }
+    public long Field6
+    {
+        get; init;
+    }
 
     [AvroField(DefaultJson = "0", Order = 7)]
-    public long Field7 { get; init; }
+    public long Field7
+    {
+        get; init;
+    }
 }
 
 [AvroRecord(Name = "PocoByteArrayDefaultCollection", Namespace = "Dekaf.Tests")]
 internal sealed partial class PocoByteArrayDefaultCollection
 {
     [AvroField(Name = "values")]
-    public required PocoByteArrayDefaultItem[] Values { get; init; }
+    public required PocoByteArrayDefaultItem[] Values
+    {
+        get; init;
+    }
 }
 
 [AvroRecord(Name = "PocoByteArrayDefaultItem", Namespace = "Dekaf.Tests")]
 internal sealed partial class PocoByteArrayDefaultItem
 {
     [AvroField(DefaultJson = "\"abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyz\"")]
-    public byte[] Data { get; init; } = null!;
+    public byte[] Data
+    {
+        get; init;
+    } = null!;
 }
 
 [AvroRecord(Name = "PocoAllocatingConstructorCollection", Namespace = "Dekaf.Tests")]
 internal sealed partial class PocoAllocatingConstructorCollection
 {
     [AvroField(Name = "values")]
-    public required PocoAllocatingConstructorItem[] Values { get; init; }
+    public required PocoAllocatingConstructorItem[] Values
+    {
+        get; init;
+    }
 }
 
 [AvroRecord(Name = "PocoAllocatingConstructorItem", Namespace = "Dekaf.Tests")]
@@ -4306,10 +4539,16 @@ internal sealed partial class PocoAllocatingConstructorItem
     public PocoAllocatingConstructorItem() => Hidden = new byte[4096];
 
     [AvroField(DefaultJson = "0")]
-    public long Value { get; init; }
+    public long Value
+    {
+        get; init;
+    }
 
     [AvroIgnore]
-    public byte[] Hidden { get; }
+    public byte[] Hidden
+    {
+        get;
+    }
 }
 
 [AvroRecord(Name = "PocoWriteOverflowRecord", Namespace = "Dekaf.Tests")]
@@ -4319,7 +4558,10 @@ internal sealed partial class PocoWriteOverflowRecord
     private int _later;
 
     [AvroField(Order = 0)]
-    public required string First { get; init; }
+    public required string First
+    {
+        get; init;
+    }
 
     [AvroField(Order = 1)]
     public int Later
@@ -4343,7 +4585,10 @@ internal sealed partial class PocoFixedWriteOverflowRecord
     private string _later = string.Empty;
 
     [AvroField(Order = 0)]
-    public int First { get; init; }
+    public int First
+    {
+        get; init;
+    }
 
     [AvroField(Order = 1)]
     public string Later
@@ -4363,7 +4608,10 @@ internal sealed partial class PocoFixedWriteOverflowRecord
 [AvroRecord(Name = "PocoCollectionOverflowRecord", Namespace = "Dekaf.Tests")]
 internal sealed partial class PocoCollectionOverflowRecord
 {
-    public required PocoCollectionOverflowItem[] Items { get; init; }
+    public required PocoCollectionOverflowItem[] Items
+    {
+        get; init;
+    }
 }
 
 [AvroRecord(Name = "PocoCollectionOverflowItem", Namespace = "Dekaf.Tests")]
@@ -4390,111 +4638,186 @@ internal sealed partial class PocoCollectionOverflowItem
 internal sealed partial class PocoLargeZeroWidthMap
 {
     [AvroField(Name = "values")]
-    public required Dictionary<string, PocoLargeZeroWidthItem> Values { get; init; }
+    public required Dictionary<string, PocoLargeZeroWidthItem> Values
+    {
+        get; init;
+    }
 }
 
 [AvroRecord(Name = "PocoNestedCollectionAllocation", Namespace = "Dekaf.Tests")]
 internal sealed partial class PocoNestedCollectionAllocation
 {
     [AvroField(Name = "items")]
-    public required PocoNestedCollectionAllocationItem[] Items { get; init; }
+    public required PocoNestedCollectionAllocationItem[] Items
+    {
+        get; init;
+    }
 }
 
 [AvroRecord(Name = "PocoNestedCollectionAllocationItem", Namespace = "Dekaf.Tests")]
 internal sealed partial class PocoNestedCollectionAllocationItem
 {
     [AvroField(Name = "values")]
-    public required PocoLargeZeroWidthItem[] Values { get; init; }
+    public required PocoLargeZeroWidthItem[] Values
+    {
+        get; init;
+    }
 }
 
 [AvroRecord(Name = "PocoStringCollection", Namespace = "Dekaf.Tests")]
 internal sealed partial class PocoStringCollection
 {
     [AvroField(Name = "values")]
-    public required string[] Values { get; init; }
+    public required string[] Values
+    {
+        get; init;
+    }
 }
 
 [AvroRecord(Name = "PocoBytesCollection", Namespace = "Dekaf.Tests")]
 internal sealed partial class PocoBytesCollection
 {
     [AvroField(Name = "values")]
-    public required List<byte[]> Values { get; init; }
+    public required List<byte[]> Values
+    {
+        get; init;
+    }
 }
 
 [AvroRecord(Name = "PocoLargeZeroWidthItem", Namespace = "Dekaf.Tests")]
 internal partial record struct PocoLargeZeroWidthItem
 {
     [AvroField(DefaultJson = "0", Order = 0)]
-    public long Field0 { get; init; }
+    public long Field0
+    {
+        get; init;
+    }
 
     [AvroField(DefaultJson = "0", Order = 1)]
-    public long Field1 { get; init; }
+    public long Field1
+    {
+        get; init;
+    }
 
     [AvroField(DefaultJson = "0", Order = 2)]
-    public long Field2 { get; init; }
+    public long Field2
+    {
+        get; init;
+    }
 
     [AvroField(DefaultJson = "0", Order = 3)]
-    public long Field3 { get; init; }
+    public long Field3
+    {
+        get; init;
+    }
 
     [AvroField(DefaultJson = "0", Order = 4)]
-    public long Field4 { get; init; }
+    public long Field4
+    {
+        get; init;
+    }
 
     [AvroField(DefaultJson = "0", Order = 5)]
-    public long Field5 { get; init; }
+    public long Field5
+    {
+        get; init;
+    }
 
     [AvroField(DefaultJson = "0", Order = 6)]
-    public long Field6 { get; init; }
+    public long Field6
+    {
+        get; init;
+    }
 
     [AvroField(DefaultJson = "0", Order = 7)]
-    public long Field7 { get; init; }
+    public long Field7
+    {
+        get; init;
+    }
 }
 
 [AvroRecord(Name = "PocoEmptyCollections", Namespace = "Dekaf.Tests")]
 internal sealed partial class PocoEmptyCollections
 {
     [AvroField(Name = "items", Order = 0)]
-    public required int[] Items { get; init; }
+    public required int[] Items
+    {
+        get; init;
+    }
 
     [AvroField(Name = "names", Order = 1)]
-    public required List<string> Names { get; init; }
+    public required List<string> Names
+    {
+        get; init;
+    }
 
     [AvroField(Name = "values", Order = 2)]
-    public required Dictionary<string, long> Values { get; init; }
+    public required Dictionary<string, long> Values
+    {
+        get; init;
+    }
 
     [AvroField(Name = "tail", Order = 3)]
-    public int Tail { get; init; }
+    public int Tail
+    {
+        get; init;
+    }
 }
 
 [AvroRecord(Name = "PocoWriterUnions", Namespace = "Dekaf.Tests")]
 internal sealed partial class PocoWriterUnions
 {
     [AvroField(Name = "scalar", Order = 0)]
-    public double Scalar { get; init; }
+    public double Scalar
+    {
+        get; init;
+    }
 
     [AvroField(Name = "items", Order = 1)]
-    public required double[] Items { get; init; }
+    public required double[] Items
+    {
+        get; init;
+    }
 
     [AvroField(Name = "values", Order = 2)]
-    public required Dictionary<string, double> Values { get; init; }
+    public required Dictionary<string, double> Values
+    {
+        get; init;
+    }
 }
 
 [AvroRecord(Name = "PocoNumericPromotions", Namespace = "Dekaf.Tests")]
 internal sealed partial class PocoNumericPromotions
 {
-    public long LongValue { get; init; }
-    public float FloatValue { get; init; }
-    public double DoubleValue { get; init; }
+    public long LongValue
+    {
+        get; init;
+    }
+    public float FloatValue
+    {
+        get; init;
+    }
+    public double DoubleValue
+    {
+        get; init;
+    }
 }
 
 [AvroRecord(Name = "PocoGrowingPayload", Namespace = "Dekaf.Tests")]
 internal sealed partial class PocoGrowingPayload
 {
-    public required string Value { get; init; }
+    public required string Value
+    {
+        get; init;
+    }
 }
 
 internal sealed class CountingPocoPayload
 {
-    public required string Value { get; init; }
+    public required string Value
+    {
+        get; init;
+    }
 }
 
 internal readonly struct CountingPocoPayloadCodec : IAvroPocoCodec<CountingPocoPayload>
@@ -4542,12 +4865,18 @@ internal readonly struct CountingPocoPayloadCodec : IAvroPocoCodec<CountingPocoP
 [AvroRecord(Name = "PocoLogicalBaseUnion", Namespace = "Dekaf.Tests")]
 internal sealed partial class PocoLogicalBaseUnion
 {
-    public long? Value { get; init; }
+    public long? Value
+    {
+        get; init;
+    }
 }
 
 internal sealed class PocoLogicalUnionValue
 {
-    public required object Value { get; init; }
+    public required object Value
+    {
+        get; init;
+    }
 }
 
 internal readonly struct PocoLogicalUnionCodec : IAvroPocoCodec<PocoLogicalUnionValue>
@@ -4603,87 +4932,138 @@ internal readonly struct PocoLogicalUnionCodec : IAvroPocoCodec<PocoLogicalUnion
 [AvroRecord(Name = "PocoSecondGrowingPayload", Namespace = "Dekaf.Tests")]
 internal sealed partial class PocoSecondGrowingPayload
 {
-    public required string Value { get; init; }
+    public required string Value
+    {
+        get; init;
+    }
 }
 
 [AvroRecord(Name = "PocoArrayTerminatorPayload", Namespace = "Dekaf.Tests")]
 internal sealed partial class PocoArrayTerminatorPayload
 {
-    public required int[] Values { get; init; }
+    public required int[] Values
+    {
+        get; init;
+    }
 }
 
 [AvroRecord(Name = "PocoStringPromotion", Namespace = "Dekaf.Tests")]
 internal sealed partial class PocoStringPromotion
 {
-    public required string Value { get; init; }
+    public required string Value
+    {
+        get; init;
+    }
 }
 
 [AvroRecord(Name = "PocoBytesPromotion", Namespace = "Dekaf.Tests")]
 internal sealed partial class PocoBytesPromotion
 {
-    public required byte[] Value { get; init; }
+    public required byte[] Value
+    {
+        get; init;
+    }
 }
 
 [AvroRecord(Name = "PocoLargeGrowingPayload", Namespace = "Dekaf.Tests")]
 internal sealed partial class PocoLargeGrowingPayload
 {
-    public required string Value { get; init; }
+    public required string Value
+    {
+        get; init;
+    }
 }
 
 [AvroRecord(Name = "PocoNestedMap", Namespace = "Dekaf.Tests")]
 internal sealed partial class PocoNestedMap
 {
-    public required Dictionary<string, Dictionary<string, int>> Values { get; init; }
+    public required Dictionary<string, Dictionary<string, int>> Values
+    {
+        get; init;
+    }
 }
 
 [AvroRecord(Name = "PocoTemporal", Namespace = "Dekaf.Tests")]
 internal sealed partial class PocoTemporal
 {
     [AvroField(Order = 0)]
-    public DateTime Timestamp { get; init; }
+    public DateTime Timestamp
+    {
+        get; init;
+    }
 
     [AvroField(Order = 1)]
-    public TimeSpan Time { get; init; }
+    public TimeSpan Time
+    {
+        get; init;
+    }
 }
 
 [AvroRecord(Name = "PocoDateTimeOffsetTemporal", Namespace = "Dekaf.Tests")]
 internal sealed partial class PocoDateTimeOffsetTemporal
 {
-    public DateTimeOffset Timestamp { get; init; }
+    public DateTimeOffset Timestamp
+    {
+        get; init;
+    }
 }
 
 [AvroRecord(Name = "PocoPublicContract", Namespace = "Dekaf.Tests")]
 internal sealed partial class PocoPublicContract
 {
-    private int State { get; set; }
-    public string Hidden { get; private set; } = string.Empty;
-    public int Id { get; init; }
+    private int State
+    {
+        get; set;
+    }
+    public string Hidden
+    {
+        get; private set;
+    } = string.Empty;
+    public int Id
+    {
+        get; init;
+    }
 }
 
 [AvroRecord(Name = "PocoReadonlyRecord", Namespace = "Dekaf.Tests")]
 internal readonly partial record struct PocoReadonlyRecord
 {
-    public int Id { get; init; }
+    public int Id
+    {
+        get; init;
+    }
 }
 
 [AvroRecord(Name = "PocoNullableStructRecord", Namespace = "Dekaf.Tests")]
 internal sealed partial class PocoNullableStructRecord
 {
-    public PocoReadonlyRecord? Value { get; init; }
+    public PocoReadonlyRecord? Value
+    {
+        get; init;
+    }
 }
 
 [AvroRecord(Name = "PocoTimestampEvolution", Namespace = "Dekaf.Tests")]
 internal sealed partial class PocoTimestampEvolution
 {
-    public DateTime Value { get; init; }
+    public DateTime Value
+    {
+        get; init;
+    }
 }
 
 [AvroRecord(Name = "PocoFixedEvolution", Namespace = "Dekaf.Tests")]
 internal sealed partial class PocoFixedEvolution
 {
     [AvroField(Order = 0, Precision = 9, Scale = 2)]
-    public decimal Amount { get; init; }
+    public decimal Amount
+    {
+        get; init;
+    }
 
     [AvroField(Order = 1)]
-    public int Tail { get; init; }
+    public int Tail
+    {
+        get; init;
+    }
 }

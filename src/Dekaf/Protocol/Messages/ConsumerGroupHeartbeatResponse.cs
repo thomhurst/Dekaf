@@ -16,41 +16,62 @@ public sealed class ConsumerGroupHeartbeatResponse : IKafkaResponse
     /// <summary>
     /// Throttle time in milliseconds.
     /// </summary>
-    public int ThrottleTimeMs { get; init; }
+    public int ThrottleTimeMs
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The top-level error code, or 0 if there was no error.
     /// </summary>
-    public required ErrorCode ErrorCode { get; init; }
+    public required ErrorCode ErrorCode
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The error message, or null if there was no error.
     /// </summary>
-    public string? ErrorMessage { get; init; }
+    public string? ErrorMessage
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The member ID. For v0: assigned by the coordinator on first join.
     /// For v1+ (KIP-1082): echoes the client-generated UUID v4 back.
     /// </summary>
-    public string? MemberId { get; init; }
+    public string? MemberId
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The current member epoch. The member must use this epoch for subsequent heartbeats.
     /// </summary>
-    public int MemberEpoch { get; init; }
+    public int MemberEpoch
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The heartbeat interval in milliseconds.
     /// The member should send the next heartbeat before this interval expires.
     /// </summary>
-    public int HeartbeatIntervalMs { get; init; }
+    public int HeartbeatIntervalMs
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The assignment for this member, or null if the assignment has not changed.
     /// Contains both immediately usable partitions and pending partitions
     /// that are still being revoked from other members.
     /// </summary>
-    public ConsumerGroupHeartbeatAssignment? Assignment { get; init; }
+    public ConsumerGroupHeartbeatAssignment? Assignment
+    {
+        get; init;
+    }
 
     public static IKafkaResponse Read(ref KafkaProtocolReader reader, short version)
     {
@@ -94,14 +115,20 @@ public sealed class ConsumerGroupHeartbeatAssignment
     /// <summary>
     /// The partitions assigned to this member that are immediately usable.
     /// </summary>
-    public required IReadOnlyList<ConsumerGroupHeartbeatTopicPartitions> AssignedTopicPartitions { get; init; }
+    public required IReadOnlyList<ConsumerGroupHeartbeatTopicPartitions> AssignedTopicPartitions
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The partitions assigned to this member that are not yet released by their former owners.
     /// The member should not start consuming from these partitions until they appear in
     /// <see cref="AssignedTopicPartitions"/> in a subsequent heartbeat response.
     /// </summary>
-    public required IReadOnlyList<ConsumerGroupHeartbeatTopicPartitions> PendingTopicPartitions { get; init; }
+    public required IReadOnlyList<ConsumerGroupHeartbeatTopicPartitions> PendingTopicPartitions
+    {
+        get; init;
+    }
 
     public static ConsumerGroupHeartbeatAssignment Read(ref KafkaProtocolReader reader, short version)
     {

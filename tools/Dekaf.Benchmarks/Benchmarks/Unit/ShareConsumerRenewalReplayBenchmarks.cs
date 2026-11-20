@@ -23,10 +23,16 @@ public class ShareConsumerRenewalReplayBenchmarks
     private int _recordCount;
 
     [Params(1, 64)]
-    public int RecordsPerBatch { get; set; }
+    public int RecordsPerBatch
+    {
+        get; set;
+    }
 
     [Params(1, 16, 64, 128)]
-    public int BatchCount { get; set; }
+    public int BatchCount
+    {
+        get; set;
+    }
 
     [GlobalSetup]
     public void Setup()
@@ -37,13 +43,16 @@ public class ShareConsumerRenewalReplayBenchmarks
         {
             var records = new Record[RecordsPerBatch];
             for (var index = 0; index < records.Length; index++)
+            {
                 records[index] = new Record { OffsetDelta = index, IsKeyNull = true, Value = new byte[32] };
+            }
             using var batch = new RecordBatch { BaseOffset = batchIndex * RecordsPerBatch, Records = records };
             batch.Write(bytes);
         }
         _consumer = new KafkaShareConsumer<int, ReadOnlyMemory<byte>>(new ShareConsumerOptions
         {
-            BootstrapServers = ["localhost:9092"], GroupId = "renewal-benchmark",
+            BootstrapServers = ["localhost:9092"],
+            GroupId = "renewal-benchmark",
             AcknowledgementMode = ShareAcknowledgementMode.Explicit
         }, Serializers.Int32, Serializers.RawBytes);
         var type = _consumer.GetType();
@@ -52,21 +61,31 @@ public class ShareConsumerRenewalReplayBenchmarks
                 List<ShareConsumeResult<int, ReadOnlyMemory<byte>>>>>(_consumer);
         var partition = new ShareFetchResponsePartition
         {
-            PartitionIndex = 0, CurrentLeader = new(), RecordBytes = bytes.WrittenMemory,
+            PartitionIndex = 0,
+            CurrentLeader = new(),
+            RecordBytes = bytes.WrittenMemory,
             AcquiredRecords = [new ShareFetchAcquiredRecords
             {
-                FirstOffset = 0, LastOffset = _recordCount - 1, DeliveryCount = 1
+                FirstOffset = 0,
+                LastOffset = _recordCount - 1,
+                DeliveryCount = 1
             }]
         };
         using (_consumer.BeginRecordBatchScope())
         {
             var parsed = parse(new TopicInfo { Name = "renewal-benchmark", Partitions = [] }, partition, _recordCount);
             if (parsed.Count != _recordCount || parsed[0].BatchOwner is null)
+            {
                 throw new InvalidOperationException("Renewal replay requires actual borrowed batch ownership.");
+            }
             // Interleave batches to expose deduplication that only remembers the last owner.
             for (var index = 0; index < RecordsPerBatch; index++)
+            {
                 for (var batchIndex = 0; batchIndex < BatchCount; batchIndex++)
+                {
                     _consumer.Acknowledge(parsed[batchIndex * RecordsPerBatch + index], AcknowledgeType.Renew);
+                }
+            }
         }
         var tracker = (AcknowledgementTracker)type.GetField("_ackTracker", BindingFlags.Instance | BindingFlags.NonPublic)!
             .GetValue(_consumer)!;
@@ -77,7 +96,9 @@ public class ShareConsumerRenewalReplayBenchmarks
             .CreateDelegate<Func<IReadOnlySet<TopicPartition>, int,
                 List<ShareConsumeResult<int, ReadOnlyMemory<byte>>>>>(_consumer);
         if (Replay() != 32L * _recordCount)
+        {
             throw new InvalidOperationException("Renewed payloads must remain available across poll rounds.");
+        }
     }
 
     [Benchmark]
@@ -87,7 +108,9 @@ public class ShareConsumerRenewalReplayBenchmarks
         var records = _replay(_assignment, _recordCount);
         long bytes = 0;
         foreach (var record in records)
+        {
             bytes += record.Value.Length;
+        }
         return bytes;
     }
 

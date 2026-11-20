@@ -77,16 +77,22 @@ public static class AspireDekafAdminClientExtensions
         void Configure(IServiceProvider services, AdminClientServiceBuilder admin)
         {
             if (settings.ConnectionString is not null)
+            {
                 admin.WithBootstrapServers(settings.ConnectionString);
+            }
             configureBuilder?.Invoke(services, admin);
         }
 
         builder.Services.AddDekaf(dekaf =>
         {
             if (serviceKey is null)
+            {
                 dekaf.AddAdminClient(native, Configure);
+            }
             else
+            {
                 dekaf.AddAdminClient(serviceKey, native, Configure);
+            }
         });
 
         DekafAspireRegistration.AddTelemetry(builder, settings);

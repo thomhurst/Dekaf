@@ -38,7 +38,10 @@ internal sealed class LiveArenaBudget
     /// latest construction then picks up. Nothing per producer feeds the limit; per-producer
     /// bounds come from each producer's own BufferMemory.
     /// </remarks>
-    internal static LiveArenaBudget Shared { get; } = new(long.MaxValue);
+    internal static LiveArenaBudget Shared
+    {
+        get;
+    } = new(long.MaxValue);
 
     private long _liveBytes;
     private long _limit;

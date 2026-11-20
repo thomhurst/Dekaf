@@ -40,18 +40,24 @@ public class CachingStringDeserializerTests
         for (var pass = 0; pass < maxPasses && !deserializer.IsCacheEnabled; pass++)
         {
             for (var i = 0; i < keys.Length; i++)
+            {
                 deserializer.Deserialize(keys[i], context);
+            }
         }
 
         if (!deserializer.IsCacheEnabled)
+        {
             throw new InvalidOperationException("Bounded key reuse did not promote the cache.");
+        }
     }
 
     private static ReadOnlyMemory<byte>[] CreateKeys(string prefix, int count)
     {
         var keys = new ReadOnlyMemory<byte>[count];
         for (var i = 0; i < count; i++)
+        {
             keys[i] = ToUtf8($"{prefix}-{i}");
+        }
         return keys;
     }
 
@@ -118,11 +124,15 @@ public class CachingStringDeserializerTests
         // One pass fills the freshly promoted cache; the next pass must hit it.
         var references = new string[keyCount];
         for (var i = 0; i < keyCount; i++)
+        {
             references[i] = sut.Deserialize(keys[i], context);
+        }
 
         var allReferencesCached = true;
         for (var i = 0; i < keyCount; i++)
+        {
             allReferencesCached &= ReferenceEquals(references[i], sut.Deserialize(keys[i], context));
+        }
 
         await Assert.That(allReferencesCached).IsTrue();
     }
@@ -150,7 +160,9 @@ public class CachingStringDeserializerTests
         var context = KeyContext();
 
         for (var i = 0; i < 50_000; i++)
+        {
             sut.Deserialize(ToUtf8($"unique-{i}"), context);
+        }
 
         await Assert.That(sut.IsCacheEnabled).IsFalse();
     }
@@ -167,7 +179,9 @@ public class CachingStringDeserializerTests
         // demotes, with slack.
         var uniqueLookups = KeyCacheMaxEntries + 3 * CachingStringDeserializer.DemoteWindowLookups;
         for (var i = 0; i < uniqueLookups; i++)
+        {
             sut.Deserialize(ToUtf8($"demote-unique-{i}"), context);
+        }
 
         await Assert.That(sut.IsCacheEnabled).IsFalse();
     }
@@ -182,7 +196,9 @@ public class CachingStringDeserializerTests
 
         var uniqueLookups = KeyCacheMaxEntries + 3 * CachingStringDeserializer.DemoteWindowLookups;
         for (var i = 0; i < uniqueLookups; i++)
+        {
             sut.Deserialize(ToUtf8($"cycle-unique-{i}"), context);
+        }
         await Assert.That(sut.IsCacheEnabled).IsFalse();
 
         PromoteWithBoundedKeys(sut, context, keys);
@@ -206,7 +222,9 @@ public class CachingStringDeserializerTests
         for (var pass = 0; pass < 100; pass++)
         {
             for (var i = 0; i < keys.Length; i++)
+            {
                 sut.Deserialize(keys[i], context);
+            }
         }
 
         await Assert.That(sut.IsCacheEnabled).IsFalse();
@@ -228,7 +246,9 @@ public class CachingStringDeserializerTests
         // Promotion can land mid-pass, so admit the warm set explicitly, then fill
         // the remaining capacity with a second batch of distinct keys.
         for (var i = 0; i < keys.Length; i++)
+        {
             sut.Deserialize(keys[i], context);
+        }
         for (var i = 0; i < 8; i++)
         {
             var data = ToUtf8($"cap-fill-{i}");
@@ -269,7 +289,9 @@ public class CachingStringDeserializerTests
         var oversized = ToUtf8(new string('x', 129));
 
         for (var i = 0; i < 20_000; i++)
+        {
             sut.Deserialize(oversized, context);
+        }
 
         await Assert.That(sut.IsCacheEnabled).IsFalse();
     }
@@ -297,11 +319,15 @@ public class CachingStringDeserializerTests
 
         // Warm the code paths so JIT/tiering allocations do not pollute the measurement.
         for (var i = 0; i < warmupKeys.Length; i++)
+        {
             sut.Deserialize(warmupKeys[i], context);
+        }
 
         var before = GC.GetAllocatedBytesForCurrentThread();
         for (var i = 0; i < keys.Length; i++)
+        {
             sut.Deserialize(keys[i], context);
+        }
         var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
 
         // Each lookup allocates one short string (~40 B); sampling and the recent-hash
@@ -326,7 +352,9 @@ public class CachingStringDeserializerTests
                 var data = ToUtf8(key);
                 var result = sut.Deserialize(data, context);
                 if (result != key)
+                {
                     throw new InvalidOperationException($"Expected '{key}' but got '{result}'");
+                }
                 return ValueTask.CompletedTask;
             });
 

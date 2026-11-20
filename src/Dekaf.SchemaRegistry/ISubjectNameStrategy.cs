@@ -30,19 +30,28 @@ public static class SubjectNameStrategies
     /// Gets a strategy that uses the topic name with a -key or -value suffix.
     /// Subject format: {topic}-key or {topic}-value.
     /// </summary>
-    public static ISubjectNameStrategy Topic { get; } = new TopicNameStrategy();
+    public static ISubjectNameStrategy Topic
+    {
+        get;
+    } = new TopicNameStrategy();
 
     /// <summary>
     /// Gets a strategy that uses the fully-qualified record type name.
     /// Subject format: {recordType}.
     /// </summary>
-    public static ISubjectNameStrategy Record { get; } = new RecordNameStrategy();
+    public static ISubjectNameStrategy Record
+    {
+        get;
+    } = new RecordNameStrategy();
 
     /// <summary>
     /// Gets a strategy that combines the topic name with the record type name.
     /// Subject format: {topic}-{recordType}.
     /// </summary>
-    public static ISubjectNameStrategy TopicRecord { get; } = new TopicRecordNameStrategy();
+    public static ISubjectNameStrategy TopicRecord
+    {
+        get;
+    } = new TopicRecordNameStrategy();
 }
 
 /// <summary>

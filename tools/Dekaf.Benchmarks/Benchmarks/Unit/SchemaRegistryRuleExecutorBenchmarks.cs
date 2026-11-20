@@ -212,11 +212,17 @@ public class SchemaRegistryRuleExecutorBenchmarks
     {
         public const string RuleType = "BENCHMARK";
 
-        public static PassThroughRuleHandler Instance { get; } = new(RuleType);
+        public static PassThroughRuleHandler Instance
+        {
+            get;
+        } = new(RuleType);
 
         public PassThroughRuleHandler(string type) => Type = type;
 
-        public string Type { get; }
+        public string Type
+        {
+            get;
+        }
 
         public ReadOnlyMemory<byte> TransformSerializedPayload(
             ReadOnlyMemory<byte> payload,
@@ -229,7 +235,10 @@ public class SchemaRegistryRuleExecutorBenchmarks
 
     private sealed class NoOpJsonSchemaValidator : IJsonSchemaValidator
     {
-        public static NoOpJsonSchemaValidator Instance { get; } = new();
+        public static NoOpJsonSchemaValidator Instance
+        {
+            get;
+        } = new();
 
         public void Validate(ReadOnlySpan<byte> payload, int schemaId)
         {
@@ -381,7 +390,10 @@ public class SchemaRegistryRuleContextBenchmarks
 
     private sealed class PassThroughRuleExecutor : ISchemaRegistryRuleExecutor
     {
-        public static PassThroughRuleExecutor Instance { get; } = new();
+        public static PassThroughRuleExecutor Instance
+        {
+            get;
+        } = new();
 
         public ReadOnlyMemory<byte> TransformSerializedPayload(
             ReadOnlyMemory<byte> payload,
@@ -647,7 +659,10 @@ public class SchemaRegistryMigrationBenchmarks
     private sealed class PassThroughMigrationHandler : ISchemaRegistryRuleHandler
     {
         internal const string RuleType = "MIGRATION-BENCHMARK";
-        internal static PassThroughMigrationHandler Instance { get; } = new();
+        internal static PassThroughMigrationHandler Instance
+        {
+            get;
+        } = new();
 
         public string Type => RuleType;
 
@@ -662,7 +677,10 @@ public class SchemaRegistryMigrationBenchmarks
 
     private sealed class LegacyCopyingRuleHandler : ISchemaRegistryRuleHandler
     {
-        internal static LegacyCopyingRuleHandler Instance { get; } = new();
+        internal static LegacyCopyingRuleHandler Instance
+        {
+            get;
+        } = new();
         public string Type => "LEGACY-COPY";
         public ReadOnlyMemory<byte> TransformSerializedPayload(
             ReadOnlyMemory<byte> payload,
@@ -674,7 +692,10 @@ public class SchemaRegistryMigrationBenchmarks
 
     private sealed class ReportedCopyingRuleHandler : ISchemaRegistryRuleTransformResultHandler
     {
-        internal static ReportedCopyingRuleHandler Instance { get; } = new();
+        internal static ReportedCopyingRuleHandler Instance
+        {
+            get;
+        } = new();
         public string Type => "REPORTED-COPY";
         public ReadOnlyMemory<byte> TransformSerializedPayload(
             ReadOnlyMemory<byte> payload,

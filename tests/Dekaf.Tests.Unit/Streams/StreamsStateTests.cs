@@ -293,7 +293,10 @@ public sealed class StreamsStateTests
 
     private sealed class CountingVisitor(int failAt) : IWindowEntryVisitor
     {
-        public int Visits { get; private set; }
+        public int Visits
+        {
+            get; private set;
+        }
 
         public void Visit(ReadOnlyMemory<byte> key, long windowStart, ReadOnlyMemory<byte> value)
         {
@@ -306,7 +309,10 @@ public sealed class StreamsStateTests
 
     private sealed class RecordingVisitor : IWindowEntryVisitor
     {
-        public List<(int Key, long Start, int Value)> Visited { get; } = [];
+        public List<(int Key, long Start, int Value)> Visited
+        {
+            get;
+        } = [];
 
         public void Visit(ReadOnlyMemory<byte> key, long windowStart, ReadOnlyMemory<byte> value) =>
             Visited.Add((key.Span[0], windowStart, value.Span[0]));
@@ -314,7 +320,10 @@ public sealed class StreamsStateTests
 
     private sealed class RecordingCollector : IRecordCollector
     {
-        public List<(string Topic, byte[] Value)> Sent { get; } = [];
+        public List<(string Topic, byte[] Value)> Sent
+        {
+            get;
+        } = [];
 
         public void Send(
             string topic,
@@ -330,7 +339,10 @@ public sealed class StreamsStateTests
 
     private sealed class TemporaryDirectory : IDisposable
     {
-        public string Path { get; } = System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"dekaf-streams-{Guid.NewGuid():N}");
+        public string Path
+        {
+            get;
+        } = System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"dekaf-streams-{Guid.NewGuid():N}");
 
         public void Dispose()
         {

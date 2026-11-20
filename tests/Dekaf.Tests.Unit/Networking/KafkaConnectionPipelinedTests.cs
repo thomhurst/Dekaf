@@ -139,7 +139,9 @@ public sealed class KafkaConnectionPipelinedTests
         ReleasePendingRequestSlot(connection);
 
         for (var correlationId = 2; correlationId <= capacity; correlationId++)
+        {
             await Assert.That(TryRemovePendingRequest(connection, correlationId)).IsTrue();
+        }
 
         await connection.DisposeAsync();
     }
@@ -418,19 +420,27 @@ public sealed class KafkaConnectionPipelinedTests
                 await Assert.That(result.LockHeld).IsFalse();
                 await Assert.That(result.Removed).IsTrue();
                 if (dispose)
+                {
                     await Assert.That(result.Error).IsTypeOf<ObjectDisposedException>();
+                }
                 else
+                {
                     await Assert.That(result.Error).IsTypeOf<KafkaException>();
+                }
             }
 
             for (var i = 0; i < ordinaryRequests.Length; i++)
             {
                 if (dispose)
+                {
                     await Assert.ThrowsAsync<ObjectDisposedException>(async () =>
                         await ordinaryRequests[i].WaitAsync(cancellationToken));
+                }
                 else
+                {
                     await Assert.ThrowsAsync<KafkaException>(async () =>
                         await ordinaryRequests[i].WaitAsync(cancellationToken));
+                }
                 await Assert.That(TryRemovePendingRequest(connection, i + inlineCompletions.Length)).IsTrue();
             }
 
@@ -440,7 +450,9 @@ public sealed class KafkaConnectionPipelinedTests
         finally
         {
             for (var i = 0; i < inlineCompletions.Length + ordinaryRequests.Length; i++)
+            {
                 TryRemovePendingRequest(connection, i);
+            }
             await connection.DisposeAsync();
         }
     }

@@ -47,7 +47,8 @@ public class OutboxRelayServiceTests
         var store = new FakeStore();
         var options = new OutboxRelayOptions
         {
-            PollInterval = TimeSpan.FromSeconds(2), MaxPublishDuration = TimeSpan.FromSeconds(5)
+            PollInterval = TimeSpan.FromSeconds(2),
+            MaxPublishDuration = TimeSpan.FromSeconds(5)
         };
         using var relay = new OutboxRelayService(store, new FakePublisher(), options,
             NullLogger<OutboxRelayService>.Instance, time, notifier);
@@ -88,7 +89,9 @@ public class OutboxRelayServiceTests
             await Assert.That(store.ProbeCalls).IsEqualTo(1);
             store.Enqueue(Row(1), Row(2), Row(3));
             if (notify)
+            {
                 notifier.NotifyCommitted();
+            }
             else
             {
                 time.Advance(TimeSpan.FromMilliseconds(999));
@@ -117,7 +120,8 @@ public class OutboxRelayServiceTests
         // A poll interval past the backoff, so the only timer the relay waits on is the retry.
         var options = new OutboxRelayOptions
         {
-            ErrorBackoff = TimeSpan.FromSeconds(3), PollInterval = TimeSpan.FromMinutes(1),
+            ErrorBackoff = TimeSpan.FromSeconds(3),
+            PollInterval = TimeSpan.FromMinutes(1),
             MaxPublishDuration = TimeSpan.FromSeconds(5)
         };
         using var relay = new OutboxRelayService(store, publisher, options,
@@ -157,7 +161,8 @@ public class OutboxRelayServiceTests
         var store = new FakeStore();
         var options = new OutboxRelayOptions
         {
-            PollInterval = TimeSpan.FromMinutes(1), MaxPublishDuration = TimeSpan.FromSeconds(5)
+            PollInterval = TimeSpan.FromMinutes(1),
+            MaxPublishDuration = TimeSpan.FromSeconds(5)
         };
         using var relay = new OutboxRelayService(store, new FakePublisher(), options,
             NullLogger<OutboxRelayService>.Instance, time, notifier);
@@ -191,7 +196,8 @@ public class OutboxRelayServiceTests
         var publisher = new FakePublisher();
         var options = new OutboxRelayOptions
         {
-            ErrorBackoff = TimeSpan.FromSeconds(3), LeaseDuration = TimeSpan.FromSeconds(60),
+            ErrorBackoff = TimeSpan.FromSeconds(3),
+            LeaseDuration = TimeSpan.FromSeconds(60),
             MaxPublishDuration = TimeSpan.FromSeconds(5)
         };
         using var relay = new OutboxRelayService(store, publisher, options,
@@ -431,7 +437,9 @@ public class OutboxRelayServiceTests
         store.OnLeaseAcquired = () =>
         {
             if (++acquisitions <= 2)
+            {
                 time.Advance(TimeSpan.FromSeconds(65));
+            }
         };
         var publisher = new FakePublisher();
 
@@ -458,7 +466,9 @@ public class OutboxRelayServiceTests
         store.OnBatchReturned = () =>
         {
             if (++fetches <= 2)
+            {
                 time.Advance(TimeSpan.FromSeconds(65));
+            }
         };
         var publisher = new FakePublisher();
 
@@ -497,7 +507,10 @@ public class OutboxRelayServiceTests
 
     private sealed class SubclassedRow : OutboxMessage
     {
-        public required string NativeId { get; init; }
+        public required string NativeId
+        {
+            get; init;
+        }
     }
 
     private static async Task<RelayHandle> StartRelayAsync(
@@ -533,20 +546,41 @@ public class OutboxRelayServiceTests
             _ownedBuckets = ownedBuckets ?? [0];
         }
 
-        public TaskCompletionSource Marked { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        public ConcurrentQueue<long> MarkedIds { get; } = [];
-        public ConcurrentQueue<OutboxMessage> MarkedMessages { get; } = [];
-        public int FailFirstLeaseCalls { get; init; }
+        public TaskCompletionSource Marked
+        {
+            get;
+        } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public ConcurrentQueue<long> MarkedIds
+        {
+            get;
+        } = [];
+        public ConcurrentQueue<OutboxMessage> MarkedMessages
+        {
+            get;
+        } = [];
+        public int FailFirstLeaseCalls
+        {
+            get; init;
+        }
         public int LeaseCalls => Volatile.Read(ref _leaseCalls);
         public int ProbeCalls => Volatile.Read(ref _probeCalls);
 
         /// <summary>Invoked after each non-empty batch is served (e.g. to advance a fake clock).</summary>
-        public Action? OnBatchReturned { get; set; }
+        public Action? OnBatchReturned
+        {
+            get; set;
+        }
 
         /// <summary>Invoked inside each successful lease acquisition (e.g. to simulate a slow store).</summary>
-        public Action? OnLeaseAcquired { get; set; }
+        public Action? OnLeaseAcquired
+        {
+            get; set;
+        }
 
-        public Action? OnPendingReturned { get; set; }
+        public Action? OnPendingReturned
+        {
+            get; set;
+        }
 
         public void Enqueue(params OutboxMessage[] rows)
         {
@@ -555,7 +589,9 @@ public class OutboxRelayServiceTests
                 foreach (var row in rows)
                 {
                     if (!_rows.TryGetValue(row.Bucket, out var list))
+                    {
                         _rows[row.Bucket] = list = [];
+                    }
                     list.Add(row);
                 }
             }
@@ -578,7 +614,9 @@ public class OutboxRelayServiceTests
             await Task.Yield();
             var call = Interlocked.Increment(ref _leaseCalls);
             if (call <= FailFirstLeaseCalls)
+            {
                 throw new InvalidOperationException("Simulated lease store outage.");
+            }
             OnLeaseAcquired?.Invoke();
             return _ownedBuckets;
         }
@@ -595,7 +633,9 @@ public class OutboxRelayServiceTests
                 for (var i = 0; i < buckets.Count; i++)
                 {
                     if (_rows.TryGetValue(buckets[i], out var list) && list.Count > 0)
+                    {
                         pending.Add(buckets[i]);
+                    }
                 }
 
                 return pending;
@@ -610,12 +650,16 @@ public class OutboxRelayServiceTests
             lock (_lock)
             {
                 if (!_rows.TryGetValue(bucket, out var list))
+                {
                     return [];
+                }
                 batch = list.GetRange(0, Math.Min(maxCount, list.Count));
             }
 
             if (batch.Count > 0)
+            {
                 OnBatchReturned?.Invoke();
+            }
 
             return batch;
         }
@@ -637,9 +681,13 @@ public class OutboxRelayServiceTests
 
                 var anyLeft = false;
                 foreach (var rows in _rows.Values)
+                {
                     anyLeft |= rows.Count > 0;
+                }
                 if (!anyLeft)
+                {
                     _empty.TrySetResult();
+                }
             }
 
             Marked.TrySetResult();
@@ -652,22 +700,36 @@ public class OutboxRelayServiceTests
         private int _initCalls;
 
         /// <summary>Ids that permanently fail; acking stops at the first one encountered.</summary>
-        public HashSet<long> FailIds { get; init; } = [];
+        public HashSet<long> FailIds
+        {
+            get; init;
+        } = [];
 
         /// <summary>The first N publish calls ack nothing and report a failure.</summary>
-        public int FailFirstCalls { get; init; }
+        public int FailFirstCalls
+        {
+            get; init;
+        }
 
         /// <summary>The first N initialization attempts throw (broker unreachable at start).</summary>
-        public int FailFirstInitCalls { get; init; }
+        public int FailFirstInitCalls
+        {
+            get; init;
+        }
 
         public int PublishCalls => Volatile.Read(ref _publishCalls);
         public int InitCalls => Volatile.Read(ref _initCalls);
-        public ConcurrentQueue<long> PublishedIds { get; } = [];
+        public ConcurrentQueue<long> PublishedIds
+        {
+            get;
+        } = [];
 
         public ValueTask InitializeAsync(CancellationToken cancellationToken = default)
         {
             if (Interlocked.Increment(ref _initCalls) <= FailFirstInitCalls)
+            {
                 return ValueTask.FromException(new InvalidOperationException("Simulated broker unreachable."));
+            }
             return ValueTask.CompletedTask;
         }
 
@@ -678,13 +740,17 @@ public class OutboxRelayServiceTests
             await Task.Yield();
             var call = Interlocked.Increment(ref _publishCalls);
             if (call <= FailFirstCalls)
+            {
                 return new OutboxPublishResult(0, new InvalidOperationException("Simulated broker outage."));
+            }
 
             var acked = 0;
             for (var i = 0; i < messages.Count; i++)
             {
                 if (FailIds.Contains(messages[i].Id))
+                {
                     return new OutboxPublishResult(acked, new InvalidOperationException("Simulated per-record failure."));
+                }
                 PublishedIds.Enqueue(messages[i].Id);
                 acked++;
             }

@@ -99,7 +99,9 @@ public class ConsumerCommitObserverTests(KafkaTestContainer kafka) : KafkaIntegr
         {
             consumer.StoreOffset(result);
             if (++consumed >= count)
+            {
                 break;
+            }
         }
     }
 
@@ -141,7 +143,9 @@ public class ConsumerCommitObserverTests(KafkaTestContainer kafka) : KafkaIntegr
         await foreach (var _ in consumer.ConsumeAsync(cts.Token).ConfigureAwait(false))
         {
             if (++consumed >= count)
+            {
                 break;
+            }
         }
     }
 
@@ -163,7 +167,9 @@ public class ConsumerCommitObserverTests(KafkaTestContainer kafka) : KafkaIntegr
         public void OnCommitCompleted(OffsetCommitObservation observation, object? state, Exception? exception)
         {
             if (!Equals(state, observation.Reason))
+            {
                 throw new InvalidOperationException("State from OnCommitStarting did not reach OnCommitCompleted.");
+            }
 
             _completed.Enqueue(new ObservedCommit(
                 observation.Reason, observation.Offsets, exception, observation.CompletedRecordCount));
@@ -176,7 +182,9 @@ public class ConsumerCommitObserverTests(KafkaTestContainer kafka) : KafkaIntegr
             while (true)
             {
                 if (_completed.FirstOrDefault(match) is { } observed)
+                {
                     return observed;
+                }
                 await _signal.WaitAsync(cts.Token).ConfigureAwait(false);
             }
         }

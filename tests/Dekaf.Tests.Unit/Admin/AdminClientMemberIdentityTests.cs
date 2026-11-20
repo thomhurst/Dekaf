@@ -18,11 +18,13 @@ public sealed partial class AdminClientRemoveMembersTests
     {
         var (admin, _) = CreateAdmin(3, 5);
         await using (admin)
+        {
             await Assert.That(async () => await admin.RemoveMembersFromConsumerGroupAsync(GroupId,
                 new ConsumerGroupMemberRemovalOptions
                 {
                     Members = [new ConsumerGroupMemberIdentity { GroupInstanceId = instanceId, MemberId = memberId }]
                 })).Throws<ArgumentException>();
+        }
     }
 
     [Test]
@@ -32,12 +34,14 @@ public sealed partial class AdminClientRemoveMembersTests
     {
         var (admin, _) = CreateAdmin(3, 5);
         await using (admin)
+        {
             await Assert.That(async () => await admin.RemoveMembersFromConsumerGroupAsync(GroupId,
                 new ConsumerGroupMemberRemovalOptions
                 {
                     RemoveAll = removeAll,
                     Members = removeAll ? [new ConsumerGroupMemberIdentity { MemberId = "member" }] : []
                 })).Throws<ArgumentException>();
+        }
     }
 
     [Test]
@@ -73,7 +77,8 @@ public sealed partial class AdminClientRemoveMembersTests
             var result = await admin.RemoveMembersFromConsumerGroupAsync(GroupId,
                 new ConsumerGroupMemberRemovalOptions
                 {
-                    RemoveAll = removeAll, Reason = "operator request",
+                    RemoveAll = removeAll,
+                    Reason = "operator request",
                     Members = removeAll ? [] :
                     [new ConsumerGroupMemberIdentity { GroupInstanceId = "instance" }, new ConsumerGroupMemberIdentity { MemberId = "dynamic" }]
                 });
@@ -134,7 +139,11 @@ public sealed partial class AdminClientRemoveMembersTests
             {
                 Groups = [new DescribeGroupsResponseGroup
                 {
-                    GroupId = GroupId, ErrorCode = ErrorCode.None, GroupState = "Empty", ProtocolType = protocol, Members = []
+                    GroupId = GroupId,
+                    ErrorCode = ErrorCode.None,
+                    GroupState = "Empty",
+                    ProtocolType = protocol,
+                    Members = []
                 }]
             }));
         await using (admin)
@@ -157,7 +166,11 @@ public sealed partial class AdminClientRemoveMembersTests
             {
                 Groups = [new DescribeGroupsResponseGroup
                 {
-                    GroupId = GroupId, ErrorCode = ErrorCode.None, GroupState = "Dead", ProtocolType = "", Members = []
+                    GroupId = GroupId,
+                    ErrorCode = ErrorCode.None,
+                    GroupState = "Dead",
+                    ProtocolType = "",
+                    Members = []
                 }]
             }));
         await using (admin)
@@ -200,20 +213,29 @@ public sealed partial class AdminClientRemoveMembersTests
         using var cancellation = new CancellationTokenSource();
         connection.SendAsync<DescribeGroupsRequest, DescribeGroupsResponse>(Arg.Any<DescribeGroupsRequest>(), Arg.Any<short>(), Arg.Any<CancellationToken>())
             .Returns(call => new ValueTask<DescribeGroupsResponse>(WaitForCancellation(call.Arg<CancellationToken>())));
+
         async Task<DescribeGroupsResponse> WaitForCancellation(CancellationToken token)
         {
-            if (callerCancellation) await cancellation.CancelAsync();
+            if (callerCancellation)
+            {
+                await cancellation.CancelAsync();
+            }
             await Task.Delay(Timeout.Infinite, token);
             throw new InvalidOperationException("Unreachable");
         }
+
         await using (admin)
         {
             var action = async () => await admin.RemoveMembersFromConsumerGroupAsync(GroupId,
                 new ConsumerGroupMemberRemovalOptions { RemoveAll = true, TimeoutMs = callerCancellation ? 30000 : 20 }, cancellation.Token);
             if (callerCancellation)
+            {
                 await Assert.That(action).Throws<OperationCanceledException>();
+            }
             else
+            {
                 await Assert.That(action).Throws<KafkaTimeoutException>();
+            }
         }
         await connection.DidNotReceive().SendAsync<LeaveGroupRequest, LeaveGroupResponse>(
             Arg.Any<LeaveGroupRequest>(), Arg.Any<short>(), Arg.Any<CancellationToken>());
@@ -225,9 +247,11 @@ public sealed partial class AdminClientRemoveMembersTests
         var (admin, connection) = CreateAdmin(0, 2);
         SetupCoordinator(connection);
         await using (admin)
+        {
             await Assert.That(async () => await admin.RemoveMembersFromConsumerGroupAsync(GroupId,
                 new ConsumerGroupMemberRemovalOptions { Members = [new ConsumerGroupMemberIdentity { MemberId = "member" }] }))
                 .Throws<BrokerVersionException>();
+        }
     }
 
     [Test]
@@ -247,8 +271,10 @@ public sealed partial class AdminClientRemoveMembersTests
             _ => new ConsumerGroupMemberRemovalOptions { Members = [identity], TimeoutMs = -1 }
         };
         await using (admin)
+        {
             await Assert.That(async () => await admin.RemoveMembersFromConsumerGroupAsync(GroupId, options))
                 .Throws<ArgumentException>();
+        }
     }
 
     [Test]
@@ -281,7 +307,10 @@ public sealed partial class AdminClientRemoveMembersTests
             {
                 Groups = [new DescribeGroupsResponseGroup
                 {
-                    GroupId = GroupId, ErrorCode = discoveryError, GroupState = "Stable", ProtocolType = protocol,
+                    GroupId = GroupId,
+                    ErrorCode = discoveryError,
+                    GroupState = "Stable",
+                    ProtocolType = protocol,
                     Members = [new DescribeGroupsResponseMember { MemberId = "member", MemberAssignment = [1, 2, 3] }]
                 }]
             }));
@@ -306,10 +335,15 @@ public sealed partial class AdminClientRemoveMembersTests
             {
                 Groups = [new ConsumerGroupDescribeGroup
                 {
-                    GroupId = GroupId, GroupState = "Stable", AssignorName = "uniform",
+                    GroupId = GroupId,
+                    GroupState = "Stable",
+                    AssignorName = "uniform",
                     Members = [new ConsumerGroupDescribeMember
                     {
-                        MemberId = "modern-member", ClientId = "client", ClientHost = "host", SubscribedTopicNames = [],
+                        MemberId = "modern-member",
+                        ClientId = "client",
+                        ClientHost = "host",
+                        SubscribedTopicNames = [],
                         Assignment = new ConsumerGroupDescribeAssignment { TopicPartitions = [] },
                         TargetAssignment = new ConsumerGroupDescribeAssignment { TopicPartitions = [] }
                     }]
@@ -338,8 +372,12 @@ public sealed partial class AdminClientRemoveMembersTests
             {
                 Groups = [new DescribeGroupsResponseGroup
                 {
-                    GroupId = GroupId, ErrorCode = ErrorCode.None, GroupState = members.Length == 0 ? "Empty" : "Stable",
-                    ProtocolType = "consumer", ProtocolData = "range", Members = members
+                    GroupId = GroupId,
+                    ErrorCode = ErrorCode.None,
+                    GroupState = members.Length == 0 ? "Empty" : "Stable",
+                    ProtocolType = "consumer",
+                    ProtocolData = "range",
+                    Members = members
                 }]
             }));
 }

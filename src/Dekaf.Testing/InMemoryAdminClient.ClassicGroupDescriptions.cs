@@ -17,7 +17,9 @@ public sealed partial class InMemoryAdminClient : IClassicGroupDescriptionAdminC
         var opts = options ?? new DescribeClassicGroupsOptions();
         ArgumentOutOfRangeException.ThrowIfNegative(opts.TimeoutMs);
         if (groups.Length == 0)
+        {
             return new(new Dictionary<string, ClassicGroupDescriptionResult>(StringComparer.Ordinal));
+        }
         return ExecuteWithTimeoutAsync<IReadOnlyDictionary<string, ClassicGroupDescriptionResult>>(async token =>
         {
             var results = new Dictionary<string, ClassicGroupDescriptionResult>(groups.Length, StringComparer.Ordinal);

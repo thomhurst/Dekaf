@@ -53,7 +53,9 @@ public static class OutboxBucket
         // every row for the same logical key shares a bucket. Only truly null (keyless)
         // rows are spread by message id; they carry no ordering requirement.
         if (key is not null)
+        {
             return Partitioner.Partition(string.Empty, key, keyIsNull: false, bucketCount);
+        }
 
         Span<byte> idBytes = stackalloc byte[16];
         MemoryMarshal.TryWrite(idBytes, in messageId);

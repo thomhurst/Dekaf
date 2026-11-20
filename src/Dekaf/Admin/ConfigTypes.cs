@@ -111,13 +111,19 @@ public sealed class ConfigResource : IEquatable<ConfigResource>
     /// <summary>
     /// The type of resource.
     /// </summary>
-    public required ConfigResourceType Type { get; init; }
+    public required ConfigResourceType Type
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The name of the resource. For topics, this is the topic name.
     /// For brokers, this is the broker ID as a string, or empty for cluster-wide config.
     /// </summary>
-    public required string Name { get; init; }
+    public required string Name
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Creates a ConfigResource for a topic.
@@ -145,7 +151,10 @@ public sealed class ConfigResource : IEquatable<ConfigResource>
 
     public bool Equals(ConfigResource? other)
     {
-        if (other is null) return false;
+        if (other is null)
+        {
+            return false;
+        }
         return Type == other.Type && Name == other.Name;
     }
 
@@ -164,42 +173,66 @@ public sealed class ConfigEntry
     /// <summary>
     /// The configuration name.
     /// </summary>
-    public required string Name { get; init; }
+    public required string Name
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The configuration value, or null if sensitive.
     /// </summary>
-    public string? Value { get; init; }
+    public string? Value
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Whether the config value is read-only.
     /// </summary>
-    public bool IsReadOnly { get; init; }
+    public bool IsReadOnly
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Whether the config value is set to a non-default value.
     /// </summary>
-    public bool IsDefault { get; init; }
+    public bool IsDefault
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Whether the config value is sensitive.
     /// </summary>
-    public bool IsSensitive { get; init; }
+    public bool IsSensitive
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The source of this configuration entry.
     /// </summary>
-    public ConfigSource Source { get; init; } = ConfigSource.Unknown;
+    public ConfigSource Source
+    {
+        get; init;
+    } = ConfigSource.Unknown;
 
     /// <summary>
     /// Configuration synonyms (if requested).
     /// </summary>
-    public IReadOnlyList<ConfigSynonym>? Synonyms { get; init; }
+    public IReadOnlyList<ConfigSynonym>? Synonyms
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The documentation for this config (if requested).
     /// </summary>
-    public string? Documentation { get; init; }
+    public string? Documentation
+    {
+        get; init;
+    }
 }
 
 /// <summary>
@@ -210,17 +243,26 @@ public sealed class ConfigSynonym
     /// <summary>
     /// The synonym name.
     /// </summary>
-    public required string Name { get; init; }
+    public required string Name
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The synonym value.
     /// </summary>
-    public string? Value { get; init; }
+    public string? Value
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The source of this synonym.
     /// </summary>
-    public ConfigSource Source { get; init; } = ConfigSource.Unknown;
+    public ConfigSource Source
+    {
+        get; init;
+    } = ConfigSource.Unknown;
 }
 
 /// <summary>
@@ -231,17 +273,26 @@ public sealed class ConfigAlter
     /// <summary>
     /// The configuration name.
     /// </summary>
-    public required string Name { get; init; }
+    public required string Name
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The configuration value, or null for delete operation.
     /// </summary>
-    public string? Value { get; init; }
+    public string? Value
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The operation to perform.
     /// </summary>
-    public ConfigAlterOperation Operation { get; init; } = ConfigAlterOperation.Set;
+    public ConfigAlterOperation Operation
+    {
+        get; init;
+    } = ConfigAlterOperation.Set;
 
     /// <summary>
     /// Creates a Set operation.
@@ -276,17 +327,26 @@ public sealed class DescribeConfigsOptions
     /// <summary>
     /// Timeout in milliseconds.
     /// </summary>
-    public int TimeoutMs { get; init; } = 30000;
+    public int TimeoutMs
+    {
+        get; init;
+    } = 30000;
 
     /// <summary>
     /// Whether to include synonyms in the response.
     /// </summary>
-    public bool IncludeSynonyms { get; init; }
+    public bool IncludeSynonyms
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Whether to include documentation in the response.
     /// </summary>
-    public bool IncludeDocumentation { get; init; }
+    public bool IncludeDocumentation
+    {
+        get; init;
+    }
 }
 
 /// <summary>
@@ -297,12 +357,18 @@ public sealed class AlterConfigsOptions
     /// <summary>
     /// Timeout in milliseconds.
     /// </summary>
-    public int TimeoutMs { get; init; } = 30000;
+    public int TimeoutMs
+    {
+        get; init;
+    } = 30000;
 
     /// <summary>
     /// If true, the broker will validate the request, but not change the configuration.
     /// </summary>
-    public bool ValidateOnly { get; init; }
+    public bool ValidateOnly
+    {
+        get; init;
+    }
 }
 
 /// <summary>
@@ -313,10 +379,16 @@ public sealed class IncrementalAlterConfigsOptions
     /// <summary>
     /// Timeout in milliseconds.
     /// </summary>
-    public int TimeoutMs { get; init; } = 30000;
+    public int TimeoutMs
+    {
+        get; init;
+    } = 30000;
 
     /// <summary>
     /// If true, the broker will validate the request, but not change the configuration.
     /// </summary>
-    public bool ValidateOnly { get; init; }
+    public bool ValidateOnly
+    {
+        get; init;
+    }
 }

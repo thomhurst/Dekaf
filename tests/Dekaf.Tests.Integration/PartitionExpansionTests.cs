@@ -85,7 +85,9 @@ public sealed class PartitionExpansionTests(KafkaTestContainer kafka) : KafkaInt
             var result = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(2), cancellation.Token)
                 .ConfigureAwait(false);
             if (result is { Partition: 1, Value: "written-before-discovery" })
+            {
                 hotRecord = result;
+            }
         }
 
         await Assert.That(hotRecord.Value.Offset).IsEqualTo(0);
@@ -278,7 +280,10 @@ public sealed class PartitionExpansionTests(KafkaTestContainer kafka) : KafkaInt
                     }
                 }
 
-                if (newPartitionMessages.Count >= 2) break;
+                if (newPartitionMessages.Count >= 2)
+                {
+                    break;
+                }
             }
         }
         catch (OperationCanceledException)
@@ -386,7 +391,10 @@ public sealed class PartitionExpansionTests(KafkaTestContainer kafka) : KafkaInt
                     newPartitionValues.Add(r.Value);
                 }
 
-                if (newPartitionValues.Count >= 2) break;
+                if (newPartitionValues.Count >= 2)
+                {
+                    break;
+                }
             }
         }
         catch (OperationCanceledException)
@@ -595,7 +603,10 @@ public sealed class PartitionExpansionTests(KafkaTestContainer kafka) : KafkaInt
                     newPartitionMessages.Add(r);
                 }
 
-                if (newPartitionMessages.Count >= 2) break;
+                if (newPartitionMessages.Count >= 2)
+                {
+                    break;
+                }
             }
         }
         catch (OperationCanceledException)

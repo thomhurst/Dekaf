@@ -17,7 +17,10 @@ public class PartitionedTransactionalReadBenchmarks
     private long _gatedOffset;
 
     [Params(64, 1024)]
-    public int Records { get; set; }
+    public int Records
+    {
+        get; set;
+    }
 
     [GlobalSetup]
     public void Setup()
@@ -53,5 +56,9 @@ public class PartitionedTransactionalReadBenchmarks
 
     private static PartitionLane<string, string> CreateLane(TransactionReadGate? gate)
         => new(new TopicPartition("transactional", 0), 32,
-            static (_, _) => default, static _ => { }, static (_, _) => { }, readGate: gate);
+            static (_, _) => default, static _ =>
+            {
+            }, static (_, _) =>
+            {
+            }, readGate: gate);
 }

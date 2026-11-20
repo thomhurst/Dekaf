@@ -373,7 +373,10 @@ public class SchemaRegistryPreparationBenchmarks
 
     private sealed class BenchmarkPayload
     {
-        public int Id { get; init; }
+        public int Id
+        {
+            get; init;
+        }
     }
 
     private static Schema CreateDataContractSchema(string owner = "payments") =>

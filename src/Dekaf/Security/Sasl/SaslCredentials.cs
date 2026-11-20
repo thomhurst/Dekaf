@@ -12,8 +12,14 @@ public readonly struct SaslCredentials
     }
 
     /// <summary>The SASL username.</summary>
-    public string Username { get; }
+    public string Username
+    {
+        get;
+    }
 
     /// <summary>The SASL password.</summary>
-    public string Password { get; }
+    public string Password
+    {
+        get;
+    }
 }

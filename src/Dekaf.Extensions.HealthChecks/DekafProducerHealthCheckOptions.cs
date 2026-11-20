@@ -9,5 +9,8 @@ public sealed class DekafProducerHealthCheckOptions
     /// The timeout for waiting for a producer flush checkpoint to complete.
     /// Default is 5 seconds.
     /// </summary>
-    public TimeSpan Timeout { get; init; } = TimeSpan.FromSeconds(5);
+    public TimeSpan Timeout
+    {
+        get; init;
+    } = TimeSpan.FromSeconds(5);
 }

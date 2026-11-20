@@ -60,10 +60,14 @@ public class FixedWorkerPoolTests
                 "--depsfile", Path.ChangeExtension(testAssembly, "deps.json"),
                 typeof(Program).Assembly.Location, "check-worker-pool", "--output", directory
             })
+            {
                 start.ArgumentList.Add(argument);
+            }
             start.Environment.Remove("DEKAF_STRESS_FIXED_WORKER_THREADS");
             if (requested is not null)
+            {
                 start.Environment["DEKAF_STRESS_FIXED_WORKER_THREADS"] = requested;
+            }
             start.Environment["DOTNET_ThreadPool_ForceMinWorkerThreads"] = minimum;
             start.Environment["DOTNET_ThreadPool_ForceMaxWorkerThreads"] = maximum;
             start.Environment["DOTNET_ThreadPool_ThreadTimeoutMs"] = idleTimeout;
@@ -79,7 +83,9 @@ public class FixedWorkerPoolTests
             catch
             {
                 if (!process.HasExited)
+                {
                     process.Kill(entireProcessTree: true);
+                }
                 await process.WaitForExitAsync();
                 await Task.WhenAll(output, errors);
                 throw;

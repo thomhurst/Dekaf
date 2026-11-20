@@ -18,7 +18,9 @@ internal sealed class NonDisposingHttpMessageHandler : HttpMessageHandler
     protected override void Dispose(bool disposing)
     {
         if (disposing)
+        {
             _invoker.Dispose();
+        }
 
         base.Dispose(disposing);
     }

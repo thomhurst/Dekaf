@@ -342,7 +342,9 @@ public class ProducerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))
         {
             if (msg.Key == "warmup")
+            {
                 continue;
+            }
 
             await Assert.That(msg.Key).IsEqualTo("key1");
             await Assert.That(msg.Value).IsEqualTo("value1");
@@ -618,7 +620,9 @@ public class ProducerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
 
                 results[index] = metadata;
                 if (Interlocked.Increment(ref callbackCount) == results.Length)
+                {
                     callbacksCompleted.TrySetResult();
+                }
             });
         }
 
@@ -669,7 +673,9 @@ public class ProducerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
 
                 results[index] = metadata;
                 if (Interlocked.Increment(ref callbackCount) == results.Length)
+                {
                     callbacksCompleted.TrySetResult();
+                }
             });
         }
 
@@ -1260,7 +1266,9 @@ public class ProducerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
         {
             consumed.Add((msg.Key, msg.Partition, msg.Timestamp, msg.Headers?.Count ?? 0));
             if (consumed.Count == 2)
+            {
                 break;
+            }
         }
 
         await Assert.That(consumed[0]).IsEqualTo(("fields-key", 2, timestamp, 1));
@@ -1313,7 +1321,9 @@ public class ProducerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
         {
             consumedCount++;
             if (consumedCount >= messageCount)
+            {
                 break;
+            }
         }
 
         await Assert.That(consumedCount).IsEqualTo(messageCount);
@@ -1351,7 +1361,9 @@ public class ProducerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
                     (metadata, error) =>
                     {
                         if (error is null)
+                        {
                             Interlocked.Increment(ref deliveredCount);
+                        }
                     });
             }
         })).ToArray();

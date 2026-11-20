@@ -15,51 +15,84 @@ internal sealed class TestCertificateGenerator : IDisposable
     /// <summary>
     /// The root CA certificate used to sign both server and client certificates.
     /// </summary>
-    public X509Certificate2 CaCertificate { get; }
+    public X509Certificate2 CaCertificate
+    {
+        get;
+    }
 
     /// <summary>
     /// The server certificate signed by the CA, used by Kafka for SSL listeners.
     /// </summary>
-    public X509Certificate2 ServerCertificate { get; }
+    public X509Certificate2 ServerCertificate
+    {
+        get;
+    }
 
     /// <summary>
     /// The client certificate signed by the CA, used for mutual TLS authentication.
     /// </summary>
-    public X509Certificate2 ClientCertificate { get; }
+    public X509Certificate2 ClientCertificate
+    {
+        get;
+    }
 
-    internal string ServerPrivateKeyPem { get; }
+    internal string ServerPrivateKeyPem
+    {
+        get;
+    }
 
-    internal string ClientPrivateKeyPem { get; }
+    internal string ClientPrivateKeyPem
+    {
+        get;
+    }
 
     /// <summary>
     /// Directory containing the generated certificate files.
     /// </summary>
-    public string CertificateDirectory { get; }
+    public string CertificateDirectory
+    {
+        get;
+    }
 
     /// <summary>
     /// Path to the CA certificate PEM file.
     /// </summary>
-    public string CaCertPemPath { get; }
+    public string CaCertPemPath
+    {
+        get;
+    }
 
     /// <summary>
     /// Path to the server keystore in PKCS12 format (for Kafka).
     /// </summary>
-    public string ServerKeystorePath { get; }
+    public string ServerKeystorePath
+    {
+        get;
+    }
 
     /// <summary>
     /// Path to the server truststore in PKCS12 format (for Kafka).
     /// </summary>
-    public string ServerTruststorePath { get; }
+    public string ServerTruststorePath
+    {
+        get;
+    }
 
     /// <summary>
     /// Path to the client certificate PEM file.
     /// </summary>
-    public string ClientCertPemPath { get; }
+    public string ClientCertPemPath
+    {
+        get;
+    }
 
     /// <summary>
     /// Path to the client private key PEM file.
     /// </summary>
-    public string ClientKeyPemPath { get; }
+    public string ClientKeyPemPath
+    {
+        get;
+    }
 
     /// <summary>
     /// Password used for all keystores and truststores.
@@ -354,7 +387,9 @@ internal sealed class TestCertificateGenerator : IDisposable
     public void Dispose()
     {
         if (_disposed)
+        {
             return;
+        }
 
         _disposed = true;
 

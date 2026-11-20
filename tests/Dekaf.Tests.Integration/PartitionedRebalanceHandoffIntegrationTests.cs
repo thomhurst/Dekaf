@@ -223,7 +223,9 @@ public sealed class PartitionedRebalanceHandoffIntegrationTests(KafkaTestContain
         try
         {
             await foreach (var record in consumer.ConsumeAsync(cancellationToken))
+            {
                 records.Enqueue((record.Partition, record.Offset));
+            }
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {

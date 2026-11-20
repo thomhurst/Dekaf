@@ -29,7 +29,9 @@ public sealed class HostedConsumerServiceNetworkFaultTests(TransactionFaultKafka
         using var serviceLogs = new CapturingLoggerProvider(entry =>
         {
             if (entry.LogLevel == LogLevel.Warning && entry.Message.Contains("restart attempt", StringComparison.Ordinal))
+            {
                 restartObserved.TrySetResult();
+            }
         });
 
         // The consumer is not initialized yet: the service initializes it while the lane is black-holed.
@@ -134,7 +136,10 @@ public sealed class HostedConsumerServiceNetworkFaultTests(TransactionFaultKafka
         KafkaConsumerServiceOptions options)
         : KafkaConsumerService<string, string>(consumer, logger, serviceOptions: options)
     {
-        public TaskCompletionSource<string?> Received { get; } =
+        public TaskCompletionSource<string?> Received
+        {
+            get;
+        } =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         protected override IEnumerable<string> Topics => [topic];
@@ -153,7 +158,9 @@ public sealed class HostedConsumerServiceNetworkFaultTests(TransactionFaultKafka
         {
             Received.TrySetResult(result.Value);
             if (result.Value is not null)
+            {
                 GetSignal(result.Value).TrySetResult();
+            }
             return ValueTask.CompletedTask;
         }
     }

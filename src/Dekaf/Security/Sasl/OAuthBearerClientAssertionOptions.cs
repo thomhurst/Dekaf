@@ -10,46 +10,85 @@ namespace Dekaf.Security.Sasl;
 public sealed class OAuthBearerClientAssertionOptions
 {
     /// <summary>OAuth token endpoint that receives the client assertion.</summary>
-    public string? TokenEndpoint { get; set; }
+    public string? TokenEndpoint
+    {
+        get; set;
+    }
 
     /// <summary>OAuth client identifier; defaults the assertion issuer and subject.</summary>
-    public string? ClientId { get; set; }
+    public string? ClientId
+    {
+        get; set;
+    }
 
     /// <summary>RSA or ECDSA private key used to sign each assertion.</summary>
-    public AsymmetricAlgorithm? PrivateKey { get; set; }
+    public AsymmetricAlgorithm? PrivateKey
+    {
+        get; set;
+    }
 
     /// <summary>Intended audience for the assertion.</summary>
-    public string? Audience { get; set; }
+    public string? Audience
+    {
+        get; set;
+    }
 
     /// <summary>Assertion issuer; defaults to <see cref="ClientId"/>.</summary>
-    public string? Issuer { get; set; }
+    public string? Issuer
+    {
+        get; set;
+    }
 
     /// <summary>Assertion subject; defaults to <see cref="ClientId"/>.</summary>
-    public string? Subject { get; set; }
+    public string? Subject
+    {
+        get; set;
+    }
 
     /// <summary>Optional key identifier written to the JWT header.</summary>
-    public string? KeyId { get; set; }
+    public string? KeyId
+    {
+        get; set;
+    }
 
     /// <summary>Scopes sent as a space-delimited token request parameter.</summary>
-    public IReadOnlyList<string>? Scopes { get; set; }
+    public IReadOnlyList<string>? Scopes
+    {
+        get; set;
+    }
 
     /// <summary>
     /// Additional AOT-safe JWT claims. Supported values match
     /// <see cref="OAuthBearerJwtBearerOptions.AdditionalClaims"/>.
     /// </summary>
-    public IReadOnlyDictionary<string, object?>? AdditionalClaims { get; set; }
+    public IReadOnlyDictionary<string, object?>? AdditionalClaims
+    {
+        get; set;
+    }
 
     /// <summary>Additional non-reserved form parameters for the token request.</summary>
-    public IReadOnlyDictionary<string, string>? AdditionalParameters { get; set; }
+    public IReadOnlyDictionary<string, string>? AdditionalParameters
+    {
+        get; set;
+    }
 
     /// <summary>Assertion lifetime. Defaults to five minutes.</summary>
-    public TimeSpan AssertionLifetime { get; set; } = TimeSpan.FromMinutes(5);
+    public TimeSpan AssertionLifetime
+    {
+        get; set;
+    } = TimeSpan.FromMinutes(5);
 
     /// <summary>Seconds before token expiration that trigger refresh.</summary>
-    public int TokenRefreshBufferSeconds { get; set; } = 60;
+    public int TokenRefreshBufferSeconds
+    {
+        get; set;
+    } = 60;
 
     /// <summary>Signing algorithm; inferred from <see cref="PrivateKey"/> when omitted.</summary>
-    public OAuthBearerJwtSigningAlgorithm? SigningAlgorithm { get; set; }
+    public OAuthBearerJwtSigningAlgorithm? SigningAlgorithm
+    {
+        get; set;
+    }
 
     internal OAuthBearerConfig ToOAuthBearerConfig()
     {
@@ -70,17 +109,29 @@ public sealed class OAuthBearerClientAssertionOptions
     private void Validate()
     {
         if (string.IsNullOrWhiteSpace(TokenEndpoint))
+        {
             throw new InvalidOperationException("OAuth client-assertion token endpoint is required");
+        }
         if (string.IsNullOrWhiteSpace(ClientId))
+        {
             throw new InvalidOperationException("OAuth client-assertion client ID is required");
+        }
         if (string.IsNullOrWhiteSpace(Audience))
+        {
             throw new InvalidOperationException("OAuth client-assertion audience is required");
+        }
         if (PrivateKey is null)
+        {
             throw new InvalidOperationException("OAuth client-assertion private key is required");
+        }
         if (AssertionLifetime <= TimeSpan.Zero)
+        {
             throw new InvalidOperationException("OAuth client-assertion lifetime must be positive");
+        }
         if (TokenRefreshBufferSeconds < 0)
+        {
             throw new InvalidOperationException("OAuth client-assertion token refresh buffer must be non-negative");
+        }
 
         ValidateAdditionalParameters(AdditionalParameters);
     }

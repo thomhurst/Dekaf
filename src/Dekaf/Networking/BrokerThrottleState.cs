@@ -19,7 +19,9 @@ internal sealed class BrokerThrottleState(ClientTelemetryMetricCollector? teleme
     {
         var throttleUntilMs = Volatile.Read(ref _throttleUntilMs);
         if (throttleUntilMs == 0)
+        {
             return 0;
+        }
 
         var remainingMs = throttleUntilMs - MonotonicClock.GetMilliseconds();
         if (remainingMs <= 0)
@@ -47,7 +49,9 @@ internal sealed class BrokerThrottleState(ClientTelemetryMetricCollector? teleme
         telemetryMetricCollector?.RecordBrokerThrottle(throttleTimeMs);
 
         if (throttleTimeMs <= 0)
+        {
             return;
+        }
 
         var observedMaximum = Volatile.Read(ref _maxObservedThrottleTimeMs);
         while (throttleTimeMs > observedMaximum)
@@ -57,7 +61,9 @@ internal sealed class BrokerThrottleState(ClientTelemetryMetricCollector? teleme
                 throttleTimeMs,
                 observedMaximum);
             if (previous == observedMaximum)
+            {
                 break;
+            }
 
             observedMaximum = previous;
         }
@@ -75,7 +81,9 @@ internal sealed class BrokerThrottleState(ClientTelemetryMetricCollector? teleme
                 throttleUntilMs,
                 current);
             if (observed == current)
+            {
                 return;
+            }
 
             current = observed;
         }
@@ -84,7 +92,9 @@ internal sealed class BrokerThrottleState(ClientTelemetryMetricCollector? teleme
     public void MergeFrom(BrokerThrottleState source)
     {
         if (ReferenceEquals(this, source))
+        {
             return;
+        }
 
         var sourceMaximum = Volatile.Read(ref source._maxObservedThrottleTimeMs);
         var observedMaximum = Volatile.Read(ref _maxObservedThrottleTimeMs);
@@ -95,7 +105,9 @@ internal sealed class BrokerThrottleState(ClientTelemetryMetricCollector? teleme
                 sourceMaximum,
                 observedMaximum);
             if (previous == observedMaximum)
+            {
                 break;
+            }
 
             observedMaximum = previous;
         }
@@ -109,7 +121,9 @@ internal sealed class BrokerThrottleState(ClientTelemetryMetricCollector? teleme
                 sourceDeadline,
                 currentDeadline);
             if (previous == currentDeadline)
+            {
                 break;
+            }
 
             currentDeadline = previous;
         }

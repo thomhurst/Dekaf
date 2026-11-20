@@ -18,10 +18,16 @@ public class ConsumerRawTrackingBenchmarks
     private long _nextOffset;
 
     [Params(false, true)]
-    public bool TrackRawBytes { get; set; }
+    public bool TrackRawBytes
+    {
+        get; set;
+    }
 
     [Params(0, 1, 100)]
-    public int PayloadKind { get; set; }
+    public int PayloadKind
+    {
+        get; set;
+    }
 
     [GlobalSetup]
     public void Setup()
@@ -29,6 +35,7 @@ public class ConsumerRawTrackingBenchmarks
         var bytes = PayloadKind > 1 ? new byte[PayloadKind] : Array.Empty<byte>();
         var records = new Record[RecordsPerBatch];
         for (var index = 0; index < records.Length; index++)
+        {
             records[index] = new Record
             {
                 OffsetDelta = index,
@@ -37,6 +44,7 @@ public class ConsumerRawTrackingBenchmarks
                 IsKeyNull = PayloadKind == 0,
                 IsValueNull = PayloadKind == 0
             };
+        }
         _records = records;
         _consumer = new KafkaConsumer<ReadOnlyMemory<byte>, ReadOnlyMemory<byte>>(
             new ConsumerOptions { BootstrapServers = ["localhost:9092"], OffsetCommitMode = OffsetCommitMode.Manual },
@@ -44,7 +52,9 @@ public class ConsumerRawTrackingBenchmarks
         BufferedConsumerHarness.InitializeForBufferedFastPath(_consumer, "raw-tracking", 0);
         _pendingFetches = (Queue<PendingFetchData>)BufferedConsumerHarness.GetPrivateField(_consumer, "_pendingFetches")!;
         if (TrackRawBytes)
+        {
             ((IRawRecordAccessor)_consumer).EnableRawRecordTracking();
+        }
     }
 
     [Benchmark(OperationsPerInvoke = RecordsPerBatch)]
@@ -63,7 +73,9 @@ public class ConsumerRawTrackingBenchmarks
             lastOffset = record!.Value.Offset;
         }
         if (lastOffset != _nextOffset - 1)
+        {
             throw new InvalidOperationException("Buffered batch was not fully consumed.");
+        }
         return lastOffset;
     }
 

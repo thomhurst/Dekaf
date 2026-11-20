@@ -87,7 +87,9 @@ public sealed class ClientTelemetryResourceTests
         };
         var admin = new ClientTelemetryMetricCollector(ClientTelemetryClientRole.Admin);
         foreach (var collector in new[] { producer, consumer, admin })
+        {
             collector.RegisterMetricForSubscription(new("com.example.depth", ApplicationTelemetryMetricKind.Gauge, static () => 1));
+        }
         await Assert.That(Decode(producer.Collect(Subscription())).Resource.Attributes.Select(a => a.Key)).IsEquivalentTo(["transactional_id"]);
         await Assert.That(Decode(consumer.Collect(Subscription())).Resource.Attributes.Select(a => a.Key)).IsEquivalentTo(["group_id"]);
         await Assert.That(Decode(admin.Collect(Subscription())).Resource).IsNull();

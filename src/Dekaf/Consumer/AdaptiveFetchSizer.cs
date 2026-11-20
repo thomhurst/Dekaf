@@ -75,30 +75,46 @@ internal sealed class AdaptiveFetchSizer
         _currentFetchMaxBytes = options.InitialFetchMaxBytes;
 
         if (options.MinPartitionFetchBytes > options.InitialPartitionFetchBytes)
+        {
             throw new ArgumentException($"MinPartitionFetchBytes ({options.MinPartitionFetchBytes}) must be <= InitialPartitionFetchBytes ({options.InitialPartitionFetchBytes}).", nameof(options));
+        }
 
         if (options.InitialPartitionFetchBytes > options.MaxPartitionFetchBytes)
+        {
             throw new ArgumentException($"InitialPartitionFetchBytes ({options.InitialPartitionFetchBytes}) must be <= MaxPartitionFetchBytes ({options.MaxPartitionFetchBytes}).", nameof(options));
+        }
 
         if (options.MinFetchMaxBytes > options.InitialFetchMaxBytes)
+        {
             throw new ArgumentException($"MinFetchMaxBytes ({options.MinFetchMaxBytes}) must be <= InitialFetchMaxBytes ({options.InitialFetchMaxBytes}).", nameof(options));
+        }
 
         if (options.InitialFetchMaxBytes > options.MaxFetchMaxBytes)
+        {
             throw new ArgumentException($"InitialFetchMaxBytes ({options.InitialFetchMaxBytes}) must be <= MaxFetchMaxBytes ({options.MaxFetchMaxBytes}).", nameof(options));
+        }
 
         if (options.GrowthFactor <= 1.0)
+        {
             throw new ArgumentException($"GrowthFactor ({options.GrowthFactor}) must be greater than 1.0.", nameof(options));
+        }
 
         if (options.ShrinkFactor is <= 0.0 or >= 1.0)
+        {
             throw new ArgumentException($"ShrinkFactor ({options.ShrinkFactor}) must be in the range (0.0, 1.0) exclusive.", nameof(options));
+        }
 
         if (options.GrowThreshold >= options.ShrinkThreshold)
+        {
             throw new ArgumentException(
                 $"GrowThreshold ({options.GrowThreshold}) must be less than ShrinkThreshold ({options.ShrinkThreshold}).",
                 nameof(options));
+        }
 
         if (options.StableWindowCount < 1)
+        {
             throw new ArgumentException($"StableWindowCount ({options.StableWindowCount}) must be >= 1.", nameof(options));
+        }
     }
 
     /// <summary>
@@ -128,12 +144,16 @@ internal sealed class AdaptiveFetchSizer
     public void ReportProcessingComplete(TimeSpan processingDuration)
     {
         if (_lastFetchStartTimestamp == 0 || _lastFetchEndTimestamp == 0)
+        {
             return;
+        }
 
         var fetchDuration = Stopwatch.GetElapsedTime(_lastFetchStartTimestamp, _lastFetchEndTimestamp);
 
         if (fetchDuration <= TimeSpan.Zero)
+        {
             return;
+        }
 
         var ratio = processingDuration.TotalSeconds / fetchDuration.TotalSeconds;
         EvaluateAndAdjust(ratio);
@@ -149,7 +169,9 @@ internal sealed class AdaptiveFetchSizer
         _consecutiveGrowSignals = 0;
 
         if (_consecutiveShrinkSignals < _stableWindowCount)
+        {
             return;
+        }
 
         Shrink();
         _consecutiveShrinkSignals = 0;
@@ -232,7 +254,9 @@ internal sealed class AdaptiveFetchSizer
     {
         var result = 1L;
         while (result < value && result <= int.MaxValue)
+        {
             result <<= 1;
+        }
 
         return result > int.MaxValue ? int.MaxValue : (int)result;
     }
@@ -241,7 +265,9 @@ internal sealed class AdaptiveFetchSizer
     {
         var result = 1L;
         while ((result << 1) <= value && result <= int.MaxValue / 2L)
+        {
             result <<= 1;
+        }
 
         return (int)result;
     }
@@ -256,65 +282,98 @@ public sealed class AdaptiveFetchSizingOptions
     /// Minimum MaxPartitionFetchBytes. Fetch size will not shrink below this.
     /// Default is 1 MB (1048576 bytes).
     /// </summary>
-    public int MinPartitionFetchBytes { get; init; } = 1048576;
+    public int MinPartitionFetchBytes
+    {
+        get; init;
+    } = 1048576;
 
     /// <summary>
     /// Maximum MaxPartitionFetchBytes. Fetch size will not grow above this.
     /// Default is 16 MB (16777216 bytes).
     /// </summary>
-    public int MaxPartitionFetchBytes { get; init; } = 16 * 1024 * 1024;
+    public int MaxPartitionFetchBytes
+    {
+        get; init;
+    } = 16 * 1024 * 1024;
 
     /// <summary>
     /// Initial MaxPartitionFetchBytes to start with before adaptation begins.
     /// Default is 1 MB (1048576 bytes), matching the Kafka default.
     /// </summary>
-    public int InitialPartitionFetchBytes { get; init; } = 1048576;
+    public int InitialPartitionFetchBytes
+    {
+        get; init;
+    } = 1048576;
 
     /// <summary>
     /// Minimum FetchMaxBytes. Total fetch response size will not shrink below this.
     /// Default is 1 MB (1048576 bytes).
     /// </summary>
-    public int MinFetchMaxBytes { get; init; } = 1048576;
+    public int MinFetchMaxBytes
+    {
+        get; init;
+    } = 1048576;
 
     /// <summary>
     /// Maximum FetchMaxBytes. Total fetch response size will not grow above this.
     /// Default is 100 MB (104857600 bytes).
     /// </summary>
-    public int MaxFetchMaxBytes { get; init; } = 100 * 1024 * 1024;
+    public int MaxFetchMaxBytes
+    {
+        get; init;
+    } = 100 * 1024 * 1024;
 
     /// <summary>
     /// Initial FetchMaxBytes to start with before adaptation begins.
     /// Default is 52428800 (50 MB), matching the Kafka default.
     /// </summary>
-    public int InitialFetchMaxBytes { get; init; } = 52428800;
+    public int InitialFetchMaxBytes
+    {
+        get; init;
+    } = 52428800;
 
     /// <summary>
     /// Multiplicative factor for growing fetch sizes. Applied when the consumer is keeping up.
     /// Default is 1.5 (50% growth per step).
     /// </summary>
-    public double GrowthFactor { get; init; } = 1.5;
+    public double GrowthFactor
+    {
+        get; init;
+    } = 1.5;
 
     /// <summary>
     /// Multiplicative factor for shrinking fetch sizes. Applied under sustained prefetch memory pressure.
     /// Default is 0.75 (25% reduction per step).
     /// </summary>
-    public double ShrinkFactor { get; init; } = 0.75;
+    public double ShrinkFactor
+    {
+        get; init;
+    } = 0.75;
 
     /// <summary>
     /// Processing-to-fetch ratio below which the consumer is considered "keeping up"
     /// and fetch sizes should grow. Default is 0.5 (processing takes less than half the fetch time).
     /// </summary>
-    public double GrowThreshold { get; init; } = 0.5;
+    public double GrowThreshold
+    {
+        get; init;
+    } = 0.5;
 
     /// <summary>
     /// Processing-to-fetch ratio above which shrinkage is armed. Fetch sizes remain unchanged
     /// until prefetch memory pressure is also reported. Default is 2.0.
     /// </summary>
-    public double ShrinkThreshold { get; init; } = 2.0;
+    public double ShrinkThreshold
+    {
+        get; init;
+    } = 2.0;
 
     /// <summary>
     /// Number of consecutive signals in the same direction required before adjusting fetch sizes.
     /// Prevents oscillation from transient spikes. Default is 3.
     /// </summary>
-    public int StableWindowCount { get; init; } = 3;
+    public int StableWindowCount
+    {
+        get; init;
+    } = 3;
 }

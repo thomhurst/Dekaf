@@ -13,32 +13,50 @@ public sealed class InitProducerIdResponse : IKafkaResponse
     /// <summary>
     /// Throttle time in milliseconds.
     /// </summary>
-    public int ThrottleTimeMs { get; init; }
+    public int ThrottleTimeMs
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The error code, or 0 if there was no error.
     /// </summary>
-    public required ErrorCode ErrorCode { get; init; }
+    public required ErrorCode ErrorCode
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The producer ID.
     /// </summary>
-    public long ProducerId { get; init; } = -1;
+    public long ProducerId
+    {
+        get; init;
+    } = -1;
 
     /// <summary>
     /// The producer epoch.
     /// </summary>
-    public short ProducerEpoch { get; init; } = -1;
+    public short ProducerEpoch
+    {
+        get; init;
+    } = -1;
 
     /// <summary>
     /// Producer ID for an ongoing prepared transaction returned by InitProducerId v6.
     /// </summary>
-    public long OngoingTransactionProducerId { get; init; } = -1;
+    public long OngoingTransactionProducerId
+    {
+        get; init;
+    } = -1;
 
     /// <summary>
     /// Producer epoch for an ongoing prepared transaction returned by InitProducerId v6.
     /// </summary>
-    public short OngoingTransactionProducerEpoch { get; init; } = -1;
+    public short OngoingTransactionProducerEpoch
+    {
+        get; init;
+    } = -1;
 
     public static IKafkaResponse Read(ref KafkaProtocolReader reader, short version)
     {

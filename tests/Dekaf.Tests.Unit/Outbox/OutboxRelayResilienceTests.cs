@@ -30,7 +30,9 @@ public sealed class OutboxRelayResilienceTests
             await publisher.AttemptsReached.Task.WaitAsync(SignalTimeout);
 
             for (var id = 2L; id <= 5; id++)
+            {
                 await Assert.That(publisher.Deliveries(id)).IsEqualTo(1);
+            }
             await Assert.That(store.MarkedIds).IsEmpty();
             // After the first attempt the relay asks for the head row alone.
             await Assert.That(store.FetchSizes.Skip(1).All(size => size == 1)).IsTrue();
@@ -46,7 +48,9 @@ public sealed class OutboxRelayResilienceTests
         // One batch of duplicates for the poison row, however long it was stuck.
         await Assert.That(publisher.Deliveries(1)).IsEqualTo(1);
         for (var id = 2L; id <= 5; id++)
+        {
             await Assert.That(publisher.Deliveries(id)).IsEqualTo(2);
+        }
         await Assert.That(string.Join(',', store.MarkedIds)).IsEqualTo("1,2,3,4,5");
     }
 
@@ -175,14 +179,18 @@ public sealed class OutboxRelayResilienceTests
         listener.InstrumentPublished = (instrument, meterListener) =>
         {
             if (instrument.Meter.Name == OutboxDiagnostics.MeterName && instrument.Name == "dekaf.outbox.cycle.duration")
+            {
                 meterListener.EnableMeasurementEvents(instrument);
+            }
         };
         listener.SetMeasurementEventCallback<double>((_, _, tags, _) =>
         {
             foreach (var tag in tags)
             {
                 if (Equals(tag.Value, metricsName))
+                {
                     Interlocked.Increment(ref cycles);
+                }
             }
         });
         listener.Start();
@@ -353,7 +361,9 @@ public sealed class OutboxRelayResilienceTests
             BeforePublish = id =>
             {
                 if (id == 2)
+                {
                     time.Advance(TimeSpan.FromSeconds(40));
+                }
             }
         };
         publisher.Reject(1);
@@ -394,8 +404,11 @@ public sealed class OutboxRelayResilienceTests
         var store = new RowStore { ProbeAlwaysFails = true };
         var options = new OutboxRelayOptions
         {
-            RelayId = "relay-backoff", BucketCount = 1, MaxPublishDuration = TimeSpan.FromSeconds(5),
-            ErrorBackoff = TimeSpan.FromSeconds(1), LeaseRenewInterval = TimeSpan.FromSeconds(10)
+            RelayId = "relay-backoff",
+            BucketCount = 1,
+            MaxPublishDuration = TimeSpan.FromSeconds(5),
+            ErrorBackoff = TimeSpan.FromSeconds(1),
+            LeaseRenewInterval = TimeSpan.FromSeconds(10)
         };
 
         using var relay = CreateRelay(store, new ConcurrentSendPublisher(), options, time);
@@ -433,9 +446,12 @@ public sealed class OutboxRelayResilienceTests
         // ignores how old the kept lease already is: the ceiling alone is a whole interval.
         var options = new OutboxRelayOptions
         {
-            RelayId = "relay-backoff", BucketCount = 1, MaxPublishDuration = TimeSpan.FromMilliseconds(500),
+            RelayId = "relay-backoff",
+            BucketCount = 1,
+            MaxPublishDuration = TimeSpan.FromMilliseconds(500),
             ErrorBackoff = TimeSpan.FromMilliseconds(500),
-            LeaseRenewInterval = TimeSpan.FromSeconds(29), LeaseDuration = TimeSpan.FromSeconds(30)
+            LeaseRenewInterval = TimeSpan.FromSeconds(29),
+            LeaseDuration = TimeSpan.FromSeconds(30)
         };
 
         using var relay = CreateRelay(store, new ConcurrentSendPublisher(), options, time);
@@ -463,8 +479,11 @@ public sealed class OutboxRelayResilienceTests
         var store = new RowStore { FailingProbes = [1, 2, 3, 5] };
         var options = new OutboxRelayOptions
         {
-            RelayId = "relay-backoff", BucketCount = 1, MaxPublishDuration = TimeSpan.FromSeconds(5),
-            ErrorBackoff = TimeSpan.FromSeconds(1), PollInterval = TimeSpan.FromMilliseconds(1500)
+            RelayId = "relay-backoff",
+            BucketCount = 1,
+            MaxPublishDuration = TimeSpan.FromSeconds(5),
+            ErrorBackoff = TimeSpan.FromSeconds(1),
+            PollInterval = TimeSpan.FromMilliseconds(1500)
         };
 
         using var relay = CreateRelay(store, new ConcurrentSendPublisher(), options, time);
@@ -633,8 +652,20 @@ public sealed class OutboxRelayResilienceTests
         private readonly List<TimeSpan> _delays = [];
         private long _ticks = TimeSpan.TicksPerSecond;
 
-        public TaskCompletionSource LimitReached { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        public IReadOnlyList<TimeSpan> Delays { get { lock (_delays) return [.. _delays]; } }
+        public TaskCompletionSource LimitReached
+        {
+            get;
+        } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public IReadOnlyList<TimeSpan> Delays
+        {
+            get
+            {
+                lock (_delays)
+                {
+                    return [.. _delays];
+                }
+            }
+        }
 
         public override long TimestampFrequency => TimeSpan.TicksPerSecond;
         public override long GetTimestamp() => Interlocked.Read(ref _ticks);
@@ -663,7 +694,9 @@ public sealed class OutboxRelayResilienceTests
         private sealed class InertTimer : ITimer
         {
             public bool Change(TimeSpan dueTime, TimeSpan period) => true;
-            public void Dispose() { }
+            public void Dispose()
+            {
+            }
             public ValueTask DisposeAsync() => ValueTask.CompletedTask;
         }
     }
@@ -678,13 +711,31 @@ public sealed class OutboxRelayResilienceTests
         private int _leaseCalls;
         private int _probeCalls;
 
-        public bool ProbeAlwaysFails { get; init; }
-        public HashSet<int> FailingProbes { get; init; } = [];
-        public TimeProvider? Clock { get; init; }
-        public ConcurrentQueue<long> LeaseCallTimestamps { get; } = [];
+        public bool ProbeAlwaysFails
+        {
+            get; init;
+        }
+        public HashSet<int> FailingProbes
+        {
+            get; init;
+        } = [];
+        public TimeProvider? Clock
+        {
+            get; init;
+        }
+        public ConcurrentQueue<long> LeaseCallTimestamps
+        {
+            get;
+        } = [];
         public int LeaseCalls => Volatile.Read(ref _leaseCalls);
-        public ConcurrentQueue<long> MarkedIds { get; } = [];
-        public ConcurrentQueue<int> FetchSizes { get; } = [];
+        public ConcurrentQueue<long> MarkedIds
+        {
+            get;
+        } = [];
+        public ConcurrentQueue<int> FetchSizes
+        {
+            get;
+        } = [];
 
         private IReadOnlyList<int>? _owned;
 
@@ -697,7 +748,9 @@ public sealed class OutboxRelayResilienceTests
             lock (_lock)
             {
                 foreach (var list in _rows.Values)
+                {
                     list.RemoveAll(row => row.Id == id);
+                }
             }
         }
 
@@ -708,7 +761,9 @@ public sealed class OutboxRelayResilienceTests
                 foreach (var row in rows)
                 {
                     if (!_rows.TryGetValue(row.Bucket, out var list))
+                    {
                         _rows[row.Bucket] = list = [];
+                    }
                     list.Add(row);
                 }
             }
@@ -722,7 +777,9 @@ public sealed class OutboxRelayResilienceTests
             lock (_lock)
             {
                 if (!_rows.TryGetValue(bucket, out var list) || list.Count == 0)
+                {
                     return Task.CompletedTask;
+                }
                 _bucketWaiters.Add((bucket, waiter));
             }
 
@@ -735,7 +792,9 @@ public sealed class OutboxRelayResilienceTests
             await Task.Yield();
             Interlocked.Increment(ref _leaseCalls);
             if (Clock is not null)
+            {
                 LeaseCallTimestamps.Enqueue(Clock.GetTimestamp());
+            }
             return Volatile.Read(ref _owned) ?? _ownedBuckets;
         }
 
@@ -745,10 +804,14 @@ public sealed class OutboxRelayResilienceTests
             await Task.Yield();
             var call = Interlocked.Increment(ref _probeCalls);
             if (ProbeAlwaysFails || FailingProbes.Contains(call))
+            {
                 throw new InvalidOperationException("Simulated throttled probe.");
+            }
 
             lock (_lock)
+            {
                 return [.. buckets.Where(bucket => _rows.TryGetValue(bucket, out var list) && list.Count > 0)];
+            }
         }
 
         public async ValueTask<IReadOnlyList<OutboxMessage>> GetNextBatchAsync(
@@ -758,7 +821,9 @@ public sealed class OutboxRelayResilienceTests
             lock (_lock)
             {
                 if (!_rows.TryGetValue(bucket, out var list) || list.Count == 0)
+                {
                     return [];
+                }
                 FetchSizes.Enqueue(maxCount);
                 return list.GetRange(0, Math.Min(maxCount, list.Count));
             }
@@ -787,7 +852,9 @@ public sealed class OutboxRelayResilienceTests
                 }
 
                 if (_rows.Values.All(rows => rows.Count == 0))
+                {
                     _empty.TrySetResult();
+                }
             }
         }
     }
@@ -803,9 +870,18 @@ public sealed class OutboxRelayResilienceTests
         private readonly ConcurrentDictionary<long, byte> _rejected = new();
         private int _rejectedAttempts;
 
-        public int AttemptsToAwait { get; init; } = int.MaxValue;
-        public Action<long>? BeforePublish { get; init; }
-        public TaskCompletionSource AttemptsReached { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public int AttemptsToAwait
+        {
+            get; init;
+        } = int.MaxValue;
+        public Action<long>? BeforePublish
+        {
+            get; init;
+        }
+        public TaskCompletionSource AttemptsReached
+        {
+            get;
+        } = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         public void Reject(long id) => _rejected[id] = 0;
         public void Accept(long id) => _rejected.TryRemove(id, out _);
@@ -828,13 +904,17 @@ public sealed class OutboxRelayResilienceTests
                 {
                     firstError ??= new InvalidOperationException("Simulated MESSAGE_TOO_LARGE.");
                     if (Interlocked.Increment(ref _rejectedAttempts) >= AttemptsToAwait)
+                    {
                         AttemptsReached.TrySetResult();
+                    }
                     continue;
                 }
 
                 _deliveries.AddOrUpdate(messages[index].Id, 1, static (_, count) => count + 1);
                 if (firstError is null)
+                {
                     acked++;
+                }
             }
 
             return new OutboxPublishResult(acked, firstError);
@@ -845,8 +925,14 @@ public sealed class OutboxRelayResilienceTests
 
     private sealed class PausedPublisher : IOutboxPublisher
     {
-        internal TaskCompletionSource Entered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        internal TaskCompletionSource<OutboxPublishResult> Completion { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        internal TaskCompletionSource Entered
+        {
+            get;
+        } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        internal TaskCompletionSource<OutboxPublishResult> Completion
+        {
+            get;
+        } = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         public ValueTask InitializeAsync(CancellationToken cancellationToken = default) => ValueTask.CompletedTask;
 
@@ -869,17 +955,28 @@ public sealed class OutboxRelayResilienceTests
         private int _renewals;
         private int _acquisitions;
 
-        internal int ThrowingRenewals { get; init; }
+        internal int ThrowingRenewals
+        {
+            get; init;
+        }
         internal int MarkCount => Volatile.Read(ref _markCount);
-        internal TaskCompletionSource RenewalAttempted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        internal TaskCompletionSource SecondAcquisition { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        internal TaskCompletionSource RenewalAttempted
+        {
+            get;
+        } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        internal TaskCompletionSource SecondAcquisition
+        {
+            get;
+        } = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         public ValueTask<IReadOnlyList<int>> AcquireBucketLeasesAsync(OutboxLeaseRequest request,
             CancellationToken cancellationToken = default)
         {
             _ = time;
             if (Interlocked.Increment(ref _acquisitions) == 2)
+            {
                 SecondAcquisition.TrySetResult();
+            }
             return ValueTask.FromResult(Buckets);
         }
 
@@ -913,7 +1010,9 @@ public sealed class OutboxRelayResilienceTests
     {
         private int _failed;
 
-        public void NotifyCommitted() { }
+        public void NotifyCommitted()
+        {
+        }
 
         public async ValueTask WaitAsync(TimeSpan timeout, CancellationToken cancellationToken = default)
         {
@@ -931,12 +1030,21 @@ public sealed class OutboxRelayResilienceTests
     {
         private int _ownershipCalls;
 
-        internal TaskCompletionSource Waited { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        internal TaskCompletionSource Waited
+        {
+            get;
+        } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         internal int OwnershipCalls => Volatile.Read(ref _ownershipCalls);
 
-        public void NotifyCommitted() { }
-        public void NotifyCommitted(IReadOnlySet<int> buckets) { }
-        public void NotifyCommitted(int bucket) { }
+        public void NotifyCommitted()
+        {
+        }
+        public void NotifyCommitted(IReadOnlySet<int> buckets)
+        {
+        }
+        public void NotifyCommitted(int bucket)
+        {
+        }
 
         public void SetOwnedBuckets(IReadOnlyList<int> buckets)
         {

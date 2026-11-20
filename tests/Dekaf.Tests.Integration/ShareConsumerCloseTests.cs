@@ -56,7 +56,9 @@ public class ShareConsumerCloseTests(KafkaTestContainer kafka) : KafkaIntegratio
             values.Add(record.Value);
             second.Acknowledge(record);
             if (values.Count == 2)
+            {
                 break;
+            }
         }
         string?[] expected = ["value-0", "value-1"];
         await Assert.That(values).IsEquivalentTo(expected);
@@ -66,8 +68,14 @@ public class ShareConsumerCloseTests(KafkaTestContainer kafka) : KafkaIntegratio
     private sealed class PausedPreparer : IDeserializer<string>, IAsyncDeserializerPreparer<string>
     {
         private bool _prepared;
-        internal TaskCompletionSource Entered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        internal TaskCompletionSource Release { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        internal TaskCompletionSource Entered
+        {
+            get;
+        } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        internal TaskCompletionSource Release
+        {
+            get;
+        } = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         public string Deserialize(ReadOnlyMemory<byte> data, SerializationContext context) =>
             Serializers.String.Deserialize(data, context);
@@ -118,9 +126,13 @@ public class ShareConsumerCloseTests(KafkaTestContainer kafka) : KafkaIntegratio
             {
                 firstValue = record.Value;
                 if (explicitAccept)
+                {
                     first.Acknowledge(record);
+                }
                 if (processingThrows)
+                {
                     throw new ProcessingException();
+                }
                 break;
             }
         }
@@ -139,7 +151,9 @@ public class ShareConsumerCloseTests(KafkaTestContainer kafka) : KafkaIntegratio
             values.Add(record.Value);
             second.Acknowledge(record);
             if (values.Count == (explicitAccept ? 2 : 3))
+            {
                 break;
+            }
         }
 
         string?[] producedValues = ["value-0", "value-1", "value-2"];

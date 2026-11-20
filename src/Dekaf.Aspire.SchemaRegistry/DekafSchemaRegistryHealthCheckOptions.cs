@@ -4,5 +4,8 @@ namespace Dekaf.Aspire;
 public sealed class DekafSchemaRegistryHealthCheckOptions
 {
     /// <summary>Gets or sets the timeout for listing subjects. The default is 30 seconds.</summary>
-    public TimeSpan Timeout { get; set; } = TimeSpan.FromSeconds(30);
+    public TimeSpan Timeout
+    {
+        get; set;
+    } = TimeSpan.FromSeconds(30);
 }

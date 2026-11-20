@@ -17,35 +17,55 @@ public class ShareBatchHeaderRoutingBenchmarks
     private ShareFetchAcquiredRecords[] _acquired = null!;
 
     [Params(1, 64)]
-    public int RecordCount { get; set; }
+    public int RecordCount
+    {
+        get; set;
+    }
 
     [Params(8, 512)]
-    public int KeyLength { get; set; }
+    public int KeyLength
+    {
+        get; set;
+    }
 
     [Params(false, true)]
-    public bool UnrelatedHeader { get; set; }
+    public bool UnrelatedHeader
+    {
+        get; set;
+    }
 
     [Params(false, true)]
-    public bool FullCache { get; set; }
+    public bool FullCache
+    {
+        get; set;
+    }
 
     [GlobalSetup]
     public async ValueTask Setup()
     {
         if (FullCache)
+        {
             FillHeaderCache();
+        }
         var name = new string('r', KeyLength);
         // The default out-of-process toolchain gives each case its own static cache.
         // Verify the measured names too, so incompatible execution fails explicitly.
         if (FullCache)
+        {
             VerifyHeaderCache(name, cached: false);
+        }
         else
+        {
             VerifyHeaderCache("verify-available-cache", cached: true);
+        }
         // Do not prime configured names: consumer-owned retention must also be
         // measured when no other consumer has admitted the name globally.
         if (UnrelatedHeader)
         {
             for (var index = 0; index < RecordCount; index++)
+            {
                 VerifyHeaderCache(FullCache ? $"uncached-{index}" : "unrelated", cached: !FullCache);
+            }
         }
         var router = new HeaderRoutingDeserializer<int>(name, Serializers.Int32,
             new HeaderDeserializerRoute<int>("selected"u8.ToArray(), Serializers.Int32));
@@ -60,7 +80,11 @@ public class ShareBatchHeaderRoutingBenchmarks
                 : [new(name, "selected"u8.ToArray())];
             records[index] = new Record
             {
-                OffsetDelta = index, IsKeyNull = true, Value = new byte[4], Headers = headers, HeaderCount = headers.Length
+                OffsetDelta = index,
+                IsKeyNull = true,
+                Value = new byte[4],
+                Headers = headers,
+                HeaderCount = headers.Length
             };
         }
         using var source = new RecordBatch { Records = records };
@@ -69,7 +93,9 @@ public class ShareBatchHeaderRoutingBenchmarks
         _bytes = output.WrittenMemory;
         _acquired = [new() { FirstOffset = 0, LastOffset = RecordCount - 1, DeliveryCount = 1 }];
         if (await ParseBatch() != RecordCount)
+        {
             throw new InvalidOperationException("The fixture must deliver every acquired record.");
+        }
     }
 
     private static void FillHeaderCache()
@@ -77,11 +103,15 @@ public class ShareBatchHeaderRoutingBenchmarks
         // The shared header cache admits 128 names. These names differ from every
         // measured routing/unrelated name; a full cache never admits the latter.
         for (var index = 0; index < 256; index++)
+        {
             _ = ReadHeader($"cache-fill-{index}");
+        }
         var first = ReadHeader("verify-full-cache");
         var second = ReadHeader("verify-full-cache");
         if (ReferenceEquals(first.Key, second.Key))
+        {
             throw new InvalidOperationException("The fixture requires an exhausted header cache.");
+        }
     }
 
     private static Header ReadHeader(string name)
@@ -99,7 +129,9 @@ public class ShareBatchHeaderRoutingBenchmarks
         var first = ReadHeader(name);
         var second = ReadHeader(name);
         if (ReferenceEquals(first.Key, second.Key) != cached)
+        {
             throw new InvalidOperationException("The measured header name has an unexpected cache state.");
+        }
     }
 
     [Benchmark]
@@ -110,7 +142,9 @@ public class ShareBatchHeaderRoutingBenchmarks
             RecordBatch.Read(ref reader), _acquired, RecordCount, default);
         var count = 0;
         foreach (var record in batch)
+        {
             count += record.Value + 1;
+        }
         return count;
     }
 

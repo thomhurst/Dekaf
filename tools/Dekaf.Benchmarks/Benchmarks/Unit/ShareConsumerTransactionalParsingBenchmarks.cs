@@ -31,7 +31,10 @@ public class ShareConsumerTransactionalParsingBenchmarks
     private int _maxRecords;
 
     [Params(1, 256)]
-    public int BatchCount { get; set; }
+    public int BatchCount
+    {
+        get; set;
+    }
 
     [GlobalSetup]
     public void Setup()
@@ -96,7 +99,9 @@ public class ShareConsumerTransactionalParsingBenchmarks
         _parse = type.GetMethod("ParsePartitionRecords", BindingFlags.Instance | BindingFlags.NonPublic)!
             .CreateDelegate<Func<TopicInfo, ShareFetchResponsePartition, int, List<ShareConsumeResult<int, ReadOnlyMemory<byte>>>>>(_consumer);
         _release = type.GetMethod("ReleasePolledBatchOwners", BindingFlags.Instance | BindingFlags.NonPublic)?
-            .CreateDelegate<Action>(_consumer) ?? (static () => { });
+            .CreateDelegate<Action>(_consumer) ?? (static () =>
+        {
+        });
         _tracker = (AcknowledgementTracker)type.GetField("_ackTracker", BindingFlags.Instance | BindingFlags.NonPublic)!
             .GetValue(_consumer)!;
 
@@ -104,7 +109,9 @@ public class ShareConsumerTransactionalParsingBenchmarks
         // return more; this fixture compares the parse and flush costs.
         ParseBorrowedPoll();
         if (ParsePreparedBorrowedPoll() == 0)
+        {
             throw new InvalidOperationException("No transactional records were parsed.");
+        }
     }
 
     [Benchmark]
@@ -129,7 +136,9 @@ public class ShareConsumerTransactionalParsingBenchmarks
         {
             if (_consumer.ParsePartitionRecordsWithPreparation(_topic, _partition, _maxRecords,
                 records, ref state, false, default) is not null)
+            {
                 throw new InvalidOperationException("The raw deserializer must not require preparation.");
+            }
             return Consume(records);
         }
         finally
@@ -142,7 +151,9 @@ public class ShareConsumerTransactionalParsingBenchmarks
     private long Consume(List<ShareConsumeResult<int, ReadOnlyMemory<byte>>> records)
     {
         if (records.Count < BatchCount * RecordsPerBatch)
+        {
             throw new InvalidOperationException("Incomplete transactional poll.");
+        }
         long checksum = 0;
         foreach (var record in records)
         {

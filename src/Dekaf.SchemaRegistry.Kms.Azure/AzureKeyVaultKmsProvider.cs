@@ -101,7 +101,9 @@ public sealed class AzureKeyVaultKmsProvider : ISchemaRegistryKmsProvider
     {
         ArgumentNullException.ThrowIfNull(clientFactory);
         if (string.IsNullOrWhiteSpace(type))
+        {
             throw new ArgumentException("KMS provider type cannot be null or whitespace.", nameof(type));
+        }
 
         _clients = new BoundedClientCache(
             clientFactory,
@@ -112,7 +114,10 @@ public sealed class AzureKeyVaultKmsProvider : ISchemaRegistryKmsProvider
     }
 
     /// <inheritdoc />
-    public string Type { get; }
+    public string Type
+    {
+        get;
+    }
 
     /// <inheritdoc />
     public async ValueTask<byte[]> WrapKeyAsync(
@@ -122,7 +127,9 @@ public sealed class AzureKeyVaultKmsProvider : ISchemaRegistryKmsProvider
     {
         cancellationToken.ThrowIfCancellationRequested();
         if (keyMaterial.IsEmpty)
+        {
             throw new SchemaRegistryKmsException("Azure Key Vault wrap failed. Key material cannot be empty.");
+        }
 
         var key = ResolveKey(keyReference);
         var plaintext = GetInputArray(keyMaterial, out var temporaryPlaintext);
@@ -135,7 +142,9 @@ public sealed class AzureKeyVaultKmsProvider : ISchemaRegistryKmsProvider
             var ciphertext = RequireMaterial(result.EncryptedKey, "wrap");
 
             if (!ShouldSaveVersion(keyReference.KmsProps))
+            {
                 return ciphertext;
+            }
 
             var resolvedKey = ParseKeyUri(result.KeyId, "Azure Key Vault response key identifier");
             if (!IsValidVersion(resolvedKey.Version))
@@ -150,10 +159,14 @@ public sealed class AzureKeyVaultKmsProvider : ISchemaRegistryKmsProvider
         {
             _clients.Remove(key.KeyId, client);
             if (ex is OperationCanceledException && cancellationToken.IsCancellationRequested)
+            {
                 throw;
+            }
 
             if (IsAzureFailure(ex))
+            {
                 throw new SchemaRegistryKmsException("Azure Key Vault wrap failed.");
+            }
 
             throw;
         }
@@ -179,7 +192,9 @@ public sealed class AzureKeyVaultKmsProvider : ISchemaRegistryKmsProvider
     {
         cancellationToken.ThrowIfCancellationRequested();
         if (encryptedKeyMaterial.IsEmpty)
+        {
             throw new SchemaRegistryKmsException("Azure Key Vault unwrap failed. Encrypted key material cannot be empty.");
+        }
 
         var key = ResolveKey(keyReference);
         var wrappedMaterial = encryptedKeyMaterial;
@@ -189,7 +204,9 @@ public sealed class AzureKeyVaultKmsProvider : ISchemaRegistryKmsProvider
             key = key.WithVersion(version);
             wrappedMaterial = encryptedKeyMaterial[VersionHeaderLength..];
             if (wrappedMaterial.IsEmpty)
+            {
                 throw new SchemaRegistryKmsException("Azure Key Vault ciphertext contains no wrapped key material.");
+            }
         }
 
         var ciphertext = GetInputArray(wrappedMaterial, out var temporaryCiphertext);
@@ -209,10 +226,14 @@ public sealed class AzureKeyVaultKmsProvider : ISchemaRegistryKmsProvider
             clientCache.Remove(key.KeyId, client);
 
             if (ex is OperationCanceledException && cancellationToken.IsCancellationRequested)
+            {
                 throw;
+            }
 
             if (IsAzureFailure(ex))
+            {
                 throw new SchemaRegistryKmsException("Azure Key Vault unwrap failed.");
+            }
 
             throw;
         }
@@ -229,7 +250,9 @@ public sealed class AzureKeyVaultKmsProvider : ISchemaRegistryKmsProvider
         {
             ClearTemporaryBuffer(temporaryCiphertext);
             if (hasEmbeddedVersion && evictClient)
+            {
                 clientCache.Remove(key.KeyId, client);
+            }
         }
     }
 
@@ -249,12 +272,18 @@ public sealed class AzureKeyVaultKmsProvider : ISchemaRegistryKmsProvider
 
         var keyId = keyReference.KmsKeyId;
         if (string.IsNullOrWhiteSpace(keyId))
+        {
             throw new SchemaRegistryKmsException("Azure Key Vault key identifier cannot be null or whitespace.");
+        }
 
         if (keyId.StartsWith(KeyUriPrefix, StringComparison.OrdinalIgnoreCase))
+        {
             keyId = keyId[KeyUriPrefix.Length..];
+        }
         else if (keyId.StartsWith(ConfluentKeyUriPrefix, StringComparison.OrdinalIgnoreCase))
+        {
             keyId = keyId[ConfluentKeyUriPrefix.Length..];
+        }
 
         return ParseKeyUri(keyId, "Azure Key Vault key identifier");
     }
@@ -288,16 +317,22 @@ public sealed class AzureKeyVaultKmsProvider : ISchemaRegistryKmsProvider
         const string httpsPrefix = "https://";
         const string defaultPort = ":443";
         if (value is null || !value.StartsWith(httpsPrefix, StringComparison.OrdinalIgnoreCase))
+        {
             return false;
+        }
 
         var remainder = value.AsSpan(httpsPrefix.Length);
         var pathStart = remainder.IndexOf('/');
         if (pathStart <= 0)
+        {
             return false;
+        }
 
         var authority = remainder[..pathStart];
         if (authority.EndsWith(defaultPort, StringComparison.Ordinal))
+        {
             authority = authority[..^defaultPort.Length];
+        }
 
         return IsTrustedVaultHost(authority);
     }
@@ -392,7 +427,9 @@ public sealed class AzureKeyVaultKmsProvider : ISchemaRegistryKmsProvider
 
         var versionBytes = ciphertext.Slice(VersionHeaderPrefix.Length, AzureKeyVersionLength);
         if (!IsValidVersion(versionBytes))
+        {
             throw new SchemaRegistryKmsException("Azure Key Vault ciphertext contains an invalid embedded key version.");
+        }
 
         version = Encoding.ASCII.GetString(versionBytes);
         return true;
@@ -401,7 +438,9 @@ public sealed class AzureKeyVaultKmsProvider : ISchemaRegistryKmsProvider
     private static bool IsValidVersion(string? version)
     {
         if (version is null || version.Length != AzureKeyVersionLength)
+        {
             return false;
+        }
 
         foreach (var value in version)
         {
@@ -419,7 +458,9 @@ public sealed class AzureKeyVaultKmsProvider : ISchemaRegistryKmsProvider
     private static bool IsValidVersion(ReadOnlySpan<byte> version)
     {
         if (version.Length != AzureKeyVersionLength)
+        {
             return false;
+        }
 
         foreach (var value in version)
         {
@@ -452,7 +493,9 @@ public sealed class AzureKeyVaultKmsProvider : ISchemaRegistryKmsProvider
     private static void ClearTemporaryBuffer(byte[]? temporaryBuffer)
     {
         if (temporaryBuffer is not null)
+        {
             CryptographicOperations.ZeroMemory(temporaryBuffer);
+        }
     }
 
     private readonly record struct KeyReference(Uri KeyId, Uri VersionlessKeyId, string? Version)
@@ -478,17 +521,23 @@ public sealed class AzureKeyVaultKmsProvider : ISchemaRegistryKmsProvider
         internal Lazy<CryptographyClient> GetOrAdd(Uri keyId)
         {
             if (_entries.TryGetValue(keyId, out var client))
+            {
                 return client;
+            }
 
             lock (_missLock)
             {
                 if (_entries.TryGetValue(keyId, out client))
+                {
                     return client;
+                }
 
                 var slot = GetInsertionSlot();
                 var evicted = _slots[slot];
                 if (evicted is not null)
+                {
                     _entries.TryRemove(KeyValuePair.Create(evicted.KeyId, evicted.Client));
+                }
 
                 client = CreateClientEntry(keyId, clientFactory);
                 _entries[keyId] = client;
@@ -510,7 +559,9 @@ public sealed class AzureKeyVaultKmsProvider : ISchemaRegistryKmsProvider
             lock (_missLock)
             {
                 if (!_entries.TryRemove(KeyValuePair.Create(keyId, client)))
+                {
                     return;
+                }
 
                 for (var slot = 0; slot < capacity; slot++)
                 {
@@ -532,7 +583,9 @@ public sealed class AzureKeyVaultKmsProvider : ISchemaRegistryKmsProvider
             {
                 var slot = (_nextSlot + offset) % capacity;
                 if (_slots[slot] is null)
+                {
                     return slot;
+                }
             }
 
             return _nextSlot;

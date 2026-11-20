@@ -20,10 +20,16 @@ public class ShareBatchPendingStateBenchmarks
     private KafkaShareConsumer<int, int> _consumer = null!;
 
     [Params(1, 128, 1024)]
-    public int BatchCount { get; set; }
+    public int BatchCount
+    {
+        get; set;
+    }
 
     [Params(false, true)]
-    public bool Pending { get; set; }
+    public bool Pending
+    {
+        get; set;
+    }
 
     [GlobalSetup]
     public async ValueTask Setup()
@@ -35,11 +41,14 @@ public class ShareBatchPendingStateBenchmarks
         {
             Records = [new Record { IsKeyNull = true, Value = value.WrittenMemory }]
         })
+        {
             source.Write(bytes);
+        }
 
         _consumer = new KafkaShareConsumer<int, int>(new ShareConsumerOptions
         {
-            BootstrapServers = ["localhost:9092"], GroupId = "pending-state-benchmark",
+            BootstrapServers = ["localhost:9092"],
+            GroupId = "pending-state-benchmark",
             AcknowledgementMode = ShareAcknowledgementMode.Explicit
         }, Serializers.Int32, Serializers.Int32);
         _tracker = new ShareBatchAcknowledgements<int, int>();
@@ -57,15 +66,21 @@ public class ShareBatchPendingStateBenchmarks
                     1, default);
                 _tracker.Register(batch);
                 foreach (var record in batch)
+                {
                     batch.Acknowledge(record, AcknowledgeType.Renew);
+                }
                 last = batch.Storage;
             }
         }
         _tracker.ApplySuccessfulAcknowledgements(_tracker.Flush());
         if (Pending)
+        {
             last!.Acknowledge(0, AcknowledgeType.Renew);
+        }
         if (_tracker.RetainedBatchCount != BatchCount || _tracker.HasPending != Pending)
+        {
             throw new InvalidOperationException("Retained renewal pending state changed.");
+        }
     }
 
     [Benchmark(OperationsPerInvoke = 1024)]
@@ -73,7 +88,9 @@ public class ShareBatchPendingStateBenchmarks
     {
         var pendingCount = 0;
         for (var index = 0; index < 1024; index++)
+        {
             pendingCount += ReadPending(_tracker) ? 1 : 0;
+        }
         return pendingCount;
     }
 

@@ -24,7 +24,10 @@ public class ShareConsumerMultiBatchBenchmarks
     private ShareFetchResponsePartition _partition = null!;
 
     [Params(1, 500, 1024)]
-    public int BatchCount { get; set; }
+    public int BatchCount
+    {
+        get; set;
+    }
 
     [GlobalSetup]
     public void Setup()
@@ -72,7 +75,9 @@ public class ShareConsumerMultiBatchBenchmarks
             .CreateDelegate<Func<TopicInfo, ShareFetchResponsePartition, int, List<ShareConsumeResult<int, ReadOnlyMemory<byte>>>>>(_consumer);
         _release = typeof(KafkaShareConsumer<int, ReadOnlyMemory<byte>>)
             .GetMethod("ReleasePolledBatchOwners", BindingFlags.Instance | BindingFlags.NonPublic)?
-            .CreateDelegate<Action>(_consumer) ?? (static () => { });
+            .CreateDelegate<Action>(_consumer) ?? (static () =>
+        {
+        });
 
         Validate(_parse(_topic, _partition, BatchCount));
         Validate(ParsePrepared());
@@ -83,13 +88,17 @@ public class ShareConsumerMultiBatchBenchmarks
         try
         {
             if (records.Count != BatchCount)
+            {
                 throw new InvalidOperationException("Incomplete multi-batch poll.");
+            }
             for (var index = 0; index < records.Count; index++)
             {
                 var record = records[index];
                 if (record.Partition != _partition.PartitionIndex || record.Offset != index || record.Key != index ||
                     Serializers.Int32.Deserialize(record.Value, default) != 42)
+                {
                     throw new InvalidOperationException("Borrowed multi-batch payload was corrupted.");
+                }
             }
         }
         finally
@@ -106,7 +115,9 @@ public class ShareConsumerMultiBatchBenchmarks
             var records = _parse(_topic, _partition, BatchCount);
             long checksum = 0;
             foreach (var record in records)
+            {
                 checksum += record.Partition + record.Offset + record.Key + record.Value.Span[3];
+            }
             return checksum;
         }
         finally
@@ -123,7 +134,9 @@ public class ShareConsumerMultiBatchBenchmarks
             var records = ParsePrepared();
             long checksum = 0;
             foreach (var record in records)
+            {
                 checksum += record.Partition + record.Offset + record.Key + record.Value.Span[3];
+            }
             return checksum;
         }
         finally
@@ -140,7 +153,9 @@ public class ShareConsumerMultiBatchBenchmarks
         {
             if (_consumer.ParsePartitionRecordsWithPreparation(_topic, _partition, BatchCount,
                 records, ref state, false, default) is not null)
+            {
                 throw new InvalidOperationException("The raw deserializer must not require preparation.");
+            }
             return records;
         }
         finally

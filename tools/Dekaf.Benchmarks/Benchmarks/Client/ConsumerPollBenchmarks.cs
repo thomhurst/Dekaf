@@ -61,10 +61,16 @@ public class ConsumerPollBenchmarks
     // Keep the measurement shape in the benchmark identity so rolling history never
     // mixes this 400k-poll epoch with obsolete runs that used a shorter invocation count.
     [Params(ConfiguredPollsPerIteration)]
-    public int PollsPerIteration { get; set; }
+    public int PollsPerIteration
+    {
+        get; set;
+    }
 
     [Params(100, 1000)]
-    public int MessageSize { get; set; }
+    public int MessageSize
+    {
+        get; set;
+    }
 
     [GlobalSetup]
     public async Task Setup()

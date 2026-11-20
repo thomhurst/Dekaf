@@ -23,7 +23,8 @@ public sealed partial class AdminClientRemoveMembersTests
             var exception = await Assert.That(async () => await admin.RemoveMembersFromConsumerGroupAsync(GroupId,
                 new ConsumerGroupMemberRemovalOptions
                 {
-                    RemoveAll = removeAll, TimeoutMs = 0,
+                    RemoveAll = removeAll,
+                    TimeoutMs = 0,
                     Members = removeAll ? [] : [new ConsumerGroupMemberIdentity { MemberId = "member" }]
                 })).Throws<KafkaTimeoutException>();
             await Assert.That(exception!.Configured).IsEqualTo(TimeSpan.Zero);
@@ -98,7 +99,9 @@ public sealed partial class AdminClientRemoveMembersTests
             // cancellation race on an in-flight request. A call that ends before the send
             // surfaces its own failure instead of leaving the test waiting.
             if (await Task.WhenAny(sendStarted.Task, removal) == removal)
+            {
                 await removal;
+            }
             await Assert.That(sendStarted.Task.IsCompleted).IsTrue();
             AdminDeadline.Expire(await sendStarted.Task);
             var result = await removal;
@@ -213,7 +216,8 @@ public sealed partial class AdminClientRemoveMembersTests
         SetupCoordinator(connection);
         SetupMemberDiscovery(connection, new DescribeGroupsResponseMember
         {
-            MemberId = "original", GroupInstanceId = staticMember ? "instance" : null
+            MemberId = "original",
+            GroupInstanceId = staticMember ? "instance" : null
         });
         var transportError = new KafkaException(ErrorCode.NetworkException, "Removal applied; response lost.");
         var attempts = 0;
@@ -224,7 +228,8 @@ public sealed partial class AdminClientRemoveMembersTests
                 {
                     Members = [new LeaveGroupResponseMember
                     {
-                        MemberId = "original", GroupInstanceId = staticMember ? "instance" : null,
+                        MemberId = "original",
+                        GroupInstanceId = staticMember ? "instance" : null,
                         ErrorCode = ErrorCode.UnknownMemberId
                     }]
                 }));

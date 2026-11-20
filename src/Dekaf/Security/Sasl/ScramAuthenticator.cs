@@ -151,7 +151,9 @@ public sealed partial class ScramAuthenticator : ISaslAuthenticator
         for (var index = 0; index < serverNonce.Length; index++)
         {
             if (serverNonce[index] is < '!' or > '~')
+            {
                 throw new AuthenticationException("Invalid characters in SCRAM server nonce");
+            }
         }
 
         var iterations = ParseIterationCount(parts.Iterations);
@@ -206,7 +208,9 @@ public sealed partial class ScramAuthenticator : ISaslAuthenticator
 
         var actualServerSignature = DecodeBase64(parts.Verifier, "Invalid SCRAM server signature encoding");
         if (actualServerSignature.Length != _hashSize)
+        {
             throw new AuthenticationException("Invalid SCRAM server signature length");
+        }
 
         // Verify server signature
         var serverKey = Hmac(_saltedPassword!, "Server Key");

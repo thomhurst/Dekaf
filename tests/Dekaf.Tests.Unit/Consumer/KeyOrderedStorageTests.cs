@@ -60,7 +60,9 @@ public sealed class KeyOrderedStorageTests
     private static object CreateDictionary<TKey>(IEqualityComparer<TKey>? comparer = null)
     {
         var lane = new PartitionLane<TKey, int>(new TopicPartition("topic", 0), 128,
-            static (_, _) => default, static _ => { }, static (_, error) => throw error);
+            static (_, _) => default, static _ =>
+            {
+            }, static (_, error) => throw error);
         var dispatcher = new KeyOrderedPartitionDispatcher<TKey, int>(
             new PartitionProcessorContext<TKey, int>(lane), 16, 2, 128,
             static (_, _) => default, comparer);

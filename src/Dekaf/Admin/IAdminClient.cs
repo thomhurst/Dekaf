@@ -545,7 +545,10 @@ public interface IAdminClient : IAsyncDisposable
     /// <summary>
     /// Gets the cluster metadata.
     /// </summary>
-    ClusterMetadata Metadata { get; }
+    ClusterMetadata Metadata
+    {
+        get;
+    }
 }
 
 /// <summary>
@@ -553,17 +556,32 @@ public interface IAdminClient : IAsyncDisposable
 /// </summary>
 public sealed class NewTopic
 {
-    public required string Name { get; init; }
-    public int NumPartitions { get; init; } = 1;
-    public short ReplicationFactor { get; init; } = 1;
-    public IReadOnlyDictionary<string, string>? Configs { get; init; }
+    public required string Name
+    {
+        get; init;
+    }
+    public int NumPartitions
+    {
+        get; init;
+    } = 1;
+    public short ReplicationFactor
+    {
+        get; init;
+    } = 1;
+    public IReadOnlyDictionary<string, string>? Configs
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Manual partition-to-broker assignments. When non-empty, these determine the partition count
     /// and replica placement; <see cref="NumPartitions"/> and <see cref="ReplicationFactor"/> are
     /// ignored and sent as -1. Null or empty assignments use the configured counts.
     /// </summary>
-    public IReadOnlyDictionary<int, IReadOnlyList<int>>? ReplicaAssignments { get; init; }
+    public IReadOnlyDictionary<int, IReadOnlyList<int>>? ReplicaAssignments
+    {
+        get; init;
+    }
 }
 
 /// <summary>
@@ -571,8 +589,14 @@ public sealed class NewTopic
 /// </summary>
 public sealed class CreateTopicsOptions
 {
-    public int TimeoutMs { get; init; } = 30000;
-    public bool ValidateOnly { get; init; }
+    public int TimeoutMs
+    {
+        get; init;
+    } = 30000;
+    public bool ValidateOnly
+    {
+        get; init;
+    }
 }
 
 /// <summary>
@@ -580,7 +604,10 @@ public sealed class CreateTopicsOptions
 /// </summary>
 public sealed class DeleteTopicsOptions
 {
-    public int TimeoutMs { get; init; } = 30000;
+    public int TimeoutMs
+    {
+        get; init;
+    } = 30000;
 }
 
 /// <summary>
@@ -588,8 +615,14 @@ public sealed class DeleteTopicsOptions
 /// </summary>
 public sealed class ListTopicsOptions
 {
-    public bool ListInternal { get; init; }
-    public int TimeoutMs { get; init; } = 30000;
+    public bool ListInternal
+    {
+        get; init;
+    }
+    public int TimeoutMs
+    {
+        get; init;
+    } = 30000;
 }
 
 /// <summary>
@@ -597,8 +630,14 @@ public sealed class ListTopicsOptions
 /// </summary>
 public sealed class ListConsumerGroupsOptions
 {
-    public IReadOnlyList<string>? States { get; init; }
-    public int TimeoutMs { get; init; } = 30000;
+    public IReadOnlyList<string>? States
+    {
+        get; init;
+    }
+    public int TimeoutMs
+    {
+        get; init;
+    } = 30000;
 }
 
 /// <summary>
@@ -616,7 +655,10 @@ public sealed class ListConfigResourcesOptions
     /// <summary>
     /// Resource types to return. An empty list requests every broker-supported type.
     /// </summary>
-    public IReadOnlyList<ConfigResourceType> ResourceTypes { get; init; } = [];
+    public IReadOnlyList<ConfigResourceType> ResourceTypes
+    {
+        get; init;
+    } = [];
 }
 
 /// <summary>
@@ -624,7 +666,10 @@ public sealed class ListConfigResourcesOptions
 /// </summary>
 public sealed class ClientMetricsResourceListing
 {
-    public required string Name { get; init; }
+    public required string Name
+    {
+        get; init;
+    }
 }
 
 /// <summary>
@@ -632,8 +677,14 @@ public sealed class ClientMetricsResourceListing
 /// </summary>
 public sealed class ConfigResourceListing
 {
-    public required string Name { get; init; }
-    public ConfigResourceType Type { get; init; }
+    public required string Name
+    {
+        get; init;
+    }
+    public ConfigResourceType Type
+    {
+        get; init;
+    }
 }
 
 /// <summary>
@@ -641,9 +692,18 @@ public sealed class ConfigResourceListing
 /// </summary>
 public sealed class TopicListing
 {
-    public required string Name { get; init; }
-    public Guid TopicId { get; init; }
-    public bool IsInternal { get; init; }
+    public required string Name
+    {
+        get; init;
+    }
+    public Guid TopicId
+    {
+        get; init;
+    }
+    public bool IsInternal
+    {
+        get; init;
+    }
 }
 
 /// <summary>
@@ -651,24 +711,42 @@ public sealed class TopicListing
 /// </summary>
 public sealed class TopicDescription
 {
-    public required string Name { get; init; }
-    public Guid TopicId { get; init; }
-    public bool IsInternal { get; init; }
-    public required IReadOnlyList<PartitionInfo> Partitions { get; init; }
+    public required string Name
+    {
+        get; init;
+    }
+    public Guid TopicId
+    {
+        get; init;
+    }
+    public bool IsInternal
+    {
+        get; init;
+    }
+    public required IReadOnlyList<PartitionInfo> Partitions
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The error for this topic, or <see cref="Protocol.ErrorCode.None"/> if it was described
     /// successfully. A batch describe reports per-topic failures here (for example
     /// <see cref="Protocol.ErrorCode.TopicAuthorizationFailed"/>) rather than failing the whole call.
     /// </summary>
-    public Protocol.ErrorCode ErrorCode { get; init; }
+    public Protocol.ErrorCode ErrorCode
+    {
+        get; init;
+    }
 
     /// <summary>
     /// 32-bit bitfield representing authorized operations for this topic. This is populated by
     /// DescribeTopicPartitions APIs; APIs that do not return authorized operations leave the default
     /// <see cref="int.MinValue"/> sentinel.
     /// </summary>
-    public int TopicAuthorizedOperations { get; init; } = int.MinValue;
+    public int TopicAuthorizedOperations
+    {
+        get; init;
+    } = int.MinValue;
 }
 
 /// <summary>
@@ -676,7 +754,10 @@ public sealed class TopicDescription
 /// </summary>
 public sealed class DescribeTopicPartitionsOptions
 {
-    public int ResponsePartitionLimit { get; init; } = 2000;
+    public int ResponsePartitionLimit
+    {
+        get; init;
+    } = 2000;
 }
 
 /// <summary>
@@ -684,8 +765,14 @@ public sealed class DescribeTopicPartitionsOptions
 /// </summary>
 public sealed class DescribeTopicPartitionsPageOptions
 {
-    public int ResponsePartitionLimit { get; init; } = 2000;
-    public DescribeTopicPartitionsCursor? Cursor { get; init; }
+    public int ResponsePartitionLimit
+    {
+        get; init;
+    } = 2000;
+    public DescribeTopicPartitionsCursor? Cursor
+    {
+        get; init;
+    }
 }
 
 /// <summary>
@@ -693,8 +780,14 @@ public sealed class DescribeTopicPartitionsPageOptions
 /// </summary>
 public sealed class DescribeTopicPartitionsCursor
 {
-    public required string TopicName { get; init; }
-    public int PartitionIndex { get; init; }
+    public required string TopicName
+    {
+        get; init;
+    }
+    public int PartitionIndex
+    {
+        get; init;
+    }
 }
 
 /// <summary>
@@ -702,9 +795,18 @@ public sealed class DescribeTopicPartitionsCursor
 /// </summary>
 public sealed class DescribeTopicPartitionsPage
 {
-    public int ThrottleTimeMs { get; init; }
-    public required IReadOnlyDictionary<string, TopicDescription> Topics { get; init; }
-    public DescribeTopicPartitionsCursor? NextCursor { get; init; }
+    public int ThrottleTimeMs
+    {
+        get; init;
+    }
+    public required IReadOnlyDictionary<string, TopicDescription> Topics
+    {
+        get; init;
+    }
+    public DescribeTopicPartitionsCursor? NextCursor
+    {
+        get; init;
+    }
 }
 
 /// <summary>
@@ -712,9 +814,18 @@ public sealed class DescribeTopicPartitionsPage
 /// </summary>
 public sealed class ClusterDescription
 {
-    public string? ClusterId { get; init; }
-    public int ControllerId { get; init; }
-    public required IReadOnlyList<BrokerNode> Nodes { get; init; }
+    public string? ClusterId
+    {
+        get; init;
+    }
+    public int ControllerId
+    {
+        get; init;
+    }
+    public required IReadOnlyList<BrokerNode> Nodes
+    {
+        get; init;
+    }
 }
 
 /// <summary>
@@ -722,9 +833,18 @@ public sealed class ClusterDescription
 /// </summary>
 public sealed class FeatureMetadata
 {
-    public long FinalizedFeaturesEpoch { get; init; }
-    public required IReadOnlyDictionary<string, FeatureVersionRange> SupportedFeatures { get; init; }
-    public required IReadOnlyDictionary<string, FeatureVersionRange> FinalizedFeatures { get; init; }
+    public long FinalizedFeaturesEpoch
+    {
+        get; init;
+    }
+    public required IReadOnlyDictionary<string, FeatureVersionRange> SupportedFeatures
+    {
+        get; init;
+    }
+    public required IReadOnlyDictionary<string, FeatureVersionRange> FinalizedFeatures
+    {
+        get; init;
+    }
 }
 
 /// <summary>
@@ -737,8 +857,14 @@ public readonly record struct FeatureVersionRange(short MinVersion, short MaxVer
 /// </summary>
 public sealed class FeatureUpdate
 {
-    public short MaxVersionLevel { get; init; }
-    public FeatureUpgradeType UpgradeType { get; init; } = FeatureUpgradeType.Upgrade;
+    public short MaxVersionLevel
+    {
+        get; init;
+    }
+    public FeatureUpgradeType UpgradeType
+    {
+        get; init;
+    } = FeatureUpgradeType.Upgrade;
 }
 
 /// <summary>
@@ -756,8 +882,14 @@ public enum FeatureUpgradeType : sbyte
 /// </summary>
 public sealed class UpdateFeaturesOptions
 {
-    public int TimeoutMs { get; init; } = 60000;
-    public bool ValidateOnly { get; init; }
+    public int TimeoutMs
+    {
+        get; init;
+    } = 60000;
+    public bool ValidateOnly
+    {
+        get; init;
+    }
 }
 
 /// <summary>
@@ -765,8 +897,14 @@ public sealed class UpdateFeaturesOptions
 /// </summary>
 public sealed class FeatureUpdateResultInfo
 {
-    public Protocol.ErrorCode ErrorCode { get; init; }
-    public string? ErrorMessage { get; init; }
+    public Protocol.ErrorCode ErrorCode
+    {
+        get; init;
+    }
+    public string? ErrorMessage
+    {
+        get; init;
+    }
 }
 
 /// <summary>
@@ -774,11 +912,23 @@ public sealed class FeatureUpdateResultInfo
 /// </summary>
 public sealed class GroupListing
 {
-    public required string GroupId { get; init; }
-    public string? ProtocolType { get; init; }
-    public string? State { get; init; }
+    public required string GroupId
+    {
+        get; init;
+    }
+    public string? ProtocolType
+    {
+        get; init;
+    }
+    public string? State
+    {
+        get; init;
+    }
     /// <summary>Broker-reported type, preserved verbatim, including unknown future values. Null when the broker's ListGroups version predates v5.</summary>
-    public string? GroupType { get; init; }
+    public string? GroupType
+    {
+        get; init;
+    }
 }
 
 /// <summary>
@@ -789,24 +939,36 @@ public sealed class ListTransactionsOptions
     /// <summary>
     /// Transaction states to include. Null or empty means all states.
     /// </summary>
-    public IReadOnlyList<string>? StateFilters { get; init; }
+    public IReadOnlyList<string>? StateFilters
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Producer IDs to include. Null or empty means all producer IDs.
     /// </summary>
-    public IReadOnlyList<long>? ProducerIdFilters { get; init; }
+    public IReadOnlyList<long>? ProducerIdFilters
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Minimum transaction duration in milliseconds. Negative means all durations.
     /// Requires broker support for ListTransactions v1+.
     /// </summary>
-    public long DurationFilterMs { get; init; } = -1;
+    public long DurationFilterMs
+    {
+        get; init;
+    } = -1;
 
     /// <summary>
     /// Transactional ID regular expression filter. Null or empty means all IDs.
     /// Requires broker support for ListTransactions v2+.
     /// </summary>
-    public string? TransactionalIdPattern { get; init; }
+    public string? TransactionalIdPattern
+    {
+        get; init;
+    }
 }
 
 /// <summary>
@@ -817,12 +979,18 @@ public sealed class ListTransactionsResult
     /// <summary>
     /// State filters that were not recognized by brokers.
     /// </summary>
-    public required IReadOnlyList<string> UnknownStateFilters { get; init; }
+    public required IReadOnlyList<string> UnknownStateFilters
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Matching transactions.
     /// </summary>
-    public required IReadOnlyList<TransactionListing> Transactions { get; init; }
+    public required IReadOnlyList<TransactionListing> Transactions
+    {
+        get; init;
+    }
 }
 
 /// <summary>
@@ -830,10 +998,22 @@ public sealed class ListTransactionsResult
 /// </summary>
 public sealed class TransactionListing
 {
-    public required string TransactionalId { get; init; }
-    public long ProducerId { get; init; }
-    public required string TransactionState { get; init; }
-    public int CoordinatorId { get; init; }
+    public required string TransactionalId
+    {
+        get; init;
+    }
+    public long ProducerId
+    {
+        get; init;
+    }
+    public required string TransactionState
+    {
+        get; init;
+    }
+    public int CoordinatorId
+    {
+        get; init;
+    }
 }
 
 /// <summary>
@@ -841,11 +1021,26 @@ public sealed class TransactionListing
 /// </summary>
 public sealed class TransactionDescription
 {
-    public required string TransactionalId { get; init; }
-    public Protocol.ErrorCode ErrorCode { get; init; }
-    public required string TransactionState { get; init; }
-    public int TransactionTimeoutMs { get; init; }
-    public long TransactionStartTimeMs { get; init; }
+    public required string TransactionalId
+    {
+        get; init;
+    }
+    public Protocol.ErrorCode ErrorCode
+    {
+        get; init;
+    }
+    public required string TransactionState
+    {
+        get; init;
+    }
+    public int TransactionTimeoutMs
+    {
+        get; init;
+    }
+    public long TransactionStartTimeMs
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Unix timestamp in milliseconds when the broker last changed the transaction state,
@@ -853,12 +1048,27 @@ public sealed class TransactionDescription
     /// Null when the coordinator responds with DescribeTransactions v0. KIP-994 (v1) is not in any
     /// released Kafka version yet, so Dekaf does not negotiate v1 and this is currently always null.
     /// </summary>
-    public long? TransactionLastUpdateTimeMs { get; init; }
+    public long? TransactionLastUpdateTimeMs
+    {
+        get; init;
+    }
 
-    public long ProducerId { get; init; }
-    public short ProducerEpoch { get; init; }
-    public int CoordinatorId { get; init; }
-    public required IReadOnlyList<TopicPartition> TopicPartitions { get; init; }
+    public long ProducerId
+    {
+        get; init;
+    }
+    public short ProducerEpoch
+    {
+        get; init;
+    }
+    public int CoordinatorId
+    {
+        get; init;
+    }
+    public required IReadOnlyList<TopicPartition> TopicPartitions
+    {
+        get; init;
+    }
 }
 
 /// <summary>
@@ -866,10 +1076,22 @@ public sealed class TransactionDescription
 /// </summary>
 public sealed class DescribeProducersResultInfo
 {
-    public required TopicPartition TopicPartition { get; init; }
-    public Protocol.ErrorCode ErrorCode { get; init; }
-    public string? ErrorMessage { get; init; }
-    public required IReadOnlyList<ActiveProducerDescription> ActiveProducers { get; init; }
+    public required TopicPartition TopicPartition
+    {
+        get; init;
+    }
+    public Protocol.ErrorCode ErrorCode
+    {
+        get; init;
+    }
+    public string? ErrorMessage
+    {
+        get; init;
+    }
+    public required IReadOnlyList<ActiveProducerDescription> ActiveProducers
+    {
+        get; init;
+    }
 }
 
 /// <summary>
@@ -877,12 +1099,30 @@ public sealed class DescribeProducersResultInfo
 /// </summary>
 public sealed class ActiveProducerDescription
 {
-    public long ProducerId { get; init; }
-    public int ProducerEpoch { get; init; }
-    public int LastSequence { get; init; }
-    public long LastTimestamp { get; init; }
-    public int CoordinatorEpoch { get; init; }
-    public long CurrentTransactionStartOffset { get; init; }
+    public long ProducerId
+    {
+        get; init;
+    }
+    public int ProducerEpoch
+    {
+        get; init;
+    }
+    public int LastSequence
+    {
+        get; init;
+    }
+    public long LastTimestamp
+    {
+        get; init;
+    }
+    public int CoordinatorEpoch
+    {
+        get; init;
+    }
+    public long CurrentTransactionStartOffset
+    {
+        get; init;
+    }
 }
 
 /// <summary>
@@ -893,7 +1133,10 @@ public sealed class FenceProducersOptions
     /// <summary>
     /// Timeout in milliseconds used by the transaction coordinator while fencing.
     /// </summary>
-    public int TimeoutMs { get; init; } = 30000;
+    public int TimeoutMs
+    {
+        get; init;
+    } = 30000;
 }
 
 /// <summary>
@@ -901,10 +1144,22 @@ public sealed class FenceProducersOptions
 /// </summary>
 public sealed class FenceProducersResultInfo
 {
-    public required string TransactionalId { get; init; }
-    public Protocol.ErrorCode ErrorCode { get; init; }
-    public long ProducerId { get; init; } = -1;
-    public short ProducerEpoch { get; init; } = -1;
+    public required string TransactionalId
+    {
+        get; init;
+    }
+    public Protocol.ErrorCode ErrorCode
+    {
+        get; init;
+    }
+    public long ProducerId
+    {
+        get; init;
+    } = -1;
+    public short ProducerEpoch
+    {
+        get; init;
+    } = -1;
 }
 
 /// <summary>
@@ -915,7 +1170,10 @@ public sealed class ForceTerminateTransactionOptions
     /// <summary>
     /// Timeout in milliseconds used by the transaction coordinator while terminating.
     /// </summary>
-    public int? TimeoutMs { get; init; }
+    public int? TimeoutMs
+    {
+        get; init;
+    }
 }
 
 /// <summary>
@@ -923,11 +1181,23 @@ public sealed class ForceTerminateTransactionOptions
 /// </summary>
 public sealed class ForceTerminateTransactionResultInfo
 {
-    public required string TransactionalId { get; init; }
-    public Protocol.ErrorCode ErrorCode { get; init; }
+    public required string TransactionalId
+    {
+        get; init;
+    }
+    public Protocol.ErrorCode ErrorCode
+    {
+        get; init;
+    }
     public bool IsRetriable => Protocol.ErrorCodeExtensions.IsRetriable(ErrorCode);
-    public long ProducerId { get; init; } = -1;
-    public short ProducerEpoch { get; init; } = -1;
+    public long ProducerId
+    {
+        get; init;
+    } = -1;
+    public short ProducerEpoch
+    {
+        get; init;
+    } = -1;
 }
 
 /// <summary>
@@ -935,14 +1205,26 @@ public sealed class ForceTerminateTransactionResultInfo
 /// </summary>
 public sealed class AbortTransactionSpec
 {
-    public required TopicPartition TopicPartition { get; init; }
-    public required long ProducerId { get; init; }
-    public required short ProducerEpoch { get; init; }
+    public required TopicPartition TopicPartition
+    {
+        get; init;
+    }
+    public required long ProducerId
+    {
+        get; init;
+    }
+    public required short ProducerEpoch
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Transaction coordinator epoch returned by DescribeProducers for the active producer.
     /// </summary>
-    public required int CoordinatorEpoch { get; init; }
+    public required int CoordinatorEpoch
+    {
+        get; init;
+    }
 }
 
 /// <summary>
@@ -957,11 +1239,26 @@ public sealed class AbortTransactionOptions
 /// </summary>
 public sealed class AbortTransactionResultInfo
 {
-    public required TopicPartition TopicPartition { get; init; }
-    public long ProducerId { get; init; }
-    public short ProducerEpoch { get; init; }
-    public int CoordinatorEpoch { get; init; }
-    public Protocol.ErrorCode ErrorCode { get; init; }
+    public required TopicPartition TopicPartition
+    {
+        get; init;
+    }
+    public long ProducerId
+    {
+        get; init;
+    }
+    public short ProducerEpoch
+    {
+        get; init;
+    }
+    public int CoordinatorEpoch
+    {
+        get; init;
+    }
+    public Protocol.ErrorCode ErrorCode
+    {
+        get; init;
+    }
 }
 
 /// <summary>
@@ -969,26 +1266,56 @@ public sealed class AbortTransactionResultInfo
 /// </summary>
 public sealed class GroupDescription
 {
-    public required string GroupId { get; init; }
-    public string? ProtocolType { get; init; }
+    public required string GroupId
+    {
+        get; init;
+    }
+    public string? ProtocolType
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Selected protocol data from the classic DescribeGroups API. For KIP-848 consumer
     /// groups this mirrors <see cref="AssignorName"/> for compatibility.
     /// </summary>
-    public string? ProtocolData { get; init; }
-    public string State { get; init; } = "Unknown";
-    public required IReadOnlyList<MemberDescription> Members { get; init; }
-    public int? CoordinatorId { get; init; }
-    public int? GroupEpoch { get; init; }
-    public int? AssignmentEpoch { get; init; }
+    public string? ProtocolData
+    {
+        get; init;
+    }
+    public string State
+    {
+        get; init;
+    } = "Unknown";
+    public required IReadOnlyList<MemberDescription> Members
+    {
+        get; init;
+    }
+    public int? CoordinatorId
+    {
+        get; init;
+    }
+    public int? GroupEpoch
+    {
+        get; init;
+    }
+    public int? AssignmentEpoch
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Selected assignor reported by ConsumerGroupDescribe (API 69), or null when the
     /// group falls back to the classic DescribeGroups API.
     /// </summary>
-    public string? AssignorName { get; init; }
-    public int AuthorizedOperations { get; init; } = int.MinValue;
+    public string? AssignorName
+    {
+        get; init;
+    }
+    public int AuthorizedOperations
+    {
+        get; init;
+    } = int.MinValue;
 }
 
 /// <summary>
@@ -996,17 +1323,50 @@ public sealed class GroupDescription
 /// </summary>
 public sealed class MemberDescription
 {
-    public required string MemberId { get; init; }
-    public string? GroupInstanceId { get; init; }
-    public string? RackId { get; init; }
-    public int? MemberEpoch { get; init; }
-    public string? ClientId { get; init; }
-    public string? ClientHost { get; init; }
-    public IReadOnlyList<string>? SubscribedTopicNames { get; init; }
-    public string? SubscribedTopicRegex { get; init; }
-    public IReadOnlyList<TopicPartition>? Assignment { get; init; }
-    public IReadOnlyList<TopicPartition>? TargetAssignment { get; init; }
-    public sbyte? MemberType { get; init; }
+    public required string MemberId
+    {
+        get; init;
+    }
+    public string? GroupInstanceId
+    {
+        get; init;
+    }
+    public string? RackId
+    {
+        get; init;
+    }
+    public int? MemberEpoch
+    {
+        get; init;
+    }
+    public string? ClientId
+    {
+        get; init;
+    }
+    public string? ClientHost
+    {
+        get; init;
+    }
+    public IReadOnlyList<string>? SubscribedTopicNames
+    {
+        get; init;
+    }
+    public string? SubscribedTopicRegex
+    {
+        get; init;
+    }
+    public IReadOnlyList<TopicPartition>? Assignment
+    {
+        get; init;
+    }
+    public IReadOnlyList<TopicPartition>? TargetAssignment
+    {
+        get; init;
+    }
+    public sbyte? MemberType
+    {
+        get; init;
+    }
 }
 
 /// <summary>
@@ -1014,7 +1374,10 @@ public sealed class MemberDescription
 /// </summary>
 public sealed class DeleteConsumerGroupOffsetsOptions
 {
-    public int TimeoutMs { get; init; } = 30000;
+    public int TimeoutMs
+    {
+        get; init;
+    } = 30000;
 }
 
 /// <summary>
@@ -1025,17 +1388,26 @@ public sealed class TopicPartitionOffsetSpec
     /// <summary>
     /// The topic partition.
     /// </summary>
-    public required TopicPartition TopicPartition { get; init; }
+    public required TopicPartition TopicPartition
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The offset specification.
     /// </summary>
-    public required OffsetSpec Spec { get; init; }
+    public required OffsetSpec Spec
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Timestamp to query when Spec is Timestamp.
     /// </summary>
-    public long? Timestamp { get; init; }
+    public long? Timestamp
+    {
+        get; init;
+    }
 }
 
 /// <summary>
@@ -1087,17 +1459,26 @@ public sealed class ListOffsetsResultInfo
     /// <summary>
     /// The offset.
     /// </summary>
-    public required long Offset { get; init; }
+    public required long Offset
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The timestamp associated with the offset (-1 if not available).
     /// </summary>
-    public long Timestamp { get; init; } = -1;
+    public long Timestamp
+    {
+        get; init;
+    } = -1;
 
     /// <summary>
     /// The leader epoch, or null if not available.
     /// </summary>
-    public int? LeaderEpoch { get; init; }
+    public int? LeaderEpoch
+    {
+        get; init;
+    }
 }
 
 /// <summary>
@@ -1108,12 +1489,18 @@ public sealed class ListOffsetsOptions
     /// <summary>
     /// Timeout in milliseconds.
     /// </summary>
-    public int TimeoutMs { get; init; } = 30000;
+    public int TimeoutMs
+    {
+        get; init;
+    } = 30000;
 
     /// <summary>
     /// Isolation level for the request.
     /// </summary>
-    public Protocol.Messages.IsolationLevel IsolationLevel { get; init; } = Protocol.Messages.IsolationLevel.ReadUncommitted;
+    public Protocol.Messages.IsolationLevel IsolationLevel
+    {
+        get; init;
+    } = Protocol.Messages.IsolationLevel.ReadUncommitted;
 }
 
 /// <summary>
@@ -1140,7 +1527,10 @@ public sealed class ElectLeadersOptions
     /// <summary>
     /// Timeout in milliseconds.
     /// </summary>
-    public int TimeoutMs { get; init; } = 30000;
+    public int TimeoutMs
+    {
+        get; init;
+    } = 30000;
 }
 
 /// <summary>
@@ -1151,17 +1541,26 @@ public sealed class ElectLeadersResultInfo
     /// <summary>
     /// The topic partition.
     /// </summary>
-    public required TopicPartition TopicPartition { get; init; }
+    public required TopicPartition TopicPartition
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Error code for this partition (None if successful).
     /// </summary>
-    public Protocol.ErrorCode ErrorCode { get; init; }
+    public Protocol.ErrorCode ErrorCode
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Error message, if any.
     /// </summary>
-    public string? ErrorMessage { get; init; }
+    public string? ErrorMessage
+    {
+        get; init;
+    }
 }
 
 /// <summary>
@@ -1183,27 +1582,42 @@ public sealed class LogDirDescription
     /// <summary>
     /// Directory-level error code, or None if the directory was described successfully.
     /// </summary>
-    public Protocol.ErrorCode ErrorCode { get; init; }
+    public Protocol.ErrorCode ErrorCode
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Replica information keyed by topic partition.
     /// </summary>
-    public required IReadOnlyDictionary<TopicPartition, ReplicaLogDirInfo> ReplicaInfos { get; init; }
+    public required IReadOnlyDictionary<TopicPartition, ReplicaLogDirInfo> ReplicaInfos
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Total size in bytes of the volume containing the log directory, when returned by the broker.
     /// </summary>
-    public long? TotalBytes { get; init; }
+    public long? TotalBytes
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Usable size in bytes of the volume containing the log directory, when returned by the broker.
     /// </summary>
-    public long? UsableBytes { get; init; }
+    public long? UsableBytes
+    {
+        get; init;
+    }
 
     /// <summary>
     /// True when the broker reports the log directory is cordoned.
     /// </summary>
-    public bool? IsCordoned { get; init; }
+    public bool? IsCordoned
+    {
+        get; init;
+    }
 }
 
 /// <summary>
@@ -1214,17 +1628,26 @@ public sealed class ReplicaLogDirInfo
     /// <summary>
     /// Size of the log segments for this replica in bytes.
     /// </summary>
-    public required long Size { get; init; }
+    public required long Size
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Offset lag of this log relative to the current replica high watermark or log end offset.
     /// </summary>
-    public required long OffsetLag { get; init; }
+    public required long OffsetLag
+    {
+        get; init;
+    }
 
     /// <summary>
     /// True when this is a future log created by AlterReplicaLogDirs.
     /// </summary>
-    public required bool IsFuture { get; init; }
+    public required bool IsFuture
+    {
+        get; init;
+    }
 }
 
 /// <summary>
@@ -1235,33 +1658,51 @@ public sealed class DescribeReplicaLogDirResultInfo
     /// <summary>
     /// The replica the result applies to.
     /// </summary>
-    public required TopicPartitionReplica TopicPartitionReplica { get; init; }
+    public required TopicPartitionReplica TopicPartitionReplica
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The current replica log directory, or null when the replica was not found.
     /// </summary>
-    public string? CurrentReplicaLogDir { get; init; }
+    public string? CurrentReplicaLogDir
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The current replica offset lag, or -1 when the replica was not found.
     /// </summary>
-    public long CurrentReplicaOffsetLag { get; init; } = -1;
+    public long CurrentReplicaOffsetLag
+    {
+        get; init;
+    } = -1;
 
     /// <summary>
     /// The future replica log directory, or null when the replica is not moving.
     /// </summary>
-    public string? FutureReplicaLogDir { get; init; }
+    public string? FutureReplicaLogDir
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The future replica offset lag, or -1 when the replica is not moving.
     /// </summary>
-    public long FutureReplicaOffsetLag { get; init; } = -1;
+    public long FutureReplicaOffsetLag
+    {
+        get; init;
+    } = -1;
 
     /// <summary>
     /// Broker-level error code, an explicitly reported directory-level error code,
     /// or None when Kafka did not report an error for this replica.
     /// </summary>
-    public Protocol.ErrorCode ErrorCode { get; init; }
+    public Protocol.ErrorCode ErrorCode
+    {
+        get; init;
+    }
 }
 
 /// <summary>
@@ -1272,10 +1713,16 @@ public sealed class AlterReplicaLogDirResultInfo
     /// <summary>
     /// The replica the result applies to.
     /// </summary>
-    public required TopicPartitionReplica TopicPartitionReplica { get; init; }
+    public required TopicPartitionReplica TopicPartitionReplica
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Per-replica error code, or None if the assignment succeeded.
     /// </summary>
-    public Protocol.ErrorCode ErrorCode { get; init; }
+    public Protocol.ErrorCode ErrorCode
+    {
+        get; init;
+    }
 }

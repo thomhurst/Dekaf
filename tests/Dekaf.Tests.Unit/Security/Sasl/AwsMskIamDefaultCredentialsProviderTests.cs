@@ -285,7 +285,10 @@ public sealed partial class AwsMskIamDefaultCredentialsProviderTests
             _responseFactory = responseFactory;
         }
 
-        public List<CapturedRequest> Requests { get; } = [];
+        public List<CapturedRequest> Requests
+        {
+            get;
+        } = [];
 
         protected override Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request,
@@ -311,14 +314,18 @@ public sealed partial class AwsMskIamDefaultCredentialsProviderTests
         {
             var values = new Dictionary<string, string?>(StringComparer.Ordinal);
             foreach (var name in names)
+            {
                 values[name] = Environment.GetEnvironmentVariable(name);
+            }
             return new EnvironmentSnapshot(values);
         }
 
         public void Restore()
         {
             foreach (var (name, value) in _values)
+            {
                 Environment.SetEnvironmentVariable(name, value);
+            }
         }
     }
 }

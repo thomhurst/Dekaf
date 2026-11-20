@@ -24,7 +24,9 @@ internal sealed class StuckFetchPositionTracker
             position);
 
         if (observation.Count < _threshold)
+        {
             return null;
+        }
 
         return new Errors.ConsumeException(
             Protocol.ErrorCode.CorruptMessage,

@@ -58,7 +58,9 @@ public sealed class IdempotentSequenceModelTests : ScriptedProduceResponseFixtur
         accumulator.PublishProducerState(state.Read());
         var bumps = 0;
         var sender = CreateSender(
-            pool, options, accumulator, (_, _, _, _, _) => { },
+            pool, options, accumulator, (_, _, _, _, _) =>
+            {
+            },
             bumpEpoch: (expectedEpoch, _) =>
             {
                 var current = state.Read();
@@ -100,7 +102,9 @@ public sealed class IdempotentSequenceModelTests : ScriptedProduceResponseFixtur
                 }
 
                 if (planner.Next(3) == 0)
+                {
                     await Task.Yield();
+                }
             }
 
             var failed = new HashSet<(TopicPartition, long)>();
@@ -152,7 +156,9 @@ public sealed class IdempotentSequenceModelTests : ScriptedProduceResponseFixtur
                 foreach (var (partition, firstOrdinal, _, _, _) in deliveries)
                 {
                     if (partition == topicPartition && !failed.Contains((partition, firstOrdinal)))
+                    {
                         await Assert.That(appended.Contains(firstOrdinal)).IsTrue();
+                    }
                 }
             }
 
@@ -185,7 +191,9 @@ public sealed class IdempotentSequenceModelTests : ScriptedProduceResponseFixtur
         var partition = new TopicPartition(Topic, 0);
         var bumps = 0;
         var sender = CreateSender(
-            pool, options, accumulator, (_, _, _, _, _) => { },
+            pool, options, accumulator, (_, _, _, _, _) =>
+            {
+            },
             bumpEpoch: (_, _) =>
             {
                 Interlocked.Increment(ref bumps);
@@ -217,7 +225,9 @@ public sealed class IdempotentSequenceModelTests : ScriptedProduceResponseFixtur
             try
             {
                 foreach (var delivery in deliveries)
+                {
                     await delivery.WaitAsync(stallTimeout.Token);
+                }
             }
             catch (OperationCanceledException) when (stallTimeout.IsCancellationRequested)
             {
@@ -226,10 +236,12 @@ public sealed class IdempotentSequenceModelTests : ScriptedProduceResponseFixtur
 
             int[] baseSequences;
             lock (connection.CapturedProduceRequests)
+            {
                 baseSequences = connection.CapturedProduceRequests
                     .SelectMany(request => request.Batches)
                     .Select(batch => batch.BaseSequence)
                     .ToArray();
+            }
 
             await Assert.That(baseSequences).IsEquivalentTo([int.MaxValue - 2, 2, 6]);
             await Assert.That(broker.Contract.GetLog(partition).Select(entry => entry.FirstOrdinal).ToArray())
@@ -348,7 +360,10 @@ public sealed class IdempotentSequenceModelTests : ScriptedProduceResponseFixtur
         private int _bumpCapableFaults;
         private int _requestNumber;
 
-        public SequenceContractBroker Contract { get; } = new();
+        public SequenceContractBroker Contract
+        {
+            get;
+        } = new();
 
         /// <summary>
         /// Every batch the broker saw, in write order, for a failure message; of one partition
@@ -391,7 +406,9 @@ public sealed class IdempotentSequenceModelTests : ScriptedProduceResponseFixtur
                 {
                     // Scheduling points, not time: they vary how many requests are in flight.
                     for (var yields = _pacing.Next(maxPumpYields); yields > 0; yields--)
+                    {
                         await Task.Yield();
+                    }
 
                     if (response is not null)
                     {
@@ -401,7 +418,9 @@ public sealed class IdempotentSequenceModelTests : ScriptedProduceResponseFixtur
 
                     source.TrySetException(new IOException("Injected connection reset."));
                     while (_outstanding.Reader.TryRead(out var lost))
+                    {
                         lost.Source.TrySetException(new IOException("Injected connection reset."));
+                    }
                 }
             }
             catch (OperationCanceledException)
@@ -414,14 +433,18 @@ public sealed class IdempotentSequenceModelTests : ScriptedProduceResponseFixtur
             var fault = NextFault();
             var requestNumber = ++_requestNumber;
             if (fault is Fault.OutOfOrderSequence or Fault.DisconnectBeforeAppend or Fault.NotLeader)
+            {
                 Interlocked.Increment(ref _bumpCapableFaults);
+            }
 
             var source = new TaskCompletionSource<ProduceResponse>(TaskCreationOptions.RunContinuationsAsynchronously);
             ProduceResponse? response = null;
             if (fault == Fault.DisconnectBeforeAppend)
             {
                 foreach (var batch in request.Batches)
+                {
                     Trace(requestNumber, fault, batch, "not read by the broker");
+                }
             }
             else
             {
@@ -439,13 +462,17 @@ public sealed class IdempotentSequenceModelTests : ScriptedProduceResponseFixtur
                     };
                     var brokerResult = errorCode;
                     if (fault == Fault.RetriableErrorAfterAppend)
+                    {
                         (errorCode, baseOffset) = (ErrorCode.RequestTimedOut, -1L);
+                    }
                     results.Add((batch.Topic, batch.Partition, errorCode, baseOffset));
                     Trace(requestNumber, fault, batch, $"broker={brokerResult} answered={errorCode}");
                 }
 
                 if (fault != Fault.ResponseLostAfterAppend)
+                {
                     response = CreateResponse(results);
+                }
             }
 
             _outstanding.Writer.TryWrite((source, response));
@@ -466,7 +493,9 @@ public sealed class IdempotentSequenceModelTests : ScriptedProduceResponseFixtur
         private Fault NextFault()
         {
             if (!faultsEnabled)
+            {
                 return Fault.None;
+            }
 
             return _faults.Next(100) switch
             {

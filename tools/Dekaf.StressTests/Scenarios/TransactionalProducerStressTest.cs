@@ -118,9 +118,13 @@ internal sealed class TransactionalProducerStressTest : IStressTestScenario
                 {
                     await transaction.AbortAsync(CancellationToken.None).ConfigureAwait(false);
                     if (shouldCommit)
+                    {
                         failedCommitMessages += transactionAccepted;
+                    }
                     else
+                    {
                         abortedMessages += transactionAccepted;
+                    }
                 }
                 catch (Exception abortException)
                 {
@@ -134,8 +138,16 @@ internal sealed class TransactionalProducerStressTest : IStressTestScenario
         runCts.Cancel();
         throughput.Stop();
         gcStats.Capture();
-        try { await samplerTask.ConfigureAwait(false); } catch (OperationCanceledException) { }
-        try { await resourceMonitorTask.ConfigureAwait(false); } catch (OperationCanceledException) { }
+        try
+        {
+            await samplerTask.ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) { }
+        try
+        {
+            await resourceMonitorTask.ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) { }
 
         Console.WriteLine(
             $"  Workload complete: accepted={throughput.MessageCount:N0}, committed={committedMessages:N0}, " +
@@ -265,7 +277,9 @@ internal sealed class TransactionalProducerStressTest : IStressTestScenario
             options.Partitions,
             failedCommitMessages);
         if (!sentinelsCommitted)
+        {
             return oracle.CreateSnapshot(acceptedMessages, sentinelCommitFailed: true);
+        }
 
         var verificationProgress = new ThroughputTracker();
         verificationProgress.Start();
@@ -298,7 +312,9 @@ internal sealed class TransactionalProducerStressTest : IStressTestScenario
                 verificationProgress.RecordMessage(0);
                 oracle.Observe(record.Key);
                 if (oracle.AllSentinelsSeen)
+                {
                     break;
+                }
             }
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)

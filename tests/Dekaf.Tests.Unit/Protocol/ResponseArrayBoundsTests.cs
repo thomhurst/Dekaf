@@ -117,7 +117,9 @@ public sealed class ResponseArrayBoundsTests
         writer.WriteInt32(-1); // leader ID
         writer.WriteInt32(-1); // leader epoch
         for (var i = 0; i < arrayIndex; i++)
+        {
             writer.WriteUnsignedVarInt(1);
+        }
         WriteHostileCompactArray(ref writer);
 
         await Assert.That(() => ReadPartitionMetadata(buffer))

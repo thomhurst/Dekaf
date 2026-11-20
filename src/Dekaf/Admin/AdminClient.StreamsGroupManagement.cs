@@ -58,13 +58,17 @@ public sealed partial class AdminClient
             ValidateTopicPartition(partition, nameof(offsets));
             ArgumentOutOfRangeException.ThrowIfNegative(offset.Offset, nameof(offsets));
             if (!seen.Add(partition))
+            {
                 throw new ArgumentException($"Partition '{partition.Topic}-{partition.Partition}' is duplicated.", nameof(offsets));
+            }
         }
 
         var opts = options ?? new AlterStreamsGroupOffsetsOptions();
         ArgumentOutOfRangeException.ThrowIfNegative(opts.TimeoutMs);
         if (offsetList.Length == 0)
+        {
             return EmptyPartitionOperationResults();
+        }
 
         return ExecuteWithTimeoutAsync(
             token => AlterStreamsGroupOffsetsCoreAsync(groupId, offsetList, token),
@@ -87,7 +91,9 @@ public sealed partial class AdminClient
         var opts = options ?? new DeleteStreamsGroupOffsetsOptions();
         ArgumentOutOfRangeException.ThrowIfNegative(opts.TimeoutMs);
         if (partitionList.Count == 0)
+        {
             return EmptyPartitionOperationResults();
+        }
 
         return ExecuteWithTimeoutAsync(
             token => DeleteStreamsGroupOffsetsCoreAsync(groupId, partitionList, token),
@@ -110,7 +116,9 @@ public sealed partial class AdminClient
         {
             ArgumentException.ThrowIfNullOrWhiteSpace(groupId);
             if (!uniqueGroupIds.Add(groupId))
+            {
                 throw new ArgumentException($"Streams group ID '{groupId}' is duplicated.", nameof(groupIds));
+            }
         }
 
         var opts = options ?? new DeleteStreamsGroupsOptions();
@@ -142,7 +150,9 @@ public sealed partial class AdminClient
         foreach (var (groupId, partitions) in requests)
         {
             if (partitions is { Count: 0 })
+            {
                 results.Add(groupId, EmptyGroupOffsetsResult(groupId));
+            }
         }
 
         try
@@ -155,23 +165,23 @@ public sealed partial class AdminClient
                 foreach (var groupId in requests.Keys)
                 {
                     if (results.ContainsKey(groupId))
+                    {
                         continue;
+                    }
 
                     int coordinatorId;
                     try
                     {
                         coordinatorId = await FindGroupCoordinatorAsync(groupId, cancellationToken).ConfigureAwait(false);
                     }
-                    catch (Errors.GroupException exception) when (
-                        exception.ErrorCode is { } errorCode &&
+                    catch (Errors.GroupException exception) when (exception.ErrorCode is { } errorCode &&
                         !errorCode.IsRetriable() &&
                         !errorCode.RequiresMetadataRefresh())
                     {
                         results[groupId] = GroupOffsetsError(groupId, errorCode);
                         continue;
                     }
-                    catch (Exception exception) when (
-                        RetryHelper.IsRetriableRequestFailure(exception) &&
+                    catch (Exception exception) when (RetryHelper.IsRetriableRequestFailure(exception) &&
                         !cancellationToken.IsCancellationRequested)
                     {
                         retryErrors[groupId] = GetRetryErrorCode(exception);
@@ -225,8 +235,7 @@ public sealed partial class AdminClient
                                         cancellationToken).ConfigureAwait(false);
                                     retryFailure ??= failure;
                                 }
-                                catch (Exception exception) when (
-                                    RetryHelper.IsRetriableRequestFailure(exception) &&
+                                catch (Exception exception) when (RetryHelper.IsRetriableRequestFailure(exception) &&
                                     !cancellationToken.IsCancellationRequested)
                                 {
                                     retryErrors[groupId] = GetRetryErrorCode(exception);
@@ -251,42 +260,52 @@ public sealed partial class AdminClient
                             retryFailure ??= failure;
                         }
                     }
-                    catch (Exception exception) when (
-                        RetryHelper.IsRetriableRequestFailure(exception) &&
+                    catch (Exception exception) when (RetryHelper.IsRetriableRequestFailure(exception) &&
                         !cancellationToken.IsCancellationRequested)
                     {
                         var errorCode = GetRetryErrorCode(exception);
                         foreach (var groupId in coordinatorGroups)
                         {
                             if (!results.ContainsKey(groupId))
+                            {
                                 retryErrors[groupId] = errorCode;
+                            }
                         }
                         retryFailure ??= exception;
                     }
                 }
 
                 if (retryFailure is not null)
+                {
                     throw retryFailure;
+                }
 
                 return OrderGroupResults(requests.Keys, results);
             }, cancellationToken).ConfigureAwait(false);
         }
-        catch (Exception exception) when (
-            RetryHelper.IsRetriableRequestFailure(exception) &&
+        catch (Exception exception) when (RetryHelper.IsRetriableRequestFailure(exception) &&
             !cancellationToken.IsCancellationRequested)
         {
             foreach (var (groupId, result) in mappingRetryResults)
+            {
                 results.TryAdd(groupId, result);
+            }
 
             foreach (var (groupId, result) in retryResults)
+            {
                 results.TryAdd(groupId, result);
+            }
 
             foreach (var (groupId, errorCode) in retryErrors)
+            {
                 results.TryAdd(groupId, GroupOffsetsError(groupId, errorCode));
+            }
 
             var fallbackError = GetRetryErrorCode(exception);
             foreach (var groupId in requests.Keys)
+            {
                 results.TryAdd(groupId, GroupOffsetsError(groupId, fallbackError));
+            }
 
             return OrderGroupResults(requests.Keys, results);
         }
@@ -330,11 +349,15 @@ public sealed partial class AdminClient
                     Protocol.ErrorCode.UnknownServerError);
             }
             else if (mappingErrors is null)
+            {
                 mappingRetryResults.Remove(groupId);
+            }
 
             retryFailure ??= mappingFailure;
             if (topics is { Count: 0 })
+            {
                 continue;
+            }
 
             topicMaps[groupId] = topicMap;
             mappingErrorsByGroup[groupId] = mappingErrors;
@@ -349,7 +372,9 @@ public sealed partial class AdminClient
         }
 
         if (requestGroups.Count == 0)
+        {
             return retryFailure;
+        }
 
         var sentGroupIds = requestGroups.Select(static group => group.GroupId).ToArray();
 
@@ -402,7 +427,9 @@ public sealed partial class AdminClient
         foreach (var group in response.Groups ?? [])
         {
             if (!requestedGroupIds.Contains(group.GroupId))
+            {
                 continue;
+            }
 
             responseGroupIds.Add(group.GroupId);
             var failure = CaptureListStreamsGroupResult(
@@ -442,7 +469,9 @@ public sealed partial class AdminClient
                     results[groupId] = GroupOffsetsError(groupId, Protocol.ErrorCode.UnknownServerError);
                 }
                 else
+                {
                     retryErrors[groupId] = Protocol.ErrorCode.UnknownServerError;
+                }
             }
         }
 
@@ -456,13 +485,19 @@ public sealed partial class AdminClient
         Dictionary<string, StreamsGroupOffsetsResult> mappingRetryResults)
     {
         if (!errorCode.IsRetriable() && !errorCode.RequiresMetadataRefresh())
+        {
             return;
+        }
 
         if (retryResults.TryGetValue(groupId, out var retryResult))
+        {
             retryResults[groupId] = GroupOffsetsError(groupId, errorCode, retryResult.Offsets);
+        }
 
         if (mappingRetryResults.TryGetValue(groupId, out var mappingRetryResult))
+        {
             mappingRetryResults[groupId] = GroupOffsetsError(groupId, errorCode, mappingRetryResult.Offsets);
+        }
     }
 
     private Exception? CaptureListStreamsGroupResult(
@@ -535,7 +570,9 @@ public sealed partial class AdminClient
             {
                 responseMismatchError ??= exception.ErrorCode ?? Protocol.ErrorCode.UnknownTopicId;
                 if (exception.IsRetriable)
+                {
                     retryFailure ??= exception;
+                }
                 continue;
             }
 
@@ -543,7 +580,9 @@ public sealed partial class AdminClient
             {
                 var topicPartition = new TopicPartition(topicName, partition.PartitionIndex);
                 if (requested is not null && !requested.Contains(topicPartition))
+                {
                     continue;
+                }
 
                 offsets[topicPartition] = new StreamsGroupOffsetDescription
                 {
@@ -624,8 +663,7 @@ public sealed partial class AdminClient
                 {
                     coordinatorId = await FindGroupCoordinatorAsync(groupId, cancellationToken).ConfigureAwait(false);
                 }
-                catch (Errors.GroupException exception) when (
-                    exception.ErrorCode is { } errorCode &&
+                catch (Errors.GroupException exception) when (exception.ErrorCode is { } errorCode &&
                     !errorCode.IsRetriable() &&
                     !errorCode.RequiresMetadataRefresh())
                 {
@@ -652,13 +690,17 @@ public sealed partial class AdminClient
                 if (mappingErrors is not null)
                 {
                     foreach (var (topicPartition, errorCode) in mappingErrors)
+                    {
                         retryErrors[topicPartition] = errorCode;
+                    }
                 }
 
                 if (topics.Count == 0)
                 {
                     if (mappingFailure is not null)
+                    {
                         throw mappingFailure;
+                    }
                     return OrderPartitionResults(requestedPartitions, results);
                 }
 
@@ -678,7 +720,9 @@ public sealed partial class AdminClient
                 {
                     var partition = new TopicPartition(offset.Topic, offset.Partition);
                     if (!results.ContainsKey(partition))
+                    {
                         pending.Add(partition);
+                    }
                 }
                 var responseSnapshot = topicMap?.CaptureResponseSnapshot();
                 Exception? retryFailure = mappingFailure;
@@ -705,7 +749,9 @@ public sealed partial class AdminClient
                     {
                         var topicPartition = new TopicPartition(topicName, partition.PartitionIndex);
                         if (!pending.Remove(topicPartition))
+                        {
                             continue;
+                        }
 
                         if (partition.ErrorCode.IsRetriable() || partition.ErrorCode.RequiresMetadataRefresh())
                         {
@@ -745,12 +791,13 @@ public sealed partial class AdminClient
                 return OrderPartitionResults(requestedPartitions, results);
             }, cancellationToken).ConfigureAwait(false);
         }
-        catch (Exception exception) when (
-            RetryHelper.IsRetriableRequestFailure(exception) &&
+        catch (Exception exception) when (RetryHelper.IsRetriableRequestFailure(exception) &&
             !cancellationToken.IsCancellationRequested)
         {
             foreach (var (topicPartition, errorCode) in retryErrors)
+            {
                 results.TryAdd(topicPartition, PartitionResult(topicPartition, errorCode));
+            }
 
             return CompletePartitionResults(requestedPartitions, results, GetRetryErrorCode(exception));
         }
@@ -778,8 +825,7 @@ public sealed partial class AdminClient
                 {
                     coordinatorId = await FindGroupCoordinatorAsync(groupId, cancellationToken).ConfigureAwait(false);
                 }
-                catch (Errors.GroupException exception) when (
-                    exception.ErrorCode is { } errorCode &&
+                catch (Errors.GroupException exception) when (exception.ErrorCode is { } errorCode &&
                     !errorCode.IsRetriable() &&
                     !errorCode.RequiresMetadataRefresh())
                 {
@@ -807,15 +853,18 @@ public sealed partial class AdminClient
                         apiVersion,
                         cancellationToken).ConfigureAwait(false);
                 }
-                catch (Exception exception) when (
-                    RetryHelper.IsRetriableRequestFailure(exception) &&
+                catch (Exception exception) when (RetryHelper.IsRetriableRequestFailure(exception) &&
                     !cancellationToken.IsCancellationRequested)
                 {
                     if (writeContext.WriteStarted)
+                    {
                         ambiguousPartitions.UnionWith(pending);
+                    }
                     var errorCode = GetRetryErrorCode(exception);
                     foreach (var topicPartition in pending)
+                    {
                         retryErrors[topicPartition] = errorCode;
+                    }
                     throw;
                 }
 
@@ -823,10 +872,14 @@ public sealed partial class AdminClient
                 if (groupError.IsRetriable() || groupError.RequiresMetadataRefresh())
                 {
                     if (MayHaveAppliedDespiteError(groupError))
+                    {
                         ambiguousPartitions.UnionWith(pending);
+                    }
 
                     foreach (var topicPartition in pending)
+                    {
                         retryErrors[topicPartition] = groupError;
+                    }
 
                     throw new Errors.GroupException(
                         groupError,
@@ -858,12 +911,16 @@ public sealed partial class AdminClient
                         {
                             var topicPartition = new TopicPartition(topic.Name, partition.PartitionIndex);
                             if (!missing.Remove(topicPartition))
+                            {
                                 continue;
+                            }
 
                             if (partition.ErrorCode.IsRetriable() || partition.ErrorCode.RequiresMetadataRefresh())
                             {
                                 if (MayHaveAppliedDespiteError(partition.ErrorCode))
+                                {
                                     ambiguousPartitions.Add(topicPartition);
+                                }
                                 retryErrors[topicPartition] = partition.ErrorCode;
                                 retryFailure ??= new Errors.GroupException(
                                     partition.ErrorCode,
@@ -882,23 +939,28 @@ public sealed partial class AdminClient
                     if (retryFailure is not null)
                     {
                         foreach (var topicPartition in missing)
+                        {
                             retryErrors[topicPartition] = Protocol.ErrorCode.UnknownServerError;
+                        }
                         throw retryFailure;
                     }
 
                     foreach (var topicPartition in missing)
+                    {
                         results[topicPartition] = PartitionResult(topicPartition, Protocol.ErrorCode.UnknownServerError);
+                    }
                 }
 
                 return OrderPartitionResults(partitions, results);
             }, cancellationToken).ConfigureAwait(false);
         }
-        catch (Exception exception) when (
-            RetryHelper.IsRetriableRequestFailure(exception) &&
+        catch (Exception exception) when (RetryHelper.IsRetriableRequestFailure(exception) &&
             !cancellationToken.IsCancellationRequested)
         {
             foreach (var (topicPartition, errorCode) in retryErrors)
+            {
                 results.TryAdd(topicPartition, PartitionResult(topicPartition, errorCode));
+            }
 
             return CompletePartitionResults(partitions, results, GetRetryErrorCode(exception));
         }
@@ -924,7 +986,9 @@ public sealed partial class AdminClient
                 foreach (var groupId in groupIds)
                 {
                     if (results.ContainsKey(groupId))
+                    {
                         continue;
+                    }
 
                     int coordinatorId;
                     try
@@ -933,16 +997,14 @@ public sealed partial class AdminClient
                             groupId,
                             cancellationToken).ConfigureAwait(false);
                     }
-                    catch (Errors.GroupException exception) when (
-                        exception.ErrorCode is { } errorCode &&
+                    catch (Errors.GroupException exception) when (exception.ErrorCode is { } errorCode &&
                         !errorCode.IsRetriable() &&
                         !errorCode.RequiresMetadataRefresh())
                     {
                         results[groupId] = DeleteGroupResult(groupId, errorCode);
                         continue;
                     }
-                    catch (Exception exception) when (
-                        RetryHelper.IsRetriableRequestFailure(exception) &&
+                    catch (Exception exception) when (RetryHelper.IsRetriableRequestFailure(exception) &&
                         !cancellationToken.IsCancellationRequested)
                     {
                         retryErrors[groupId] = DeleteGroupResult(groupId, GetRetryErrorCode(exception));
@@ -986,13 +1048,17 @@ public sealed partial class AdminClient
                         foreach (var groupResult in response.Results)
                         {
                             if (!requested.Contains(groupResult.GroupId))
+                            {
                                 continue;
+                            }
 
                             var errorCode = groupResult.ErrorCode;
                             if (errorCode.IsRetriable() || errorCode.RequiresMetadataRefresh())
                             {
                                 if (MayHaveAppliedDespiteError(errorCode))
+                                {
                                     ambiguousGroups.Add(groupResult.GroupId);
+                                }
 
                                 retryErrors[groupResult.GroupId] = DeleteGroupResult(
                                     groupResult.GroupId,
@@ -1020,31 +1086,37 @@ public sealed partial class AdminClient
                                 errorCode == Protocol.ErrorCode.None ? null : groupResult.ErrorMessage);
                         }
                     }
-                    catch (Exception exception) when (
-                        RetryHelper.IsRetriableRequestFailure(exception) &&
+                    catch (Exception exception) when (RetryHelper.IsRetriableRequestFailure(exception) &&
                         !cancellationToken.IsCancellationRequested)
                     {
                         if (writeContext.WriteStarted)
+                        {
                             ambiguousGroups.UnionWith(coordinatorGroups);
+                        }
                         var errorCode = GetRetryErrorCode(exception);
                         foreach (var groupId in coordinatorGroups)
+                        {
                             retryErrors[groupId] = DeleteGroupResult(groupId, errorCode);
+                        }
                         retryFailure ??= exception;
                     }
                 }
 
                 if (retryFailure is not null)
+                {
                     throw retryFailure;
+                }
 
                 return CompleteDeleteGroupResults(groupIds, results);
             }, cancellationToken).ConfigureAwait(false);
         }
-        catch (Exception exception) when (
-            RetryHelper.IsRetriableRequestFailure(exception) &&
+        catch (Exception exception) when (RetryHelper.IsRetriableRequestFailure(exception) &&
             !cancellationToken.IsCancellationRequested)
         {
             foreach (var (groupId, result) in retryErrors)
+            {
                 results.TryAdd(groupId, result);
+            }
 
             return CompleteDeleteGroupResults(groupIds, results);
         }
@@ -1062,7 +1134,9 @@ public sealed partial class AdminClient
         mappingErrors = null;
         mappingFailure = null;
         if (partitions is null)
+        {
             return null;
+        }
 
         var groups = partitions.GroupBy(static partition => partition.Topic).ToArray();
         var requestTopicMap = apiVersion >= OffsetFetchRequest.TopicIdVersion
@@ -1083,7 +1157,9 @@ public sealed partial class AdminClient
                 mappingErrors ??= [];
                 var errorCode = exception.ErrorCode ?? Protocol.ErrorCode.UnknownTopicId;
                 foreach (var partition in group)
+                {
                     mappingErrors[partition] = errorCode;
+                }
                 continue;
             }
 
@@ -1127,7 +1203,9 @@ public sealed partial class AdminClient
                 mappingErrors ??= [];
                 var errorCode = exception.ErrorCode ?? Protocol.ErrorCode.UnknownTopicId;
                 foreach (var offset in group)
+                {
                     mappingErrors[new TopicPartition(offset.Topic, offset.Partition)] = errorCode;
+                }
                 continue;
             }
 
@@ -1166,7 +1244,9 @@ public sealed partial class AdminClient
         string paramName)
     {
         if (partitions is null)
+        {
             return null;
+        }
 
         var result = partitions.ToArray();
         var seen = new HashSet<TopicPartition>();
@@ -1174,7 +1254,9 @@ public sealed partial class AdminClient
         {
             ValidateTopicPartition(partition, paramName);
             if (!seen.Add(partition))
+            {
                 throw new ArgumentException($"Partition '{partition.Topic}-{partition.Partition}' is duplicated.", paramName);
+            }
         }
         return result;
     }
@@ -1193,7 +1275,9 @@ public sealed partial class AdminClient
     {
         var ordered = new Dictionary<string, StreamsGroupOffsetsResult>(results.Count, StringComparer.Ordinal);
         foreach (var groupId in groupIds)
+        {
             ordered[groupId] = results[groupId];
+        }
         return ordered;
     }
 
@@ -1201,11 +1285,11 @@ public sealed partial class AdminClient
         string groupId,
         Protocol.ErrorCode errorCode,
         IReadOnlyDictionary<TopicPartition, StreamsGroupOffsetDescription>? offsets = null) => new()
-    {
-        GroupId = groupId,
-        ErrorCode = errorCode,
-        Offsets = offsets ?? new Dictionary<TopicPartition, StreamsGroupOffsetDescription>()
-    };
+        {
+            GroupId = groupId,
+            ErrorCode = errorCode,
+            Offsets = offsets ?? new Dictionary<TopicPartition, StreamsGroupOffsetDescription>()
+        };
 
     private static StreamsGroupOffsetsResult EmptyGroupOffsetsResult(string groupId) => new()
     {
@@ -1249,7 +1333,9 @@ public sealed partial class AdminClient
     {
         var ordered = new Dictionary<string, DeleteStreamsGroupResult>(results.Count, StringComparer.Ordinal);
         foreach (var groupId in groupIds)
+        {
             ordered[groupId] = results[groupId];
+        }
         return ordered;
     }
 
@@ -1270,11 +1356,11 @@ public sealed partial class AdminClient
         string groupId,
         Protocol.ErrorCode errorCode,
         string? errorMessage = null) => new()
-    {
-        GroupId = groupId,
-        ErrorCode = errorCode,
-        ErrorMessage = errorMessage
-    };
+        {
+            GroupId = groupId,
+            ErrorCode = errorCode,
+            ErrorMessage = errorMessage
+        };
 
     private static Protocol.ErrorCode GetRetryErrorCode(Exception exception) =>
         exception is Errors.KafkaException { ErrorCode: { } errorCode }
@@ -1287,7 +1373,9 @@ public sealed partial class AdminClient
         Protocol.ErrorCode fallbackError)
     {
         foreach (var topicPartition in partitions)
+        {
             results.TryAdd(topicPartition, PartitionResult(topicPartition, fallbackError));
+        }
 
         return OrderPartitionResults(partitions, results);
     }
@@ -1298,7 +1386,9 @@ public sealed partial class AdminClient
     {
         var ordered = new Dictionary<TopicPartition, StreamsGroupOffsetOperationResult>(results.Count);
         foreach (var partition in partitions)
+        {
             ordered[partition] = results[partition];
+        }
         return ordered;
     }
 
@@ -1317,8 +1407,7 @@ public sealed partial class AdminClient
         {
             return await operation(timeoutSource.Token).ConfigureAwait(false);
         }
-        catch (OperationCanceledException exception) when (
-            !cancellationToken.IsCancellationRequested &&
+        catch (OperationCanceledException exception) when (!cancellationToken.IsCancellationRequested &&
             timeoutSource.IsCancellationRequested)
         {
             // A retry loop reports the deadline ending its wait as a cancellation that carries the
@@ -1331,8 +1420,7 @@ public sealed partial class AdminClient
                 $"{operationName} timed out after {timeoutMs} ms.",
                 exception.InnerException ?? exception);
         }
-        catch (OperationCanceledException ex) when (
-            cancellationToken.IsCancellationRequested && ex.CancellationToken != cancellationToken)
+        catch (OperationCanceledException ex) when (cancellationToken.IsCancellationRequested && ex.CancellationToken != cancellationToken)
         {
             throw CallerCancellation(ex, cancellationToken);
         }

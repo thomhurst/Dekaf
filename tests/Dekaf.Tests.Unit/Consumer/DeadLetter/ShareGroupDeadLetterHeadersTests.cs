@@ -103,12 +103,16 @@ public sealed class ShareGroupDeadLetterHeadersTests
         IReadOnlyList<Header> headers = BrokerHeaders();
         // Warm up JIT and tiering before measuring.
         for (var i = 0; i < 100; i++)
+        {
             Read(headers);
+        }
 
         var before = GC.GetAllocatedBytesForCurrentThread();
         var sum = 0L;
         for (var i = 0; i < 1_000; i++)
+        {
             sum += Read(headers);
+        }
         var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
 
         await Assert.That(sum).IsEqualTo(1_000L * (3 + 9_000_000_000 + 5));

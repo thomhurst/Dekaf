@@ -37,7 +37,9 @@ public sealed class AdminClientControllerUnregistrationTests
             });
 
         await using (admin)
+        {
             await admin.UnregisterControllerAsync(ControllerId);
+        }
 
         await Assert.That(sent).IsNotNull();
         await Assert.That(sent!.ControllerId).IsEqualTo(ControllerId);
@@ -51,7 +53,9 @@ public sealed class AdminClientControllerUnregistrationTests
         ReturnsResponses(connection, ErrorCode.None);
 
         await using (admin)
+        {
             await ((IAdminClient)admin).UnregisterControllerAsync(ControllerId);
+        }
 
         await Assert.That(SendCount(connection)).IsEqualTo(1);
     }
@@ -161,13 +165,17 @@ public sealed class AdminClientControllerUnregistrationTests
             .Returns<ValueTask<UnregisterControllerResponse>>(_ =>
             {
                 if (Interlocked.Increment(ref calls) == 1)
+                {
                     throw new IOException("response lost");
+                }
 
                 return ValueTask.FromResult(new UnregisterControllerResponse { ErrorCode = ErrorCode.ControllerIdNotRegistered });
             });
 
         await using (admin)
+        {
             await admin.UnregisterControllerAsync(ControllerId);
+        }
 
         await Assert.That(calls).IsEqualTo(2);
     }
@@ -179,7 +187,9 @@ public sealed class AdminClientControllerUnregistrationTests
         ReturnsResponses(connection, ErrorCode.RequestTimedOut, ErrorCode.ControllerIdNotRegistered);
 
         await using (admin)
+        {
             await admin.UnregisterControllerAsync(ControllerId);
+        }
 
         await Assert.That(SendCount(connection)).IsEqualTo(2);
     }

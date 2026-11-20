@@ -71,7 +71,9 @@ public class ParsedRecordSlabLifecycleBenchmarks
 
         long consumedBytes = 0;
         while (pending.MoveNext())
+        {
             consumedBytes += pending.CurrentRecord.Value.Length;
+        }
 
         return consumedBytes;
     }

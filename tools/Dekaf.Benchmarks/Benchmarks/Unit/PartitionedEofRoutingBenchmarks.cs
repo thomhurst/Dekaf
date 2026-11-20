@@ -19,11 +19,14 @@ public class PartitionedEofRoutingBenchmarks
             new PartitionedProcessingOptions { CommitPolicy = PartitionCommitPolicy.UserManaged }, null);
         var partition = new TopicPartition("eof", 0);
         var lane = new PartitionLane<string, string>(partition, 1,
-            static (_, _) => default, static _ => { }, static (_, _) => { });
+            static (_, _) => default, static _ =>
+            {
+            }, static (_, _) =>
+            {
+            });
         // Match the real routing path; reflection and fixture construction stay outside measurement.
         var runtimeType = runtime.GetType();
-        var lanes = (Dictionary<TopicPartition, PartitionLane<string, string>>)
-            runtimeType.GetField("_lanes", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(runtime)!;
+        var lanes = (Dictionary<TopicPartition, PartitionLane<string, string>>)runtimeType.GetField("_lanes", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(runtime)!;
         lanes.Add(partition, lane);
         _route = runtimeType.GetMethod("RouteBatchAsync", BindingFlags.Instance | BindingFlags.NonPublic)!
             .CreateDelegate<Func<ConsumeBatch<string, string>, CancellationToken, ValueTask>>(runtime);

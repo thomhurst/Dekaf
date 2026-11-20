@@ -11,23 +11,38 @@ public class ShareConsumerBufferedTelemetryBenchmarks
     private ShareConsumerPollBufferBenchmarks _poll = null!;
 
     [Params(1, 64)]
-    public int PartitionCount { get; set; }
+    public int PartitionCount
+    {
+        get; set;
+    }
 
     [Params(false, true)]
-    public bool Prepared { get; set; }
+    public bool Prepared
+    {
+        get; set;
+    }
 
     [Params(false, true)]
-    public bool Subscribed { get; set; }
+    public bool Subscribed
+    {
+        get; set;
+    }
 
     [GlobalSetup]
     public async Task Setup()
     {
         _poll = new ShareConsumerPollBufferBenchmarks
         {
-            PartitionCount = PartitionCount, Prepared = Prepared, Overflow = true, RenewalBuffering = false
+            PartitionCount = PartitionCount,
+            Prepared = Prepared,
+            Overflow = true,
+            RenewalBuffering = false
         };
         await _poll.Setup();
-        if (!Subscribed) return;
+        if (!Subscribed)
+        {
+            return;
+        }
 
         var consumer = typeof(ShareConsumerPollBufferBenchmarks)
             .GetField("_consumer", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(_poll)!;
@@ -35,7 +50,10 @@ public class ShareConsumerBufferedTelemetryBenchmarks
             BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(consumer)!;
         var metrics = collector.GetType().GetProperty("ShareConsumerMetrics",
             BindingFlags.Instance | BindingFlags.NonPublic)?.GetValue(collector);
-        if (metrics is null) return;
+        if (metrics is null)
+        {
+            return;
+        }
         metrics.GetType().GetMethod("Subscribe", BindingFlags.Instance | BindingFlags.NonPublic)!
             .Invoke(metrics, [MetricPrefixes]);
         // Begin a response under the subscription before measuring its retained windows.

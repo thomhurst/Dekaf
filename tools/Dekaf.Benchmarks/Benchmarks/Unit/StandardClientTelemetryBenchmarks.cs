@@ -17,7 +17,10 @@ public class StandardClientTelemetryBenchmarks
     private long _created, _drained;
 
     [Params(false, true)]
-    public bool Subscribed { get; set; }
+    public bool Subscribed
+    {
+        get; set;
+    }
 
     [GlobalSetup]
     public void Setup()
@@ -50,7 +53,10 @@ public class StandardClientTelemetryBenchmarks
     public void QueueCoalescedRequest()
     {
         var samples = _producer.BeginQueueTimeBatch();
-        for (var i = 0; i < 8; i++) samples.Record(_created, _drained);
+        for (var i = 0; i < 8; i++)
+        {
+            samples.Record(_created, _drained);
+        }
         samples.Complete();
     }
 

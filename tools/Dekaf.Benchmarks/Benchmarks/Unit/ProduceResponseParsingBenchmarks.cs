@@ -41,19 +41,31 @@ public class ProduceResponseParsingBenchmarks
         var writer = new KafkaProtocolWriter(buffer);
 
         if (flexible)
+        {
             writer.WriteUnsignedVarInt(2);
+        }
         else
+        {
             writer.WriteInt32(1);
+        }
 
         if (flexible)
+        {
             writer.WriteCompactString("produce-benchmark-topic");
+        }
         else
+        {
             writer.WriteString("produce-benchmark-topic");
+        }
 
         if (flexible)
+        {
             writer.WriteUnsignedVarInt(2);
+        }
         else
+        {
             writer.WriteInt32(1);
+        }
 
         writer.WriteInt32(0);
         writer.WriteInt16((short)ErrorCode.None);
@@ -75,7 +87,9 @@ public class ProduceResponseParsingBenchmarks
 
         writer.WriteInt32(0);
         if (flexible)
+        {
             writer.WriteEmptyTaggedFields();
+        }
 
         return buffer.WrittenSpan.ToArray();
     }

@@ -75,7 +75,9 @@ public sealed class BrokerSenderTests
             inflightTracker: new PartitionInflightTracker(),
 
             getProduceApiVersion: () => -1,
-            setProduceApiVersion: _ => { },
+            setProduceApiVersion: _ =>
+            {
+            },
             isTransactional: () => false,
             tryEnsurePartitionsInTransaction: null,
             bumpEpoch: null,
@@ -114,7 +116,9 @@ public sealed class BrokerSenderTests
             inflightTracker: new PartitionInflightTracker(),
 
             getProduceApiVersion: () => -1,
-            setProduceApiVersion: _ => { },
+            setProduceApiVersion: _ =>
+            {
+            },
             isTransactional: () => false,
             tryEnsurePartitionsInTransaction: null,
             bumpEpoch: null,
@@ -155,7 +159,9 @@ public sealed class BrokerSenderTests
             inflightTracker: tracker,
 
             getProduceApiVersion: () => 9,
-            setProduceApiVersion: _ => { },
+            setProduceApiVersion: _ =>
+            {
+            },
             isTransactional: () => false,
             tryEnsurePartitionsInTransaction: null,
             bumpEpoch: null,
@@ -189,7 +195,9 @@ public sealed class BrokerSenderTests
             inflightTracker: new PartitionInflightTracker(),
 
             getProduceApiVersion: () => 9,
-            setProduceApiVersion: _ => { },
+            setProduceApiVersion: _ =>
+            {
+            },
             isTransactional: () => true,
             tryEnsurePartitionsInTransaction: (_, _, _, _, _) =>
             {

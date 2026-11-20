@@ -6,7 +6,9 @@ internal static class SchemaRegistryCacheExtensions
     {
         if (schemaRegistry is ISchemaRegistryCache cache
             && cache.TryGetCachedSchema(schemaId, out var cached))
+        {
             return cached;
+        }
 
         return schemaRegistry.GetSchemaAsync(schemaId)
             .WaitAsync(timeout)
@@ -23,7 +25,9 @@ internal static class SchemaRegistryCacheExtensions
     {
         if (schemaRegistry is ISchemaRegistryCache cache
             && cache.TryGetCachedSchema(schemaId, subject, out var cached))
+        {
             return cached;
+        }
 
         return schemaRegistry.GetSchemaAsync(schemaId, subject)
             .WaitAsync(timeout)

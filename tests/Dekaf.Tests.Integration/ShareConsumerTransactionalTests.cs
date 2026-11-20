@@ -111,7 +111,10 @@ public class ShareConsumerTransactionalTests(KafkaTestContainer kafka) : Transac
         {
             await transaction.ProduceAsync(new ProducerMessage<string, string>
             {
-                Topic = topic, Partition = 0, Key = value, Value = value
+                Topic = topic,
+                Partition = 0,
+                Key = value,
+                Value = value
             }, cancellationToken);
         }
         await transaction.CommitAsync(cancellationToken);
@@ -148,10 +151,14 @@ public class ShareConsumerTransactionalTests(KafkaTestContainer kafka) : Transac
                 {
                     received.Enqueue(record.Value);
                     if (mode == ShareAcknowledgementMode.Explicit)
+                    {
                         batch.Acknowledge(record);
+                    }
                 }
                 if (mode == ShareAcknowledgementMode.Explicit)
+                {
                     await consumer.CommitAsync(cancellationToken);
+                }
             }
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)

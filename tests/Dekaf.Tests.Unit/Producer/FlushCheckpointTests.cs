@@ -66,9 +66,13 @@ public sealed class FlushCheckpointTests
         {
             accumulator.AfterFlushCheckpointCapturedForTest = null;
             if (flushedBatch is not null)
+            {
                 CompleteAndReturn(accumulator, flushedBatch, baseOffset: 0);
+            }
             if (newerBatch is not null)
+            {
                 CompleteAndReturn(accumulator, newerBatch, baseOffset: 1);
+            }
 
             await accumulator.DisposeAsync();
             await pool.DisposeAsync();
@@ -161,17 +165,23 @@ public sealed class FlushCheckpointTests
         {
             stop.Cancel();
             if (producer is not null)
+            {
                 await producer;
+            }
 
             if (sender is not null)
             {
                 foreach (var batch in await sender)
+                {
                     CompleteAndReturn(accumulator, batch, Interlocked.Add(ref nextOffset, batch.RecordCount));
+                }
             }
 
             await AccumulatorTestHelpers.SealAllAsync(accumulator);
             while (accumulator.TryDrainBatch(out var remaining))
+            {
                 CompleteAndReturn(accumulator, remaining, Interlocked.Add(ref nextOffset, remaining.RecordCount));
+            }
 
             await accumulator.DisposeAsync();
             await pool.DisposeAsync();
@@ -234,7 +244,9 @@ public sealed class FlushCheckpointTests
             releaseWorker.Set();
             accumulator.BeforeAppendWorkerAppendForTest = null;
             if (batch is not null)
+            {
                 CompleteAndReturn(accumulator, batch, baseOffset: 0);
+            }
 
             await accumulator.DisposeAsync();
             await pool.DisposeAsync();
@@ -319,9 +331,13 @@ public sealed class FlushCheckpointTests
             releaseLater.Set();
             accumulator.BeforeAppendWorkerAppendForTest = null;
             if (firstBatch is not null)
+            {
                 CompleteAndReturn(accumulator, firstBatch, baseOffset: 0);
+            }
             if (laterBatch is not null)
+            {
                 CompleteAndReturn(accumulator, laterBatch, baseOffset: 0);
+            }
 
             await accumulator.DisposeAsync();
             await pool.DisposeAsync();
@@ -402,7 +418,9 @@ public sealed class FlushCheckpointTests
         finally
         {
             if (batch is not null)
+            {
                 CompleteAndReturn(accumulator, batch, nextOffset);
+            }
 
             await accumulator.DisposeAsync();
             await pool.DisposeAsync();
@@ -444,7 +462,9 @@ public sealed class FlushCheckpointTests
         {
             accumulator.AfterBatchCountedInFlightForTest = null;
             if (batch is not null)
+            {
                 CompleteAndReturn(accumulator, batch, baseOffset: 0);
+            }
 
             await accumulator.DisposeAsync();
         }
@@ -494,7 +514,9 @@ public sealed class FlushCheckpointTests
                 await TestWait.UntilAsync(
                     () => flushTask.IsCompleted || accumulator.TryDrainBatch(topicPartition, out batch), Bound);
                 if (batch is null)
+                {
                     continue;
+                }
 
                 var recordCount = batch.RecordCount;
                 CompleteAndReturn(accumulator, batch, nextOffset);
@@ -578,7 +600,9 @@ public sealed class FlushCheckpointTests
             accumulator.BeforeAppendWorkerAppendForTest = null;
             accumulator.AfterFlushAppendWorkerBacklogCheckedForTest = null;
             if (batch is not null)
+            {
                 CompleteAndReturn(accumulator, batch, baseOffset: 0);
+            }
 
             await accumulator.DisposeAsync();
             await pool.DisposeAsync();
@@ -652,9 +676,13 @@ public sealed class FlushCheckpointTests
             releaseEnqueue.Set();
             accumulator.BeforeCompletedBatchEnqueueForTest = null;
             if (sealTask is not null)
+            {
                 await sealTask.WaitAsync(Bound);
+            }
             if (batch is not null)
+            {
                 CompleteAndReturn(accumulator, batch, baseOffset: 0);
+            }
 
             await accumulator.DisposeAsync();
             await pool.DisposeAsync();
@@ -722,7 +750,9 @@ public sealed class FlushCheckpointTests
                 () =>
                 {
                     if (!Append(secondCompletion))
+                    {
                         throw new InvalidOperationException("The rotating append was rejected.");
+                    }
                 },
                 CancellationToken.None,
                 TaskCreationOptions.LongRunning,
@@ -779,16 +809,29 @@ public sealed class FlushCheckpointTests
             accumulator.BeforeFlushWaitsForRotationsForTest = null;
             accumulator.AfterFlushCheckpointCapturedForTest = null;
             if (rotatingAppend is not null)
+            {
                 await rotatingAppend.WaitAsync(Bound);
+            }
             if (olderBatch is not null)
+            {
                 CompleteAndReturn(accumulator, olderBatch, baseOffset: 10);
+            }
             if (finalBatch is not null)
+            {
                 CompleteAndReturn(accumulator, finalBatch, baseOffset: 11);
+            }
 
             await accumulator.DisposeAsync();
             // Disposal fails whatever the flush still waits for; observe it after a failure.
             if (flushTask is not null)
-                await flushTask.ContinueWith(static _ => { }, TaskScheduler.Default).WaitAsync(Bound);
+            {
+                await flushTask.ContinueWith(
+                    static _ =>
+                    {
+                    },
+                    TaskScheduler.Default
+                ).WaitAsync(Bound);
+            }
             await pool.DisposeAsync();
         }
     }
@@ -848,9 +891,13 @@ public sealed class FlushCheckpointTests
         {
             accumulator.AfterFlushCheckpointCapturedForTest = null;
             if (firstBatch is not null)
+            {
                 CompleteAndReturn(accumulator, firstBatch, baseOffset: 0);
+            }
             if (secondBatch is not null)
+            {
                 CompleteAndReturn(accumulator, secondBatch, baseOffset: 1);
+            }
 
             await accumulator.DisposeAsync();
             await pool.DisposeAsync();

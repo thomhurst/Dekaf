@@ -59,9 +59,13 @@ public class InMemoryShareTelemetryTests
             new InMemoryShareConsumer<string, string>(new InMemoryKafkaCluster());
 
         if (name is null)
+        {
             Assert.Throws<ArgumentNullException>(() => consumer.UnregisterMetricFromSubscription(name!));
+        }
         else
+        {
             Assert.Throws<ArgumentException>(() => consumer.UnregisterMetricFromSubscription(name));
+        }
     }
 
     [Test]

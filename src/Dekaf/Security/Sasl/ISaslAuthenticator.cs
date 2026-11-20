@@ -8,7 +8,10 @@ public interface ISaslAuthenticator
     /// <summary>
     /// Gets the mechanism name as used in the Kafka protocol.
     /// </summary>
-    string MechanismName { get; }
+    string MechanismName
+    {
+        get;
+    }
 
     /// <summary>
     /// Gets the initial authentication bytes to send to the server.
@@ -25,5 +28,8 @@ public interface ISaslAuthenticator
     /// <summary>
     /// Returns true if authentication is complete.
     /// </summary>
-    bool IsComplete { get; }
+    bool IsComplete
+    {
+        get;
+    }
 }

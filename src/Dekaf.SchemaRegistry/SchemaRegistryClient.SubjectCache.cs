@@ -12,19 +12,25 @@ public sealed partial class SchemaRegistryClient
         get
         {
             lock (_cacheLock)
+            {
                 return _subjectCacheRequests.Count;
+            }
         }
     }
 
     private SubjectCacheRequest BeginSubjectCacheRequest(string subject)
     {
         if (_maxCachedSchemas == 0 || subject is null)
+        {
             return default;
+        }
 
         lock (_cacheLock)
         {
             if (!_subjectCacheRequests.TryGetValue(subject, out var state))
+            {
                 state.Generation = unchecked(++_nextSubjectCacheGeneration);
+            }
             state.Count++;
             _subjectCacheRequests[subject] = state;
             return new SubjectCacheRequest(this, subject, state.Generation);
@@ -37,9 +43,13 @@ public sealed partial class SchemaRegistryClient
         {
             var state = _subjectCacheRequests[subject];
             if (--state.Count == 0)
+            {
                 _subjectCacheRequests.Remove(subject);
+            }
             else
+            {
                 _subjectCacheRequests[subject] = state;
+            }
         }
     }
 
@@ -63,12 +73,16 @@ public sealed partial class SchemaRegistryClient
             foreach (var entry in _idBySchemaCache)
             {
                 if (string.Equals(entry.Key.Subject, subject, StringComparison.Ordinal))
+                {
                     _idBySchemaCache.TryRemove(entry.Key, out _);
+                }
             }
             foreach (var entry in _schemaBySubjectAndIdCache)
             {
                 if (string.Equals(entry.Key.Subject, subject, StringComparison.Ordinal))
+                {
                     _schemaBySubjectAndIdCache.TryRemove(entry.Key, out _);
+                }
             }
 
             // Integer IDs and GUIDs identify schema content shared across subjects.
@@ -84,7 +98,10 @@ public sealed partial class SchemaRegistryClient
 
     private readonly struct SubjectCacheRequest(SchemaRegistryClient? owner, string? subject, long generation) : IDisposable
     {
-        internal long Generation { get; } = generation;
+        internal long Generation
+        {
+            get;
+        } = generation;
 
         public void Dispose() => owner?.EndSubjectCacheRequest(subject!);
     }

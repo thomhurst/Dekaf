@@ -35,10 +35,16 @@ public class ProducerBenchmarks
     private (string? Key, string Value)[] _batchMessages = null!;
 
     [Params(100, 1000)]
-    public int MessageSize { get; set; }
+    public int MessageSize
+    {
+        get; set;
+    }
 
     [Params(100, 1000)]
-    public int BatchSize { get; set; }
+    public int BatchSize
+    {
+        get; set;
+    }
 
     [GlobalSetup]
     public async Task Setup()

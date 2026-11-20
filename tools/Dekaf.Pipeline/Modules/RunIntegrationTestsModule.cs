@@ -12,7 +12,10 @@ public abstract class RunIntegrationTestsModule : Module<IReadOnlyList<CommandRe
     /// <summary>
     /// The TUnit test category to filter by (matches [Category("X")] on test classes).
     /// </summary>
-    protected abstract string Category { get; }
+    protected abstract string Category
+    {
+        get;
+    }
 
     protected virtual TimeSpan ModuleTimeout => TimeSpan.FromMinutes(30);
 

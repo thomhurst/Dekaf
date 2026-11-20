@@ -14,25 +14,38 @@ public class ShareAcknowledgementShrinkBenchmarks
     private AcknowledgementTracker _tracker = null!;
 
     [Params(1, 4096)]
-    public int PeakPartitionCount { get; set; }
+    public int PeakPartitionCount
+    {
+        get; set;
+    }
 
     [GlobalSetup]
     public void Setup()
     {
         _tracker = new();
         for (var index = 0; index < PeakPartitionCount; index++)
+        {
             _tracker.TrackDeliveredRecords(new TopicPartition("topic", index), 0, 127);
+        }
         _tracker.Flush(releaseImplicit: true);
 
         var result = (Dictionary<TopicPartition, List<AcknowledgementBatchData>>)ReleaseAndFlush();
         if (result.Count != 1 || _tracker.HasPending)
+        {
             throw new InvalidOperationException("Only the current partition must remain in the flush.");
+        }
         var batches = result[_partition];
         if (batches.Count != 1 || batches[0].FirstOffset != 0 || batches[0].LastOffset != 127)
+        {
             throw new InvalidOperationException("The complete released range must remain represented.");
+        }
         foreach (var type in batches[0].AcknowledgeTypes)
+        {
             if (type != (byte)AcknowledgeType.Release)
+            {
                 throw new InvalidOperationException("The current range must contain only release dispositions.");
+            }
+        }
     }
 
     [Benchmark]

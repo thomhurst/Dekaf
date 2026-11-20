@@ -83,7 +83,9 @@ public sealed class ProducerLeaderFailoverIntegrationTests(RackAwareKafkaContain
         finally
         {
             if (stoppedBrokerId is { } brokerId)
+            {
                 await kafka.StartBrokerAsync(brokerId, CancellationToken.None).ConfigureAwait(false);
+            }
         }
     }
 
@@ -126,7 +128,9 @@ public sealed class ProducerLeaderFailoverIntegrationTests(RackAwareKafkaContain
                 .WaitAsync(cancellationToken)
                 .ConfigureAwait(false);
             if (ReferenceEquals(pauseOrProduction, production))
+            {
                 await production.ConfigureAwait(false);
+            }
 
             await kafka.StopBrokerAsync(leaderBrokerId, cancellationToken).ConfigureAwait(false);
             brokerStopped = true;
@@ -154,7 +158,9 @@ public sealed class ProducerLeaderFailoverIntegrationTests(RackAwareKafkaContain
             try
             {
                 if (brokerStopped)
+                {
                     await kafka.StartBrokerAsync(leaderBrokerId, CancellationToken.None).ConfigureAwait(false);
+                }
             }
             finally
             {
@@ -228,9 +234,13 @@ public sealed class ProducerLeaderFailoverIntegrationTests(RackAwareKafkaContain
                         (_, exception) =>
                         {
                             if (exception is null)
+                            {
                                 Interlocked.Increment(ref delivered);
+                            }
                             else
+                            {
                                 failures.Enqueue(exception);
+                            }
                         }).ConfigureAwait(false);
                 }
             }
@@ -246,7 +256,9 @@ public sealed class ProducerLeaderFailoverIntegrationTests(RackAwareKafkaContain
         finally
         {
             if (brokerKilled)
+            {
                 await kafka.StartBrokerAsync(killedBrokerId, CancellationToken.None).ConfigureAwait(false);
+            }
         }
     }
 
@@ -347,8 +359,7 @@ public sealed class ProducerLeaderFailoverIntegrationTests(RackAwareKafkaContain
                 }, cancellationToken).ConfigureAwait(false);
                 acknowledgedValues.Add(payload);
             }
-            catch (KafkaException exception) when (
-                !cancellationToken.IsCancellationRequested &&
+            catch (KafkaException exception) when (!cancellationToken.IsCancellationRequested &&
                 (exception is KafkaTimeoutException || exception.IsRetriable))
             {
                 // Delivery failures are allowed; losing a successfully acknowledged record is not.

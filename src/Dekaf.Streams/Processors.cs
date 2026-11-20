@@ -26,10 +26,16 @@ public interface IForwarder<TKey, TValue>
 public interface IProcessorContext<TKeyOut, TValueOut> : IForwarder<TKeyOut, TValueOut>
 {
     /// <summary>Gets the id of the subtopology the task runs.</summary>
-    string SubtopologyId { get; }
+    string SubtopologyId
+    {
+        get;
+    }
 
     /// <summary>Gets the partition the task owns.</summary>
-    int Partition { get; }
+    int Partition
+    {
+        get;
+    }
 
     /// <summary>Gets a store the processor declared.</summary>
     IKeyValueStore<TKey, TValue> GetKeyValueStore<TKey, TValue>(string name);
@@ -54,7 +60,10 @@ public abstract class StoreDefinition
     private protected StoreDefinition(string name) => Name = name;
 
     /// <summary>Gets the store name, unique in the topology.</summary>
-    public string Name { get; }
+    public string Name
+    {
+        get;
+    }
 
     internal abstract void Create(TaskBuilder builder, string? changelogTopic);
 }
@@ -83,16 +92,28 @@ public readonly struct ProcessingError
     }
 
     /// <summary>Gets the exception thrown by a deserializer, an operator or a processor.</summary>
-    public Exception Exception { get; }
+    public Exception Exception
+    {
+        get;
+    }
 
     /// <summary>Gets the topic the failed record was read from.</summary>
-    public string Topic { get; }
+    public string Topic
+    {
+        get;
+    }
 
     /// <summary>Gets the partition the failed record was read from.</summary>
-    public int Partition { get; }
+    public int Partition
+    {
+        get;
+    }
 
     /// <summary>Gets the offset of the failed record.</summary>
-    public long Offset { get; }
+    public long Offset
+    {
+        get;
+    }
 }
 
 /// <summary>What to do with a record that failed.</summary>
@@ -104,9 +125,15 @@ public readonly struct ErrorResponse
         DeadLetterTopic = deadLetterTopic;
     }
 
-    internal bool IsSkip { get; }
+    internal bool IsSkip
+    {
+        get;
+    }
 
-    internal string? DeadLetterTopic { get; }
+    internal string? DeadLetterTopic
+    {
+        get;
+    }
 
     /// <summary>Stops the task by throwing a <see cref="StreamsException"/>. This is the default.</summary>
     public static ErrorResponse Fail => default;

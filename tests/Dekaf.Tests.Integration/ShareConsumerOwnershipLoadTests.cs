@@ -52,8 +52,11 @@ public class ShareConsumerOwnershipLoadTests(KafkaTestContainer kafka) : KafkaIn
                 // crosses the native response threshold and repeatedly reuses storage.
                 await producer.ProduceAsync(new ProducerMessage<string, byte[]>
                 {
-                    Topic = topic, Partition = id % 4, Key = id.ToString(CultureInfo.InvariantCulture),
-                    Value = value, Headers = Headers.Create("identity", id.ToString(CultureInfo.InvariantCulture))
+                    Topic = topic,
+                    Partition = id % 4,
+                    Key = id.ToString(CultureInfo.InvariantCulture),
+                    Value = value,
+                    Headers = Headers.Create("identity", id.ToString(CultureInfo.InvariantCulture))
                 }, timeout.Token);
             }
 
@@ -64,7 +67,10 @@ public class ShareConsumerOwnershipLoadTests(KafkaTestContainer kafka) : KafkaIn
                 // Renew submissions use acknowledgement-only ShareFetch requests.
                 // Requeueing Renew on every local replay would prevent fresh acquisition.
                 // The existing renewal stays active until the next round's commit.
-                if (ReferenceEquals(record, retained)) continue;
+                if (ReferenceEquals(record, retained))
+                {
+                    continue;
+                }
 
                 await Assert.That(received.Add(id)).IsTrue();
                 if (retained is null)
@@ -78,7 +84,10 @@ public class ShareConsumerOwnershipLoadTests(KafkaTestContainer kafka) : KafkaIn
                     consumer.Acknowledge(record, AcknowledgeType.Accept);
                     await AssertPayloadAsync(retained, retainedId, payloadSize);
                 }
-                if (received.Count == (round + 1) * recordsPerRound) break;
+                if (received.Count == (round + 1) * recordsPerRound)
+                {
+                    break;
+                }
             }
 
             // Iterator disposal preserves this poll's views. Repeated Renew extends

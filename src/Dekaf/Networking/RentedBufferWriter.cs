@@ -62,13 +62,17 @@ internal sealed class RentedBufferWriter : IBufferWriter<byte>, IDisposable
     public void Dispose()
     {
         if (!_active)
+        {
             return;
+        }
 
         _active = false;
         var buffer = _buffer;
         _buffer = null!;
         if (!_detached)
+        {
             DekafPools.SerializationBuffers.Return(buffer, clearArray: false);
+        }
 
         Pool.Return(this);
     }
@@ -77,7 +81,9 @@ internal sealed class RentedBufferWriter : IBufferWriter<byte>, IDisposable
     public void Advance(int count)
     {
         if ((uint)count > (uint)(_buffer.Length - _written))
+        {
             throw new ArgumentOutOfRangeException(nameof(count));
+        }
 
         _written += count;
     }
@@ -100,10 +106,14 @@ internal sealed class RentedBufferWriter : IBufferWriter<byte>, IDisposable
     private void EnsureCapacity(int sizeHint)
     {
         if (sizeHint < 1)
+        {
             sizeHint = 1;
+        }
 
         if (_buffer.Length - _written < sizeHint)
+        {
             Grow(sizeHint);
+        }
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
@@ -114,7 +124,9 @@ internal sealed class RentedBufferWriter : IBufferWriter<byte>, IDisposable
         var newSize = (int)Math.Max(doubled, required);
 
         if (newSize <= _buffer.Length)
+        {
             throw new InvalidOperationException("Cannot grow buffer: maximum size reached.");
+        }
 
         var newBuffer = DekafPools.SerializationBuffers.Rent(newSize);
         _buffer.AsSpan(0, _written).CopyTo(newBuffer);
@@ -128,7 +140,9 @@ internal sealed class RentedBufferWriter : IBufferWriter<byte>, IDisposable
         public RentedBufferWriter Create() => new();
 
         // Dispose releases or transfers the byte array before returning this wrapper.
-        public void Destroy(RentedBufferWriter writer) { }
+        public void Destroy(RentedBufferWriter writer)
+        {
+        }
 
         public bool TryReset(RentedBufferWriter writer)
         {

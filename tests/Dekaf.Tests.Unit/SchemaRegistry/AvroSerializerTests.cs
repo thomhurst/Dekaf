@@ -309,8 +309,14 @@ public sealed class AvroSerializerTests
         byte[]? serializedPayload = null,
         byte[]? deserializedPayload = null) : ISchemaRegistryRuleExecutor
     {
-        public SchemaRegistryRuleContext? SerializeContext { get; private set; }
-        public SchemaRegistryRuleContext? DeserializeContext { get; private set; }
+        public SchemaRegistryRuleContext? SerializeContext
+        {
+            get; private set;
+        }
+        public SchemaRegistryRuleContext? DeserializeContext
+        {
+            get; private set;
+        }
 
         public ReadOnlyMemory<byte> TransformSerializedPayload(
             ReadOnlyMemory<byte> payload,
@@ -392,7 +398,9 @@ public sealed class AvroSerializerTests
         await Assert.That(headers[0].Key).IsEqualTo(SchemaIdentityHeaderNames.Value);
         await Assert.That(headers[0].Value.ToArray()).IsEquivalentTo(expectedGuidFrame);
         for (var index = 0; index < 32; index++)
+        {
             headers.Add(new Header($"application-{index}", ReadOnlyMemory<byte>.Empty));
+        }
         var lookupCountBeforeDeserialize = schemaRegistry.LookupSchemaCallCount;
 
         await using var deserializer = new AvroSchemaRegistryDeserializer<GenericRecord>(
@@ -2605,7 +2613,9 @@ public sealed class AvroSerializerTests
             registry,
             new AvroDeserializerConfig { SchemaIdStrategy = SchemaIdDeserializerStrategy.Header });
         for (var topic = 0; topic < 1024; topic++)
+        {
             _ = deserializer.Deserialize(payload, CreateGuidChurnContext(schemaId, topic));
+        }
 
         // Resolve schemas sequentially: Apache Avro parsing is not thread-safe. Each worker
         // receives its own parsed writer schema, and only reader insertion/eviction races.
@@ -2632,7 +2642,9 @@ public sealed class AvroSerializerTests
         start.SetResult();
         var results = await Task.WhenAll(tasks);
         foreach (var result in results)
+        {
             await Assert.That((int)result["id"]).IsEqualTo(42);
+        }
         await Assert.That(deserializer.CachedGenericReaderCount).IsLessThanOrEqualTo(1024);
         await Assert.That(deserializer.CachedGenericReaderCount).IsGreaterThan(0);
     }
@@ -2851,13 +2863,34 @@ public sealed class AvroSerializerTests
     {
         public static readonly AvroSchema _SCHEMA = AvroSchema.Parse(SpecificScalarRecordSchema);
 
-        public bool Enabled { get; init; }
-        public int Count { get; init; }
-        public long Sequence { get; init; }
-        public float Ratio { get; init; }
-        public double Total { get; init; }
-        public string Name { get; init; } = string.Empty;
-        public byte[] Payload { get; init; } = [];
+        public bool Enabled
+        {
+            get; init;
+        }
+        public int Count
+        {
+            get; init;
+        }
+        public long Sequence
+        {
+            get; init;
+        }
+        public float Ratio
+        {
+            get; init;
+        }
+        public double Total
+        {
+            get; init;
+        }
+        public string Name
+        {
+            get; init;
+        } = string.Empty;
+        public byte[] Payload
+        {
+            get; init;
+        } = [];
         public AvroSchema Schema => _SCHEMA;
 
         public object? Get(int fieldPos) => fieldPos switch
@@ -2880,7 +2913,10 @@ public sealed class AvroSerializerTests
     {
         public static readonly AvroSchema _SCHEMA = AvroSchema.Parse(SpecificArrayRecordSchema);
 
-        public int[] Values { get; init; } = [];
+        public int[] Values
+        {
+            get; init;
+        } = [];
         public AvroSchema Schema => _SCHEMA;
 
         public object Get(int fieldPos) => fieldPos == 0
@@ -2903,7 +2939,10 @@ public sealed class AvroSerializerTests
     {
         public static readonly AvroSchema _SCHEMA = AvroSchema.Parse(SpecificMismatchedPropertySchema);
 
-        public long Count { get; init; }
+        public long Count
+        {
+            get; init;
+        }
         public AvroSchema Schema => _SCHEMA;
         public object Get(int fieldPos) => fieldPos == 0
             ? Count
@@ -2915,7 +2954,10 @@ public sealed class AvroSerializerTests
     {
         public static readonly AvroSchema _SCHEMA = AvroSchema.Parse(SpecificCaseInsensitivePropertySchema);
 
-        public int UserId { get; init; }
+        public int UserId
+        {
+            get; init;
+        }
         public AvroSchema Schema => _SCHEMA;
         public object Get(int fieldPos) => fieldPos == 0
             ? UserId
@@ -2927,7 +2969,10 @@ public sealed class AvroSerializerTests
     {
         public static readonly AvroSchema _SCHEMA = AvroSchema.Parse(SpecificVirtualPropertySchema);
 
-        public virtual int Count { get; init; }
+        public virtual int Count
+        {
+            get; init;
+        }
         public AvroSchema Schema => _SCHEMA;
         public object Get(int fieldPos) => fieldPos == 0
             ? Count
@@ -2937,19 +2982,28 @@ public sealed class AvroSerializerTests
 
     private sealed class SpecificVirtualPropertyDerivedRecord : SpecificVirtualPropertyRecord
     {
-        public override int Count { get; init; }
+        public override int Count
+        {
+            get; init;
+        }
     }
 
     private class SpecificAmbiguousPropertyBase
     {
-        public long Count { get; init; }
+        public long Count
+        {
+            get; init;
+        }
     }
 
     private sealed class SpecificAmbiguousPropertyRecord : SpecificAmbiguousPropertyBase, ISpecificRecord
     {
         public static readonly AvroSchema _SCHEMA = AvroSchema.Parse(SpecificAmbiguousPropertySchema);
 
-        public new int Count { get; init; }
+        public new int Count
+        {
+            get; init;
+        }
         public AvroSchema Schema => _SCHEMA;
         public object Get(int fieldPos) => fieldPos == 0
             ? Count
@@ -2961,7 +3015,10 @@ public sealed class AvroSerializerTests
     {
         public static readonly AvroSchema _SCHEMA = AvroSchema.Parse(SpecificAliasedPropertySchema);
 
-        public string Name { get; init; } = string.Empty;
+        public string Name
+        {
+            get; init;
+        } = string.Empty;
         public AvroSchema Schema => _SCHEMA;
         public object Get(int fieldPos) => fieldPos is 0 or 1
             ? Name
@@ -2974,8 +3031,14 @@ public sealed class SpecificMigrationRecord : ISpecificRecord
 {
     public static readonly AvroSchema _SCHEMA = AvroSchema.Parse(AvroSerializerTests.SpecificMigrationRecordSchema);
 
-    public string Name { get; set; } = string.Empty;
-    public int Age { get; set; }
+    public string Name
+    {
+        get; set;
+    } = string.Empty;
+    public int Age
+    {
+        get; set;
+    }
     public AvroSchema Schema => _SCHEMA;
 
     public object Get(int fieldPos) => fieldPos switch

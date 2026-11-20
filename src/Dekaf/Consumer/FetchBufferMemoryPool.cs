@@ -64,10 +64,14 @@ internal sealed class FetchBufferMemoryPool : IResponseMemoryPool, IDisposable
 
             var updated = used + bytes;
             if (updated < used)
+            {
                 throw new OverflowException("Fetch buffer memory reservation overflowed");
+            }
 
             if (Interlocked.CompareExchange(ref _usedBytes, updated, used) == used)
+            {
                 return true;
+            }
         }
     }
 
@@ -76,8 +80,10 @@ internal sealed class FetchBufferMemoryPool : IResponseMemoryPool, IDisposable
         CancellationToken cancellationToken)
     {
         if (TryReserve(bytes))
+        {
             return new ValueTask<IResponseMemoryReservation>(
                 FetchBufferMemoryReservation.Create(this, bytes));
+        }
 
         return ReserveSlowAsync(bytes, cancellationToken);
     }
@@ -93,7 +99,9 @@ internal sealed class FetchBufferMemoryPool : IResponseMemoryPool, IDisposable
             // before this waiter became visible to Release. Recheck before sleeping so
             // that release cannot be lost in that registration gap.
             if (TryReserve(bytes))
+            {
                 return FetchBufferMemoryReservation.Create(this, bytes);
+            }
 
             BeginDepletion();
             while (true)
@@ -105,7 +113,9 @@ internal sealed class FetchBufferMemoryPool : IResponseMemoryPool, IDisposable
                 SignalNextWaiter(currentWaiterIncluded: true);
 
                 if (reserved)
+                {
                     return FetchBufferMemoryReservation.Create(this, bytes);
+                }
             }
         }
         finally
@@ -114,10 +124,14 @@ internal sealed class FetchBufferMemoryPool : IResponseMemoryPool, IDisposable
             {
                 EndDepletion();
                 if (Volatile.Read(ref _waiterCount) > 0)
+                {
                     BeginDepletion();
+                }
             }
             else
+            {
                 SignalNextWaiter(currentWaiterIncluded: false);
+            }
         }
     }
 
@@ -133,13 +147,17 @@ internal sealed class FetchBufferMemoryPool : IResponseMemoryPool, IDisposable
         }
 
         if (Volatile.Read(ref _waiterCount) > 0)
+        {
             WakeWaitersAfterCapacityChanged();
+        }
     }
 
     private void BeginDepletion()
     {
         if (Volatile.Read(ref _depletedStartTimestamp) != 0)
+        {
             return;
+        }
 
         _ = Interlocked.CompareExchange(
             ref _depletedStartTimestamp,
@@ -151,7 +169,9 @@ internal sealed class FetchBufferMemoryPool : IResponseMemoryPool, IDisposable
     {
         var started = Interlocked.Exchange(ref _depletedStartTimestamp, 0);
         if (started != 0)
+        {
             Interlocked.Add(ref _depletedTimestampTicks, Stopwatch.GetTimestamp() - started);
+        }
     }
 
     private long GetDepletedTimestampTicks()
@@ -164,7 +184,9 @@ internal sealed class FetchBufferMemoryPool : IResponseMemoryPool, IDisposable
     private void SignalMemoryAvailable()
     {
         if (_memoryAvailable.CurrentCount != 0)
+        {
             return;
+        }
 
         try
         {
@@ -189,7 +211,9 @@ internal sealed class FetchBufferMemoryPool : IResponseMemoryPool, IDisposable
                 waiterCount,
                 pending);
             if (observed == pending)
+            {
                 return;
+            }
 
             pending = observed;
         }
@@ -200,7 +224,9 @@ internal sealed class FetchBufferMemoryPool : IResponseMemoryPool, IDisposable
     {
         var waiterCount = Volatile.Read(ref _waiterCount);
         if (waiterCount <= 0)
+        {
             return;
+        }
 
         EnsurePendingWakes(waiterCount);
         SignalMemoryAvailable();
@@ -216,7 +242,9 @@ internal sealed class FetchBufferMemoryPool : IResponseMemoryPool, IDisposable
                 pending - 1,
                 pending);
             if (observed == pending)
+            {
                 return;
+            }
 
             pending = observed;
         }
@@ -235,12 +263,16 @@ internal sealed class FetchBufferMemoryPool : IResponseMemoryPool, IDisposable
     public void Dispose()
     {
         if (Interlocked.Exchange(ref _disposed, 1) != 0)
+        {
             return;
+        }
 
         EndDepletion();
         var waiterCount = Volatile.Read(ref _waiterCount);
         if (waiterCount > 0)
+        {
             EnsurePendingWakes(waiterCount);
+        }
         SignalMemoryAvailable();
     }
 }
@@ -274,7 +306,9 @@ internal sealed class FetchBufferMemoryReservation : IResponseMemoryReservation
     public void Dispose()
     {
         if (Interlocked.Exchange(ref _disposed, 1) != 0)
+        {
             return;
+        }
 
         _pool?.Release(_reservedBytes);
         s_pool.Return(this);

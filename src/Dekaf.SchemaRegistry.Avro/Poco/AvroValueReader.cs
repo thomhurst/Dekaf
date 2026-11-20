@@ -28,7 +28,9 @@ public ref struct AvroValueReader
 
     /// <summary>Reads Avro null.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static void ReadNull() { }
+    public static void ReadNull()
+    {
+    }
 
     /// <summary>Reads an Avro boolean.</summary>
     public bool ReadBoolean()
@@ -47,7 +49,9 @@ public ref struct AvroValueReader
     {
         var value = ReadInt64();
         if (value is < int.MinValue or > int.MaxValue)
+        {
             throw new InvalidDataException("Avro integer exceeds Int32 range.");
+        }
         return (int)value;
     }
 
@@ -60,10 +64,14 @@ public ref struct AvroValueReader
             Ensure(1);
             var current = _source[_position++];
             if (shift == 63 && (current & 0xFE) != 0)
+            {
                 throw new InvalidDataException("Avro variable-length integer exceeds Int64 range.");
+            }
             encoded |= (ulong)(current & 0x7F) << shift;
             if ((current & 0x80) == 0)
+            {
                 return (long)(encoded >> 1) ^ -((long)encoded & 1);
+            }
         }
 
         throw new InvalidDataException("Invalid Avro variable-length integer.");
@@ -75,7 +83,9 @@ public ref struct AvroValueReader
     {
         var microseconds = ReadInt64();
         if ((ulong)microseconds >= TimeSpan.TicksPerDay / 10)
+        {
             throw new InvalidDataException("Avro time-micros value must be from zero through less than 24 hours.");
+        }
         return microseconds * 10;
     }
 
@@ -162,7 +172,9 @@ public ref struct AvroValueReader
     {
         var value = ReadBytesSpan();
         if (!Utf8Parser.TryParse(value, out Guid result, out var consumed, 'D') || consumed != value.Length)
+        {
             throw new InvalidDataException("Invalid Avro UUID value.");
+        }
         return result;
     }
 
@@ -175,7 +187,9 @@ public ref struct AvroValueReader
     {
         var value = ReadLength();
         if (exclusiveUpperBound <= 0 || (uint)value >= (uint)exclusiveUpperBound)
+        {
             throw new InvalidDataException("Avro index is out of range.");
+        }
         return value;
     }
 
@@ -193,12 +207,16 @@ public ref struct AvroValueReader
         {
             var blockSize = ReadInt64();
             if (blockSize < 0)
+            {
                 throw new InvalidDataException("Avro collection block byte size cannot be negative.");
+            }
             result = CheckedLength(-count);
         }
 
         if (result > MaxCollectionItemCount)
+        {
             ThrowCollectionLimit();
+        }
         return result;
     }
 
@@ -239,7 +257,9 @@ public ref struct AvroValueReader
     {
         var total = (long)currentCount + blockCount;
         if ((ulong)total > MaxCollectionItemCount)
+        {
             ThrowCollectionLimit();
+        }
 
         return (int)total;
     }
@@ -250,9 +270,13 @@ public ref struct AvroValueReader
     private void ConsumeDecodedAllocation(ulong bytes)
     {
         if (_hasReservedRemainingDecodedPayload)
+        {
             return;
+        }
         if (bytes > (uint)_remainingCollectionAllocationBytes)
+        {
             ThrowCollectionAllocationLimit();
+        }
         _remainingCollectionAllocationBytes -= (int)bytes;
     }
 
@@ -262,11 +286,15 @@ public ref struct AvroValueReader
     public bool TryReserveRemainingDecodedPayload(int maximumExpansionFactor)
     {
         if (_hasReservedRemainingDecodedPayload)
+        {
             return true;
+        }
 
         var maximumPayloadBytes = (ulong)(uint)(_source.Length - _position) * (uint)maximumExpansionFactor;
         if (maximumPayloadBytes > (uint)_remainingCollectionAllocationBytes)
+        {
             return false;
+        }
 
         _remainingCollectionAllocationBytes -= (int)maximumPayloadBytes;
         _hasReservedRemainingDecodedPayload = true;
@@ -292,7 +320,9 @@ public ref struct AvroValueReader
     {
         var itemSize = (ulong)(uint)Unsafe.SizeOf<T>() + (uint)Math.Max(decodedItemAllocationSize, 0);
         if ((ulong)(uint)count * itemSize > MaxCollectionAllocationBytes)
+        {
             ThrowCollectionAllocationLimit();
+        }
     }
 
     /// <summary>Validates a generated collection and consumes its incremental decode-allocation budget.</summary>
@@ -320,7 +350,9 @@ public ref struct AvroValueReader
                                 PrechargedReferencePayloadSize) +
                         (uint)Unsafe.SizeOf<T>() + (uint)Math.Max(decodedItemAllocationSize, 0);
         if ((ulong)(uint)count * entrySize > MaxCollectionAllocationBytes)
+        {
             ThrowCollectionAllocationLimit();
+        }
     }
 
     /// <summary>Validates a generated map and consumes its incremental decode-allocation budget.</summary>
@@ -341,11 +373,15 @@ public ref struct AvroValueReader
     private void ValidateAndConsumeCollectionAllocation(int totalCount, int addedCount, ulong itemSize)
     {
         if ((ulong)(uint)totalCount * itemSize > MaxCollectionAllocationBytes)
+        {
             ThrowCollectionAllocationLimit();
+        }
 
         var addedBytes = (ulong)(uint)addedCount * itemSize;
         if (addedBytes > (uint)_remainingCollectionAllocationBytes)
+        {
             ThrowCollectionAllocationLimit();
+        }
         _remainingCollectionAllocationBytes -= (int)addedBytes;
     }
 
@@ -394,9 +430,13 @@ public ref struct AvroValueReader
             case AvroPocoTypeKind.Bytes:
             case AvroPocoTypeKind.Decimal:
                 if (node.FixedSize > 0)
+                {
                     SkipFixed(node.FixedSize);
+                }
                 else
+                {
                     SkipBytes();
+                }
                 return;
             case AvroPocoTypeKind.String:
             case AvroPocoTypeKind.Uuid:
@@ -428,7 +468,9 @@ public ref struct AvroValueReader
         try
         {
             foreach (var field in node.Fields.Span)
+            {
                 Skip(field);
+            }
         }
         finally
         {
@@ -493,7 +535,9 @@ public ref struct AvroValueReader
     private void EnterSkipNode()
     {
         if (_skipDepth >= MaxSkipDepth)
+        {
             throw new InvalidDataException($"Avro value nesting exceeds the supported limit of {MaxSkipDepth}.");
+        }
         _skipDepth++;
     }
 
@@ -525,11 +569,15 @@ public ref struct AvroValueReader
         while (count != 0)
         {
             for (var index = 0; index < count; index++)
+            {
                 Skip(item);
+            }
 
             count = ReadBlockCount();
             if (count != 0)
+            {
                 total = AddCollectionCount(total, count);
+            }
         }
     }
 
@@ -547,7 +595,9 @@ public ref struct AvroValueReader
 
             count = ReadBlockCount();
             if (count != 0)
+            {
                 total = AddCollectionCount(total, count);
+            }
         }
     }
 
@@ -571,7 +621,9 @@ public ref struct AvroValueReader
         {
             count = ReadBlockCount();
             if (count != 0)
+            {
                 total = AddCollectionCount(total, count);
+            }
         }
     }
 
@@ -587,20 +639,26 @@ public ref struct AvroValueReader
     {
         var value = ReadInt64();
         if (value < 0)
+        {
             throw new InvalidDataException("Invalid Avro length.");
+        }
         return CheckedLength(value);
     }
 
     private static int CheckedLength(long value)
     {
         if ((ulong)value > int.MaxValue)
+        {
             throw new InvalidDataException("Avro length exceeds supported range.");
+        }
         return (int)value;
     }
 
     private readonly void Ensure(int required)
     {
         if (required < 0 || required > _source.Length - _position)
+        {
             throw new EndOfStreamException("Avro payload ended before the value was complete.");
+        }
     }
 }

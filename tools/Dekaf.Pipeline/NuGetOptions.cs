@@ -5,9 +5,18 @@ namespace Dekaf.Pipeline;
 public sealed class NuGetOptions
 {
     [SecretValue]
-    public string? ApiKey { get; set; }
+    public string? ApiKey
+    {
+        get; set;
+    }
 
-    public bool ShouldPublish { get; set; }
+    public bool ShouldPublish
+    {
+        get; set;
+    }
 
-    public string Source { get; set; } = "https://api.nuget.org/v3/index.json";
+    public string Source
+    {
+        get; set;
+    } = "https://api.nuget.org/v3/index.json";
 }

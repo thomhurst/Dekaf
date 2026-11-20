@@ -193,14 +193,18 @@ public sealed partial class ConsumerCoordinatorKip848Tests
                 // Unsubscribe from the callback: the leave must wait for the callback, not deadlock.
                 coordinator!.RequestLeaveGroup();
                 lock (calls)
+                {
                     calls.Add("assigned");
+                }
                 return ValueTask.CompletedTask;
             });
         listener.OnPartitionsRevokedAsync(Arg.Any<IEnumerable<TopicPartition>>(), Arg.Any<CancellationToken>())
             .Returns(_ =>
             {
                 lock (calls)
+                {
                     calls.Add("revoked");
+                }
                 return ValueTask.CompletedTask;
             });
         script.Respond = (_, request) => RespondRecordingLeave(calls, request, CreateAssignment(TestTopicId, 0));
@@ -255,10 +259,14 @@ public sealed partial class ConsumerCoordinatorKip848Tests
         ConsumerGroupHeartbeatAssignment assignment)
     {
         if (request.MemberEpoch != -1)
+        {
             return Joined("member-1", memberEpoch: 1, assignment);
+        }
 
         lock (calls)
+        {
             calls.Add("leave");
+        }
         return ValueTask.FromResult(new ConsumerGroupHeartbeatResponse
         {
             ErrorCode = Dekaf.Protocol.ErrorCode.None,

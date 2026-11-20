@@ -20,7 +20,9 @@ public class WaveCoalesceProbeBenchmarks
     public bool DeadlineFirst()
     {
         if (Stopwatch.GetTimestamp() >= _expiredDeadline)
+        {
             return false;
+        }
 
         return _channel.Reader.TryRead(out _);
     }
@@ -29,7 +31,9 @@ public class WaveCoalesceProbeBenchmarks
     public bool ProbeFirst()
     {
         if (!_channel.Reader.TryRead(out var item))
+        {
             return false;
+        }
 
         return _channel.Writer.TryWrite(item);
     }

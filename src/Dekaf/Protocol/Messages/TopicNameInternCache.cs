@@ -18,7 +18,9 @@ internal static class TopicNameInternCache
     public static string Intern(string topic)
     {
         if (s_cache.TryGetValue(topic, out var cached))
+        {
             return cached;
+        }
 
         if (Volatile.Read(ref s_count) < MaxCachedTopicNames)
         {

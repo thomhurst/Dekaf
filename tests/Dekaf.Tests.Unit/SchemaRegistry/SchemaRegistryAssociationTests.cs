@@ -114,8 +114,7 @@ public sealed class SchemaRegistryAssociationTests
                 NormalizeSchemas = true
             },
             handler);
-        var request = CreateAssociationRequest(associations:
-        [
+        var request = CreateAssociationRequest(associations: [
             new AssociationCreateOrUpdateInfo
             {
                 Subject = "orders-value",
@@ -363,8 +362,7 @@ public sealed class SchemaRegistryAssociationTests
             .Throws<ArgumentException>();
         await Assert.That(async () => _ = await client.CreateAssociationAsync(CreateAssociationRequest(associations: [])))
             .Throws<ArgumentException>();
-        await Assert.That(async () => _ = await client.CreateAssociationAsync(CreateAssociationRequest(associations:
-        [
+        await Assert.That(async () => _ = await client.CreateAssociationAsync(CreateAssociationRequest(associations: [
             new AssociationCreateOrUpdateInfo
             {
                 Subject = "",
@@ -393,21 +391,21 @@ public sealed class SchemaRegistryAssociationTests
         string resourceId = "lkc-123:orders",
         string resourceType = "topic",
         IReadOnlyList<AssociationCreateOrUpdateInfo>? associations = null) => new()
-    {
-        ResourceName = resourceName,
-        ResourceNamespace = resourceNamespace,
-        ResourceId = resourceId,
-        ResourceType = resourceType,
-        Associations = associations ??
-        [
-            new AssociationCreateOrUpdateInfo
-            {
-                Subject = "orders-value",
-                AssociationType = "value",
-                Lifecycle = "STRONG"
-            }
-        ]
-    };
+        {
+            ResourceName = resourceName,
+            ResourceNamespace = resourceNamespace,
+            ResourceId = resourceId,
+            ResourceType = resourceType,
+            Associations = associations ??
+            [
+                new AssociationCreateOrUpdateInfo
+                {
+                    Subject = "orders-value",
+                    AssociationType = "value",
+                    Lifecycle = "STRONG"
+                }
+            ]
+        };
 
     private static SchemaRegistryClient CreateClient(HttpMessageHandler handler) => new(
         new SchemaRegistryConfig { Url = "http://schema-registry.local" },
@@ -415,10 +413,22 @@ public sealed class SchemaRegistryAssociationTests
 
     private sealed class AssociationHandler(HttpStatusCode statusCode, string? responseBody) : HttpMessageHandler
     {
-        public HttpMethod? Method { get; private set; }
-        public Uri? RequestUri { get; private set; }
-        public string? RequestBody { get; private set; }
-        public CancellationToken CancellationToken { get; private set; }
+        public HttpMethod? Method
+        {
+            get; private set;
+        }
+        public Uri? RequestUri
+        {
+            get; private set;
+        }
+        public string? RequestBody
+        {
+            get; private set;
+        }
+        public CancellationToken CancellationToken
+        {
+            get; private set;
+        }
 
         protected override async Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request,
@@ -430,7 +440,9 @@ public sealed class SchemaRegistryAssociationTests
             cancellationToken.ThrowIfCancellationRequested();
 
             if (request.Content is not null)
+            {
                 RequestBody = await request.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+            }
 
             return new HttpResponseMessage(statusCode)
             {

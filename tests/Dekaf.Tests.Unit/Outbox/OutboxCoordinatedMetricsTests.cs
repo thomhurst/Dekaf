@@ -173,9 +173,13 @@ public partial class OutboxMetricTests
     private static OutboxRelayService CoordinatedRelay(SamplingStore store, TimeProvider time, bool coordinated) =>
         new(store, new MetricPublisher(), new OutboxRelayOptions
         {
-            BucketCount = 2, MetricsName = "coordinated", MaxPublishDuration = TimeSpan.FromSeconds(1),
-            LeaseDuration = TimeSpan.FromSeconds(60), LeaseRenewInterval = TimeSpan.FromSeconds(20),
-            MetricsCollectionTimeout = TimeSpan.FromSeconds(50), CollectMetricsOnBucketZeroOwnerOnly = coordinated
+            BucketCount = 2,
+            MetricsName = "coordinated",
+            MaxPublishDuration = TimeSpan.FromSeconds(1),
+            LeaseDuration = TimeSpan.FromSeconds(60),
+            LeaseRenewInterval = TimeSpan.FromSeconds(20),
+            MetricsCollectionTimeout = TimeSpan.FromSeconds(50),
+            CollectMetricsOnBucketZeroOwnerOnly = coordinated
         }, NullLogger<OutboxRelayService>.Instance, time);
 
     private static void SetLeaseTimestamp(OutboxRelayService relay, long timestamp) =>

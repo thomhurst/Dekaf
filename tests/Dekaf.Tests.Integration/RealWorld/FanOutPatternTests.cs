@@ -97,7 +97,10 @@ public sealed class FanOutPatternTests(KafkaTestContainer kafka) : KafkaIntegrat
         await foreach (var msg in fastConsumer.ConsumeAsync(cts1.Token))
         {
             fastMessages.Add(msg);
-            if (fastMessages.Count >= messageCount) break;
+            if (fastMessages.Count >= messageCount)
+            {
+                break;
+            }
         }
 
         await fastConsumer.CommitAsync();
@@ -119,7 +122,10 @@ public sealed class FanOutPatternTests(KafkaTestContainer kafka) : KafkaIntegrat
         await foreach (var msg in slowConsumer.ConsumeAsync(cts2.Token))
         {
             slowMessages.Add(msg);
-            if (slowMessages.Count >= 3) break;
+            if (slowMessages.Count >= 3)
+            {
+                break;
+            }
         }
 
         await slowConsumer.CommitAsync();
@@ -227,7 +233,10 @@ public sealed class FanOutPatternTests(KafkaTestContainer kafka) : KafkaIntegrat
             await foreach (var msg in consumer.ConsumeAsync(cts.Token))
             {
                 messages.Add(msg);
-                if (messages.Count >= messageCount) break;
+                if (messages.Count >= messageCount)
+                {
+                    break;
+                }
             }
 
             return messages;
@@ -260,7 +269,10 @@ public sealed class FanOutPatternTests(KafkaTestContainer kafka) : KafkaIntegrat
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))
         {
             messages.Add(msg);
-            if (messages.Count >= expectedCount) break;
+            if (messages.Count >= expectedCount)
+            {
+                break;
+            }
         }
 
         return messages;

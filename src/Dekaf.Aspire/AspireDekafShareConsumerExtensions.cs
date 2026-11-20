@@ -151,9 +151,13 @@ public static class AspireDekafShareConsumerExtensions
             (dekaf, native, configure, deadLetter) =>
             {
                 if (serviceKey is null)
+                {
                     dekaf.AddShareConsumerFromConfiguration(native, configure, deadLetter);
+                }
                 else
+                {
                     dekaf.AddShareConsumerFromConfiguration(serviceKey, native, configure, deadLetter);
+                }
             });
 
         if (!settings.DisableHealthChecks)
@@ -180,9 +184,13 @@ public static class AspireDekafShareConsumerExtensions
             (dekaf, native, configure, deadLetter) =>
             {
                 if (serviceKey is null)
+                {
                     dekaf.AddShareConsumerServiceFromConfiguration<TService, TKey, TValue>(native, configure, deadLetter);
+                }
                 else
+                {
                     dekaf.AddShareConsumerServiceFromConfiguration<TService, TKey, TValue>(serviceKey, native, configure, deadLetter);
+                }
             });
 
         if (!settings.DisableHealthChecks)
@@ -211,7 +219,9 @@ public static class AspireDekafShareConsumerExtensions
         void Configure(IServiceProvider services, ShareConsumerBuilder<TKey, TValue> consumer)
         {
             if (settings.ConnectionString is not null)
+            {
                 consumer.WithBootstrapServers(settings.ConnectionString);
+            }
             configureBuilder?.Invoke(services, consumer);
         }
 

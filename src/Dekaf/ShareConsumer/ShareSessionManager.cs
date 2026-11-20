@@ -49,7 +49,9 @@ internal sealed class ShareSessionManager
     internal void ResetSession(int brokerId)
     {
         if (_sessionEpochs.TryGetValue(brokerId, out var slot))
+        {
             Volatile.Write(ref slot.Epoch, 0);
+        }
     }
 
     /// <summary>
@@ -68,7 +70,9 @@ internal sealed class ShareSessionManager
         foreach (var (brokerId, slot) in _sessionEpochs)
         {
             if (Volatile.Read(ref slot.Opened))
+            {
                 brokers.Add(brokerId);
+            }
         }
         return brokers;
     }
@@ -101,13 +105,17 @@ internal sealed class ShareSessionManager
         else if (forgottenPartitions is not null)
         {
             foreach (var partition in forgottenPartitions)
+            {
                 sessionPartitions.Remove(partition);
+            }
         }
 
         foreach (var (topic, (topicId, sentPartitions)) in sentTopics)
         {
             foreach (var partition in sentPartitions)
+            {
                 sessionPartitions[new TopicPartition(topic, partition.PartitionIndex)] = topicId;
+            }
         }
     }
 

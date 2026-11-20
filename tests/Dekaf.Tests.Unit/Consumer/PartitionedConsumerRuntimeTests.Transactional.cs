@@ -50,7 +50,9 @@ public sealed partial class PartitionedConsumerRuntimeTests
             {
                 // Out-of-order completion across keys, so the frontier trails completed records.
                 if (message.Offset % 3 == 0)
+                {
                     await Task.Delay(1, cancellationToken).ConfigureAwait(false);
+                }
                 transactions.Produce(message.Partition, message.Offset);
             },
             TransactionalOptions(
@@ -67,17 +69,23 @@ public sealed partial class PartitionedConsumerRuntimeTests
             for (var offset = end - (recordsPerPartition / 2); offset < end; offset++)
             {
                 foreach (var partition in partitions)
+                {
                     consumer.Enqueue(CreateResult(partition, offset, key: $"key-{offset % 7}"));
+                }
             }
 
             foreach (var partition in partitions)
+            {
                 await transactions.WaitForCommitAsync(partition, end, cts.Token).ConfigureAwait(false);
+            }
         }
         await StopRuntimeAsync(cts, runTask).ConfigureAwait(false);
 
         await Assert.That(transactions.CommittedCount).IsGreaterThan(1);
         foreach (var partition in partitions)
+        {
             transactions.AssertOutputMatchesOffsets(partition);
+        }
     }
 
     [Test]
@@ -185,7 +193,9 @@ public sealed partial class PartitionedConsumerRuntimeTests
             {
                 transactions.Produce(message.Partition, message.Offset);
                 if (message.Partition == lost.Partition)
+                {
                     processedLost.TrySetResult();
+                }
                 return ValueTask.CompletedTask;
             },
             TransactionalOptions(transactions, TimeSpan.FromMinutes(5)),
@@ -221,7 +231,9 @@ public sealed partial class PartitionedConsumerRuntimeTests
             {
                 transactions.Produce(message.Offset);
                 if (message.Offset == 4)
+                {
                     firstPass.TrySetResult();
+                }
                 return ValueTask.CompletedTask;
             },
             new PartitionedProcessingOptions
@@ -264,7 +276,9 @@ public sealed partial class PartitionedConsumerRuntimeTests
             {
                 transactions.Produce(message.Offset);
                 if (message.Offset == 4)
+                {
                     firstPass.TrySetResult();
+                }
                 return ValueTask.CompletedTask;
             },
             TransactionalOptions(transactions, TimeSpan.FromMinutes(5), control: control),
@@ -529,21 +543,35 @@ public sealed partial class PartitionedConsumerRuntimeTests
             Producer = new PartitionedTransactionalProducer(Begin);
         }
 
-        public PartitionedTransactionalProducer Producer { get; }
+        public PartitionedTransactionalProducer Producer
+        {
+            get;
+        }
 
-        public Queue<Exception> CommitFailures { get; } = new();
+        public Queue<Exception> CommitFailures
+        {
+            get;
+        } = new();
 
         /// <summary>When set, commits never finish until their cancellation token fires.</summary>
-        public bool BlockCommits { get; init; }
+        public bool BlockCommits
+        {
+            get; init;
+        }
 
-        public bool BlockAborts { get; init; }
+        public bool BlockAborts
+        {
+            get; init;
+        }
 
         public int CommittedCount
         {
             get
             {
                 lock (_gate)
+                {
                     return _all.Count(transaction => transaction.Committed);
+                }
             }
         }
 
@@ -552,7 +580,9 @@ public sealed partial class PartitionedConsumerRuntimeTests
             get
             {
                 lock (_gate)
+                {
                     return _all.Count(transaction => transaction.Aborted);
+                }
             }
         }
 
@@ -563,7 +593,9 @@ public sealed partial class PartitionedConsumerRuntimeTests
             lock (_gate)
             {
                 if (_current is not { IsOpen: true } transaction)
+                {
                     throw new InvalidOperationException("No transaction is open.");
+                }
                 transaction.Produced.Add((partition, offset));
             }
         }
@@ -589,7 +621,9 @@ public sealed partial class PartitionedConsumerRuntimeTests
                 foreach (var transaction in _all.Where(transaction => transaction.Committed))
                 {
                     if (transaction.Offsets!.FirstOrDefault(offset => offset.Partition == partition.Partition) is { Topic: not null } offset)
+                    {
                         committedOffset = offset.Offset;
+                    }
                 }
 
                 var output = CommittedOutput(partition).Order().ToArray();
@@ -615,7 +649,9 @@ public sealed partial class PartitionedConsumerRuntimeTests
                     var committed = _all.FirstOrDefault(transaction => transaction.Committed
                         && transaction.Offsets!.Any(value => value.Partition == partition.Partition && value.Offset >= offset));
                     if (committed is not null)
+                    {
                         return committed;
+                    }
                     changed = _changed.Task;
                 }
 
@@ -631,7 +667,9 @@ public sealed partial class PartitionedConsumerRuntimeTests
                 lock (_gate)
                 {
                     if (_all.Any(transaction => transaction.Aborted))
+                    {
                         return;
+                    }
                     changed = _changed.Task;
                 }
 
@@ -644,7 +682,9 @@ public sealed partial class PartitionedConsumerRuntimeTests
             lock (_gate)
             {
                 if (_current is { IsOpen: true })
+                {
                     throw new InvalidOperationException("A transaction is already open.");
+                }
                 _current = new FakeTransaction(this);
                 _all.Add(_current);
                 return _current;
@@ -657,16 +697,24 @@ public sealed partial class PartitionedConsumerRuntimeTests
             lock (_gate)
             {
                 if (!transaction.IsOpen)
+                {
                     throw new InvalidOperationException("The transaction already ended.");
+                }
                 if (commit && CommitFailures.TryDequeue(out var failure))
+                {
                     throw failure;
+                }
 
                 transaction.Offsets = offsets?.ToArray();
                 transaction.Metadata = metadata;
                 if (commit)
+                {
                     transaction.Committed = true;
+                }
                 else
+                {
                     transaction.Aborted = true;
+                }
                 changed = _changed;
                 _changed = NewCompletionSource();
             }
@@ -676,15 +724,30 @@ public sealed partial class PartitionedConsumerRuntimeTests
 
         public sealed class FakeTransaction(FakeTransactions owner) : IPartitionedTransaction
         {
-            public List<(int Partition, long Offset)> Produced { get; } = [];
+            public List<(int Partition, long Offset)> Produced
+            {
+                get;
+            } = [];
 
-            public TopicPartitionOffset[]? Offsets { get; set; }
+            public TopicPartitionOffset[]? Offsets
+            {
+                get; set;
+            }
 
-            public ConsumerGroupMetadata? Metadata { get; set; }
+            public ConsumerGroupMetadata? Metadata
+            {
+                get; set;
+            }
 
-            public bool Committed { get; set; }
+            public bool Committed
+            {
+                get; set;
+            }
 
-            public bool Aborted { get; set; }
+            public bool Aborted
+            {
+                get; set;
+            }
 
             public bool IsOpen => !Committed && !Aborted;
 
@@ -694,14 +757,18 @@ public sealed partial class PartitionedConsumerRuntimeTests
                 CancellationToken cancellationToken)
             {
                 if (owner.BlockCommits)
+                {
                     await Task.Delay(Timeout.Infinite, cancellationToken).ConfigureAwait(false);
+                }
                 owner.Complete(this, commit: true, offsets, consumerGroupMetadata);
             }
 
             public async ValueTask AbortAsync(CancellationToken cancellationToken)
             {
                 if (owner.BlockAborts)
+                {
                     await Task.Delay(Timeout.Infinite, cancellationToken).ConfigureAwait(false);
+                }
                 owner.Complete(this, commit: false, offsets: null, metadata: null);
             }
         }

@@ -11,10 +11,16 @@ namespace Dekaf.Benchmarks.Benchmarks.Unit;
 public class ConsumerGroupAssignmentBenchmarks
 {
     [Params(0, 1024)]
-    public int EmptyTopics { get; set; }
+    public int EmptyTopics
+    {
+        get; set;
+    }
 
     [Params(false, true)]
-    public bool IncludePartition { get; set; }
+    public bool IncludePartition
+    {
+        get; set;
+    }
 
     private byte[] _assignment = null!;
     private Func<byte[]?, IReadOnlyList<TopicPartition>?> _parse = null!;
@@ -46,7 +52,9 @@ public class ConsumerGroupAssignmentBenchmarks
         var result = Decode();
         if (result is null || result.Count != (IncludePartition ? 1 : 0) ||
             (IncludePartition && result[0] != new TopicPartition("topic", 2)))
+        {
             throw new InvalidOperationException("Assignment decoding must preserve every assigned partition.");
+        }
     }
 
     [Benchmark]

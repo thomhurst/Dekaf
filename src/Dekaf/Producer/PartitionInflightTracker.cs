@@ -10,17 +10,35 @@ namespace Dekaf.Producer;
 /// </summary>
 internal sealed class InflightEntry
 {
-    public TopicPartition TopicPartition { get; private set; }
-    public int BaseSequence { get; internal set; }
-    public int RecordCount { get; private set; }
+    public TopicPartition TopicPartition
+    {
+        get; private set;
+    }
+    public int BaseSequence
+    {
+        get; internal set;
+    }
+    public int RecordCount
+    {
+        get; private set;
+    }
 
     /// <summary>
     /// Per-partition state, stored at registration to avoid dictionary lookup races with pruning.
     /// </summary>
-    internal PartitionState? State { get; set; }
+    internal PartitionState? State
+    {
+        get; set;
+    }
 
-    internal InflightEntry? Previous { get; set; }
-    internal InflightEntry? Next { get; set; }
+    internal InflightEntry? Previous
+    {
+        get; set;
+    }
+    internal InflightEntry? Next
+    {
+        get; set;
+    }
 
     // Guard against double-return to pool when FailAll and Complete race.
     // Protected by the per-partition SpinLock — both Complete and FailAll acquire
@@ -52,7 +70,10 @@ internal sealed class InflightEntry
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal bool TryRemoveFromList()
     {
-        if (!InList) return false;
+        if (!InList)
+        {
+            return false;
+        }
         InList = false;
         return true;
     }
@@ -211,7 +232,10 @@ internal sealed class InflightEntryPool
             maxPoolSize);
     }
 
-    public int MaxPoolSize { get; }
+    public int MaxPoolSize
+    {
+        get;
+    }
 
     public long Misses => Volatile.Read(ref _misses);
 
@@ -225,13 +249,17 @@ internal sealed class InflightEntryPool
     {
         count = Math.Min(count, MaxPoolSize);
         for (var i = 0; i < count; i++)
+        {
             _pool.Return(new InflightEntry());
+        }
     }
 
     private readonly struct InflightEntryPolicy(InflightEntryPool owner)
         : Reservoir.IPooledObjectPolicy<InflightEntry>, Reservoir.INonThrowingResetPolicy
     {
-        public void Destroy(InflightEntry item) { }
+        public void Destroy(InflightEntry item)
+        {
+        }
 
         public InflightEntry Create()
         {
@@ -324,7 +352,9 @@ internal sealed class PartitionInflightTracker : IDisposable
         }
 
         if (claimed)
+        {
             return entry;
+        }
 
         // Refused: a sequence restart that must wait. Recovery only, never steady state.
         _pool.Return(entry);
@@ -393,7 +423,10 @@ internal sealed class PartitionInflightTracker : IDisposable
         }
         finally
         {
-            if (lockTaken) state.Lock.Exit();
+            if (lockTaken)
+            {
+                state.Lock.Exit();
+            }
         }
     }
 
@@ -449,7 +482,10 @@ internal sealed class PartitionInflightTracker : IDisposable
         }
         finally
         {
-            if (lockTaken) state.Lock.Exit();
+            if (lockTaken)
+            {
+                state.Lock.Exit();
+            }
         }
 
         // Written outside the lock (unlike Register's write inside the lock) because
@@ -480,13 +516,17 @@ internal sealed class PartitionInflightTracker : IDisposable
         {
             var current = Volatile.Read(ref _completionWaiters);
             if (IndexOfWaiter(current, wake) >= 0)
+            {
                 return;
+            }
 
             var updated = new Action[current.Length + 1];
             current.CopyTo(updated, 0);
             updated[^1] = wake;
             if (ReferenceEquals(Interlocked.CompareExchange(ref _completionWaiters, updated, current), current))
+            {
                 return;
+            }
         }
     }
 
@@ -498,7 +538,9 @@ internal sealed class PartitionInflightTracker : IDisposable
             var current = Volatile.Read(ref _completionWaiters);
             var index = IndexOfWaiter(current, wake);
             if (index < 0)
+            {
                 return;
+            }
 
             Action[] updated;
             if (current.Length == 1)
@@ -513,7 +555,9 @@ internal sealed class PartitionInflightTracker : IDisposable
             }
 
             if (ReferenceEquals(Interlocked.CompareExchange(ref _completionWaiters, updated, current), current))
+            {
                 return;
+            }
         }
     }
 
@@ -522,7 +566,9 @@ internal sealed class PartitionInflightTracker : IDisposable
         for (var i = 0; i < waiters.Length; i++)
         {
             if (ReferenceEquals(waiters[i], wake))
+            {
                 return i;
+            }
         }
 
         return -1;
@@ -533,13 +579,17 @@ internal sealed class PartitionInflightTracker : IDisposable
     {
         var waiters = Volatile.Read(ref _completionWaiters);
         if (waiters.Length != 0)
+        {
             WakeCompletionWaitersSlow(waiters);
+        }
     }
 
     private static void WakeCompletionWaitersSlow(Action[] waiters)
     {
         foreach (var wake in waiters)
+        {
             wake();
+        }
     }
 
     /// <summary>
@@ -584,7 +634,10 @@ internal sealed class PartitionInflightTracker : IDisposable
         }
         finally
         {
-            if (lockTaken) state.Lock.Exit();
+            if (lockTaken)
+            {
+                state.Lock.Exit();
+            }
         }
 
         // Await outside lock with ConfigureAwait(false)
@@ -634,7 +687,10 @@ internal sealed class PartitionInflightTracker : IDisposable
         }
         finally
         {
-            if (lockTaken) state.Lock.Exit();
+            if (lockTaken)
+            {
+                state.Lock.Exit();
+            }
         }
 
         Volatile.Write(ref state.LastIdleTicks, Stopwatch.GetTimestamp());
@@ -672,7 +728,10 @@ internal sealed class PartitionInflightTracker : IDisposable
         }
         finally
         {
-            if (lockTaken) state.Lock.Exit();
+            if (lockTaken)
+            {
+                state.Lock.Exit();
+            }
         }
     }
 
@@ -686,7 +745,9 @@ internal sealed class PartitionInflightTracker : IDisposable
     public bool HasInflightBefore(TopicPartition topicPartition, int baseSequence)
     {
         if (!_partitions.TryGetValue(topicPartition, out var state))
+        {
             return false;
+        }
 
         var lockTaken = false;
         try
@@ -696,7 +757,10 @@ internal sealed class PartitionInflightTracker : IDisposable
         }
         finally
         {
-            if (lockTaken) state.Lock.Exit();
+            if (lockTaken)
+            {
+                state.Lock.Exit();
+            }
         }
     }
 
@@ -714,7 +778,9 @@ internal sealed class PartitionInflightTracker : IDisposable
     public bool HasResentBefore(TopicPartition topicPartition, int baseSequence)
     {
         if (!_partitions.TryGetValue(topicPartition, out var state))
+        {
             return false;
+        }
 
         var lockTaken = false;
         try
@@ -733,7 +799,10 @@ internal sealed class PartitionInflightTracker : IDisposable
         }
         finally
         {
-            if (lockTaken) state.Lock.Exit();
+            if (lockTaken)
+            {
+                state.Lock.Exit();
+            }
         }
     }
 
@@ -746,7 +815,9 @@ internal sealed class PartitionInflightTracker : IDisposable
         for (var entry = state.Head; entry is not null; entry = entry.Next)
         {
             if (baseSequence < 0 || !RecordAccumulator.IsSequenceAtOrAfter(entry.BaseSequence, baseSequence))
+            {
                 return true;
+            }
         }
 
         return false;
@@ -761,10 +832,14 @@ internal sealed class PartitionInflightTracker : IDisposable
     internal static void FenceRestartLocked(PartitionState state)
     {
         if (state.Head is null)
+        {
             return;
+        }
 
         for (var entry = state.Head; entry is not null; entry = entry.Next)
+        {
             entry.PrecedesRestart = true;
+        }
 
         Volatile.Write(ref state.RestartFenced, true);
     }
@@ -783,16 +858,22 @@ internal sealed class PartitionInflightTracker : IDisposable
         for (var entry = state.Head; entry is not null; entry = entry.Next)
         {
             if (!entry.PrecedesRestart)
+            {
                 continue;
+            }
 
             if (baseSequence < 0 || !RecordAccumulator.IsSequenceAtOrAfter(entry.BaseSequence, baseSequence))
+            {
                 return true;
+            }
 
             anyMarked = true;
         }
 
         if (!anyMarked)
+        {
             Volatile.Write(ref state.RestartFenced, false);
+        }
 
         return false;
     }
@@ -807,7 +888,9 @@ internal sealed class PartitionInflightTracker : IDisposable
     private static bool IsRestartFenced(PartitionState state, int baseSequence)
     {
         if (!Volatile.Read(ref state.RestartFenced))
+        {
             return false;
+        }
 
         var lockTaken = false;
         try
@@ -817,7 +900,10 @@ internal sealed class PartitionInflightTracker : IDisposable
         }
         finally
         {
-            if (lockTaken) state.Lock.Exit();
+            if (lockTaken)
+            {
+                state.Lock.Exit();
+            }
         }
     }
 
@@ -835,7 +921,9 @@ internal sealed class PartitionInflightTracker : IDisposable
             var state = kvp.Value;
             if (Volatile.Read(ref state.Count) > 0
                 && (IsRestartFenced(state, baseSequence: -1) || predicate(kvp.Key, arg)))
+            {
                 return true;
+            }
         }
 
         return false;
@@ -859,7 +947,10 @@ internal sealed class PartitionInflightTracker : IDisposable
         }
         finally
         {
-            if (lockTaken) state.Lock.Exit();
+            if (lockTaken)
+            {
+                state.Lock.Exit();
+            }
         }
     }
 
@@ -933,7 +1024,10 @@ internal sealed class PartitionInflightTracker : IDisposable
             }
             finally
             {
-                if (lockTaken) state.Lock.Exit();
+                if (lockTaken)
+                {
+                    state.Lock.Exit();
+                }
             }
         }
     }

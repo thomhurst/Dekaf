@@ -92,9 +92,13 @@ public sealed class ProducerTimeoutTests(KafkaTestContainer kafka) : KafkaIntegr
                 }, (_, error) =>
                 {
                     if (error is not null)
+                    {
                         delivered.TrySetException(error);
+                    }
                     else if (Interlocked.Decrement(ref remaining) == 0)
+                    {
                         delivered.TrySetResult();
+                    }
                 });
             }
         }
@@ -115,7 +119,9 @@ public sealed class ProducerTimeoutTests(KafkaTestContainer kafka) : KafkaIntegr
                 .Select(message => message.Key!).ToArray();
             await Assert.That(keys.Length).IsEqualTo(recordsPerPartition);
             for (var i = 0; i < recordsPerPartition; i++)
+            {
                 await Assert.That(keys[i]).IsEqualTo($"key-{i}");
+            }
         }
     }
 
@@ -200,7 +206,9 @@ public sealed class ProducerTimeoutTests(KafkaTestContainer kafka) : KafkaIntegr
             messages.Add(msg);
             // We expect only the sentinel message at offset 0
             if (messages.Count >= 1)
+            {
                 break;
+            }
         }
 
         // The first (and only) message should be the sentinel, not the cancelled one
@@ -254,7 +262,9 @@ public sealed class ProducerTimeoutTests(KafkaTestContainer kafka) : KafkaIntegr
         {
             messages.Add(msg);
             if (messages.Count >= messageCount)
+            {
                 break;
+            }
         }
 
         await Assert.That(messages).Count().IsEqualTo(messageCount);
@@ -330,9 +340,13 @@ public sealed class ProducerTimeoutTests(KafkaTestContainer kafka) : KafkaIntegr
                 }, (metadata, error) =>
                 {
                     if (error is null && metadata.Offset >= 0)
+                    {
                         Interlocked.Increment(ref delivered);
+                    }
                     else
+                    {
                         Interlocked.Increment(ref failed);
+                    }
                 });
             }
 
@@ -416,7 +430,9 @@ public sealed class ProducerTimeoutTests(KafkaTestContainer kafka) : KafkaIntegr
         {
             messages.Add(msg);
             if (messages.Count >= 10)
+            {
                 break;
+            }
         }
 
         await Assert.That(messages).Count().IsEqualTo(10);

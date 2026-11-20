@@ -22,7 +22,10 @@ namespace Dekaf.Benchmarks.Benchmarks.Unit;
 public class OutboxSaveChangesBenchmarks
 {
     [Params(0, 1024)]
-    public int TrackedBusinessRows { get; set; }
+    public int TrackedBusinessRows
+    {
+        get; set;
+    }
 
     private SqliteConnection _connection = null!;
     private ServiceProvider _provider = null!;
@@ -70,19 +73,26 @@ public class OutboxSaveChangesBenchmarks
         _deleteMessage.CommandText = $"DELETE FROM {OutboxModelOptions.DefaultMessagesTableName} WHERE Id = 1";
         _deleteMessage.Prepare();
         for (var index = 1; index <= TrackedBusinessRows; index++)
+        {
             _context.Attach(new BusinessRow { Id = index });
+        }
         _message = new OutboxMessage
         {
             Id = 1,
             MessageId = Guid.Parse("ca8c386b-96a7-407b-b68e-0845c5488cb4"),
-            Topic = "outbox-save", Bucket = 0, Value = [1], CreatedAtUtc = DateTimeOffset.UnixEpoch
+            Topic = "outbox-save",
+            Bucket = 0,
+            Value = [1],
+            CreatedAtUtc = DateTimeOffset.UnixEpoch
         };
         if (SaveWithoutOutbox() != 0 || SaveAndRollbackOutbox() != 1 ||
             SaveAndCommitOutboxWithCleanup() != 1 || SaveAutocommitOutboxWithCleanup() != 1 ||
             await SaveWithoutOutboxAsync() != 0 || await SaveAndRollbackOutboxAsync() != 1 ||
             await SaveAndCommitOutboxWithCleanupAsync() != 1 || await SaveAutocommitOutboxWithCleanupAsync() != 1 ||
             _context.Set<OutboxMessage>().Any())
+        {
             throw new InvalidOperationException("Each save must preserve its expected row count and empty database state.");
+        }
     }
 
     [Benchmark]
@@ -178,7 +188,9 @@ public class OutboxSaveChangesBenchmarks
     private void AssertNoNotification()
     {
         if (_notificationReader?.TryPeek(out _) is true)
+        {
             throw new InvalidOperationException("An unchanged save or rolled-back insert must not publish a notification.");
+        }
     }
 
     private async ValueTask ConsumeCommittedNotificationAsync()
@@ -186,9 +198,13 @@ public class OutboxSaveChangesBenchmarks
         // Drain each notification so the measured commit does not merely write to
         // an already-full coalescing channel. Missing notification invalidates the case.
         if (_waitForNotification is not { } wait)
+        {
             return;
+        }
         if (_notificationReader!.TryPeek(out _))
+        {
             await wait(Timeout.InfiniteTimeSpan, default);
+        }
         else
         {
             using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
@@ -200,7 +216,9 @@ public class OutboxSaveChangesBenchmarks
     {
         _context.Entry(_message).State = EntityState.Detached;
         if (_deleteMessage.ExecuteNonQuery() != 1)
+        {
             throw new InvalidOperationException("A committed insert must leave exactly one row to clean up.");
+        }
     }
 
     [GlobalCleanup]
@@ -223,6 +241,9 @@ public class OutboxSaveChangesBenchmarks
 
     private sealed class BusinessRow
     {
-        public int Id { get; set; }
+        public int Id
+        {
+            get; set;
+        }
     }
 }

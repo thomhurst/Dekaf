@@ -32,7 +32,9 @@ public class RetryHelperDeadlineBenchmarks
         _failOnceThenSucceed = () =>
         {
             if (!_failNext)
+            {
                 return ValueTask.FromResult(42);
+            }
 
             _failNext = false;
             // A fresh exception per failure, as a connection raises one: rethrowing one shared
@@ -43,7 +45,9 @@ public class RetryHelperDeadlineBenchmarks
 
         _failNext = true;
         if (OneTransportRetry().AsTask().GetAwaiter().GetResult() != 42 || _failNext)
+        {
             throw new InvalidOperationException("Expected exactly one retry before success.");
+        }
     }
 
     [GlobalCleanup]
@@ -89,7 +93,9 @@ public class RetryHelperDeadlineBenchmarks
             throw new NotSupportedException();
         public ValueTask<IKafkaConnection> GetConnectionByIndexAsync(int brokerId, int index, CancellationToken token = default) =>
             throw new NotSupportedException();
-        public void RegisterBroker(int id, string host, int port) { }
+        public void RegisterBroker(int id, string host, int port)
+        {
+        }
         public ValueTask<int> ScaleConnectionGroupAsync(int id, int count, CancellationToken token = default) => ValueTask.FromResult(1);
         public ValueTask<IKafkaConnection?> ShrinkConnectionGroupAsync(int id, int count, CancellationToken token = default) =>
             ValueTask.FromResult<IKafkaConnection?>(null);

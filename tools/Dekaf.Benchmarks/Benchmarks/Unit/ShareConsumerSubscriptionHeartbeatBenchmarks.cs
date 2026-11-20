@@ -8,7 +8,11 @@ public class ShareConsumerSubscriptionHeartbeatBenchmarks
 {
     private ShareConsumerPollBenchmarks _consumer = null!;
 
-    [Params(false, true)] public bool AsynchronousResponse { get; set; }
+    [Params(false, true)]
+    public bool AsynchronousResponse
+    {
+        get; set;
+    }
 
     [GlobalSetup]
     public async ValueTask Setup()

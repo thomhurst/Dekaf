@@ -22,7 +22,10 @@ public class KafkaContainerDefault : KafkaTestContainer
 
     public override string ContainerName => $"apache/kafka:{Tag}";
 
-    public override int Version { get; } = ParseVersion(Tag);
+    public override int Version
+    {
+        get;
+    } = ParseVersion(Tag);
 
     /// <summary>
     /// Parses a three-part image tag like "4.2.0" into the compact form used by

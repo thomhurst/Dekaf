@@ -26,8 +26,14 @@ public class ShareConsumerOffsetResetTests(KafkaTestContainer kafka) : KafkaInte
         var builder = sharedConnections
             ? client.CreateShareConsumer<string, string>(group)
             : Kafka.CreateShareConsumer<string, string>().WithBootstrapServers(KafkaContainer.BootstrapServers).WithGroupId(group);
-        if (byDuration) builder.WithAutoOffsetResetByDuration(TimeSpan.FromDays(1));
-        else builder.WithAutoOffsetReset(AutoOffsetReset.Earliest);
+        if (byDuration)
+        {
+            builder.WithAutoOffsetResetByDuration(TimeSpan.FromDays(1));
+        }
+        else
+        {
+            builder.WithAutoOffsetReset(AutoOffsetReset.Earliest);
+        }
         await using var consumer = await builder.WithAcknowledgementMode(ShareAcknowledgementMode.Explicit)
             .SubscribeTo(topic).BuildAsync(timeout.Token);
         await foreach (var record in consumer.PollAsync(timeout.Token))
@@ -62,7 +68,10 @@ public class ShareConsumerOffsetResetTests(KafkaTestContainer kafka) : KafkaInte
         }, cancellationToken: timeout.Token);
         var builder = Kafka.CreateShareConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers).WithGroupId(group);
-        if (reset is { } policy) builder.WithAutoOffsetReset(policy);
+        if (reset is { } policy)
+        {
+            builder.WithAutoOffsetReset(policy);
+        }
         await using var consumer = await builder.BuildAsync(timeout.Token);
         var configs = await admin.DescribeConfigsAsync([resource], cancellationToken: timeout.Token);
         await Assert.That(configs[resource].Single(config => config.Name == "share.auto.offset.reset").Value)

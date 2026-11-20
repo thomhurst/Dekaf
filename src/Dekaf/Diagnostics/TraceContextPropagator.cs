@@ -30,7 +30,9 @@ internal static class TraceContextPropagator
     internal static Headers? InjectTraceContext(Headers? headers, Activity? activity)
     {
         if (activity is null)
+        {
             return headers;
+        }
 
         return InjectTraceContextSlow(headers, activity);
     }
@@ -49,7 +51,9 @@ internal static class TraceContextPropagator
     internal static void WriteTraceparent(Activity activity, Span<byte> destination)
     {
         if (destination.Length < TraceparentLength)
+        {
             throw new ArgumentException("The traceparent destination must be at least 55 bytes.", nameof(destination));
+        }
 
         WriteTraceparentUnchecked(activity, destination);
     }
@@ -94,7 +98,9 @@ internal static class TraceContextPropagator
     internal static ActivityContext? ExtractTraceContext(IReadOnlyList<Header>? headers)
     {
         if (headers is null || headers.Count == 0)
+        {
             return null;
+        }
 
         return ExtractTraceContextSlow(headers);
     }
@@ -120,7 +126,9 @@ internal static class TraceContextPropagator
         }
 
         if (traceparent is not { IsValueNull: false } parent)
+        {
             return null;
+        }
 
         // Only the fixed prefix and its extension delimiter are understood. Avoid decoding
         // the whole UTF-8 header, including arbitrarily large unknown future-version fields.
@@ -135,12 +143,18 @@ internal static class TraceContextPropagator
         Span<char> prefix = stackalloc char[TraceparentLength + 1];
         var length = Math.Min(bytes.Length, prefix.Length);
         if (length < TraceparentLength)
+        {
             return null;
+        }
 
         // The pointer overload also supports netstandard2.0 without an intermediate array.
         fixed (byte* source = bytes)
-        fixed (char* destination = prefix)
-            Encoding.ASCII.GetChars(source, length, destination, length);
+        {
+            fixed (char* destination = prefix)
+            {
+                Encoding.ASCII.GetChars(source, length, destination, length);
+            }
+        }
 
         return ParseTraceparent(prefix[..length], tracestate);
     }
@@ -154,27 +168,39 @@ internal static class TraceContextPropagator
     {
         // Minimum length: "00-" + 32 (traceId) + "-" + 16 (spanId) + "-" + 2 (flags) = 55
         if (span.Length < TraceparentLength)
+        {
             return null;
+        }
 
         if (span[2] != '-' || span[35] != '-' || span[52] != '-')
+        {
             return null;
+        }
 
         if (!TryParseHexByte(span[..2], out var version) || version == 0xff)
+        {
             return null;
+        }
 
         // Version 00 has exactly 55 characters. Higher versions may append opaque fields
         // after a dash; W3C requires readers not to interpret those unknown fields.
         if (span.Length > TraceparentLength && (version == 0 || span[TraceparentLength] != '-'))
+        {
             return null;
+        }
 
         if (!TryParseHexByte(span.Slice(53, 2), out var flags))
+        {
             return null;
+        }
 
         Span<byte> traceId = stackalloc byte[16];
         Span<byte> spanId = stackalloc byte[8];
         if (!TryDecodeIdentifier(span.Slice(3, 32), traceId) ||
             !TryDecodeIdentifier(span.Slice(36, 16), spanId))
+        {
             return null;
+        }
 
         // Validate and decode once before the platform APIs materialize their owned strings.
         return new ActivityContext(
@@ -193,7 +219,9 @@ internal static class TraceContextPropagator
             var hi = HexCharToNibble(chars[i * 2]);
             var lo = HexCharToNibble(chars[(i * 2) + 1]);
             if ((hi | lo) < 0)
+            {
                 return false;
+            }
 
             var value = (hi << 4) | lo;
             bytes[i] = (byte)value;
@@ -206,13 +234,17 @@ internal static class TraceContextPropagator
     {
         result = 0;
         if (hex.Length != 2)
+        {
             return false;
+        }
 
         var hi = HexCharToNibble(hex[0]);
         var lo = HexCharToNibble(hex[1]);
 
         if (hi < 0 || lo < 0)
+        {
             return false;
+        }
 
         result = (byte)((hi << 4) | lo);
         return true;

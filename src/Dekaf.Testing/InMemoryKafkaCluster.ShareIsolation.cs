@@ -20,18 +20,22 @@ public sealed partial class InMemoryKafkaCluster
         out InMemoryRecord record)
     {
         lock (_gate)
+        {
             return TryReadRecordUnderLock(
                 topicPartition,
                 offset,
                 GetShareIsolationUnderLock(groupId),
                 out record,
                 out _);
+        }
     }
 
     internal IReadOnlyList<ConfigEntry> DescribeShareIsolation(ConfigResource resource)
     {
         if (resource.Type != ConfigResourceType.Group)
+        {
             return Array.Empty<ConfigEntry>();
+        }
 
         lock (_gate)
         {
@@ -51,7 +55,9 @@ public sealed partial class InMemoryKafkaCluster
         ConfigResource resource, IReadOnlyList<ConfigAlter> changes, bool replace, bool validateOnly)
     {
         if (resource.Type != ConfigResourceType.Group)
+        {
             return ErrorCode.None;
+        }
 
         lock (_gate)
         {
@@ -60,7 +66,9 @@ public sealed partial class InMemoryKafkaCluster
             foreach (var change in changes)
             {
                 if (change.Name != ShareIsolationConfig)
+                {
                     continue;
+                }
 
                 changed = true;
                 if (change.Operation == ConfigAlterOperation.Delete)
@@ -76,7 +84,9 @@ public sealed partial class InMemoryKafkaCluster
                         _ => null
                     };
                     if (isolation is null)
+                    {
                         return ErrorCode.InvalidConfig;
+                    }
                 }
                 else
                 {
@@ -87,9 +97,13 @@ public sealed partial class InMemoryKafkaCluster
             if (!validateOnly && changed)
             {
                 if (isolation is { } value)
+                {
                     _shareIsolationLevels[resource.Name] = value;
+                }
                 else
+                {
                     _shareIsolationLevels.Remove(resource.Name);
+                }
             }
             return ErrorCode.None;
         }

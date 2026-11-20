@@ -12,7 +12,10 @@ namespace Dekaf.Benchmarks.Benchmarks.Unit;
 public class AdminDetailedMutationBenchmarks
 {
     [Params("create:1", "create:16", "mixed:16", "retry:16", "delete:16", "expand:16", "reassign:16", "reassign-retry:16", "wrapped:16", "disconnected:16", "disposed:16", "unregistered:16")]
-    public string Scenario { get; set; } = "create:16";
+    public string Scenario
+    {
+        get; set;
+    } = "create:16";
 
     private AdminClient _admin = null!;
     private MetadataManager _metadata = null!;
@@ -71,19 +74,30 @@ public class AdminDetailedMutationBenchmarks
             RetryBackoffMs = 1,
             RetryBackoffMaxMs = 1
         }, pool, _metadata);
-        if (await Mutate() != count) throw new InvalidOperationException("Incorrect mutation count.");
+        if (await Mutate() != count)
+        {
+            throw new InvalidOperationException("Incorrect mutation count.");
+        }
         if (_operation == "mixed")
         {
             var results = await _admin.CreateTopicsDetailedAsync(_topics);
             if (results[_names[^1]].ErrorCode != ErrorCode.TopicAuthorizationFailed || !results[_names[0]].IsSuccess)
+            {
                 throw new InvalidOperationException("Mixed outcomes were not retained.");
+            }
         }
         else if (_operation is "retry" or "wrapped" or "disconnected" or "disposed" && _connection.CreateCalls != 2)
+        {
             throw new InvalidOperationException("Expected one controller retry.");
+        }
         else if (_operation == "reassign-retry" && _connection.ReassignCalls != 3)
+        {
             throw new InvalidOperationException("Expected a partial rejection followed by a top-level rejection.");
+        }
         else if (_operation == "unregistered" && _connection.CreateCalls != 0)
+        {
             throw new InvalidOperationException("An unregistered controller must not receive a mutation.");
+        }
 
         PrepareMutation();
         IEnumerable<AdminMutationResult> values = _operation switch
@@ -96,20 +110,31 @@ public class AdminDetailedMutationBenchmarks
         var successes = 0;
         foreach (var result in values)
         {
-            if (result.IsSuccess) successes++;
+            if (result.IsSuccess)
+            {
+                successes++;
+            }
             else if (_operation == "unregistered" && result.Outcome == AdminMutationOutcome.NotAttempted
                 && result.Exception is InvalidOperationException)
+            {
                 continue;
+            }
             else if (_operation is "wrapped" or "disconnected" or "disposed"
                 && result.Outcome == AdminMutationOutcome.Unknown && result.Exception is InvalidOperationException)
+            {
                 continue;
+            }
             else if (_operation != "mixed" || result.ErrorCode != ErrorCode.TopicAuthorizationFailed)
+            {
                 throw new InvalidOperationException("Unexpected mutation outcome.");
+            }
         }
         var expectedSuccesses = _operation == "unregistered" ? 0
             : count - (_operation is "mixed" or "wrapped" or "disconnected" or "disposed" ? 1 : 0);
         if (successes != expectedSuccesses)
+        {
             throw new InvalidOperationException("Incorrect successful mutation count.");
+        }
 
     }
 
@@ -152,12 +177,30 @@ public class AdminDetailedMutationBenchmarks
         CreateTopicsResponse retry, CreateTopicsResponse retried, DeleteTopicsResponse delete,
         CreatePartitionsResponse expand, AlterPartitionReassignmentsResponse reassign) : IKafkaConnection
     {
-        public bool RetryNext { get; set; }
-        public bool Unregistered { get; set; }
-        public int CreateCalls { get; set; }
-        public string? Failure { get; set; }
-        public bool ReassignRetry { get; set; }
-        public int ReassignCalls { get; set; }
+        public bool RetryNext
+        {
+            get; set;
+        }
+        public bool Unregistered
+        {
+            get; set;
+        }
+        public int CreateCalls
+        {
+            get; set;
+        }
+        public string? Failure
+        {
+            get; set;
+        }
+        public bool ReassignRetry
+        {
+            get; set;
+        }
+        public int ReassignCalls
+        {
+            get; set;
+        }
         private readonly AlterPartitionReassignmentsResponse _partialReassignment = new()
         {
             Responses = reassign.Responses.Select((topic, index) => new AlterPartitionReassignmentsResponseTopic
@@ -190,6 +233,7 @@ public class AdminDetailedMutationBenchmarks
         {
             CreateCalls++;
             if (!RetryNext && Failure is { } failure)
+            {
                 throw failure switch
                 {
                     "wrapped" => new InvalidOperationException("Transport unavailable", new IOException("Response lost")),
@@ -197,16 +241,29 @@ public class AdminDetailedMutationBenchmarks
                     "disposed" => new ObjectDisposedException(nameof(Connection)),
                     _ => new InvalidOperationException("Unknown failure fixture.")
                 };
-            if (!RetryNext) return count == create.Topics.Count ? create : retried;
+            }
+            if (!RetryNext)
+            {
+                return count == create.Topics.Count ? create : retried;
+            }
             RetryNext = false;
             return retry;
         }
         private AlterPartitionReassignmentsResponse NextReassign(int count)
         {
             ReassignCalls++;
-            if (!ReassignRetry) return reassign;
-            if (ReassignCalls == 1) return _partialReassignment;
-            if (count != 1) throw new InvalidOperationException("Confirmed reassignment was replayed.");
+            if (!ReassignRetry)
+            {
+                return reassign;
+            }
+            if (ReassignCalls == 1)
+            {
+                return _partialReassignment;
+            }
+            if (count != 1)
+            {
+                throw new InvalidOperationException("Confirmed reassignment was replayed.");
+            }
             return ReassignCalls == 2 ? _rejectedReassignment : _retriedReassignment;
         }
         public ValueTask ConnectAsync(CancellationToken token = default) => ValueTask.CompletedTask;
@@ -227,7 +284,9 @@ public class AdminDetailedMutationBenchmarks
             connection.Unregistered ? throw new InvalidOperationException("Unknown broker ID: fixture") : ValueTask.FromResult<IKafkaConnection>(connection);
         public ValueTask<IKafkaConnection> GetConnectionAsync(string host, int port, CancellationToken token = default) => ValueTask.FromResult<IKafkaConnection>(connection);
         public ValueTask<IKafkaConnection> GetConnectionByIndexAsync(int brokerId, int index, CancellationToken token = default) => ValueTask.FromResult<IKafkaConnection>(connection);
-        public void RegisterBroker(int id, string host, int port) { }
+        public void RegisterBroker(int id, string host, int port)
+        {
+        }
         public ValueTask<int> ScaleConnectionGroupAsync(int id, int count, CancellationToken token = default) => ValueTask.FromResult(1);
         public ValueTask<IKafkaConnection?> ShrinkConnectionGroupAsync(int id, int count, CancellationToken token = default) => ValueTask.FromResult<IKafkaConnection?>(null);
         public ValueTask RemoveConnectionAsync(int id) => ValueTask.CompletedTask;

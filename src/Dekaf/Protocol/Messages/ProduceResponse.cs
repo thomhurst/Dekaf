@@ -99,23 +99,35 @@ public sealed class ProduceResponse : IKafkaResponse
     /// When created via <see cref="Read"/>, the array is recycled across pool returns.
     /// When created directly (e.g., tests), <see cref="TopicCount"/> equals the array length.
     /// </summary>
-    public ProduceResponseTopicData[] Responses { get; internal set; } = [];
+    public ProduceResponseTopicData[] Responses
+    {
+        get; internal set;
+    } = [];
 
     /// <summary>
     /// Number of valid entries in <see cref="Responses"/>.
     /// When set via init (tests), auto-computed from <see cref="Responses"/> length.
     /// </summary>
-    public int TopicCount { get; internal set; }
+    public int TopicCount
+    {
+        get; internal set;
+    }
 
     /// <summary>
     /// Throttle time in milliseconds.
     /// </summary>
-    public int ThrottleTimeMs { get; internal set; }
+    public int ThrottleTimeMs
+    {
+        get; internal set;
+    }
 
     /// <summary>
     /// Endpoints for current leaders reported in KIP-951 response tagged fields.
     /// </summary>
-    public NodeEndpoint[] NodeEndpoints { get; internal set; } = [];
+    public NodeEndpoint[] NodeEndpoints
+    {
+        get; internal set;
+    } = [];
 
     public static IKafkaResponse Read(ref KafkaProtocolReader reader, short version)
     {
@@ -142,10 +154,14 @@ public sealed class ProduceResponse : IKafkaResponse
             if (topicCount > 0)
             {
                 if (response.Responses.Length < topicCount)
+                {
                     response.Responses = new ProduceResponseTopicData[topicCount];
+                }
 
                 for (; parsedTopics < topicCount; parsedTopics++)
+                {
                     response.Responses[parsedTopics].ReadInto(ref reader, version);
+                }
             }
 
             response.TopicCount = Math.Max(topicCount, 0);
@@ -207,7 +223,9 @@ public sealed class ProduceResponse : IKafkaResponse
     internal void Return()
     {
         if (TryPrepareForPool())
+        {
             Volatile.Read(ref s_pool).Return(this);
+        }
     }
 
     /// <summary>
@@ -219,7 +237,9 @@ public sealed class ProduceResponse : IKafkaResponse
     internal bool TryPrepareForPool()
     {
         if (Responses.Length > MaxPooledTopicCapacity)
+        {
             return false;
+        }
 
         // Only entries this response touched can have grown or hold references; earlier
         // returns already vetted the rest, so the scan is O(this response's content) —
@@ -230,7 +250,9 @@ public sealed class ProduceResponse : IKafkaResponse
             topic.Name = string.Empty;
 
             if (topic.PartitionResponses is not { } partitions)
+            {
                 continue;
+            }
 
             if (partitions.Length > MaxPooledPartitionCapacity)
             {
@@ -263,12 +285,16 @@ public sealed class ProduceResponse : IKafkaResponse
     internal static void RatchetPoolSize(int poolSize)
     {
         if (poolSize <= Volatile.Read(ref s_pool).MaxPoolSize)
+        {
             return;
+        }
 
         lock (s_ratchetLock)
         {
             if (poolSize <= s_pool.MaxPoolSize)
+            {
                 return;
+            }
 
             Volatile.Write(ref s_pool, new ProduceResponsePool(poolSize));
         }
@@ -298,22 +324,34 @@ public struct ProduceResponseTopicData
     /// <summary>
     /// Topic name.
     /// </summary>
-    public string Name { get; internal set; }
+    public string Name
+    {
+        get; internal set;
+    }
 
     /// <summary>
     /// Topic ID returned instead of <see cref="Name"/> in Produce v13+.
     /// </summary>
-    public Guid TopicId { get; internal set; }
+    public Guid TopicId
+    {
+        get; internal set;
+    }
 
     /// <summary>
     /// Partition responses. Reusable array — <see cref="PartitionCount"/> indicates valid elements.
     /// </summary>
-    public ProduceResponsePartitionData[] PartitionResponses { get; internal set; }
+    public ProduceResponsePartitionData[] PartitionResponses
+    {
+        get; internal set;
+    }
 
     /// <summary>
     /// Number of valid entries in <see cref="PartitionResponses"/>.
     /// </summary>
-    public int PartitionCount { get; internal set; }
+    public int PartitionCount
+    {
+        get; internal set;
+    }
 
     /// <summary>
     /// Whether any consumed partition entry holds heap references (error message or
@@ -322,7 +360,10 @@ public struct ProduceResponseTopicData
     /// a mid-parse failure still gets cleaned. Direct constructors that populate
     /// reference-bearing entries must set this.
     /// </summary>
-    internal bool HasNestedReferences { get; set; }
+    internal bool HasNestedReferences
+    {
+        get; set;
+    }
 
     /// <summary>
     /// Non-pooled path: allocates a fresh struct and array. Used by tests and direct construction.
@@ -378,7 +419,9 @@ public struct ProduceResponseTopicData
                 ProduceResponse.MaxPartitionCount);
 
             if (PartitionResponses is null || PartitionResponses.Length < PartitionCount)
+            {
                 PartitionResponses = new ProduceResponsePartitionData[PartitionCount];
+            }
 
             // Conservative until the loop completes so a mid-parse failure still gets
             // its partially-written entries cleared on pool return.
@@ -406,7 +449,9 @@ public struct ProduceResponseTopicData
         }
 
         if (ProduceRequest.IsFlexibleVersion(version))
+        {
             reader.SkipTaggedFields();
+        }
     }
 }
 
@@ -417,47 +462,73 @@ public struct ProduceResponseTopicData
 /// </summary>
 public readonly struct ProduceResponsePartitionData
 {
-    public ProduceResponsePartitionData() { }
+    public ProduceResponsePartitionData()
+    {
+    }
 
     /// <summary>
     /// Partition index.
     /// </summary>
-    public required int Index { get; init; }
+    public required int Index
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Error code.
     /// </summary>
-    public required ErrorCode ErrorCode { get; init; }
+    public required ErrorCode ErrorCode
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Base offset assigned by the broker.
     /// </summary>
-    public required long BaseOffset { get; init; }
+    public required long BaseOffset
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Log append time (if using log append time).
     /// </summary>
-    public long LogAppendTimeMs { get; init; } = -1;
+    public long LogAppendTimeMs
+    {
+        get; init;
+    } = -1;
 
     /// <summary>
     /// Log start offset.
     /// </summary>
-    public long LogStartOffset { get; init; } = -1;
+    public long LogStartOffset
+    {
+        get; init;
+    } = -1;
 
     /// <summary>
     /// Record-level errors (v8+).
     /// </summary>
-    public BatchIndexAndErrorMessage[]? RecordErrors { get; init; }
+    public BatchIndexAndErrorMessage[]? RecordErrors
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Error message for the entire batch.
     /// </summary>
-    public string? ErrorMessage { get; init; }
+    public string? ErrorMessage
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Current leader reported by KIP-951 for retriable leader errors.
     /// </summary>
-    public LeaderIdAndEpoch? CurrentLeader { get; init; }
+    public LeaderIdAndEpoch? CurrentLeader
+    {
+        get; init;
+    }
 
     public static ProduceResponsePartitionData Read(ref KafkaProtocolReader reader, short version)
     {
@@ -541,12 +612,18 @@ public readonly struct BatchIndexAndErrorMessage
     /// <summary>
     /// Index of the record in the batch.
     /// </summary>
-    public required int BatchIndex { get; init; }
+    public required int BatchIndex
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Error message for this record.
     /// </summary>
-    public string? BatchIndexErrorMessage { get; init; }
+    public string? BatchIndexErrorMessage
+    {
+        get; init;
+    }
 
     public static BatchIndexAndErrorMessage Read(ref KafkaProtocolReader reader, short version)
     {
@@ -556,7 +633,9 @@ public readonly struct BatchIndexAndErrorMessage
             : reader.ReadString();
 
         if (ProduceRequest.IsFlexibleVersion(version))
+        {
             reader.SkipTaggedFields();
+        }
 
         return new BatchIndexAndErrorMessage
         {

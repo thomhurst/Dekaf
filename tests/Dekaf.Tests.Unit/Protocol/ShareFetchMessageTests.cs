@@ -17,7 +17,8 @@ public sealed class ShareFetchMessageTests
     {
         var partition = new ShareFetchRequestPartition
         {
-            PartitionIndex = 3, PartitionMaxBytes = 1024,
+            PartitionIndex = 3,
+            PartitionMaxBytes = 1024,
             AcknowledgementData = [new(10, 137, [2]), new(200, 202, [1, 3, 4])]
         };
         var direct = new ArrayBufferWriter<byte>();
@@ -49,7 +50,9 @@ public sealed class ShareFetchMessageTests
         var topicPartition = new TopicPartition("topic", 0);
         tracker.TrackDeliveredRecords(topicPartition, 10, 12);
         if (multipleRanges)
+        {
             tracker.ReleaseUndeliveredRecords(topicPartition, 20, 22);
+        }
         var first = tracker.FlushForPoll();
         var request = new ShareFetchRequestPartition { AcknowledgementData = first[topicPartition] };
         tracker.ReturnPollBatches(first);

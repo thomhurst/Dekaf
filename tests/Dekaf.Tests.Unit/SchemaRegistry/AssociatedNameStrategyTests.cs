@@ -124,14 +124,18 @@ public sealed class AssociatedNameStrategyTests
         var resolutions = new ValueTask<string>[32];
 
         for (var index = 0; index < resolutions.Length; index++)
+        {
             resolutions[index] = resolver.GetSubjectNameAsync("orders", "Order", isKey: true);
+        }
 
         await client.WaitForBlockedAssociationLookupAsync();
         await Assert.That(client.AssociationLookupCallCount).IsEqualTo(1);
         client.ReleaseBlockedAssociationLookup();
 
         for (var index = 0; index < resolutions.Length; index++)
+        {
             await Assert.That(await resolutions[index]).IsEqualTo("orders-associated-key");
+        }
         await Assert.That(client.AssociationLookupCallCount).IsEqualTo(1);
     }
 
@@ -288,7 +292,9 @@ public sealed class AssociatedNameStrategyTests
         var resolver = CreateResolver(client);
         await using var serializer = new SchemaRegistrySerializer<int>(
             client,
-            static (_, _) => { },
+            static (_, _) =>
+            {
+            },
             resolver,
             static _ => new Schema
             {
@@ -403,7 +409,9 @@ public sealed class AssociatedNameStrategyTests
         await AssociateAsync(client, "orders", "orders-associated-value");
         await using var serializer = new SchemaRegistrySerializer<int>(
             client,
-            static (_, _) => { },
+            static (_, _) =>
+            {
+            },
             static () => new Schema { SchemaType = SchemaType.Json, SchemaString = "{\"type\":\"integer\"}" },
             SubjectNameStrategy.AssociatedName);
 
@@ -421,7 +429,9 @@ public sealed class AssociatedNameStrategyTests
         var resolver = CreateResolver(client);
         await using var serializer = new SchemaRegistrySerializer<int>(
             client,
-            static (_, _) => { },
+            static (_, _) =>
+            {
+            },
             resolver,
             static () => new Schema { SchemaType = SchemaType.Json, SchemaString = "{\"type\":\"integer\"}" });
 
@@ -453,7 +463,9 @@ public sealed class AssociatedNameStrategyTests
         var resolver = CreateResolver(client);
         await using var serializer = new SchemaRegistrySerializer<int>(
             client,
-            static (_, _) => { },
+            static (_, _) =>
+            {
+            },
             resolver,
             static () => new Schema { SchemaType = SchemaType.Json, SchemaString = "{\"type\":\"integer\"}" });
         var prepared = await serializer.PrepareAsync("orders", 42);
@@ -519,8 +531,7 @@ public sealed class AssociatedNameStrategyTests
             ? new JsonSchemaRegistrySerializer<int>(
                 client,
                 """{"type":"integer"}""",
-                (System.Text.Json.Serialization.Metadata.JsonTypeInfo<int>)
-                    System.Text.Json.JsonSerializerOptions.Default.GetTypeInfo(typeof(int)),
+                (System.Text.Json.Serialization.Metadata.JsonTypeInfo<int>)System.Text.Json.JsonSerializerOptions.Default.GetTypeInfo(typeof(int)),
                 config)
             : new JsonSchemaRegistrySerializer<int>(
                 client,
@@ -1315,7 +1326,9 @@ public sealed class AssociatedNameStrategyTests
         var strategy = new FixedAsyncSubjectNameStrategy("configured-associated");
         await using var serializer = new SchemaRegistrySerializer<int>(
             client,
-            static (_, _) => { },
+            static (_, _) =>
+            {
+            },
             strategy,
             static () => new Schema
             {
@@ -1512,7 +1525,10 @@ public sealed class AssociatedNameStrategyTests
 
     private sealed class CapturingRuleExecutor : ISchemaRegistryRuleExecutor
     {
-        public string? Subject { get; private set; }
+        public string? Subject
+        {
+            get; private set;
+        }
 
         public ReadOnlyMemory<byte> TransformSerializedPayload(
             ReadOnlyMemory<byte> payload,
@@ -1529,7 +1545,10 @@ public sealed class AssociatedNameStrategyTests
 
     private sealed class FixedAsyncSubjectNameStrategy(string subject) : IAsyncSubjectNameStrategy
     {
-        public int CallCount { get; private set; }
+        public int CallCount
+        {
+            get; private set;
+        }
 
         public ValueTask<string> GetSubjectNameAsync(
             string topic,

@@ -296,6 +296,7 @@ public sealed class AdminClientTopicIdTests
         await using var context = new AdminTestContext();
 
         async Task Describe() => await context.Client.DescribeTopicsAsync([Guid.Empty]);
+
         async Task Delete() => await context.Client.DeleteTopicsAsync([Guid.Empty]);
 
         await Assert.That(Describe).Throws<ArgumentException>();
@@ -308,6 +309,7 @@ public sealed class AdminClientTopicIdTests
         var admin = Substitute.For<IAdminClient>();
 
         async Task Describe() => await admin.DescribeTopicsAsync([TopicId]);
+
         async Task Delete() => await admin.DeleteTopicsAsync([TopicId]);
 
         await Assert.That(Describe).Throws<NotSupportedException>();
@@ -350,12 +352,12 @@ public sealed class AdminClientTopicIdTests
         Guid topicId,
         ErrorCode errorCode,
         string? errorMessage = null) => new()
-    {
-        Name = name,
-        TopicId = topicId,
-        ErrorCode = errorCode,
-        ErrorMessage = errorMessage
-    };
+        {
+            Name = name,
+            TopicId = topicId,
+            ErrorCode = errorCode,
+            ErrorMessage = errorMessage
+        };
 
     private static DeleteTopicsResponse DeleteResponse(params DeleteTopicsResponseTopic[] topics) => new()
     {
@@ -405,7 +407,9 @@ public sealed class AdminClientTopicIdTests
                     DeleteRequests.Add(callInfo.ArgAt<DeleteTopicsRequest>(0));
                     DeleteVersions.Add(callInfo.ArgAt<short>(1));
                     if (!_deleteResponses.TryDequeue(out var response))
+                    {
                         throw new InvalidOperationException("No queued DeleteTopics response.");
+                    }
 
                     return ValueTask.FromResult(response);
                 });
@@ -442,11 +446,26 @@ public sealed class AdminClientTopicIdTests
                 _metadataManager);
         }
 
-        public AdminClient Client { get; }
-        public List<MetadataRequest> MetadataRequests { get; } = [];
-        public List<short> MetadataVersions { get; } = [];
-        public List<DeleteTopicsRequest> DeleteRequests { get; } = [];
-        public List<short> DeleteVersions { get; } = [];
+        public AdminClient Client
+        {
+            get;
+        }
+        public List<MetadataRequest> MetadataRequests
+        {
+            get;
+        } = [];
+        public List<short> MetadataVersions
+        {
+            get;
+        } = [];
+        public List<DeleteTopicsRequest> DeleteRequests
+        {
+            get;
+        } = [];
+        public List<short> DeleteVersions
+        {
+            get;
+        } = [];
 
         public void EnqueueMetadataResponse(MetadataResponse response) => _metadataResponses.Enqueue(response);
         public void SetMetadata(params TopicMetadata[] topics) => _metadataManager.Metadata.Update(MetadataResponseFor(topics));

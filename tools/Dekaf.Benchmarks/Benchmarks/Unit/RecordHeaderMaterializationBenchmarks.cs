@@ -31,7 +31,9 @@ public class RecordHeaderMaterializationBenchmarks
         var plan = RecordHeaderRoutingPlan.Create(_keyDeserializer, _valueDeserializer)!;
         var headers = new Header[32];
         for (var index = 0; index < headers.Length; index++)
+        {
             headers[index] = new Header($"header-{index}", Data);
+        }
         _pooledHeaders = headers;
         _headerLookup = new RecordHeaderRoutingLookup(
             plan,

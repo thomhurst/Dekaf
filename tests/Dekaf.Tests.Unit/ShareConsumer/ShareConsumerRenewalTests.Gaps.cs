@@ -90,11 +90,19 @@ public sealed partial class ShareConsumerRenewalTests
         await Assert.That(connection.ShareFetchRequests.Count).IsEqualTo(2);
         var sent = new List<AcknowledgementBatchData>();
         foreach (var request in connection.ShareAcknowledgeRequests)
+        {
             foreach (var batch in request.Topics[0].Partitions[0].AcknowledgementBatches)
+            {
                 sent.Add(new(batch.FirstOffset, batch.LastOffset, batch.AcknowledgeTypes.ToArray()));
+            }
+        }
         if (connection.ShareFetchRequests[1].Topics[0].Partitions[0].AcknowledgementBatches is { } inline)
+        {
             foreach (var batch in inline)
+            {
                 sent.Add(new(batch.FirstOffset, batch.LastOffset, batch.AcknowledgeTypes.ToArray()));
+            }
+        }
         var types = ExpandFlushedTypes(sent);
         await AssertGapTypes(types, mode == ShareAcknowledgementMode.Implicit ? AcknowledgeType.Accept : null,
             tail == GapResponseTail.None ? GapResponseGaps : TruncatedResponseGaps, expectedDelivered);
@@ -161,7 +169,9 @@ public sealed partial class ShareConsumerRenewalTests
         await using (var poll = fixture.Consumer.PollAsync().GetAsyncEnumerator())
         {
             for (var index = 0; index < GapResponseDataOffsets.Length; index++)
+            {
                 await Assert.That(await poll.MoveNextAsync()).IsTrue();
+            }
             fixture.Consumer.Unsubscribe();
         }
         await fixture.Consumer.DisposeAsync();
@@ -172,11 +182,19 @@ public sealed partial class ShareConsumerRenewalTests
         // Releasing a gap would only make the broker acquire it again. The final epoch
         // releases the delivered records without listing them.
         foreach (var (first, last) in GapResponseGaps)
+        {
             for (var offset = first; offset <= last; offset++)
+            {
                 await Assert.That(types[offset]).IsEqualTo((byte)AcknowledgeType.Gap);
+            }
+        }
         foreach (var offset in GapResponseDataOffsets)
+        {
             if (types.TryGetValue(offset, out var type))
+            {
                 await Assert.That(type).IsEqualTo((byte)AcknowledgeType.Release);
+            }
+        }
     }
 
     [Test]
@@ -214,7 +232,9 @@ public sealed partial class ShareConsumerRenewalTests
         await Assert.That(await poll.MoveNextAsync()).IsTrue();
         var records = new List<ShareBatchRecord<string, string>>();
         foreach (var record in poll.Current)
+        {
             records.Add(record);
+        }
         poll.Current.Acknowledge(records[0]);
         poll.Current.Acknowledge(records[2], AcknowledgeType.Reject);
 
@@ -231,11 +251,19 @@ public sealed partial class ShareConsumerRenewalTests
     {
         var expected = new Dictionary<long, byte>();
         foreach (var (first, last) in gaps)
+        {
             for (var offset = first; offset <= last; offset++)
+            {
                 expected[offset] = (byte)AcknowledgeType.Gap;
+            }
+        }
         if (deliveredType is { } type)
+        {
             foreach (var offset in deliveredOffsets ?? GapResponseDataOffsets)
+            {
                 expected[offset] = (byte)type;
+            }
+        }
         await Assert.That(types).IsEquivalentTo(expected);
     }
 
@@ -247,11 +275,15 @@ public sealed partial class ShareConsumerRenewalTests
         {
             // The broker rejects unordered or overlapping acknowledgement batches.
             if (batch.FirstOffset <= previousLast)
+            {
                 throw new InvalidOperationException($"Batch at {batch.FirstOffset} overlaps or is unordered.");
+            }
             previousLast = batch.LastOffset;
             var expanded = ExpandAcknowledgementTypes(batch.FirstOffset, batch.LastOffset, batch.AcknowledgeTypes).ToArray();
             for (var index = 0; index < expanded.Length; index++)
+            {
                 types.Add(batch.FirstOffset + index, expanded[index]);
+            }
         }
         return types;
     }

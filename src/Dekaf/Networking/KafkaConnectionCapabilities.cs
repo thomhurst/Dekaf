@@ -7,7 +7,10 @@ namespace Dekaf.Networking;
 
 internal interface IKafkaCapabilityProvider
 {
-    KafkaConnectionCapabilities Capabilities { get; }
+    KafkaConnectionCapabilities Capabilities
+    {
+        get;
+    }
 }
 
 /// <summary>
@@ -37,13 +40,21 @@ internal sealed class KafkaConnectionCapabilities
         ZkMigrationReady = zkMigrationReady;
     }
 
-    public long FinalizedFeaturesEpoch { get; }
-    public bool ZkMigrationReady { get; }
+    public long FinalizedFeaturesEpoch
+    {
+        get;
+    }
+    public bool ZkMigrationReady
+    {
+        get;
+    }
 
     public static KafkaConnectionCapabilities Create(ApiVersionsResponse response)
     {
         if (response.ErrorCode != ErrorCode.None)
+        {
             throw new InvalidOperationException($"ApiVersions failed: {response.ErrorCode}");
+        }
 
         var ranges = new int[ApiKeyCount];
         Array.Fill(ranges, MissingRange);
@@ -52,7 +63,9 @@ internal sealed class KafkaConnectionCapabilities
         {
             var key = (int)version.ApiKey;
             if ((uint)key >= (uint)ranges.Length || version.MinVersion > version.MaxVersion)
+            {
                 continue;
+            }
 
             ranges[key] = Pack(version.MinVersion, version.MaxVersion);
         }
@@ -82,7 +95,9 @@ internal sealed class KafkaConnectionCapabilities
     {
         var key = (int)apiKey;
         if ((uint)key >= (uint)_apiRanges.Length)
+        {
             return false;
+        }
 
         var range = _apiRanges[key];
         return range != MissingRange && version >= UnpackMin(range) && version <= UnpackMax(range);
@@ -95,7 +110,9 @@ internal sealed class KafkaConnectionCapabilities
 
         var key = (int)apiKey;
         if ((uint)key >= (uint)_apiRanges.Length || _apiRanges[key] == MissingRange)
+        {
             ApiVersionNegotiator.ThrowApiAbsent(apiKey, clientMinVersion, clientMaxVersion);
+        }
 
         var range = _apiRanges[key];
         var brokerMinVersion = UnpackMin(range);
@@ -213,10 +230,14 @@ internal sealed class KafkaConnectionCapabilities
             source?.Count ?? 0,
             StringComparer.Ordinal);
         if (source is null)
+        {
             return copy;
+        }
 
         foreach (var feature in source)
+        {
             copy.TryAdd(feature.Name, feature);
+        }
 
         return copy;
     }

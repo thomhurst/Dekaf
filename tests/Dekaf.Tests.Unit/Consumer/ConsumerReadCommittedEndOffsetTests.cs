@@ -36,7 +36,9 @@ public sealed class ConsumerReadCommittedEndOffsetTests
 
         var pendingItems = await InvokeFetchFromBrokerAsync(consumer);
         if (pendingItems is not null)
+        {
             ConsumerFetchPools.ReturnPendingFetchDataList(pendingItems);
+        }
 
         await AssertEof(consumer, expectEof);
     }
@@ -66,7 +68,9 @@ public sealed class ConsumerReadCommittedEndOffsetTests
 
         var pendingItems = await InvokeFetchFromBrokerAsync(consumer);
         if (pendingItems is not null)
+        {
             ConsumerFetchPools.ReturnPendingFetchDataList(pendingItems);
+        }
         var positions = (ConcurrentDictionary<TopicPartition, long>)GetField("_positions").GetValue(consumer)!;
         positions[Partition0] = Position;
 
@@ -75,7 +79,9 @@ public sealed class ConsumerReadCommittedEndOffsetTests
         foreach (var tag in measurement.Tags)
         {
             if (tag.Key == "messaging.destination.partition.id")
+            {
                 partitionId = tag.Value;
+            }
         }
 
         await Assert.That(measurement.Value).IsEqualTo(expectedLag);
@@ -88,9 +94,13 @@ public sealed class ConsumerReadCommittedEndOffsetTests
         var eofs = (ConcurrentQueue<(TopicPartition Partition, long Offset)>)GetField("_pendingEofEvents")
             .GetValue(consumer)!;
         if (expectEof)
+        {
             await Assert.That(eofs.Single()).IsEqualTo((Partition0, Position));
+        }
         else
+        {
             await Assert.That(eofs).IsEmpty();
+        }
     }
 
     private static MetadataManager CreateMetadataManager(out IConnectionPool pool)
@@ -191,7 +201,9 @@ public sealed class ConsumerReadCommittedEndOffsetTests
             consumer,
             [1, new List<TopicPartition> { Partition0 }, GetFetchBufferEpoch(consumer), CancellationToken.None]);
         if (result is not ValueTask<List<PendingFetchData>?> valueTask)
+        {
             throw new InvalidOperationException("FetchFromBrokerAsync returned unexpected type");
+        }
 
         return await valueTask.ConfigureAwait(false);
     }
@@ -206,7 +218,9 @@ public sealed class ConsumerReadCommittedEndOffsetTests
             consumer,
             [1, new List<TopicPartition> { Partition0 }, 0, 1, 0, GetFetchBufferEpoch(consumer), CancellationToken.None]);
         if (result is not ValueTask valueTask)
+        {
             throw new InvalidOperationException("PrefetchFromBrokerAsync returned unexpected type");
+        }
 
         await valueTask.ConfigureAwait(false);
     }

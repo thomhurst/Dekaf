@@ -82,7 +82,9 @@ public sealed class AdaptiveScaleDownTests
                 "RecordSendLoopPressureIfScaleUseful",
                 BindingFlags.Instance | BindingFlags.NonPublic)!;
             for (var i = 0; i < 100; i++)
+            {
                 recordPressure.Invoke(sender, null);
+            }
 
             InvokeMaybeScaleConnections(sender);
             InvokeMaybeScaleConnections(sender);
@@ -295,7 +297,9 @@ public sealed class AdaptiveScaleDownTests
             var knownPartitions = GetField<HashSet<TopicPartition>>(sender, "_knownPartitions");
             knownPartitions.Add(new TopicPartition(Topic, 0));
             for (var i = 0; i < 100; i++)
+            {
                 budget.RecordAdmissionBlock();
+            }
 
             InvokeMaybeScaleConnections(sender);
             await pool.DidNotReceive().ScaleConnectionGroupAsync(
@@ -313,9 +317,7 @@ public sealed class AdaptiveScaleDownTests
         }
     }
 
-    private static (
-        ConnectionPool Pool,
-        ConnectionPoolTests.TestIdleConnection[] Connections) CreateIdleConnectionPool(int connectionCount)
+    private static (ConnectionPool Pool, ConnectionPoolTests.TestIdleConnection[] Connections) CreateIdleConnectionPool(int connectionCount)
     {
         var connections = new ConnectionPoolTests.TestIdleConnection[connectionCount];
         var pool = new ConnectionPool(
@@ -417,7 +419,9 @@ public sealed class AdaptiveScaleDownTests
                 await Assert.That(metadataManager.GetPartitionsForNode(1)).IsEmpty();
                 await Assert.That(GetField<int>(sender, "_retainedConnectionIndexCount")).IsEqualTo(0);
                 foreach (var connection in connections)
+                {
                     connection.LastUsedTimestampMs = StaleIdleTimestamp();
+                }
 
                 var reaped = await pool.ReapIdleConnectionsAsync();
 
@@ -503,7 +507,9 @@ public sealed class AdaptiveScaleDownTests
                 senderType.GetMethod("ApplyScaleDown", BindingFlags.Instance | BindingFlags.NonPublic)!
                     .Invoke(sender, [removedConnection!]);
 
-                using (await GetConnectionLeaseAtIndexAsync(sender, 0)) { }
+                using (await GetConnectionLeaseAtIndexAsync(sender, 0))
+                {
+                }
 
                 await pool.ScaleConnectionGroupAsync(1, 2);
                 senderType.GetMethod("ApplyScaleUp", BindingFlags.Instance | BindingFlags.NonPublic)!
@@ -610,7 +616,9 @@ public sealed class AdaptiveScaleDownTests
             new CompressionCodecRegistry(),
             inflightTracker: new PartitionInflightTracker(),
             getProduceApiVersion: () => 9,
-            setProduceApiVersion: _ => { },
+            setProduceApiVersion: _ =>
+            {
+            },
             isTransactional: () => false,
             tryEnsurePartitionsInTransaction: null,
             bumpEpoch: null,
@@ -719,7 +727,9 @@ public sealed class AdaptiveScaleDownTests
             // Wave 1: enough backlog across more partitions than connections to build
             // send-loop pressure and trigger a scale-up.
             for (var i = 0; i < 512; i++)
+            {
                 sender.Enqueue(CreateTestBatch(vtPool, i % PartitionCount));
+            }
 
             var scaledConnectionCount = await scaleUpApplied.Task.WaitAsync(cancellationToken);
             await Assert.That(scaledConnectionCount).IsGreaterThan(options.ConnectionsPerBroker);
@@ -750,7 +760,9 @@ public sealed class AdaptiveScaleDownTests
             // the send loop is already dead at this point and every one of these fails with
             // ObjectDisposedException.
             for (var i = 0; i < 128; i++)
+            {
                 sender.Enqueue(CreateTestBatch(vtPool, i % PartitionCount));
+            }
 
             await WaitForSuccessfulAcknowledgementsAsync(
                 acknowledgements.Reader, expectedCount: 128, cancellationToken);
@@ -1083,7 +1095,9 @@ public sealed class AdaptiveScaleDownTests
                 "MutePartition",
                 BindingFlags.Instance | BindingFlags.NonPublic)!;
             for (var partition = 0; partition < activePartitionCount; partition++)
+            {
                 mutePartition.Invoke(sender, [new TopicPartition(Topic, partition)]);
+            }
 
             InvokeMaybeScaleConnections(sender);
             InvokeMaybeScaleConnections(sender);
@@ -1124,7 +1138,9 @@ public sealed class AdaptiveScaleDownTests
                 "MutePartition",
                 BindingFlags.Instance | BindingFlags.NonPublic)!;
             for (var partition = 0; partition < 3; partition++)
+            {
                 mutePartition.Invoke(sender, [new TopicPartition(Topic, partition)]);
+            }
 
             // Simulate all partitions clearing between scale checks without calling
             // UnmutePartition, whose wake event lets the live sender loop race this
@@ -1236,7 +1252,9 @@ public sealed class AdaptiveScaleDownTests
             BindingFlags.NonPublic)!;
         var carryOver = Activator.CreateInstance(carryOverType)!;
         if (batch is null)
+        {
             return carryOver;
+        }
 
         var batchReferenceType = typeof(BrokerSender).GetNestedType(
             "BatchReference",
@@ -1292,7 +1310,9 @@ public sealed class AdaptiveScaleDownTests
         try
         {
             using (var endpointLease = await GetConnectionLeaseAtIndexAsync(sender, 0))
+            {
                 await Assert.That(endpointLease.Connection).IsSameReferenceAs(endpointConnection);
+            }
 
             typeof(BrokerSender).GetMethod(
                     "ApplyScaleUp",

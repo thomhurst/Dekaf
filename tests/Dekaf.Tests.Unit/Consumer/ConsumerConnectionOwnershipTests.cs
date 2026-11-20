@@ -220,7 +220,9 @@ public sealed class ConsumerConnectionOwnershipTests
         {
             await consumer.DisposeAsync();
             if (!ownsInfrastructure)
+            {
                 await metadataManager.DisposeAsync();
+            }
         }
     }
 
@@ -304,7 +306,9 @@ public sealed class ConsumerConnectionOwnershipTests
         finally
         {
             if (!leaseReleased)
+            {
                 removedConnection.ReleaseLease();
+            }
             await consumer.DisposeAsync();
         }
 
@@ -369,7 +373,9 @@ public sealed class ConsumerConnectionOwnershipTests
         finally
         {
             if (!firstLeaseReleased)
+            {
                 firstConnection.ReleaseLease();
+            }
             await consumer.DisposeAsync();
         }
     }
@@ -463,7 +469,9 @@ public sealed class ConsumerConnectionOwnershipTests
         finally
         {
             if (!leaseReleased)
+            {
                 removedConnection.ReleaseLease();
+            }
             await consumer.DisposeAsync();
         }
 
@@ -486,7 +494,9 @@ public sealed class ConsumerConnectionOwnershipTests
             new() { NodeId = 1, Host = "localhost", Port = 9092 }
         };
         if (includeSecondBroker)
+        {
             brokers.Add(new BrokerMetadata { NodeId = 2, Host = "localhost", Port = 9093 });
+        }
 
         metadataManager.SetApiVersion(
             ApiKey.Fetch,
@@ -604,7 +614,9 @@ public sealed class ConsumerConnectionOwnershipTests
             {
                 var leaseCount = Volatile.Read(ref _leaseCount);
                 if (leaseCount > 0)
+                {
                     _retirementLeaseObserved.TrySetResult();
+                }
                 return leaseCount;
             }
         }
@@ -709,11 +721,23 @@ public sealed class ConsumerConnectionOwnershipTests
     {
         public ulong PreviewProducerLimit() => 1;
         public ulong PreviewConsumerLimit() => 1;
-        public void RegisterProducer(IBudgetedInstance instance) { }
-        public void UnregisterProducer(IBudgetedInstance instance) { }
-        public void RegisterConsumer(IBudgetedInstance instance) { }
-        public void UnregisterConsumer(IBudgetedInstance instance) { }
-        public void ReserveExplicit(ulong bytes) { }
-        public void ReleaseExplicit(ulong bytes) { }
+        public void RegisterProducer(IBudgetedInstance instance)
+        {
+        }
+        public void UnregisterProducer(IBudgetedInstance instance)
+        {
+        }
+        public void RegisterConsumer(IBudgetedInstance instance)
+        {
+        }
+        public void UnregisterConsumer(IBudgetedInstance instance)
+        {
+        }
+        public void ReserveExplicit(ulong bytes)
+        {
+        }
+        public void ReleaseExplicit(ulong bytes)
+        {
+        }
     }
 }

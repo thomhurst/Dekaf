@@ -225,7 +225,10 @@ public sealed class InterceptorExceptionTests(KafkaTestContainer kafka) : KafkaI
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))
         {
             consumed.Add(msg);
-            if (consumed.Count >= messageCount) break;
+            if (consumed.Count >= messageCount)
+            {
+                break;
+            }
         }
 
         await Assert.That(consumed).Count().IsEqualTo(messageCount);
@@ -277,7 +280,10 @@ public sealed class InterceptorExceptionTests(KafkaTestContainer kafka) : KafkaI
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))
         {
             consumed.Add(msg);
-            if (consumed.Count >= messageCount) break;
+            if (consumed.Count >= messageCount)
+            {
+                break;
+            }
         }
 
         await Assert.That(consumed).Count().IsEqualTo(messageCount);

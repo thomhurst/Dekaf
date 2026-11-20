@@ -30,7 +30,9 @@ public sealed class FencedBrokerDiscoveryIntegrationTests
         {
             var snapshot = await admin.DescribeClusterAsync(options, observation.Token);
             if (snapshot.Nodes.Any(node => node.NodeId == 3 && node.IsFenced == true))
+            {
                 break;
+            }
             await Task.Delay(TimeSpan.FromMilliseconds(100), observation.Token);
         }
 
@@ -44,7 +46,9 @@ public sealed class FencedBrokerDiscoveryIntegrationTests
         {
             var cached = await admin.DescribeClusterAsync(observation.Token);
             if (!cached.Nodes.Any(node => node.NodeId == 3))
+            {
                 break;
+            }
             await Task.Delay(TimeSpan.FromMilliseconds(100), observation.Token);
         }
     }

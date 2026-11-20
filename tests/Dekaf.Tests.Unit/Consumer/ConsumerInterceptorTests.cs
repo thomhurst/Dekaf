@@ -215,12 +215,17 @@ public sealed class ConsumerInterceptorTests
     private sealed class NoOpConsumerInterceptor : IConsumerInterceptor<string, string>
     {
         public ConsumeResult<string, string> OnConsume(ConsumeResult<string, string> result) => result;
-        public void OnCommit(IReadOnlyList<TopicPartitionOffset> offsets) { }
+        public void OnCommit(IReadOnlyList<TopicPartitionOffset> offsets)
+        {
+        }
     }
 
     private sealed class ConsumeTrackingInterceptor : IConsumerInterceptor<string, string>
     {
-        public List<ConsumeResult<string, string>> ConsumedResults { get; } = [];
+        public List<ConsumeResult<string, string>> ConsumedResults
+        {
+            get;
+        } = [];
 
         public ConsumeResult<string, string> OnConsume(ConsumeResult<string, string> result)
         {
@@ -228,7 +233,9 @@ public sealed class ConsumerInterceptorTests
             return result;
         }
 
-        public void OnCommit(IReadOnlyList<TopicPartitionOffset> offsets) { }
+        public void OnCommit(IReadOnlyList<TopicPartitionOffset> offsets)
+        {
+        }
     }
 
     private sealed class OrderTrackingConsumerInterceptor : IConsumerInterceptor<string, string>
@@ -248,7 +255,9 @@ public sealed class ConsumerInterceptorTests
             return result;
         }
 
-        public void OnCommit(IReadOnlyList<TopicPartitionOffset> offsets) { }
+        public void OnCommit(IReadOnlyList<TopicPartitionOffset> offsets)
+        {
+        }
     }
 
     private sealed class ThrowingOnConsumeInterceptor : IConsumerInterceptor<string, string>
@@ -258,12 +267,17 @@ public sealed class ConsumerInterceptorTests
             throw new InvalidOperationException("Interceptor error on consume");
         }
 
-        public void OnCommit(IReadOnlyList<TopicPartitionOffset> offsets) { }
+        public void OnCommit(IReadOnlyList<TopicPartitionOffset> offsets)
+        {
+        }
     }
 
     private sealed class CommitTrackingInterceptor : IConsumerInterceptor<string, string>
     {
-        public List<IReadOnlyList<TopicPartitionOffset>> CommittedOffsets { get; } = [];
+        public List<IReadOnlyList<TopicPartitionOffset>> CommittedOffsets
+        {
+            get;
+        } = [];
 
         public ConsumeResult<string, string> OnConsume(ConsumeResult<string, string> result) => result;
 

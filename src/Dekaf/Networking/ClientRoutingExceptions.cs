@@ -16,7 +16,10 @@ namespace Dekaf.Networking;
 internal sealed class UnknownBrokerException(int brokerId)
     : InvalidOperationException($"Unknown broker ID: {brokerId}")
 {
-    public int BrokerId { get; } = brokerId;
+    public int BrokerId
+    {
+        get;
+    } = brokerId;
 }
 
 /// <summary>

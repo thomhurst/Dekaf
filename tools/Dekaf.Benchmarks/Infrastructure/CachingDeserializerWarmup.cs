@@ -28,9 +28,13 @@ internal static class CachingDeserializerWarmup
             + 8 * CachingStringDeserializer.ObserveSampleStride * CachingStringDeserializer.PromoteSampledHits;
 
         for (var i = 0; i < maxLookups && !deserializer.IsCacheEnabled; i++)
+        {
             deserializer.Deserialize(payloads[i % payloads.Length], context);
+        }
 
         if (!deserializer.IsCacheEnabled)
+        {
             throw new InvalidOperationException("Payload reuse did not promote the cache.");
+        }
     }
 }

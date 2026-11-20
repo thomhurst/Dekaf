@@ -24,7 +24,10 @@ internal sealed class OutboxWorkloadState
     public long Committed => Volatile.Read(ref _committed);
     public long Completed => Volatile.Read(ref _completed);
     public long Duplicates => Volatile.Read(ref _duplicates);
-    public LatencyTracker Latency { get; } = new();
+    public LatencyTracker Latency
+    {
+        get;
+    } = new();
 
     public OutboxWorkloadState(int messageSize, int partitions, long runIdentity)
     {
@@ -34,14 +37,18 @@ internal sealed class OutboxWorkloadState
         _runIdentity = runIdentity;
         _readOffsets = new long[partitions];
         for (var i = 0; i < WindowSize; i++)
+        {
             _completedSequences[i] = i - WindowSize;
+        }
     }
 
     public void BeginCycle(ThroughputTracker throughput)
     {
         ThrowIfFailed();
         if (Reserved != Committed || Completed != Committed)
+        {
             throw new InvalidOperationException("The previous outbox phase has not fully drained.");
+        }
         Latency.Reset();
         _throughput = throughput;
     }
@@ -53,7 +60,9 @@ internal sealed class OutboxWorkloadState
         sequence = _reserved;
         if (sequence - Completed >= WindowSize
             || Volatile.Read(ref _completedSequences[sequence % WindowSize]) != sequence - WindowSize)
+        {
             return false;
+        }
         Volatile.Write(ref _reserved, sequence + 1);
         return true;
     }
@@ -63,7 +72,9 @@ internal sealed class OutboxWorkloadState
         ArgumentOutOfRangeException.ThrowIfLessThan(count, 1);
         var committed = _committed + count;
         if (committed > Reserved)
+        {
             throw new InvalidOperationException("Committed rows exceed reserved message identities.");
+        }
         Volatile.Write(ref _committed, committed);
     }
 
@@ -80,14 +91,20 @@ internal sealed class OutboxWorkloadState
     {
         if (payload is null || payload.Length != _messageSize
             || BinaryPrimitives.ReadInt64LittleEndian(payload.AsSpan(16)) != _runIdentity)
+        {
             throw new InvalidOperationException("The outbox record does not belong to this workload.");
+        }
         var sequence = BinaryPrimitives.ReadInt64LittleEndian(payload);
         var timestamp = BinaryPrimitives.ReadInt64LittleEndian(payload.AsSpan(8));
         var elapsed = Stopwatch.GetTimestamp() - timestamp;
         if (sequence < 0 || sequence >= Reserved || timestamp <= 0 || elapsed < 0)
+        {
             throw new InvalidOperationException("The outbox record has an invalid identity or timestamp.");
+        }
         if ((uint)partition >= (uint)_readOffsets.Length || offset != _readOffsets[partition])
+        {
             throw new InvalidOperationException("The Kafka reader skipped or repeated a partition offset.");
+        }
         Volatile.Write(ref _readOffsets[partition], offset + 1);
 
         ref var slot = ref _completedSequences[sequence % WindowSize];
@@ -98,7 +115,9 @@ internal sealed class OutboxWorkloadState
             return false;
         }
         if (previous != sequence - WindowSize)
+        {
             throw new InvalidOperationException("An outbox identity skipped an unfinished slot generation.");
+        }
         Latency.RecordTicks(elapsed);
         _throughput!.RecordMessage(payload.Length);
         Interlocked.Increment(ref _completed);
@@ -108,10 +127,16 @@ internal sealed class OutboxWorkloadState
     public bool HasReadThrough(long[] endOffsets)
     {
         if (endOffsets.Length != _readOffsets.Length)
+        {
             throw new ArgumentException("Partition counts do not match.", nameof(endOffsets));
+        }
         for (var i = 0; i < endOffsets.Length; i++)
+        {
             if (Volatile.Read(ref _readOffsets[i]) < endOffsets[i])
+            {
                 return false;
+            }
+        }
         return true;
     }
 
@@ -120,6 +145,8 @@ internal sealed class OutboxWorkloadState
     public void ThrowIfFailed()
     {
         if (Volatile.Read(ref _failure) is { } failure)
+        {
             ExceptionDispatchInfo.Capture(failure).Throw();
+        }
     }
 }

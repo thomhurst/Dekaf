@@ -37,7 +37,9 @@ internal sealed class AliCloudSdkKmsClientFactory : IAliCloudKmsClientFactory
                 .ExternalId(configuration.RoleExternalId);
 
             if (configuration.RoleSessionExpiration is { } expiration)
+            {
                 builder.DurationSeconds(expiration);
+            }
 
             if (configuration.AccessKeyId is not null)
             {
@@ -79,16 +81,18 @@ internal sealed class AliCloudSdkKmsClient(Client client) : IAliCloudKmsClient
         CancellationToken cancellationToken = default)
     {
         var response = await _client.EncryptAsync(new EncryptRequest
-            {
-                KeyId = keyId,
-                Plaintext = AliCloudKmsWireEncoding.EncodePlaintext(plaintext.Span)
-            })
+        {
+            KeyId = keyId,
+            Plaintext = AliCloudKmsWireEncoding.EncodePlaintext(plaintext.Span)
+        })
             .WaitAsync(cancellationToken)
             .ConfigureAwait(false);
 
         var ciphertext = response.Body?.CiphertextBlob;
         if (string.IsNullOrEmpty(ciphertext))
+        {
             return [];
+        }
 
         return AliCloudKmsWireEncoding.EncodeCiphertext(ciphertext);
     }
@@ -98,9 +102,9 @@ internal sealed class AliCloudSdkKmsClient(Client client) : IAliCloudKmsClient
         CancellationToken cancellationToken = default)
     {
         var response = await _client.DecryptAsync(new DecryptRequest
-            {
-                CiphertextBlob = AliCloudKmsWireEncoding.DecodeCiphertext(ciphertext.Span)
-            })
+        {
+            CiphertextBlob = AliCloudKmsWireEncoding.DecodeCiphertext(ciphertext.Span)
+        })
             .WaitAsync(cancellationToken)
             .ConfigureAwait(false);
 

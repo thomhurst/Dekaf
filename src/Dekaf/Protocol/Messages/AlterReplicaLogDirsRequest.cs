@@ -13,7 +13,10 @@ public sealed class AlterReplicaLogDirsRequest : IKafkaRequest<AlterReplicaLogDi
     /// <summary>
     /// The directory assignments to apply.
     /// </summary>
-    public required IReadOnlyList<AlterReplicaLogDirsRequestDir> Dirs { get; init; }
+    public required IReadOnlyList<AlterReplicaLogDirsRequestDir> Dirs
+    {
+        get; init;
+    }
 
     public static bool IsFlexibleVersion(short version) => version >= 2;
 
@@ -48,12 +51,18 @@ public sealed class AlterReplicaLogDirsRequestDir
     /// <summary>
     /// Absolute log directory path.
     /// </summary>
-    public required string Path { get; init; }
+    public required string Path
+    {
+        get; init;
+    }
 
     /// <summary>
     /// Topics to add to this directory.
     /// </summary>
-    public required IReadOnlyList<AlterReplicaLogDirsRequestTopic> Topics { get; init; }
+    public required IReadOnlyList<AlterReplicaLogDirsRequestTopic> Topics
+    {
+        get; init;
+    }
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {
@@ -81,8 +90,14 @@ public sealed class AlterReplicaLogDirsRequestDir
 /// </summary>
 public sealed class AlterReplicaLogDirsRequestTopic
 {
-    public required string Name { get; init; }
-    public required IReadOnlyList<int> Partitions { get; init; }
+    public required string Name
+    {
+        get; init;
+    }
+    public required IReadOnlyList<int> Partitions
+    {
+        get; init;
+    }
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {

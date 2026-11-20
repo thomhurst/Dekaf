@@ -52,7 +52,9 @@ public sealed class ShareRecordBatchOwnerTests
             for (var poll = 0; poll < 70; poll++)
             {
                 for (var index = 0; index < owners.Length; index++)
+                {
                     owners[index] = pool.Rent(RecordBatch.RentFromPool());
+                }
                 foreach (var owner in owners)
                 {
                     owner.Release();
@@ -68,12 +70,16 @@ public sealed class ShareRecordBatchOwnerTests
             foreach (var owner in owners)
             {
                 if (owner is null)
+                {
                     continue;
+                }
                 owner.Release();
                 owner.Release();
             }
             foreach (var owner in renewed)
+            {
                 owner.Release();
+            }
         }
     }
 
@@ -105,7 +111,10 @@ public sealed class ShareRecordBatchOwnerTests
                 await Assert.That(current.AcknowledgeType).IsEqualTo(type);
                 await Assert.That(current.BatchOwner).IsSameReferenceAs(owner);
             }
-            await Assert.That(() => { _ = original.BatchOwner; }).Throws<InvalidOperationException>();
+            await Assert.That(() =>
+            {
+                _ = original.BatchOwner;
+            }).Throws<InvalidOperationException>();
         }
         finally
         {
@@ -185,7 +194,10 @@ public sealed class ShareRecordBatchOwnerTests
         stale.AttachBatchOwner(root);
         root.Retain(); // Renewal keeps a separate reference from parser and poll.
         root.ReleasePoll();
-        await Assert.That(() => { _ = stale.BatchOwner; }).Throws<InvalidOperationException>();
+        await Assert.That(() =>
+        {
+            _ = stale.BatchOwner;
+        }).Throws<InvalidOperationException>();
 
         var parser = root.RefreshGeneration();
         parser.Retain(); // Next poll takes its own reference.
@@ -219,7 +231,10 @@ public sealed class ShareRecordBatchOwnerTests
 
     private sealed class CountingBufferPool : ArrayPool<byte>
     {
-        internal int Returns { get; private set; }
+        internal int Returns
+        {
+            get; private set;
+        }
         public override byte[] Rent(int minimumLength) => new byte[minimumLength];
         public override void Return(byte[] array, bool clearArray = false)
         {
@@ -271,6 +286,10 @@ public sealed class ShareRecordBatchOwnerTests
 
     private static ShareConsumeResult<int, int> CreateRecord(int deliveryCount, int partition = 0) => new()
     {
-        Topic = "topic", Partition = partition, Offset = 7, Value = 42, DeliveryCount = deliveryCount
+        Topic = "topic",
+        Partition = partition,
+        Offset = 7,
+        Value = 42,
+        DeliveryCount = deliveryCount
     };
 }

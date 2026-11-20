@@ -13,12 +13,18 @@ public sealed class DeleteShareGroupOffsetsRequest : IKafkaRequest<DeleteShareGr
     /// <summary>
     /// The group ID.
     /// </summary>
-    public required string GroupId { get; init; }
+    public required string GroupId
+    {
+        get; init;
+    }
 
     /// <summary>
     /// The topics to delete offsets for.
     /// </summary>
-    public required IReadOnlyList<DeleteShareGroupOffsetsRequestTopic> Topics { get; init; }
+    public required IReadOnlyList<DeleteShareGroupOffsetsRequestTopic> Topics
+    {
+        get; init;
+    }
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {
@@ -41,7 +47,10 @@ public sealed class DeleteShareGroupOffsetsRequestTopic
     /// <summary>
     /// The topic name.
     /// </summary>
-    public required string TopicName { get; init; }
+    public required string TopicName
+    {
+        get; init;
+    }
 
     public void Write(ref KafkaProtocolWriter writer)
     {

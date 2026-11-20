@@ -24,7 +24,9 @@ internal static class KeyedConsumerWorkload
         _ = KeySize(shape);
         if (partitions is < 1 or > 6 || recordsPerPartition is < KeyCount or > 65536
             || recordsPerPartition % KeyCount != 0 || messageSize is < 8 or > 4096)
+        {
             throw new ArgumentException("Keyed replay requires 1..6 partitions, 32..65536 records per partition (multiple of 32), and 8..4096 value bytes.");
+        }
     }
 
     internal static byte[] CreateBinaryKey(string shape, int id)
@@ -40,7 +42,10 @@ internal static class KeyedConsumerWorkload
 
     internal static int ReadBinaryKey(string shape, byte[] key)
     {
-        if (key.Length != KeySize(shape)) throw new InvalidOperationException("Unexpected key size.");
+        if (key.Length != KeySize(shape))
+        {
+            throw new InvalidOperationException("Unexpected key size.");
+        }
         return BinaryPrimitives.ReadInt32LittleEndian(key.AsSpan(shape == "large-colliding" ? key.Length - 32 : 0));
     }
 }
@@ -55,7 +60,10 @@ internal sealed class KeyedConsumerPass
     private readonly CancellationTokenSource _stop;
     private long _completed;
     internal long Completed => Interlocked.Read(ref _completed);
-    internal long Expected { get; }
+    internal long Expected
+    {
+        get;
+    }
 
     internal KeyedConsumerPass(int partitions, int recordsPerPartition, ThroughputTracker throughput, CancellationTokenSource stop)
     {
@@ -65,7 +73,9 @@ internal sealed class KeyedConsumerPass
         Expected = (long)partitions * recordsPerPartition;
         _slots = new Slot[partitions * KeyedConsumerWorkload.KeyCount];
         for (var i = 0; i < _slots.Length; i++)
+        {
             _slots[i].Next = i % KeyedConsumerWorkload.KeyCount;
+        }
     }
 
     internal int Enter(int partition, int key, long offset, ReadOnlySpan<byte> value)
@@ -73,11 +83,15 @@ internal sealed class KeyedConsumerPass
         if ((uint)partition >= (uint)(_slots.Length / KeyedConsumerWorkload.KeyCount)
             || (uint)key >= KeyedConsumerWorkload.KeyCount || offset < 0 || offset >= _recordsPerPartition
             || value.Length < sizeof(long) || BinaryPrimitives.ReadInt64LittleEndian(value) != offset)
+        {
             throw new InvalidOperationException("Unexpected keyed replay record or payload sequence.");
+        }
         var index = partition * KeyedConsumerWorkload.KeyCount + key;
         ref var slot = ref _slots[index];
         if (Interlocked.CompareExchange(ref slot.Active, 1, 0) != 0)
+        {
             throw new InvalidOperationException("Equal-key handlers overlapped within one partition.");
+        }
         if (slot.Next != offset)
         {
             Volatile.Write(ref slot.Active, 0);
@@ -92,16 +106,24 @@ internal sealed class KeyedConsumerPass
         slot.Next += KeyedConsumerWorkload.KeyCount;
         _throughput.RecordMessage(valueBytes);
         Volatile.Write(ref slot.Active, 0);
-        if (Interlocked.Increment(ref _completed) == Expected) _stop.Cancel();
+        if (Interlocked.Increment(ref _completed) == Expected)
+        {
+            _stop.Cancel();
+        }
     }
 
     internal void ValidateComplete()
     {
-        if (Completed != Expected) throw new InvalidOperationException($"Keyed replay incomplete: {Completed}/{Expected} records completed.");
+        if (Completed != Expected)
+        {
+            throw new InvalidOperationException($"Keyed replay incomplete: {Completed}/{Expected} records completed.");
+        }
         for (var i = 0; i < _slots.Length; i++)
         {
             if (_slots[i].Active != 0 || _slots[i].Next != _recordsPerPartition + i % KeyedConsumerWorkload.KeyCount)
+            {
                 throw new InvalidOperationException("Keyed replay did not drain every handler and sequence.");
+            }
         }
     }
 
@@ -114,15 +136,36 @@ internal sealed class KeyedConsumerPass
 
 internal sealed class KeyedConsumerSnapshot
 {
-    public required string Shape { get; init; }
-    public required int KeySizeBytes { get; init; }
-    public required int Partitions { get; init; }
+    public required string Shape
+    {
+        get; init;
+    }
+    public required int KeySizeBytes
+    {
+        get; init;
+    }
+    public required int Partitions
+    {
+        get; init;
+    }
     public int KeysPerPartition => KeyedConsumerWorkload.KeyCount;
-    public required int RecordsPerPartition { get; init; }
+    public required int RecordsPerPartition
+    {
+        get; init;
+    }
     public int HandlerConcurrency => KeyedConsumerWorkload.HandlerConcurrency;
     public int BufferedRecordsPerPartition => KeyedConsumerWorkload.BufferedRecords;
     public int YieldEveryKeyRecords => KeyedConsumerWorkload.YieldInterval;
-    public required long CompletedPasses { get; init; }
-    public required long CompletedRecords { get; init; }
-    public required double ReplayBookkeepingSeconds { get; init; }
+    public required long CompletedPasses
+    {
+        get; init;
+    }
+    public required long CompletedRecords
+    {
+        get; init;
+    }
+    public required double ReplayBookkeepingSeconds
+    {
+        get; init;
+    }
 }

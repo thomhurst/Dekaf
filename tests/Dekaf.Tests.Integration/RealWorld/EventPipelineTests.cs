@@ -93,7 +93,10 @@ public sealed class EventPipelineTests(KafkaTestContainer kafka) : KafkaIntegrat
         await foreach (var msg in outputConsumer.ConsumeAsync(cts2.Token))
         {
             outputMessages.Add(msg);
-            if (outputMessages.Count >= 5) break;
+            if (outputMessages.Count >= 5)
+            {
+                break;
+            }
         }
 
         await Assert.That(outputMessages).Count().IsEqualTo(5);
@@ -201,7 +204,10 @@ public sealed class EventPipelineTests(KafkaTestContainer kafka) : KafkaIntegrat
         await foreach (var msg in dlqConsumer.ConsumeAsync(cts2.Token))
         {
             dlqMessages.Add(msg);
-            if (dlqMessages.Count >= 2) break;
+            if (dlqMessages.Count >= 2)
+            {
+                break;
+            }
         }
 
         await Assert.That(dlqMessages).Count().IsEqualTo(2);
@@ -361,7 +367,10 @@ public sealed class EventPipelineTests(KafkaTestContainer kafka) : KafkaIntegrat
         await foreach (var msg in aggregator.ConsumeAsync(cts.Token))
         {
             events.Add((msg.Topic, msg.Key!, msg.Value));
-            if (events.Count >= 3) break;
+            if (events.Count >= 3)
+            {
+                break;
+            }
         }
 
         await Assert.That(events).Count().IsEqualTo(3);
@@ -415,7 +424,10 @@ public sealed class EventPipelineTests(KafkaTestContainer kafka) : KafkaIntegrat
             var targetTopic = msg.Value.StartsWith("HIGH:", StringComparison.Ordinal) ? highPriorityTopic : lowPriorityTopic;
             await routerProducer.FireAsync(targetTopic, msg.Key, msg.Value);
             routed++;
-            if (routed >= 4) break;
+            if (routed >= 4)
+            {
+                break;
+            }
         }
 
         await routerProducer.FlushWithTimeoutAsync();
@@ -435,7 +447,10 @@ public sealed class EventPipelineTests(KafkaTestContainer kafka) : KafkaIntegrat
         await foreach (var msg in highConsumer.ConsumeAsync(cts2.Token))
         {
             highMessages.Add(msg.Value);
-            if (highMessages.Count >= 2) break;
+            if (highMessages.Count >= 2)
+            {
+                break;
+            }
         }
 
         await Assert.That(highMessages).Count().IsEqualTo(2);
@@ -459,7 +474,10 @@ public sealed class EventPipelineTests(KafkaTestContainer kafka) : KafkaIntegrat
         await foreach (var msg in lowConsumer.ConsumeAsync(cts3.Token))
         {
             lowMessages.Add(msg.Value);
-            if (lowMessages.Count >= 2) break;
+            if (lowMessages.Count >= 2)
+            {
+                break;
+            }
         }
 
         await Assert.That(lowMessages).Count().IsEqualTo(2);

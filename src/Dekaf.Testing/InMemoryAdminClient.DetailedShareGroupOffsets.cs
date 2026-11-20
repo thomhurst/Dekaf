@@ -48,7 +48,10 @@ public sealed partial class InMemoryAdminClient : IDetailedShareGroupOffsetAdmin
             }
             catch (Exception exception) when (AdminClient.IsDetailedMutationFailure(exception))
             {
-                if (exception is OperationCanceledException && last is not null) return last;
+                if (exception is OperationCanceledException && last is not null)
+                {
+                    return last;
+                }
                 var failure = AdminClient.MutationFailure(exception, deadline, timeoutMs, "Share-group offset mutation", callerToken);
                 last = exception is KafkaException { ErrorCode: { } code } brokerFailure
                     ? AdminMutationResult.FromResponse(code, brokerFailure.Message)
@@ -56,9 +59,14 @@ public sealed partial class InMemoryAdminClient : IDetailedShareGroupOffsetAdmin
                         ? AdminMutationOutcome.NotAttempted : AdminMutationOutcome.Unknown,
                         "The simulated group mutation did not receive a definitive response.", failure);
                 if (!AdminMutationResult.IsSafeCoordinatorRetry(last) || attempt >= RetryHelper.MaxRetries || token.IsCancellationRequested)
+                {
                     return last;
+                }
             }
-            try { await Task.Delay(1, token).ConfigureAwait(false); }
+            try
+            {
+                await Task.Delay(1, token).ConfigureAwait(false);
+            }
             catch (OperationCanceledException) when (token.IsCancellationRequested) { return last; }
         }
     }

@@ -30,7 +30,9 @@ public static class ShareConsumerBatchExtensions
     {
         ArgumentNullException.ThrowIfNull(consumer);
         if (consumer is not IKafkaShareBatchConsumer<TKey, TValue> batchConsumer)
+        {
             throw new NotSupportedException("This share consumer does not support borrowed batch delivery.");
+        }
         return batchConsumer.PollBatchesAsync(cancellationToken);
     }
 }

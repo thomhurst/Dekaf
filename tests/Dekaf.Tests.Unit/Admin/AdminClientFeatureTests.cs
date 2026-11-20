@@ -28,11 +28,15 @@ public sealed class AdminClientFeatureTests
     {
         var (admin, first, _) = CreateAdmin(updateFeaturesVersion: 1);
         if (timeoutMs < 0)
+        {
             await Assert.ThrowsAsync<ArgumentOutOfRangeException>(async () =>
                 await admin.DescribeFeaturesAsync(new DescribeFeaturesOptions { TimeoutMs = timeoutMs }));
+        }
         else
+        {
             await Assert.ThrowsAsync<TimeoutException>(async () =>
                 await admin.DescribeFeaturesAsync(new DescribeFeaturesOptions { TimeoutMs = timeoutMs }));
+        }
         await first.DidNotReceiveWithAnyArgs().SendAsync<MetadataRequest, MetadataResponse>(default!, default, default);
     }
 
@@ -79,9 +83,11 @@ public sealed class AdminClientFeatureTests
             Arg.Any<ApiVersionsRequest>(), Arg.Any<short>(), Arg.Any<CancellationToken>())
             .Returns(call => WaitForCancellationAsync(started, call.Arg<CancellationToken>()));
         if (nodeId is null)
+        {
             first.SendAsync<ApiVersionsRequest, ApiVersionsResponse>(
                 Arg.Any<ApiVersionsRequest>(), Arg.Any<short>(), Arg.Any<CancellationToken>())
                 .Returns(call => WaitForCancellationAsync(started, call.Arg<CancellationToken>()));
+        }
         var operation = admin.DescribeFeaturesAsync(
             new DescribeFeaturesOptions { NodeId = nodeId, TimeoutMs = callerCancels ? 30_000 : 200 }, cancellation.Token).AsTask();
         await started.Task.WaitAsync(TimeSpan.FromSeconds(10));
@@ -96,7 +102,9 @@ public sealed class AdminClientFeatureTests
             await Assert.That(exception!.Message).Contains(nodeId is null ? "(default)" : "node 2");
         }
         if (nodeId is not null)
+        {
             await first.DidNotReceiveWithAnyArgs().SendAsync<ApiVersionsRequest, ApiVersionsResponse>(default!, default, default);
+        }
     }
 
     private static async ValueTask<ApiVersionsResponse> WaitForCancellationAsync(
@@ -446,7 +454,10 @@ public sealed class AdminClientFeatureTests
         public string Host => inner.Host;
         public int Port => inner.Port;
         public bool IsConnected => inner.IsConnected;
-        public KafkaConnectionCapabilities Capabilities { get; } = KafkaConnectionCapabilities.Create(response);
+        public KafkaConnectionCapabilities Capabilities
+        {
+            get;
+        } = KafkaConnectionCapabilities.Create(response);
         public ValueTask<TResponse> SendAsync<TRequest, TResponse>(
             TRequest request, short apiVersion, CancellationToken cancellationToken = default)
             where TRequest : IKafkaRequest<TResponse>

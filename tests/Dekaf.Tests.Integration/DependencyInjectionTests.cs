@@ -25,12 +25,15 @@ public sealed class DependencyInjectionTests(KafkaTestContainer kafka) : KafkaIn
         {
             builder.AddGlobalProducerInterceptor<string, string, ProviderInterceptor>();
             builder.AddGlobalConsumerInterceptor<string, string, ProviderInterceptor>();
+
             void ConfigureProducer(ProducerBuilder<string, string> producer) =>
                 producer.WithBootstrapServers(KafkaContainer.BootstrapServers);
+
             void ConfigureConsumer(ConsumerBuilder<string, string> consumer) =>
                 consumer.WithBootstrapServers(KafkaContainer.BootstrapServers)
                     .WithGroupId($"di-isolation-{Guid.NewGuid():N}")
                     .WithAutoOffsetReset(AutoOffsetReset.Earliest);
+
             if (keyed)
             {
                 builder.AddProducer<string, string>("client", ConfigureProducer);
@@ -73,6 +76,7 @@ public sealed class DependencyInjectionTests(KafkaTestContainer kafka) : KafkaIn
         IKafkaProducer<string, string> ResolveProducer(ServiceProvider provider) => keyed
             ? provider.GetRequiredKeyedService<IKafkaProducer<string, string>>("client")
             : provider.GetRequiredService<IKafkaProducer<string, string>>();
+
         IKafkaConsumer<string, string> ResolveConsumer(ServiceProvider provider) => keyed
             ? provider.GetRequiredKeyedService<IKafkaConsumer<string, string>>("client")
             : provider.GetRequiredService<IKafkaConsumer<string, string>>();
@@ -85,7 +89,10 @@ public sealed class DependencyInjectionTests(KafkaTestContainer kafka) : KafkaIn
         private int _consumeCount;
         public int SendCount => Volatile.Read(ref _sendCount);
         public int ConsumeCount => Volatile.Read(ref _consumeCount);
-        public bool Disposed { get; private set; }
+        public bool Disposed
+        {
+            get; private set;
+        }
         public ProducerMessage<string, string> OnSend(ProducerMessage<string, string> message)
         {
             Interlocked.Increment(ref _sendCount);
@@ -98,8 +105,12 @@ public sealed class DependencyInjectionTests(KafkaTestContainer kafka) : KafkaIn
             ObjectDisposedException.ThrowIf(Disposed, this);
             return result;
         }
-        public void OnAcknowledgement(RecordMetadata metadata, Exception? exception) { }
-        public void OnCommit(IReadOnlyList<TopicPartitionOffset> offsets) { }
+        public void OnAcknowledgement(RecordMetadata metadata, Exception? exception)
+        {
+        }
+        public void OnCommit(IReadOnlyList<TopicPartitionOffset> offsets)
+        {
+        }
         public void Dispose() => Disposed = true;
     }
 

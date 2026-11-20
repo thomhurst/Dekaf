@@ -30,7 +30,11 @@ public class PartitionedStorageLifetimeBenchmarks
         enumerator.MoveNext();
         _record = enumerator.Current;
         _lane = new PartitionLane<ReadOnlyMemory<byte>, ReadOnlyMemory<byte>>(
-            new TopicPartition("lifetime", 0), 1024, static (_, _) => default, static _ => { }, static (_, _) => { });
+            new TopicPartition("lifetime", 0), 1024, static (_, _) => default, static _ =>
+            {
+            }, static (_, _) =>
+            {
+            });
         _context = new PartitionProcessorContext<ReadOnlyMemory<byte>, ReadOnlyMemory<byte>>(_lane);
         // Automatic processors own progress outside the queue. Keep this storage
         // transfer fixture steady-state and measure manual reservations separately.
@@ -54,12 +58,18 @@ public class PartitionedStorageLifetimeBenchmarks
     public void QueueAndComplete()
     {
         for (var index = 0; index < 1024; index++)
+        {
             if (!_lane.TryEnqueue(_record, completionBatch: null))
+            {
                 throw new InvalidOperationException("The prepared queue could not accept all records.");
+            }
+        }
         for (var index = 0; index < 1024; index++)
         {
             if (!_lane.TryReadMessage(out var message))
+            {
                 throw new InvalidOperationException("The queue lost a published record.");
+            }
             message.ReleaseStorage();
         }
     }
@@ -71,7 +81,9 @@ public class PartitionedStorageLifetimeBenchmarks
         for (var index = 0; index < 1024; index++)
         {
             while (!_lane.TryEnqueue(_record, completionBatch: null))
+            {
                 Thread.SpinWait(1);
+            }
         }
         _complete.WaitOne();
     }
@@ -93,14 +105,18 @@ public class PartitionedStorageLifetimeBenchmarks
         while (_start.WaitOne())
         {
             if (Volatile.Read(ref _stopped) != 0)
+            {
                 return;
+            }
             for (var index = 0; index < 1024; index++)
             {
                 ConsumeResult<ReadOnlyMemory<byte>, ReadOnlyMemory<byte>> message;
                 while (!_lane.TryReadMessage(out message))
                 {
                     if (Volatile.Read(ref _stopped) != 0)
+                    {
                         return;
+                    }
                     Thread.SpinWait(1);
                 }
                 message.ReleaseStorage();
