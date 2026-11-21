@@ -211,6 +211,17 @@ public sealed partial class ClientTelemetryReceiverIntegrationTests(TelemetryRec
             .RegisterMetricForSubscription(new ApplicationTelemetryMetric(applicationName,
                 ApplicationTelemetryMetricKind.Gauge, () => Volatile.Read(ref applicationValue)))
             .BuildAsync(cancellationToken);
+        // The probe confirms broker configuration. Wait for this consumer to export both
+        // counters before polling, since its own telemetry subscription can start later.
+        var baseline = await kafka.WaitForPayloadAsync(clientId, payload =>
+        {
+            var metrics = Decode(payload);
+            return !payload.IsTerminating && metrics.Any(metric => metric.Name == recordsName)
+                && metrics.Any(metric => metric.Name == acknowledgementsName);
+        }, cancellationToken);
+        var identity = ((IKafkaClientInstanceIdentity)consumer).ClientInstanceId;
+        await Assert.That(identity).IsEqualTo(baseline.ClientInstanceId);
+
         consumer.Subscribe(topic);
         var values = new HashSet<string?>();
         if (batchApi)
@@ -244,7 +255,6 @@ public sealed partial class ClientTelemetryReceiverIntegrationTests(TelemetryRec
         }
         string?[] expected = ["value-0", "value-1"];
         await Assert.That(values).IsEquivalentTo(expected);
-        var identity = ((IKafkaClientInstanceIdentity)consumer).ClientInstanceId;
         foreach (var name in new[] { recordsName, acknowledgementsName })
         {
             var received = await kafka.WaitForPayloadAsync(clientId, payload =>

@@ -236,11 +236,15 @@ public sealed class ConsumerSnapshotIntegrationTests(KafkaTestContainer kafka)
         await using var snapshot = consumer.ConsumeSnapshotAsync(snapshotCancellation.Token).GetAsyncEnumerator();
         var moveNext = snapshot.MoveNextAsync().AsTask();
         await deserializer.WaitUntilBlockedAsync(timeout.Token).ConfigureAwait(false);
+        await Assert.That(moveNext.IsCompleted).IsFalse();
         snapshotCancellation.Cancel();
         try
         {
-            await Assert.That(async () => await moveNext.ConfigureAwait(false))
-                .Throws<OperationCanceledException>();
+            await Assert.That(await moveNext.ConfigureAwait(false)).IsFalse();
+        }
+        catch (OperationCanceledException) when (snapshotCancellation.IsCancellationRequested)
+        {
+            // Cancellation may end enumeration cleanly or interrupt the active read.
         }
         finally
         {

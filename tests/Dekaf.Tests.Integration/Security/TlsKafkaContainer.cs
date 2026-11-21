@@ -122,6 +122,7 @@ public class TlsKafkaContainer : IAsyncInitializer, IAsyncDisposable
             // Docker may assign a different ephemeral host port after stop/start. A fixed host
             // binding keeps existing clients' advertised endpoint valid across certificate rotation.
             .WithPortBinding(stableHostPort, KafkaContainerPort)
+            .WithCommand(KafkaTestContainer.StartupCommandOverride)
             .Build();
 
         await _container.StartAsync();
@@ -170,6 +171,9 @@ public class TlsKafkaContainer : IAsyncInitializer, IAsyncDisposable
         }
 
         await container.StopAsync();
+        // Testcontainers copies its startup script after Docker starts the broker. Clear the old
+        // script so the startup command waits for this start's copy before trying to execute it.
+        await container.CopyAsync([], KafkaBuilder.StartupScriptFilePath);
         await container.CopyAsync(keystoreBytes, ServerKeystoreContainerPath);
         await container.StartAsync();
         try
