@@ -17092,6 +17092,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             {
                 var elapsedMs = (long)Stopwatch.GetElapsedTime(closeStartedAt).TotalMilliseconds;
                 commitTimeout.CancelAfter((int)Math.Max(0, closeTimeoutMs - leaveReserveMs - elapsedMs));
+                CloseCommitBudgetReservedForTest?.Invoke();
             }
 
             await CommitPendingOffsetsOnCloseAsync(commitTimeout.Token).ConfigureAwait(false);
@@ -17171,6 +17172,11 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         {
             ExceptionDispatchInfo.Capture(partitionStopCancellation).Throw();
         }
+    }
+
+    internal Action? CloseCommitBudgetReservedForTest
+    {
+        get; set;
     }
 
     // The part of the close budget kept for LeaveGroup (see CloseAsyncCore step 6). At most half

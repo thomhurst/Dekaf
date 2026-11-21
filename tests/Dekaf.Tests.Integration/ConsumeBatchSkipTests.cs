@@ -118,7 +118,7 @@ public sealed class ConsumeBatchSkipTests(KafkaTestContainer kafka) : KafkaInteg
 
         using var skipperStop = new CancellationTokenSource();
         var bothSkipped = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var rebalanced = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var retainedPartition = new TaskCompletionSource<TopicPartition>(TaskCreationOptions.RunContinuationsAsynchronously);
         var skippedPartitions = new HashSet<int>();
         var skipperTask = Task.Run(async () =>
         {
@@ -135,9 +135,10 @@ public sealed class ConsumeBatchSkipTests(KafkaTestContainer kafka) : KafkaInteg
                         }
                     }
 
-                    if (skipper.Assignment.Count == 1)
+                    var assignment = skipper.Assignment;
+                    if (bothSkipped.Task.IsCompletedSuccessfully && assignment.Count == 1)
                     {
-                        rebalanced.TrySetResult();
+                        retainedPartition.TrySetResult(assignment.Single());
                     }
                 }
             }
@@ -159,9 +160,9 @@ public sealed class ConsumeBatchSkipTests(KafkaTestContainer kafka) : KafkaInteg
             var received = await joiner.ConsumeOneAsync(TimeSpan.FromSeconds(45), timeout.Token);
 
             await Assert.That(received).IsNotNull();
-            // The joiner can receive before the skipper's consume loop publishes its assignment.
-            await rebalanced.Task.WaitAsync(timeout.Token);
-            await Assert.That(skipper.Assignment.Count).IsEqualTo(1);
+            // Compare the assignment observed by the skipper with the partition delivered to the joiner.
+            var retained = await retainedPartition.Task.WaitAsync(timeout.Token);
+            await Assert.That(retained).IsNotEqualTo(new TopicPartition(topic, received!.Value.Partition));
         }
         finally
         {

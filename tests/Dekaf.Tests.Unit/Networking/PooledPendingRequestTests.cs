@@ -880,7 +880,7 @@ public class PooledPendingRequestTests
     {
         // Regression test: FailAllPendingRequests must NOT remove from dictionary,
         // so the awaiter's finally block can find the request and return it to pool.
-        var (pool, request, pendingRequests, awaiterTask) = await SetupFailAllScenarioAsync();
+        var (pool, _, pendingRequests, awaiterTask) = await SetupFailAllScenarioAsync();
 
         // Simulate fixed FailAllPendingRequests — don't remove from dictionary
         foreach (var kvp in pendingRequests)
@@ -890,10 +890,9 @@ public class PooledPendingRequestTests
 
         await awaiterTask;
 
-        // The request should have been returned to pool by the awaiter's finally
-        var reused = pool.Rent();
-        await Assert.That(reused).IsSameReferenceAs(request);
-        pool.Return(reused);
+        // The awaiter's finally returned the request. Check retention without depending on
+        // which instance Rent selects when the return and rent happen on different threads.
+        await Assert.That(pool.ApproximateCount).IsEqualTo(1);
     }
 
     [Test]
@@ -910,10 +909,7 @@ public class PooledPendingRequestTests
 
         await awaiterTask;
 
-        // Request was NOT returned to pool, so Rent gives a new instance
-        var newRequest = pool.Rent();
-        await Assert.That(newRequest).IsNotSameReferenceAs(request);
-        pool.Return(newRequest);
+        await Assert.That(pool.ApproximateCount).IsEqualTo(0);
     }
 
     /// <summary>
