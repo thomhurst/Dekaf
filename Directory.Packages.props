@@ -45,7 +45,7 @@
     <PackageVersion Include="OpenTelemetry" Version="1.21.0" />
     <PackageVersion Include="OpenTelemetry.Api" Version="1.21.0" />
     <PackageVersion Include="OpenTelemetry.Extensions.Hosting" Version="1.21.0" />
-    <PackageVersion Include="Polyfill" Version="11.4.5" />
+    <PackageVersion Include="Polyfill" Version="12.0.0" />
     <PackageVersion Include="protobuf-net.Reflection" Version="3.4.40" />
     <PackageVersion Include="Reservoir" Version="1.10.0" />
     <PackageVersion Include="SharpFuzz" Version="2.3.0" />
