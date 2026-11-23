@@ -1168,7 +1168,8 @@ jobs:
         run: |
           set -euo pipefail
           body=$(gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" --jq '.body // ""')
-          body=$(printf '%s' "$body" | sed -E "s#(/compare/[^ )]+)\.\.\.[^ )]+#\1...$RELEASE_TAG#")
+          # Only the generated "**Full Changelog**: .../compare/A...B" line; other links stay.
+          body=$(printf '%s' "$body" | sed -E "/^\*\*Full Changelog\*\*: /s#(/compare/[^ )]+)\.\.\.[^ )]+#\1...$RELEASE_TAG#")
           gh api -X PATCH "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" -f name="$VERSION" -f body="$body" > /dev/null
 
       - name: Expose GitHub Actions Runtime

@@ -54,10 +54,16 @@ class ResolveVersionTests(unittest.TestCase):
 
     def test_release_takes_the_version_from_a_semver_tag(self) -> None:
         for tag, version in (
-            ("v1.29.1", "1.29.1"),
-            ("1.30.0", "1.30.0"),
-            ("v2.0.0-beta.1", "2.0.0-beta.1"),
+            ("v1.2.3", "1.2.3"),
+            ("1.2.3", "1.2.3"),
+            ("v0.0.0", "0.0.0"),
+            ("v1.2.3-beta.1", "1.2.3-beta.1"),
+            ("v1.2.3-beta01", "1.2.3-beta01"),
+            ("v1.2.3-0", "1.2.3-0"),
             ("v2.0.0-rc.10", "2.0.0-rc.10"),
+            ("v2.0.0-beta.0", "2.0.0-beta.0"),
+            ("v2.0.0-01a.x-y", "2.0.0-01a.x-y"),
+            ("v65535.0.0", "65535.0.0"),
         ):
             with self.subTest(tag=tag):
                 result, github_env, github_output = self.run_script(
@@ -67,8 +73,10 @@ class ResolveVersionTests(unittest.TestCase):
                 self.assertEqual(f"semVer={version}\n", github_output)
 
     def test_release_rejects_a_tag_that_is_not_a_version(self) -> None:
-        for tag in ("", "latest", "v1.2", "v1.2.3.4", "vv1.2.3", "v01.2.3", "v1.2.3-", "v1.2.3+build",
-                    "v1.2.3-beta..1", "release-1.2.3", "v1.2.3 ", "v1.2.3\nv1.2.4"):
+        for tag in ("", "latest", "release-1", "v1.2", "v1.2.3.4", "vv1.2.3", "V1.2.3", "v01.2.3",
+                    "v1.02.3", "v1.2.03", "v1.2.3-", "v1.2.3-beta.", "v1.2.3-.beta", "v1.2.3-beta..1",
+                    "v1.2.3-beta.01", "v1.2.3-01", "v1.2.3-00", "v1.2.3+build", "v1.2.3-beta+build",
+                    "v1.2.3-beta_1", "release-1.2.3", "v1.2.3 ", " v1.2.3", "v1.2.3\nv1.2.4"):
             with self.subTest(tag=tag):
                 result, github_env, _ = self.run_script(GITHUB_EVENT_NAME="release", RELEASE_TAG=tag)
                 self.assertEqual(1, result.returncode)
