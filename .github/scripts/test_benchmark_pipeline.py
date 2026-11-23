@@ -1,12 +1,72 @@
 import json
+import re
 import tempfile
 import unittest
 from pathlib import Path
 
-from benchmark_pipeline import pipeline_mode, validate_gate, validate_reports
+from benchmark_pipeline import pipeline_mode, shard_filters, validate_gate, validate_reports
+
+
+LISTING = "\n".join([
+    "Dekaf.Benchmarks.Benchmarks.Unit.Alpha.One",
+    "Dekaf.Benchmarks.Benchmarks.Unit.Alpha.Two",
+    "Dekaf.Benchmarks.Benchmarks.Unit.AlphaBeta.One",
+    "Dekaf.Benchmarks.Benchmarks.Unit.Cache<Int32>.Hit",
+    "Dekaf.Benchmarks.Benchmarks.Unit.Cache<Object>.Hit",
+    "Dekaf.Benchmarks.Benchmarks.Unit.Zeta.Run",
+    "",
+    "// unrelated log line",
+])
 
 
 class BenchmarkPipelineTests(unittest.TestCase):
+    def test_shards_cover_every_class_exactly_once(self):
+        for count in (1, 2, 3, 5, 8):
+            with self.subTest(count=count):
+                shards = [shard_filters(LISTING, index, count) for index in range(1, count + 1)]
+                flattened = [item for shard in shards for item in shard]
+                self.assertEqual(sorted(flattened), sorted(set(flattened)))
+                self.assertEqual({
+                    "Dekaf.Benchmarks.Benchmarks.Unit.Alpha.*",
+                    "Dekaf.Benchmarks.Benchmarks.Unit.AlphaBeta.*",
+                    "Dekaf.Benchmarks.Benchmarks.Unit.Cache<Int32>.*",
+                    "Dekaf.Benchmarks.Benchmarks.Unit.Cache<Object>.*",
+                    "Dekaf.Benchmarks.Benchmarks.Unit.Zeta.*",
+                }, set(flattened))
+                self.assertLessEqual(max(map(len, shards)) - min(map(len, shards)), 1)
+
+    def test_shard_filters_do_not_match_classes_sharing_a_prefix(self):
+        self.assertIn("Dekaf.Benchmarks.Benchmarks.Unit.Alpha.*", shard_filters(LISTING, 1, 1))
+        self.assertNotIn("Dekaf.Benchmarks.Benchmarks.Unit.Alpha*", shard_filters(LISTING, 1, 1))
+
+    def test_invalid_shards_or_empty_listing_fail(self):
+        for shard, count in ((0, 3), (4, 3), (1, 0)):
+            with self.subTest(shard=shard, count=count), self.assertRaises(ValueError):
+                shard_filters(LISTING, shard, count)
+        with self.assertRaises(ValueError):
+            shard_filters("no benchmarks here\n", 1, 1)
+
+    def test_extra_shards_receive_no_filters(self):
+        self.assertEqual([], shard_filters(LISTING, 8, 8))
+
+    @staticmethod
+    def workflow_job(job):
+        workflow = (Path(__file__).resolve().parents[1] / "workflows/benchmarks.yml").read_text(encoding="utf-8")
+        start = workflow.index(f"\n  {job}:\n")
+        following = re.search(r"\n  [a-z-]+:\n", workflow[start + 1:])
+        return workflow[start:start + 1 + following.start()] if following else workflow[start:]
+
+    def test_workflow_shards_cover_the_declared_count(self):
+        for job, count in (("unit-benchmarks", 16), ("client-benchmarks-native-memory", 8)):
+            with self.subTest(job=job):
+                body = self.workflow_job(job)
+                self.assertIn(f"SHARD_COUNT: {count}", body)
+                self.assertIn(f"shard: [{', '.join(str(index) for index in range(1, count + 1))}]", body)
+                self.assertIn("benchmark_pipeline.py shard", body)
+                self.assertIn("--buildTimeout 600", body)
+
+    def test_client_run_allows_slow_generated_builds(self):
+        self.assertIn("--buildTimeout 600", self.workflow_job("client-benchmarks"))
     def test_only_explicit_manual_filters_select_filtered_pipeline(self):
         for event, value, expected in (
             ("schedule", "", "full"), ("schedule", "*Serializer*", "full"),

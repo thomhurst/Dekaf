@@ -207,6 +207,62 @@ class StressWarmupTests(unittest.TestCase):
                 self.assertEqual(1, code)
                 self.assertEqual("INCONCLUSIVE", report["verdict"])
 
+    def test_advisory_regular_run_reports_steady_state_findings_without_failing(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            resized = result()
+            resized["throughput"]["intervalSamples"][5]["runtime"]["threadPoolThreads"] = 6
+            resized["throughput"]["warmup"]["samples"][-1]["runtime"]["threadPoolThreads"] = 5
+            growing = result()
+            for index, sample in enumerate(growing["throughput"]["intervalSamples"]):
+                sample["runtime"]["workingSetBytes"] = 200 + index * 20
+            write(root, resized, growing)
+            code, report, summary = run_main(root, "--expected-results", "2", "--advisory-steady-state")
+            self.assertEqual(0, code)
+            self.assertEqual("VALIDATED", report["verdict"])
+            self.assertEqual("VALIDATED", report["coverageVerdict"])
+            self.assertEqual("INCONCLUSIVE", report["trendVerdict"])
+            self.assertEqual("advisory", report["steadyStateGate"])
+            self.assertEqual([], report["errors"])
+            notes = " ".join(report["notes"])
+            self.assertIn("Warmup tail: thread-pool size changes", notes)
+            self.assertIn("Measurement: thread-pool size changes", notes)
+            self.assertIn("working set grew", notes)
+            self.assertIn("advisory", summary)
+            # The resized result keeps its trend assessment after the thread-pool note.
+            self.assertEqual(2, len(report["trends"]))
+
+    def test_advisory_regular_run_still_fails_on_missing_coverage(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            broken = result()
+            broken["throughput"]["intervalSamples"][0]["runtime"]["threadPoolThreads"] = 5
+            broken["throughput"]["elapsedSeconds"] = 10
+            write(root, result(), broken)
+            code, report, _ = run_main(root, "--expected-results", "2", "--advisory-steady-state")
+            self.assertEqual(1, code)
+            self.assertEqual("INCONCLUSIVE", report["coverageVerdict"])
+            self.assertIn("complete window", " ".join(report["errors"]))
+
+    def test_steady_state_gate_stays_required_without_the_advisory_flag(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            resized = result()
+            resized["throughput"]["intervalSamples"][5]["runtime"]["threadPoolThreads"] = 6
+            write(root, result(), resized)
+            code, report, _ = run_main(root, "--expected-results", "2")
+            self.assertEqual(1, code)
+            self.assertEqual("required", report["steadyStateGate"])
+            self.assertEqual([], report["notes"])
+            self.assertIn("thread-pool size changes", " ".join(report["errors"]))
+
+    def test_workflow_keeps_steady_state_gate_for_aba_and_advisory_for_regular_runs(self):
+        workflow = (Path(__file__).resolve().parents[1] / "workflows/stress-tests.yml").read_text(encoding="utf-8")
+        aba = workflow.index("Validate exact baseline warmup and runtime coverage")
+        regular = workflow.index("Validate regular workload warmup and runtime coverage")
+        self.assertNotIn("--advisory-steady-state", workflow[aba:regular])
+        self.assertIn("--advisory-steady-state", workflow[regular:workflow.index("- name:", regular + 1)])
+
     def test_accepts_complete_quiet_runtime_coverage(self):
         self.assertEqual(20, validate(result()))
 

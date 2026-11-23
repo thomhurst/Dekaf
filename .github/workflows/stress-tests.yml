@@ -833,9 +833,12 @@ jobs:
 
       - name: Validate regular workload warmup and runtime coverage
         if: always() && matrix.baseline_sha == '' && matrix.producer_samples > 0
+        # Regular runs publish absolute results with default .NET thread-pool sizing, which grows
+        # and shrinks under load. Coverage stays fatal; steady-state findings are reported as notes.
+        # Exact-SHA A-B-A comparisons (step above) keep the steady-state gate.
         run: |
           python3 .github/scripts/stress_warmup.py tools/Dekaf.StressTests/results \
-            --expected-results "${{ matrix.producer_samples }}" \
+            --expected-results "${{ matrix.producer_samples }}" --advisory-steady-state \
             --output tools/Dekaf.StressTests/results/warmup-validation.json --summary "$GITHUB_STEP_SUMMARY"
 
       - name: Record comparison binaries and final main

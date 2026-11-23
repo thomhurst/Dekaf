@@ -83,24 +83,17 @@ jobs:
     needs: select-pipeline
     if: needs.select-pipeline.outputs.mode == 'full'
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
+    env:
+      SHARD_COUNT: 16
     strategy:
       fail-fast: false
-      # Exhaustive class-name ranges keep future unit benchmarks sharded
-      # automatically. Boundaries are balanced from observed class runtimes.
+      # Each shard lists the built unit classes and takes every SHARD_COUNT-th one
+      # (benchmark_pipeline.py shard), so new fixtures are sharded automatically.
+      # Size the count so a shard stays well inside timeout-minutes (about two
+      # minutes per class, including the generated-project build).
       matrix:
-        include:
-          - shard: a-d
-            filters: >-
-              *Unit.A* *Unit.B* *Unit.C* *Unit.D*
-          - shard: e-p
-            filters: >-
-              *Unit.E* *Unit.F* *Unit.G* *Unit.H* *Unit.I* *Unit.J*
-              *Unit.K* *Unit.L* *Unit.M* *Unit.N* *Unit.O* *Unit.P*
-          - shard: q-z
-            filters: >-
-              *Unit.Q* *Unit.R* *Unit.S* *Unit.T* *Unit.U* *Unit.V*
-              *Unit.W* *Unit.X* *Unit.Y* *Unit.Z*
+        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
 
     steps:
       - name: Checkout
@@ -119,11 +112,23 @@ jobs:
 
       - name: Run Unit Benchmarks
         env:
-          BENCHMARK_FILTERS: ${{ matrix.filters }}
+          SHARD: ${{ matrix.shard }}
         run: |
           cd tools/Dekaf.Benchmarks
-          read -r -a benchmark_filters <<< "$BENCHMARK_FILTERS"
-          dotnet run -c Release --no-build -- --filter "${benchmark_filters[@]}" --exporters json --artifacts ./BenchmarkResults/Unit
+          dotnet run -c Release --no-build -- --list flat --filter '*.Unit.*' > "$RUNNER_TEMP/benchmarks.txt"
+          python3 ../../.github/scripts/benchmark_pipeline.py shard "$SHARD" "$SHARD_COUNT" \
+            < "$RUNNER_TEMP/benchmarks.txt" > "$RUNNER_TEMP/filters.txt"
+          mapfile -t benchmark_filters < "$RUNNER_TEMP/filters.txt"
+          if [ "${#benchmark_filters[@]}" -eq 0 ]; then
+            echo "Shard $SHARD has no unit benchmark classes."
+            exit 0
+          fi
+          printf 'Shard %s runs:\n' "$SHARD"
+          printf '  %s\n' "${benchmark_filters[@]}"
+          # Generated BenchmarkDotNet projects rebuild Dekaf with code-style analysis,
+          # which can exceed the 120s default build timeout on hosted runners.
+          dotnet run -c Release --no-build -- --filter "${benchmark_filters[@]}" --buildTimeout 600 \
+            --exporters json --artifacts ./BenchmarkResults/Unit
 
       - name: Upload Results
         if: always()
@@ -182,7 +187,9 @@ jobs:
           KAFKA_BOOTSTRAP_SERVERS: localhost:9092
         run: |
           cd tools/Dekaf.Benchmarks
-          taskset -c 2,3 dotnet run -c Release --no-build -- --filter "*Client*" --exporters json --artifacts ./BenchmarkResults/Client
+          # Generated BenchmarkDotNet projects can exceed the 120s default build timeout.
+          taskset -c 2,3 dotnet run -c Release --no-build -- --filter "*Client*" --buildTimeout 600 \
+            --exporters json --artifacts ./BenchmarkResults/Client
 
       - name: Stop Kafka
         if: always()
@@ -202,22 +209,15 @@ jobs:
     if: needs.select-pipeline.outputs.mode == 'full'
     runs-on: windows-latest
     timeout-minutes: 90
+    env:
+      SHARD_COUNT: 8
     strategy:
       fail-fast: false
-      # NativeMemoryProfiler makes the producer classes substantially slower,
-      # so isolate the P-Z range while keeping both shards below the 90m cap.
+      # NativeMemoryProfiler makes client classes slow (ProducerBenchmarks alone takes
+      # about an hour), so each shard runs every SHARD_COUNT-th listed client class;
+      # with one class per shard every job stays below the 90m cap.
       matrix:
-        include:
-          - shard: a-o
-            filters: >-
-              *Client.A* *Client.B* *Client.C* *Client.D* *Client.E*
-              *Client.F* *Client.G* *Client.H* *Client.I* *Client.J*
-              *Client.K* *Client.L* *Client.M* *Client.N* *Client.O*
-          - shard: p-z
-            filters: >-
-              *Client.P* *Client.Q* *Client.R* *Client.S* *Client.T*
-              *Client.U* *Client.V* *Client.W* *Client.X* *Client.Y*
-              *Client.Z*
+        shard: [1, 2, 3, 4, 5, 6, 7, 8]
 
     steps:
       - name: Checkout
@@ -234,6 +234,31 @@ jobs:
       - name: Build
         run: dotnet build tools/Dekaf.Benchmarks --configuration Release
 
+      - name: Select shard classes
+        id: shard
+        shell: pwsh
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $listing = Join-Path $env:RUNNER_TEMP 'benchmarks.txt'
+          $filters = Join-Path $env:RUNNER_TEMP 'filters.txt'
+          Push-Location tools/Dekaf.Benchmarks
+          try {
+            dotnet run -c Release --no-build -- --list flat --filter '*.Client.*' | Set-Content -Path $listing
+            if ($LASTEXITCODE -ne 0) { throw "Benchmark listing failed (exit $LASTEXITCODE)" }
+          } finally {
+            Pop-Location
+          }
+          Get-Content -Path $listing | python .github/scripts/benchmark_pipeline.py shard $env:SHARD $env:SHARD_COUNT |
+            Set-Content -Path $filters
+          if ($LASTEXITCODE -ne 0) { throw "Shard selection failed (exit $LASTEXITCODE)" }
+          $selected = @(Get-Content -Path $filters | Where-Object { $_ })
+          Write-Host "Shard $env:SHARD runs:"
+          $selected | ForEach-Object { Write-Host "  $_" }
+          "filters=$filters" >> $env:GITHUB_OUTPUT
+          "empty=$($selected.Count -eq 0)".ToLowerInvariant() >> $env:GITHUB_OUTPUT
+
       # windows-latest runs Docker in Windows-container mode and cannot pull the Linux
       # Kafka image, so Testcontainers fails. Instead run a native single-node KRaft broker
       # (Java is preinstalled on the runner) and point the benchmarks at it via
@@ -243,10 +268,11 @@ jobs:
       # process started in an earlier step is killed when that step's shell exits, so a
       # separate "Start Kafka" step leaves the benchmarks with no broker to connect to.
       - name: Run Client Benchmarks with Native Memory Profiler
+        if: steps.shard.outputs.empty != 'true'
         shell: pwsh
         env:
           KAFKA_BOOTSTRAP_SERVERS: localhost:9092
-          BENCHMARK_FILTERS: ${{ matrix.filters }}
+          BENCHMARK_FILTERS_FILE: ${{ steps.shard.outputs.filters }}
         run: |
           $ErrorActionPreference = 'Stop'
           $env:JAVA_HOME = $env:JAVA_HOME_17_X64
@@ -299,10 +325,10 @@ jobs:
           $benchmarkExitCode = 0
           try {
             Push-Location tools/Dekaf.Benchmarks
-            $benchmarkFilters = $env:BENCHMARK_FILTERS.Split(
-              ' ',
-              [System.StringSplitOptions]::RemoveEmptyEntries)
-            dotnet run -c Release --no-build -- --filter $benchmarkFilters --profiler NativeMemory --exporters json --artifacts ./BenchmarkResults/ClientNative
+            $benchmarkFilters = @(Get-Content -Path $env:BENCHMARK_FILTERS_FILE | Where-Object { $_ })
+            # Generated BenchmarkDotNet projects can exceed the 120s default build timeout.
+            dotnet run -c Release --no-build -- --filter $benchmarkFilters --buildTimeout 600 `
+              --profiler NativeMemory --exporters json --artifacts ./BenchmarkResults/ClientNative
             $benchmarkExitCode = $LASTEXITCODE
             Write-Host "Benchmark run exited with $benchmarkExitCode"
           } finally {
