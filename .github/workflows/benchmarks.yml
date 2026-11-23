@@ -83,15 +83,15 @@ jobs:
     needs: select-pipeline
     if: needs.select-pipeline.outputs.mode == 'full'
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 90
     env:
       SHARD_COUNT: 16
     strategy:
       fail-fast: false
       # Each shard lists the built unit classes and takes every SHARD_COUNT-th one
       # (benchmark_pipeline.py shard), so new fixtures are sharded automatically.
-      # Size the count so a shard stays well inside timeout-minutes (about two
-      # minutes per class, including the generated-project build).
+      # Size the count so a shard stays well inside timeout-minutes. Classes vary
+      # widely in cost, so the slowest shard took about an hour in November 2026.
       matrix:
         shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
 
@@ -208,14 +208,14 @@ jobs:
     needs: select-pipeline
     if: needs.select-pipeline.outputs.mode == 'full'
     runs-on: windows-latest
-    timeout-minutes: 90
+    timeout-minutes: 180
     env:
       SHARD_COUNT: 8
     strategy:
       fail-fast: false
-      # NativeMemoryProfiler makes client classes slow (ProducerBenchmarks alone takes
-      # about an hour), so each shard runs every SHARD_COUNT-th listed client class;
-      # with one class per shard every job stays below the 90m cap.
+      # NativeMemoryProfiler makes client classes slow (ConsumerPollBenchmarks alone
+      # takes nearly two hours), so each shard runs every SHARD_COUNT-th listed client
+      # class. A class cannot be split further, so the cap leaves room for the slowest.
       matrix:
         shard: [1, 2, 3, 4, 5, 6, 7, 8]
 
