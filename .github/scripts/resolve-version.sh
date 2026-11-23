@@ -15,19 +15,16 @@
 # DEFAULT_BRANCH (default main), GITHUB_ENV, GITHUB_OUTPUT.
 set -euo pipefail
 
+# shellcheck source=semver.sh
+source "$(dirname "${BASH_SOURCE[0]}")/semver.sh"
+
 github_env=${GITHUB_ENV:-/dev/null}
 github_output=${GITHUB_OUTPUT:-/dev/null}
 
 if [ "${GITHUB_EVENT_NAME:-}" = "release" ]; then
   tag=${RELEASE_TAG:-}
-  # SemVer 2.0 without build metadata: no leading zeros in major.minor.patch or in a numeric
-  # prerelease identifier (beta.0 and beta01 are fine, beta.01 and 01 are not), no empty
-  # identifiers. The version is the package version only; AssemblyVersion stays as
-  # Directory.Build.props sets it, so the components have no 16-bit limit.
-  number='(0|[1-9][0-9]*)'
-  identifier='(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)'
-  pattern="^v?$number\\.$number\\.$number(-$identifier(\\.$identifier)*)?\$"
-  if [[ ! "$tag" =~ $pattern ]]; then
+  # The grammar lives in semver.sh.
+  if ! is_version "$tag"; then
     echo "::error::Release tag '$tag' is not a version. Use a tag such as v1.2.3 or v1.2.3-beta.1."
     exit 1
   fi

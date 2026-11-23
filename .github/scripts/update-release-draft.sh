@@ -5,6 +5,11 @@
 # draft and every published release is left alone. The marker must stay in the draft's notes:
 # without it the next push creates a second draft.
 #
+# The suggestion is the version GitVersion computed, one patch above the latest release. To
+# override it, change the draft's tag: later pushes keep a valid tag with higher precedence than
+# the suggestion, as long as that version is not already tagged or released, and refresh only the
+# draft's target and notes. Set the tag back to the suggestion (or lower) to return to the default.
+#
 # Inputs (environment): GH_TOKEN, GITHUB_REPOSITORY, GITHUB_SHA, VERSION, DRAFT_MARKER,
 # GITHUB_STEP_SUMMARY (optional).
 set -euo pipefail
@@ -14,53 +19,55 @@ if [ -z "${VERSION:-}" ]; then
   exit 1
 fi
 
+# shellcheck source=semver.sh
+source "$(dirname "${BASH_SOURCE[0]}")/semver.sh"
+
 repo="repos/$GITHUB_REPOSITORY"
-tag="v$VERSION"
+suggested="v$VERSION"
 summary=${GITHUB_STEP_SUMMARY:-/dev/null}
 
-# Prints the HTTP status of a GET: 200 (found) or 404 (not found). Any other outcome (rate limit,
-# 5xx, network) fails, so a failed lookup never passes for "nothing there". Capture it in an
-# assignment (x=$(status_of ...)) so that failure stops the script under set -e.
-status_of() {
-  local out rc=0 first status
+# GETs $1 and sets FETCH_STATUS to 200 (found) or 404 (not found) and FETCH_BODY to the response.
+# Any other outcome (rate limit, 5xx, network) stops the script, so a failed lookup never passes
+# for "nothing there", even when called from an if condition.
+fetch() {
+  local out rc=0 first
   out=$(gh api -i "$1" 2>/dev/null) || rc=$?
+  # Headers end in CRLF; JSON escapes any CR in a string, so every raw CR belongs to a header.
+  out=${out//$'\r'/}
   first=${out%%$'\n'*}
-  status=${first#* }
-  status=${status%% *}
-  case "$status" in
-    200 | 404) echo "$status" ;;
+  FETCH_STATUS=${first#* }
+  FETCH_STATUS=${FETCH_STATUS%% *}
+  FETCH_BODY=${out#*$'\n\n'}
+  case "$FETCH_STATUS" in
+    200 | 404) ;;
     *)
-      echo "::error::GET $1 failed (HTTP ${status:-no response}, exit $rc)." >&2
-      return 1
+      echo "::error::GET $1 failed (HTTP ${FETCH_STATUS:-no response}, exit $rc)." >&2
+      exit 1
       ;;
   esac
 }
 
-# A published release or a tag for this version already exists (resolve-version.sh accepts the
-# tag with or without the v prefix): the suggestion is stale, so leave the draft as it is.
-for candidate in "$tag" "$VERSION"; do
-  for path in "git/ref/tags/$candidate" "releases/tags/$candidate"; do
-    found=$(status_of "$repo/$path")
-    if [ "$found" = 200 ]; then
-      echo "Version $VERSION is already tagged or released ($path); the draft is left unchanged." | tee -a "$summary"
-      exit 0
-    fi
+# Succeeds when version $1 already has a tag or a published release, in either tag form
+# (resolve-version.sh accepts the tag with or without the v prefix). Drafts have neither.
+version_taken() {
+  local candidate path
+  for candidate in "v${1#v}" "${1#v}"; do
+    for path in "git/ref/tags/$candidate" "releases/tags/$candidate"; do
+      fetch "$repo/$path"
+      if [ "$FETCH_STATUS" = 200 ]; then
+        TAKEN_BY=$path
+        return 0
+      fi
+    done
   done
-done
+  return 1
+}
 
-# The latest published release (drafts and prereleases are never "latest"). None yet: let GitHub
-# choose the range.
-previous=""
-latest=$(status_of "$repo/releases/latest")
-if [ "$latest" = 200 ]; then
-  previous=$(gh api "$repo/releases/latest" --jq .tag_name)
+# The suggestion is already tagged or released: it is stale, so leave the draft as it is.
+if version_taken "$VERSION"; then
+  echo "Version $VERSION is already tagged or released ($TAKEN_BY); the draft is left unchanged." | tee -a "$summary"
+  exit 0
 fi
-notes_args=(-f tag_name="$tag" -f target_commitish="$GITHUB_SHA")
-if [ -n "$previous" ]; then
-  notes_args+=(-f previous_tag_name="$previous")
-fi
-notes=$(gh api -X POST "$repo/releases/generate-notes" "${notes_args[@]}" --jq .body)
-body="$notes"$'\n\n'"$DRAFT_MARKER"
 
 draft_ids=$(gh api --paginate "$repo/releases?per_page=100" \
   --jq '.[] | select(.draft and ((.body // "") | contains(env.DRAFT_MARKER))) | .id')
@@ -74,34 +81,62 @@ if [ -n "$draft_ids" ]; then
   fi
 fi
 
+tag=$suggested
+kept=""
 if [ -n "$draft_id" ]; then
   # Re-read just before the update: if the draft was published (or deleted) since it was
   # selected, leave it alone. The PATCH never sends draft=true, so it cannot turn a published
   # release back into a draft. A publish in the instant between this read and the PATCH could
   # still have its tag, name and notes overwritten: GitHub's release API has no conditional
   # update, so that sub-second window remains.
-  state=$(status_of "$repo/releases/$draft_id")
-  still_draft=""
-  if [ "$state" = 200 ]; then
-    still_draft=$(gh api "$repo/releases/$draft_id" --jq .draft)
-  fi
-  if [ "$state" = 200 ] && [ "$still_draft" != true ]; then
-    echo "Release $draft_id was published since it was selected; it is left unchanged." | tee -a "$summary"
-    exit 0
-  fi
-  if [ "$state" = 404 ]; then
+  fetch "$repo/releases/$draft_id"
+  if [ "$FETCH_STATUS" = 404 ]; then
     draft_id=""
+  else
+    still_draft=$(printf '%s' "$FETCH_BODY" | jq -r .draft)
+    if [ "$still_draft" != true ]; then
+      echo "Release $draft_id was published since it was selected; it is left unchanged." | tee -a "$summary"
+      exit 0
+    fi
+
+    # Keep a higher version the owner set on the draft, unless it is already taken.
+    current=$(printf '%s' "$FETCH_BODY" | jq -r '.tag_name // ""')
+    if is_version "$current" && semver_gt "$current" "$VERSION" && ! version_taken "$current"; then
+      tag=$current
+      kept=true
+    fi
   fi
 fi
 
-if [ -n "$draft_id" ]; then
+# The latest published release (drafts and prereleases are never "latest"). None yet: let GitHub
+# choose the range.
+previous=""
+fetch "$repo/releases/latest"
+if [ "$FETCH_STATUS" = 200 ]; then
+  previous=$(printf '%s' "$FETCH_BODY" | jq -r .tag_name)
+fi
+notes_args=(-f tag_name="$tag" -f target_commitish="$GITHUB_SHA")
+if [ -n "$previous" ]; then
+  notes_args+=(-f previous_tag_name="$previous")
+fi
+notes=$(gh api -X POST "$repo/releases/generate-notes" "${notes_args[@]}" --jq .body)
+body="$notes"$'\n\n'"$DRAFT_MARKER"
+
+if [ -n "$kept" ]; then
+  # The owner's tag and name stay as they are; only the target and the notes are refreshed.
+  url=$(gh api -X PATCH "$repo/releases/$draft_id" \
+    -f target_commitish="$GITHUB_SHA" -f body="$body" --jq .html_url)
+  choice="kept the draft's tag $tag (suggested $suggested)"
+elif [ -n "$draft_id" ]; then
   url=$(gh api -X PATCH "$repo/releases/$draft_id" \
     -f tag_name="$tag" -f target_commitish="$GITHUB_SHA" -f name="$VERSION" \
     -f body="$body" --jq .html_url)
+  choice="used the suggested tag $tag"
 else
   url=$(gh api -X POST "$repo/releases" \
     -f tag_name="$tag" -f target_commitish="$GITHUB_SHA" -f name="$VERSION" \
     -F draft=true -f body="$body" --jq .html_url)
+  choice="created with the suggested tag $tag"
 fi
 
-echo "Draft release $tag for $GITHUB_SHA (previous release ${previous:-none}): $url" | tee -a "$summary"
+echo "Draft release for $GITHUB_SHA $choice (previous release ${previous:-none}): $url" | tee -a "$summary"

@@ -1,7 +1,63 @@
 # Configures GitHub's auto-generated release notes, which release-draft.yml requests
 # for the draft release it keeps for main.
 # https://docs.github.com/repositories/releasing-projects-on-github/automatically-generated-release-notes
+#
+# A PR lands in the first category it matches, in file order. Label a PR `breaking` for Breaking
+# Changes and `ignore-for-release` (or `ignore-release`) to leave it out. Dependency PRs (Renovate
+# labels them `dependencies`) are excluded from every category except Breaking Changes, so they
+# stay together under Dependencies, which must stay last.
 changelog:
   exclude:
     labels:
+      - ignore-for-release
       - ignore-release
+  categories:
+    - title: Breaking Changes
+      labels:
+        - breaking
+        - breaking-change
+    - title: New Features
+      labels:
+        - enhancement
+        - feature
+      exclude:
+        labels:
+          - dependencies
+    - title: Bug Fixes
+      labels:
+        - bug
+        - fix
+      exclude:
+        labels:
+          - dependencies
+    - title: Performance
+      labels:
+        - performance
+      exclude:
+        labels:
+          - dependencies
+    - title: Documentation
+      labels:
+        - documentation
+        - docs
+      exclude:
+        labels:
+          - dependencies
+    - title: Other Changes
+      labels:
+        - '*'
+      exclude:
+        labels:
+          - dependencies
+          - breaking
+          - breaking-change
+          - enhancement
+          - feature
+          - bug
+          - fix
+          - performance
+          - documentation
+          - docs
+    - title: Dependencies
+      labels:
+        - dependencies

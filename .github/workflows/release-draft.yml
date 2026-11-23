@@ -10,8 +10,13 @@ name: Release Draft
 # ci.yml on it, which runs the full release gate with the tag's version and pushes the packages to
 # NuGet.
 #
-# Every push to main rewrites the draft, so edits to it are lost if main moves before it is
-# published. The draft this workflow owns carries DRAFT_MARKER in its notes; other drafts are left
+# Change the draft's tag to override the version; later pushes keep a higher version you set.
+# Set it back to the suggestion (or lower) to return to the default. Every push to main refreshes
+# the draft's target and notes, so other edits to it are lost if main moves before it is
+# published.
+#
+# Notes are grouped by PR label (.github/release.yml): label a PR `breaking` for Breaking Changes
+# and `ignore-for-release` to leave it out; dependency PRs are grouped automatically. The draft this workflow owns carries DRAFT_MARKER in its notes; other drafts are left
 # alone. Keep the marker when editing the notes: without it the next push creates a second draft.
 # A push whose suggested version is already tagged or released leaves the draft unchanged.
 

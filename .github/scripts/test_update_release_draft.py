@@ -41,10 +41,10 @@ FAKE_GH = textwrap.dedent("""\
         status, body = scenario.get(method + " " + path, [200, {"html_url": "https://x/draft", "body": "notes"}])
     text = json.dumps(body)
     if include:
-        print(f"HTTP/2.0 {status} X\\n")
+        # gh prints the status line with LF and the headers with CRLF, then the body.
+        sys.stdout.write(f"HTTP/2.0 {status} X\\nContent-Type: application/json\\r\\n\\r\\n{text}")
+        sys.exit(0 if status == 200 else 1)
     if status != 200:
-        if include:
-            print(text)
         print(f"gh: failed (HTTP {status})", file=sys.stderr)
         sys.exit(1)
     if jq:
@@ -123,6 +123,43 @@ class UpdateReleaseDraftTests(unittest.TestCase):
         self.assertFalse(any(f.startswith("draft=") for f in write["fields"]))
         self.assertIn("updating 9 and leaving 7 alone", result.stdout)
 
+    def draft_tagged(self, tag: str, extra: dict | None = None) -> tuple[subprocess.CompletedProcess[str], list[dict]]:
+        scenario = {
+            f"{REPO}/releases?per_page=100": [200, [{"id": 9, "draft": True, "body": MARKER}]],
+            f"{REPO}/releases/9": [200, {"id": 9, "draft": True, "tag_name": tag, "name": tag}],
+        }
+        scenario.update(extra or {})
+        return self.run_script(scenario)
+
+    def test_keeps_a_higher_version_the_owner_set(self) -> None:
+        for tag in ("v1.30.0", "1.30.0", "v2.0.0-beta.1", "v1.29.2"):
+            with self.subTest(tag=tag):
+                result, calls = self.draft_tagged(tag)
+                self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+                [write] = self.writes(calls)
+                self.assertEqual(("PATCH", f"{REPO}/releases/9"), (write["method"], write["path"]))
+                self.assertEqual(["target_commitish=abc"], [f for f in write["fields"] if not f.startswith("body=")])
+                notes = next(c for c in calls if c["path"].endswith("generate-notes"))
+                self.assertIn(f"tag_name={tag}", notes["fields"])
+                self.assertIn(f"kept the draft's tag {tag}", result.stdout)
+
+    def test_uses_the_suggestion_over_a_lower_equal_invalid_or_taken_tag(self) -> None:
+        for tag, extra in (
+            ("v1.29.0", None), ("v1.29.1", None), ("1.29.1", None), ("v1.29.1-rc.1", None),
+            ("v1.30.01", None), ("next", None), ("", None),
+            ("v1.30.0", {f"{REPO}/git/ref/tags/v1.30.0": [200, {}]}),
+            ("v1.30.0", {f"{REPO}/releases/tags/1.30.0": [200, {}]}),
+        ):
+            with self.subTest(tag=tag, extra=extra):
+                result, calls = self.draft_tagged(tag, extra)
+                self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+                [write] = self.writes(calls)
+                self.assertIn("tag_name=v1.29.1", write["fields"])
+                self.assertIn("name=1.29.1", write["fields"])
+                notes = next(c for c in calls if c["path"].endswith("generate-notes"))
+                self.assertIn("tag_name=v1.29.1", notes["fields"])
+                self.assertIn("used the suggested tag v1.29.1", result.stdout)
+
     def test_leaves_a_draft_published_since_it_was_selected(self) -> None:
         result, calls = self.run_script({
             f"{REPO}/releases?per_page=100": [200, [{"id": 9, "draft": True, "body": MARKER}]],
@@ -156,6 +193,11 @@ class UpdateReleaseDraftTests(unittest.TestCase):
                 result, calls = self.run_script({f"{REPO}/{path}": [503, {"message": "Unavailable"}]})
                 self.assertNotEqual(0, result.returncode)
                 self.assertEqual([], self.writes(calls))
+
+    def test_a_failed_lookup_of_the_owner_tag_fails_without_writing(self) -> None:
+        result, calls = self.draft_tagged("v1.30.0", {f"{REPO}/releases/tags/v1.30.0": [502, {}]})
+        self.assertNotEqual(0, result.returncode)
+        self.assertEqual([], self.writes(calls))
 
     def test_a_missing_version_fails(self) -> None:
         result, calls = self.run_script({}, version="")
