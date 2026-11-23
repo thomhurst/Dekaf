@@ -102,28 +102,12 @@ public class PartitionedBatchRoutingBenchmarks
     [GlobalCleanup]
     public void Cleanup() => _lane.EnableAutomaticCompletion();
 
-    // Reflection keeps this fixture compiling against revisions without the monitor; there the
-    // monitored cases fail setup and the gate measures them on the candidate alone. The null
-    // argument is the lane's optional PartitionedProcessingLimits.
     private static PartitionLane<Ignore, ReadOnlyMemory<byte>> CreateMonitoredLane(TopicPartition partition, int capacity)
-    {
-        var laneType = typeof(PartitionLane<Ignore, ReadOnlyMemory<byte>>);
-        var monitor = Activator.CreateInstance(
-            laneType.Assembly.GetType("Dekaf.Consumer.PartitionedProcessingMonitor", throwOnError: true)!)!;
-        Func<PartitionLane<Ignore, ReadOnlyMemory<byte>>, CancellationToken, ValueTask> commit = static (_, _) => default;
-        Action<PartitionLane<Ignore, ReadOnlyMemory<byte>>> capacityAvailable = static _ =>
+        => new(partition, capacity, static (_, _) => default, static _ =>
         {
-        };
-        Action<PartitionLane<Ignore, ReadOnlyMemory<byte>>, Exception> failed = static (_, _) =>
+        }, static (_, _) =>
         {
-        };
-        return (PartitionLane<Ignore, ReadOnlyMemory<byte>>)Activator.CreateInstance(
-            laneType,
-            BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic,
-            binder: null,
-            [partition, capacity, commit, capacityAvailable, failed, null, monitor],
-            culture: null)!;
-    }
+        }, limits: null, monitor: new PartitionedProcessingMonitor());
 
     private sealed class RejectAllFilter : IConsumerRecordFilter
     {

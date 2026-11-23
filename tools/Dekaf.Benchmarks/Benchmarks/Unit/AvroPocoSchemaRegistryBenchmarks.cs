@@ -978,7 +978,8 @@ public class AvroPocoReentrantRuleSerializationBenchmarks
 [MemoryDiagnoser(displayGenColumns: false)]
 public class AvroPocoLargePayloadSerializationBenchmarks
 {
-    private const int PayloadLength = 1024 * 1024 + 1;
+    // The largest array the POCO Avro writer accepts (1,048,576 items).
+    private const int PayloadLength = 1024 * 1024;
     private readonly SerializationContext _context = new()
     {
         Topic = "avro-poco-large",
