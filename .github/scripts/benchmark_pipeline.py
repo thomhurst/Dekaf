@@ -3,8 +3,12 @@
 import json
 import math
 import os
+import re
 import sys
 from pathlib import Path
+
+# Namespace.Class.Method from `--list flat`; generic classes print as Class<Int32>.
+BENCHMARK_NAME = re.compile(r"[A-Za-z_]\w*(\.[A-Za-z_][\w<>,]*)+\.[A-Za-z_]\w*")
 
 
 def pipeline_mode(event_name, benchmark_filter):
@@ -36,6 +40,21 @@ def validate_reports(directory):
     return count
 
 
+def shard_filters(listing, shard, count):
+    """Return exact class filters for one shard of a BenchmarkDotNet ``--list flat`` output.
+
+    Classes are sorted and dealt round-robin, so the shards cover every listed class exactly once
+    and new fixtures join a shard without editing the workflow.
+    """
+    if count < 1 or not 1 <= shard <= count:
+        raise ValueError(f"Shard {shard} is outside 1..{count}.")
+    names = (line.strip() for line in listing.splitlines())
+    classes = sorted({name.rsplit(".", 1)[0] for name in names if BENCHMARK_NAME.fullmatch(name)})
+    if not classes:
+        raise ValueError("The benchmark listing contains no benchmark classes.")
+    return [f"{name}.*" for name in classes[shard - 1::count]]
+
+
 def validate_gate(mode, is_main, results):
     if mode not in ("full", "filtered"):
         raise ValueError("Benchmark pipeline selection failed.")
@@ -60,6 +79,10 @@ def main(arguments):
     elif command == "validate":
         directory, = arguments
         print(f"Validated {validate_reports(directory)} benchmark cases.")
+    elif command == "shard":
+        shard, count = (int(value) for value in arguments)
+        for benchmark_filter in shard_filters(sys.stdin.read(), shard, count):
+            print(benchmark_filter)
     elif command == "gate":
         results = {name: os.environ.get(f"{name}_RESULT") for name in
                    ("PLAN", "FILTERED", "UNIT", "CLIENT", "NATIVE", "SUMMARY", "HISTORY", "DOCS")}

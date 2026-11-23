@@ -60,13 +60,18 @@ def sample_list(value, name):
     return value
 
 
-def quiet(samples, label):
+def quiet(samples, label, notes=None):
+    """Require a constant thread-pool size; with ``notes``, record a change instead of failing."""
     for previous, current in zip(samples, samples[1:]):
         if current["threadPoolThreads"] != previous["threadPoolThreads"]:
-            raise ValueError(f"{label}: thread-pool size changes; steady state is not established")
+            message = f"{label}: thread-pool size changes; steady state is not established"
+            if notes is None:
+                raise ValueError(message)
+            notes.append(message)
+            return
 
 
-def _validate_warmup(warmup):
+def _validate_warmup(warmup, notes=None):
     requested = number(warmup.get("requestedSeconds"), "warmup requestedSeconds")
     workload = number(warmup.get("workloadSeconds"), "warmup workloadSeconds")
     if requested < 20 or workload < requested:
@@ -88,16 +93,19 @@ def _validate_warmup(warmup):
         raise ValueError("Final warmup sample does not confirm the drained message count")
     observations = [runtime(sample.get("runtime")) for sample in samples]
     tail_start = max(index for index, seconds in enumerate(active) if seconds <= workload - QUIET_WORKLOAD_SECONDS)
-    quiet(observations[tail_start:], "Warmup tail")
+    quiet(observations[tail_start:], "Warmup tail", notes)
     if samples[-1].get("acceptedMessages", 0) <= samples[tail_start].get("acceptedMessages", 0):
         raise ValueError("Warmup quiet window has no workload progress")
     return requested
 
 
-def validate(result):
-    """Validate runtime coverage and return the declared workload warmup seconds."""
+def validate(result, notes=None):
+    """Validate runtime coverage and return the declared workload warmup seconds.
+
+    With ``notes``, thread-pool size changes are appended to it instead of failing validation.
+    """
     throughput = object_value(result.get("throughput"), "throughput")
-    requested = _validate_warmup(object_value(throughput.get("warmup"), "warmup"))
+    requested = _validate_warmup(object_value(throughput.get("warmup"), "warmup"), notes)
 
     start = runtime(throughput.get("runtimeStart"))
     end = runtime(throughput.get("runtimeEnd"))
@@ -108,8 +116,8 @@ def validate(result):
             right < left or right - left > MAX_SAMPLE_GAP_SECONDS for left, right in zip(times, times[1:])):
         raise ValueError("Measured runtime samples do not cover the complete window, including drain")
     # Preserve all measured samples, including both boundaries and drain.
-    quiet([start] + [runtime(item.get("runtime")) for item in intervals] + [end], "Measurement")
-    validate_outbox(result)
+    quiet([start] + [runtime(item.get("runtime")) for item in intervals] + [end], "Measurement", notes)
+    validate_outbox(result, notes)
     validate_telemetry(result)
     return requested
 
@@ -128,7 +136,7 @@ def _outbox_counts(value):
     return counts
 
 
-def _validate_idle(phase, label, warmup=False):
+def _validate_idle(phase, label, warmup=False, notes=None):
     phase = object_value(phase, label)
     requested = number(phase.get("requestedSeconds"), f"{label} requestedSeconds")
     elapsed = number(phase.get("elapsedSeconds"), f"{label} elapsedSeconds")
@@ -155,12 +163,12 @@ def _validate_idle(phase, label, warmup=False):
     if delta["probes"] == 0 or any(sample["published"] or sample["errors"] for sample in counts):
         raise ValueError(f"{label} must exercise an empty healthy relay")
     tail = max(index for index, seconds in enumerate(times) if seconds <= elapsed - QUIET_WORKLOAD_SECONDS) if warmup else 0
-    quiet(observations[tail:], label)
+    quiet(observations[tail:], label, notes)
     return {"idleCpu": (observations[-1]["cpuSeconds"] - observations[0]["cpuSeconds"]) * 1000 / elapsed,
             "idleAlloc": (observations[-1]["allocatedBytes"] - observations[0]["allocatedBytes"]) / elapsed}
 
 
-def validate_outbox(result):
+def validate_outbox(result, notes=None):
     """Require complete idle and active evidence; derive idle rates from retained boundaries."""
     is_outbox = str(result.get("scenario", "")).casefold() == "outbox"
     if not is_outbox:
@@ -171,8 +179,8 @@ def validate_outbox(result):
     object_value(result.get("latency"), "outbox latency")
     if result.get("idempotent") is not True or result.get("brokerCount") != 1 or str(result.get("client", "")).casefold() != "dekaf":
         raise ValueError("Outbox evidence requires one broker and the idempotent Dekaf publisher")
-    _validate_idle(outbox.get("idleWarmup"), "Outbox idle warmup", warmup=True)
-    rates = _validate_idle(outbox.get("idle"), "Outbox idle measurement")
+    _validate_idle(outbox.get("idleWarmup"), "Outbox idle warmup", warmup=True, notes=notes)
+    rates = _validate_idle(outbox.get("idle"), "Outbox idle measurement", notes=notes)
     throughput = object_value(result.get("throughput"), "throughput")
     warmup = object_value(throughput.get("warmup"), "warmup")
     if outbox["idleWarmup"]["requestedSeconds"] != number(warmup.get("requestedSeconds"), "active warmup duration"):
@@ -295,14 +303,22 @@ def assess_trends(result):
     return {"findings": findings, "metrics": metrics}
 
 
-def assessment_report(errors, result_count, trends=None):
+def assessment_report(errors, result_count, trends=None, notes=None):
+    """Build the report. With ``notes`` (advisory mode), steady-state findings are reported but only
+    coverage decides the verdict."""
     trends = trends or {}
     coverage_verdict = "INCONCLUSIVE" if errors else "VALIDATED"
     trend_findings = [f"{label}: {finding}" for label, trend in trends.items() for finding in trend["findings"]]
-    trend_verdict = "INCONCLUSIVE" if trend_findings or not trends else "VALIDATED"
-    verdict = "VALIDATED" if coverage_verdict == trend_verdict == "VALIDATED" else "INCONCLUSIVE"
+    steady_state_notes = [*(notes or []), *trend_findings]
+    trend_verdict = "INCONCLUSIVE" if steady_state_notes or not trends else "VALIDATED"
+    if notes is None:
+        verdict = "VALIDATED" if coverage_verdict == trend_verdict == "VALIDATED" else "INCONCLUSIVE"
+        errors, steady_state_notes = [*errors, *trend_findings], []
+    else:
+        verdict = coverage_verdict
     return {"verdict": verdict, "coverageVerdict": coverage_verdict, "trendVerdict": trend_verdict,
-            "errors": [*errors, *trend_findings], "trends": trends,
+            "steadyStateGate": "required" if notes is None else "advisory",
+            "errors": list(errors), "notes": steady_state_notes, "trends": trends,
             "unassessedMetrics": list(UNASSESSED_METRICS), "resultCount": result_count,
             "tolerances": {"trendPercent": TREND_TOLERANCE_PERCENT, "memoryGrowthPercent": MEMORY_GROWTH_PERCENT,
                            "allocationNoiseFloorBytes": ALLOCATION_NOISE_FLOOR_BYTES,
@@ -311,12 +327,16 @@ def assessment_report(errors, result_count, trends=None):
                      "is not in the retained schema; aggregate quantiles are compared by the A-B-A screen."}
 
 
-def _assess(label, result, errors, trends, durations):
+def _assess(label, result, errors, trends, durations, notes=None):
+    result_notes = None if notes is None else []
     try:
-        durations.add(validate(object_value(result, "result")))
+        durations.add(validate(object_value(result, "result"), result_notes))
     except ValueError as error:
         errors.append(f"{label}: {error}")
         return
+    finally:
+        if result_notes:
+            notes.extend(f"{label}: {note}" for note in result_notes)
     trends[label] = assess_trends(result)
     if result.get("outbox") is not None:
         trends[f"{label} idle"] = assess_idle_trends(result)
@@ -339,8 +359,12 @@ def main(argv=None):
     parser.add_argument("--summary")
     parser.add_argument("--expected-results", type=int,
                         help="Validate all result files/client entries and require this total count.")
+    parser.add_argument("--advisory-steady-state", action="store_true",
+                        help="Report thread-pool changes and trend drift as notes instead of failing. Only for runs "
+                             "that publish absolute results; A-B-A comparisons keep the steady-state gate.")
     args = parser.parse_args(argv)
     errors, trends, durations = [], {}, set()
+    notes = [] if args.advisory_steady_state else None
     result_count = 0
     if args.expected_results is not None and args.expected_results <= 0:
         errors.append("Expected result count must be positive")
@@ -364,12 +388,12 @@ def main(argv=None):
                 continue
             for index, result in enumerate(results):
                 result_count += 1
-                _assess(f"{path} result {index + 1}", result, errors, trends, durations)
+                _assess(f"{path} result {index + 1}", result, errors, trends, durations, notes)
     if args.expected_results is not None and result_count != args.expected_results:
         errors.append(f"Expected {args.expected_results} results, found {result_count}")
     if len(durations) > 1:
         errors.append("All phases must declare the same warmup duration")
-    report = assessment_report(errors, result_count, trends)
+    report = assessment_report(errors, result_count, trends, notes)
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
@@ -378,6 +402,9 @@ def main(argv=None):
                f"({report['resultCount']} result(s)).\n")
     if report["errors"]:
         summary += "\n" + "\n".join(f"- {error}" for error in report["errors"]) + "\n"
+    if report["notes"]:
+        summary += ("\nSteady-state notes (advisory; they do not fail this run):\n\n"
+                    + "\n".join(f"- {note}" for note in report["notes"]) + "\n")
     print(summary)
     if args.summary:
         with Path(args.summary).open("a", encoding="utf-8") as handle:
