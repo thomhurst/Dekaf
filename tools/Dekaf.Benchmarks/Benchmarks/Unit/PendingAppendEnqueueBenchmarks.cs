@@ -21,6 +21,7 @@ public class PendingAppendEnqueueBenchmarks
 {
     private const string Topic = "pending-append-benchmark";
     private RecordAccumulator _accumulator = null!;
+    private ValueTask<bool> _fillAppend;
     private ValueTask<bool> _warmupAppend;
     private ValueTask<bool> _pendingAppend;
 
@@ -31,9 +32,16 @@ public class PendingAppendEnqueueBenchmarks
         {
             BootstrapServers = ["localhost:9092"],
             BatchSize = 4096,
-            BufferMemory = 1,
+            // Room for exactly one record: a smaller budget rejects every record as too large.
+            BufferMemory = (ulong)PartitionBatch.EstimateRecordSize(0, 0, null, 0),
             LingerMs = 0
         });
+
+        _fillAppend = Enqueue();
+        if (!_fillAppend.IsCompleted)
+        {
+            throw new InvalidOperationException("The first append did not fit in BufferMemory.");
+        }
 
         _warmupAppend = Enqueue();
         if (_warmupAppend.IsCompleted)
@@ -47,6 +55,7 @@ public class PendingAppendEnqueueBenchmarks
     {
         _accumulator.DisposeAsync().AsTask().GetAwaiter().GetResult();
 
+        ObserveDisposed(_fillAppend);
         ObserveDisposed(_warmupAppend);
         ObserveDisposed(_pendingAppend);
     }

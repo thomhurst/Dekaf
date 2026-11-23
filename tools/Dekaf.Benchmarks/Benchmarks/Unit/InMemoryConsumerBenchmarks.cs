@@ -237,7 +237,10 @@ public class InMemoryConsumerBenchmarks
             }
         }
 
-        _multiPartitionCommitConsumers = new InMemoryConsumer<Ignore, Ignore>[128];
+        // One fresh consumer per invocation, for every stage of the run. BenchmarkDotNet 0.16
+        // runs up to six tiering (jitting) iterations before warmup, so 16 invocations over
+        // jitting, warmup and measurement need far more than 128 consumers.
+        _multiPartitionCommitConsumers = new InMemoryConsumer<Ignore, Ignore>[1024];
         for (var consumerIndex = 0; consumerIndex < _multiPartitionCommitConsumers.Length; consumerIndex++)
         {
             var groupId = $"{GroupId}-{consumerIndex}";

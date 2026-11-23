@@ -1,4 +1,5 @@
 using BenchmarkDotNet.Attributes;
+using Dekaf.Producer;
 using Dekaf.Testing;
 
 namespace Dekaf.Benchmarks.Benchmarks.Unit;
@@ -11,6 +12,10 @@ public class ShareAcknowledgeCommitBenchmarks
     private const string GroupId = "workers";
     private const int BatchSize = 4096;
     private const int NonMatchingSelectorCount = 1024;
+
+    // Records stay on partition 0, so the non-matching plan's partition-1 selectors never fire.
+    private static readonly ProducerMessage<string, string> Message =
+        new() { Topic = Topic, Key = "key", Value = "value", Partition = 0 };
 
     [Params(false, true)]
     public bool ExplicitAcknowledgement
@@ -118,7 +123,7 @@ public class ShareAcknowledgeCommitBenchmarks
     {
         for (var index = 0; index < BatchSize; index++)
         {
-            producer.ProduceAsync(Topic, "key", "value").GetAwaiter().GetResult();
+            producer.ProduceAsync(Message).GetAwaiter().GetResult();
         }
 
         var enumerator = consumer.PollAsync().GetAsyncEnumerator();
