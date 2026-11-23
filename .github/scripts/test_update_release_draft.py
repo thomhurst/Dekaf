@@ -75,6 +75,7 @@ class UpdateReleaseDraftTests(unittest.TestCase):
             f"{REPO}/releases/latest": [200, {"tag_name": "v1.29.0"}],
             f"POST {REPO}/releases/generate-notes": [200, {"body": "## What's Changed"}],
             f"{REPO}/releases?per_page=100": [200, []],
+            f"{REPO}/git/ref/heads/main": [200, {"object": {"sha": "abc"}}],
         }
         base.update(scenario)
         (self.root / "scenario.json").write_text(json.dumps(base))
@@ -198,6 +199,36 @@ class UpdateReleaseDraftTests(unittest.TestCase):
         result, calls = self.draft_tagged("v1.30.0", {f"{REPO}/releases/tags/v1.30.0": [502, {}]})
         self.assertNotEqual(0, result.returncode)
         self.assertEqual([], self.writes(calls))
+
+    def test_a_run_for_an_older_commit_leaves_the_draft(self) -> None:
+        for drafts in ([], [{"id": 9, "draft": True, "body": MARKER}]):
+            with self.subTest(drafts=drafts):
+                result, calls = self.run_script({
+                    f"{REPO}/releases?per_page=100": [200, drafts],
+                    f"{REPO}/releases/9": [200, {"id": 9, "draft": True, "tag_name": "v1.29.1"}],
+                    f"{REPO}/git/ref/heads/main": [200, {"object": {"sha": "newer"}}],
+                })
+                self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+                self.assertEqual([], self.writes(calls))
+                self.assertIn("is no longer the tip of main", result.stdout)
+
+    def test_a_failed_branch_lookup_fails_without_writing(self) -> None:
+        for status in (404, 500):
+            with self.subTest(status=status):
+                result, calls = self.run_script({f"{REPO}/git/ref/heads/main": [status, {}]})
+                self.assertNotEqual(0, result.returncode)
+                self.assertEqual([], self.writes(calls))
+
+    def test_failed_notes_generation_writes_nothing(self) -> None:
+        for drafts in ([], [{"id": 9, "draft": True, "body": MARKER}]):
+            with self.subTest(drafts=drafts):
+                result, calls = self.run_script({
+                    f"{REPO}/releases?per_page=100": [200, drafts],
+                    f"{REPO}/releases/9": [200, {"id": 9, "draft": True, "tag_name": "v1.29.1"}],
+                    f"POST {REPO}/releases/generate-notes": [500, {"message": "boom"}],
+                })
+                self.assertNotEqual(0, result.returncode)
+                self.assertEqual([], self.writes(calls))
 
     def test_a_missing_version_fails(self) -> None:
         result, calls = self.run_script({}, version="")

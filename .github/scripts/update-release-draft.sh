@@ -11,8 +11,10 @@
 # draft's target and notes. Set the tag back to the suggestion (or lower) to return to the default.
 #
 # Inputs (environment): GH_TOKEN, GITHUB_REPOSITORY, GITHUB_SHA, VERSION, DRAFT_MARKER,
-# GITHUB_STEP_SUMMARY (optional).
+# DEFAULT_BRANCH (default main), GITHUB_STEP_SUMMARY (optional).
 set -euo pipefail
+# Command substitutions inherit set -e (bash 4.4+, which the runners have; older bash skips it).
+shopt -s inherit_errexit 2>/dev/null || true
 
 if [ -z "${VERSION:-}" ]; then
   echo "::error::No version to name the draft release after."
@@ -121,6 +123,19 @@ if [ -n "$previous" ]; then
 fi
 notes=$(gh api -X POST "$repo/releases/generate-notes" "${notes_args[@]}" --jq .body)
 body="$notes"$'\n\n'"$DRAFT_MARKER"
+
+# A re-run of an older main run keeps its original commit: it must not move the draft back.
+# Checked just before writing, after every lookup, to keep the window short.
+fetch "$repo/git/ref/heads/${DEFAULT_BRANCH:-main}"
+if [ "$FETCH_STATUS" != 200 ]; then
+  echo "::error::Branch ${DEFAULT_BRANCH:-main} was not found."
+  exit 1
+fi
+tip=$(printf '%s' "$FETCH_BODY" | jq -er .object.sha)
+if [ "$tip" != "$GITHUB_SHA" ]; then
+  echo "Commit $GITHUB_SHA is no longer the tip of ${DEFAULT_BRANCH:-main} ($tip); the draft is left unchanged." | tee -a "$summary"
+  exit 0
+fi
 
 if [ -n "$kept" ]; then
   # The owner's tag and name stay as they are; only the target and the notes are refreshed.

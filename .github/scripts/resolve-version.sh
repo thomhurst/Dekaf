@@ -14,6 +14,8 @@
 # Inputs (environment): GITHUB_EVENT_NAME, GITHUB_SHA, RELEASE_TAG, GITVERSION_SEMVER,
 # DEFAULT_BRANCH (default main), GITHUB_ENV, GITHUB_OUTPUT.
 set -euo pipefail
+# Command substitutions inherit set -e (bash 4.4+, which the runners have; older bash skips it).
+shopt -s inherit_errexit 2>/dev/null || true
 
 # shellcheck source=semver.sh
 source "$(dirname "${BASH_SOURCE[0]}")/semver.sh"
