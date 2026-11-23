@@ -6,13 +6,11 @@ on:
     # Drafts skip every job (see `changes`); `ready_for_review` starts CI on the reviewed head and
     # `converted_to_draft` cancels an in-flight run through the concurrency group below.
     types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
+  # Publishing the draft release that release-draft.yml keeps for main runs the full release gate
+  # on the release's tag and pushes the packages to NuGet, stamped with the tag's version.
+  release:
+    types: [published]
   workflow_dispatch:
-    inputs:
-      publish_nuget:
-        description: 'Publish to NuGet'
-        type: boolean
-        required: false
-        default: false
 
 permissions:
   contents: read
@@ -24,12 +22,11 @@ env:
   ContinuousIntegrationBuild: true
   Deterministic: true
 
-# Cancel superseded runs: a newer commit on the same PR/branch cancels older
-# in-progress runs. Manual workflow_dispatch runs (e.g. NuGet publish) are never
-# cancelled.
+# Cancel superseded runs: a newer commit on the same PR cancels older in-progress
+# runs. Release (NuGet publish) and manual workflow_dispatch runs are never cancelled.
 concurrency:
   group: ci-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   # Auto-merge armed on an earlier head must not carry over to a new push: GitHub would merge
@@ -174,7 +171,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     permissions:
-      contents: read  # Publishing (and its release/tag creation) lives in the gated publish job
+      contents: read  # Publishing lives in the gated publish job
 
     steps:
       - name: Checkout
@@ -196,14 +193,25 @@ jobs:
           restore-keys: nuget-${{ runner.os }}-
 
       - name: Install GitVersion
+        if: github.event_name != 'release'
         uses: gittools/actions/gitversion/setup@7417b1089e2c7de93510f1901d656ddf60bb024f # v4.7.0
         with:
           versionSpec: '6.x'
 
       - name: Determine Version
+        if: github.event_name != 'release'
         id: gitversion
         uses: gittools/actions/gitversion/execute@7417b1089e2c7de93510f1901d656ddf60bb024f # v4.7.0
         continue-on-error: true  # Don't fail if GitVersion has issues on PR branches
+
+      # GitVersion's version, or the release's tag when a release is published (which also
+      # fails a tag that is not a version or does not point at a commit on main).
+      - name: Resolve version
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          GITVERSION_SEMVER: ${{ steps.gitversion.outputs.semVer }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: bash .github/scripts/resolve-version.sh
 
       - name: Expose GitHub Actions Runtime
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
@@ -584,12 +592,12 @@ jobs:
 
   # Integration categories run via the shared group definitions in
   # integration-groups.yml against the prebuilt binaries (no rebuild).
-  # PRs and manual non-publish runs cover both frameworks. NuGet publish
-  # dispatches skip this job — the release-matrix jobs below cover a superset.
+  # PRs and manual runs cover both frameworks. Release (NuGet publish) runs
+  # skip this job — the release-matrix jobs below cover a superset.
   integration:
     name: Integration (${{ matrix.framework }})
     needs: [changes, build]
-    if: needs.changes.outputs.code == 'true' && !(github.event_name == 'workflow_dispatch' && inputs.publish_nuget == true)
+    if: needs.changes.outputs.code == 'true' && github.event_name != 'release'
     strategy:
       fail-fast: true
       matrix:
@@ -731,13 +739,13 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
-  # Release gate: a NuGet publish dispatch must pass the full matrix — both
+  # Release gate: a published release must pass the full matrix — both
   # frameworks across every supported broker version, plus the complete AOT
   # sweep on floor and current — before the publish job below pushes packages.
   release-matrix:
     name: Release Matrix
     needs: [changes, build]
-    if: github.event_name == 'workflow_dispatch' && inputs.publish_nuget == true
+    if: github.event_name == 'release'
     strategy:
       fail-fast: false
       matrix:
@@ -752,7 +760,7 @@ jobs:
   release-matrix-aot:
     name: Release Matrix AOT
     needs: [changes, aot-integration-publish]
-    if: github.event_name == 'workflow_dispatch' && inputs.publish_nuget == true
+    if: github.event_name == 'release'
     strategy:
       fail-fast: false
       matrix:
@@ -907,7 +915,7 @@ jobs:
   aot-integration-smoke:
     name: Integration Tests AOT (smoke)
     needs: [changes, aot-integration-publish]
-    if: needs.changes.outputs.code == 'true' && !(github.event_name == 'workflow_dispatch' && inputs.publish_nuget == true)
+    if: needs.changes.outputs.code == 'true' && github.event_name != 'release'
     runs-on: ubuntu-latest
     timeout-minutes: 25
     env:
@@ -1102,28 +1110,29 @@ jobs:
       - name: Test Integration Category Runner
         run: bash scripts/tests/run-integration-categories-tests.sh
 
-  # Pushes NuGet packages and creates the GitHub release — only reachable when
-  # the entire release matrix (plus the regular lanes) is green. Re-runs the
-  # pipeline on the same commit, so GitVersion yields the same version the
-  # build job computed.
+  # Pushes the NuGet packages of a published release — only reachable when the
+  # entire release matrix (plus the regular lanes) is green. GitHub has already
+  # created the tag and the release; the version is the release's tag, the same
+  # one the build job stamped. Pushes skip packages already on NuGet, so a failed
+  # publish is retried by re-running this job.
   publish:
     name: Publish NuGet
     needs: [build, gssapi-packages, unit-net11, unit-net10, aspire-hosting, leak-gates-debug, eventhubs-integration, redpanda-integration, aot-smoke, aot-integration-publish, release-matrix, release-matrix-aot, code-quality]
-    if: github.event_name == 'workflow_dispatch' && inputs.publish_nuget == true
+    if: github.event_name == 'release'
     runs-on: ubuntu-latest
     timeout-minutes: 45
-    # Declaring permissions drops all other scopes to none; contents:write is the only scope any
-    # step here needs (release/tag creation). NuGet push authenticates with an API-key secret, and
-    # artifact upload uses the exposed Actions runtime token — neither relies on GITHUB_TOKEN scopes.
+    # Declaring permissions drops all other scopes to none. NuGet push authenticates with the
+    # trusted-publishing key from NuGet/login, and artifact upload uses the exposed Actions runtime
+    # token — neither relies on GITHUB_TOKEN scopes.
     permissions:
-      contents: write  # Create GitHub releases (and their tags) when publishing
+      contents: write  # Rename the published release after its tag
       id-token: write  # Request a NuGet trusted publishing token
 
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          fetch-depth: 0  # Required for GitVersion
+          fetch-depth: 0  # Required to check that the release's commit is on main
 
       - name: Setup .NET
         uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
@@ -1138,15 +1147,29 @@ jobs:
           key: nuget-${{ runner.os }}-${{ hashFiles('global.json', '**/*.csproj', '**/Directory.Packages.props', '**/Directory.Build.props', '**/Directory.Build.targets') }}
           restore-keys: nuget-${{ runner.os }}-
 
-      - name: Install GitVersion
-        uses: gittools/actions/gitversion/setup@7417b1089e2c7de93510f1901d656ddf60bb024f # v4.7.0
-        with:
-          versionSpec: '6.x'
+      # The release's tag is the version; fails a tag that is not a version or does not point at
+      # a commit on main.
+      - name: Resolve version
+        id: version
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: bash .github/scripts/resolve-version.sh
 
-      - name: Determine Version
-        id: gitversion
-        uses: gittools/actions/gitversion/execute@7417b1089e2c7de93510f1901d656ddf60bb024f # v4.7.0
+      # The draft was named, and its compare link written, for the version GitVersion suggested.
+      # Follow the tag if it was edited before publishing. Cosmetic, so it never blocks a release.
+      - name: Name release after its tag
         continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_ID: ${{ github.event.release.id }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          VERSION: ${{ steps.version.outputs.semVer }}
+        run: |
+          set -euo pipefail
+          body=$(gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" --jq '.body // ""')
+          body=$(printf '%s' "$body" | sed -E "s#(/compare/[^ )]+)\.\.\.[^ )]+#\1...$RELEASE_TAG#")
+          gh api -X PATCH "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" -f name="$VERSION" -f body="$body" > /dev/null
 
       - name: Expose GitHub Actions Runtime
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
@@ -1160,6 +1183,7 @@ jobs:
         id: login
         with:
           user: ${{ secrets.NUGET_USER }}
+
       - name: Run Pipeline (publish)
         env:
           NET_VERSION: net10.0
@@ -1167,7 +1191,6 @@ jobs:
           SKIP_AOT_SMOKE_TESTS: 'true'
           NuGet__ShouldPublish: 'true'
           NuGet__ApiKey: ${{ steps.login.outputs.NUGET_API_KEY }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}  # Used by CreateReleaseModule when a publish ships packages
         run: dotnet run --project tools/Dekaf.Pipeline
 
       - name: Upload Packages

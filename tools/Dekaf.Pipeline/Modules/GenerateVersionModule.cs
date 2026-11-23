@@ -10,28 +10,26 @@ public class GenerateVersionModule : Module<VersionInfo>
 {
     protected override async Task<VersionInfo> ExecuteAsync(IModuleContext context, CancellationToken cancellationToken)
     {
-        // Use the version GitVersion computed directly. +semver: bump messages drive Major/Minor/Patch,
-        // and the v{version} release tags CreateReleaseModule pushes act as GitVersion's version
-        // sources, so each publishing commit on main advances the patch and gets a fresh, unique
-        // version. SemVer excludes the +build metadata (which NuGet ignores), so it is the value we
-        // pack and publish.
-        //
-        // NOTE: uniqueness relies on every release pushing a v{version} tag. If a release ships
-        // packages without creating its tag, the next run can recompute the same version, and
-        // UploadToNuGetModule throws once every push is a duplicate (see its guard). Keep the tag and
-        // publish steps together.
-        var envSemVer = Environment.GetEnvironmentVariable("GitVersion_SemVer");
-        var envFullSemVer = Environment.GetEnvironmentVariable("GitVersion_FullSemVer");
+        // In CI, .github/scripts/resolve-version.sh has already chosen the version and exported it
+        // as DEKAF_VERSION: the tag of a published release, or the version GitVersion computed for
+        // any other run. Reuse it so the packages carry the version the workflow resolved.
+        var resolvedVersion = Environment.GetEnvironmentVariable("DEKAF_VERSION");
 
-        if (!string.IsNullOrEmpty(envSemVer) || !string.IsNullOrEmpty(envFullSemVer))
+        if (!string.IsNullOrEmpty(resolvedVersion))
         {
-            var semVer = envSemVer ?? envFullSemVer!;
-            context.Logger.LogInformation("Using GitVersion from environment: {SemVer}", semVer);
-            return new VersionInfo(semVer, semVer);
+            context.Logger.LogInformation("Using the version CI resolved: {SemVer}", resolvedVersion);
+            return new VersionInfo(resolvedVersion, resolvedVersion);
         }
 
-        // Fall back to running GitVersion directly (local development, where the CI action hasn't
-        // exported the GitVersion_* environment variables).
+        // A release must ship the version of its tag; never fall back to a computed one.
+        if (Environment.GetEnvironmentVariable("GITHUB_EVENT_NAME") == "release")
+        {
+            throw new InvalidOperationException(
+                "DEKAF_VERSION is not set on a release run; run .github/scripts/resolve-version.sh first.");
+        }
+
+        // Local development, or a CI run where GitVersion failed: run GitVersion directly. SemVer
+        // excludes the +build metadata (which NuGet ignores), so it is the value we pack.
         try
         {
             var gitVersionInformation = await context.Tools.Git.Versioning.GetVersioningInformationAsync(cancellationToken);

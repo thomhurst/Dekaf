@@ -7,10 +7,20 @@ using ModularPipelines.Git;
 
 namespace Dekaf.Pipeline.Modules;
 
-[RunOnlyOnBranch("main")]
+// Publishing runs only for a published GitHub release (see .github/workflows/release-draft.yml):
+// the release's tag is the version, and GitHub has already created the tag and the release. A
+// branch gate such as RunOnlyOnBranch("main") would skip every release run, which checks out the
+// tag on a detached HEAD.
 [DependsOn<PackModule>]
 public class UploadToNuGetModule(IOptions<NuGetOptions> nuGetOptions) : Module<List<CommandResult>>
 {
+    protected override void Configure(ModuleConfigurationBuilder module)
+    {
+        module.WithSkipWhen(_ => Environment.GetEnvironmentVariable("GITHUB_EVENT_NAME") == "release"
+            ? SkipDecision.DoNotSkip
+            : SkipDecision.Skip("Not a published release"));
+    }
+
     protected override async Task<List<CommandResult>> ExecuteAsync(IModuleContext context, CancellationToken cancellationToken)
     {
         var options = nuGetOptions.Value;
@@ -36,8 +46,7 @@ public class UploadToNuGetModule(IOptions<NuGetOptions> nuGetOptions) : Module<L
             return [];
         }
 
-        // Holds only the packages that were newly published this run (duplicates are excluded), so
-        // the returned count is an honest "did we ship anything new?" signal for CreateReleaseModule.
+        // Holds only the packages that were newly published this run (duplicates are excluded).
         var newlyPublished = new List<CommandResult>();
         var duplicates = 0;
 
@@ -76,11 +85,13 @@ public class UploadToNuGetModule(IOptions<NuGetOptions> nuGetOptions) : Module<L
         }
 
         // Guard against silent no-op releases: the job succeeds but ships nothing because every
-        // package version already exists (e.g. the version stopped advancing). Fail loudly instead.
+        // package version already exists (the release's tag names a version NuGet already has) or
+        // no package file was found. Fail loudly instead. A re-run of a partly published release
+        // still passes: the packages it had not pushed yet are new.
         if (newlyPublished.Count == 0)
         {
             var reason = duplicates > 0
-                ? $"every push was a duplicate of an already-released version ({packedProjects[0].Version}); the package version likely did not advance"
+                ? $"every push was a duplicate of an already-published version ({packedProjects[0].Version})"
                 : "no package files were found to push";
 
             throw new InvalidOperationException(

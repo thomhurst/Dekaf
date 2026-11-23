@@ -1,0 +1,64 @@
+name: Release Draft
+
+# Keeps one draft release up to date with main: its tag is the version GitVersion suggests for the
+# newest commit (the next patch after the latest release tag), its target is that commit, and its
+# notes list the changes since the latest published release (categorised by .github/release.yml).
+#
+# To release, edit the draft on GitHub: change the tag to choose the version (for example v1.30.0
+# for a minor or v2.0.0 for a major release; a prerelease such as v2.0.0-beta.1 also works),
+# adjust the notes, and publish it. Publishing creates the tag on the draft's commit and runs
+# ci.yml on it, which runs the full release gate with the tag's version and pushes the packages to
+# NuGet.
+#
+# Every push to main rewrites the draft, so edits to it are lost if main moves before it is
+# published. The draft this workflow owns carries DRAFT_MARKER in its notes; other drafts are left
+# alone.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions: {}
+
+# Only the newest commit's draft matters.
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: true
+
+jobs:
+  draft:
+    name: Update draft release
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    env:
+      DRAFT_MARKER: '<!-- dekaf-release-draft -->'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0  # Required for GitVersion
+          persist-credentials: false
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
+        with:
+          global-json-file: global.json
+
+      - name: Install GitVersion
+        uses: gittools/actions/gitversion/setup@7417b1089e2c7de93510f1901d656ddf60bb024f # v4.7.0
+        with:
+          versionSpec: '6.x'
+
+      - name: Determine Version
+        id: gitversion
+        uses: gittools/actions/gitversion/execute@7417b1089e2c7de93510f1901d656ddf60bb024f # v4.7.0
+
+      - name: Update draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.gitversion.outputs.semVer }}
+        run: bash .github/scripts/update-release-draft.sh
