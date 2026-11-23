@@ -16,8 +16,10 @@ name: Release Draft
 # published.
 #
 # Notes are grouped by PR label (.github/release.yml): label a PR `breaking` for Breaking Changes
-# and `ignore-for-release` to leave it out; dependency PRs are grouped automatically. The draft this workflow owns carries DRAFT_MARKER in its notes; other drafts are left
-# alone. Keep the marker when editing the notes: without it the next push creates a second draft.
+# and `ignore-for-release` to leave it out; dependency PRs are grouped automatically.
+#
+# The draft this workflow owns carries DRAFT_MARKER in its notes; other drafts are left alone.
+# Keep the marker when editing the notes: without it the next push creates a second draft.
 # A push whose suggested version is already tagged or released leaves the draft unchanged.
 
 on:
