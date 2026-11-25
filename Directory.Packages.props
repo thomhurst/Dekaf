@@ -26,7 +26,7 @@
     <PackageVersion Include="Confluent.SchemaRegistry.Serdes.Protobuf" Version="2.16.0" />
     <PackageVersion Include="Dekaf" Version="$(DekafPackageVersion)" />
     <PackageVersion Include="Dekaf.Abstractions" Version="$(DekafPackageVersion)" />
-    <PackageVersion Include="GitVersion.MsBuild" Version="6.8.2" />
+    <PackageVersion Include="GitVersion.MsBuild" Version="7.0.1" />
     <PackageVersion Include="Google.Cloud.Kms.V1" Version="3.27.0" />
     <PackageVersion Include="Google.Protobuf" Version="3.36.2" />
     <PackageVersion Include="Grpc.Core.Api" Version="2.85.0" />
