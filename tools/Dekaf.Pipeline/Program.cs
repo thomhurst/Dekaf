@@ -50,7 +50,6 @@ if (!skipPackaging)
 {
     builder.AddModule<PackModule>();
     builder.AddModule<UploadToNuGetModule>();
-    builder.AddModule<CreateReleaseModule>();
 }
 
 if (runBenchmarks)
